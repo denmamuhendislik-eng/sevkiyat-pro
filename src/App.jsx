@@ -122,6 +122,7 @@ export default function App() {
   const [selectedRow, setSelectedRow] = useState(null);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [pdfHtml, setPdfHtml] = useState(null);
+  const [hideShipped, setHideShipped] = useState(false);
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
@@ -230,6 +231,7 @@ export default function App() {
   };
 
   const yd = yearsData[selYear] || {containers:[],orders:{},carryOver:{},quantities:{}};
+  const visibleContainers = hideShipped ? yd.containers.filter(c=>!isShipped(c)) : yd.containers;
 
   const getCKG = useCallback(cid => {
     const q = yd.quantities[cid]||{};
@@ -666,6 +668,7 @@ export default function App() {
               </button>}
               {isAdmin&&<button onClick={()=>setShowAddC(true)} style={{...bP,padding:"4px 14px",fontSize:11}}>+ Sevkiyat</button>}
               {isAdmin&&<button onClick={()=>setShowAddO(true)} style={{...bS,padding:"4px 14px",fontSize:11}}>+ Sipariş</button>}
+              <button onClick={()=>setHideShipped(!hideShipped)} style={{...bS,padding:"4px 10px",fontSize:10,color:hideShipped?"#1D9E75":"var(--color-text-secondary)",borderColor:hideShipped?"#1D9E75":"var(--color-border-secondary)",background:hideShipped?"rgba(29,158,117,0.08)":"transparent"}}>{hideShipped?"◉ Sevk gizli":"○ Sevk gizle"}</button>
             </>}
             {isAdmin&&page==="products"&&<button onClick={()=>setShowAddP(true)} style={bP}>+ Ürün</button>}
             {!isAdmin&&<span style={{fontSize:10,padding:"4px 10px",borderRadius:6,background:"rgba(29,158,117,0.1)",color:"#1D9E75"}}>Görüntüleme modu</span>}
@@ -682,10 +685,11 @@ export default function App() {
                   <th colSpan={6} style={{position:"sticky",left:0,zIndex:30,background:"#ffffff",padding:"4px 6px",textAlign:"left",borderBottom:"2px solid var(--color-border-tertiary)",fontSize:10,fontWeight:600,color:"var(--color-text-secondary)",minWidth:528,boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>
                     <span>KG </span><span style={{fontSize:9,fontWeight:400,color:"var(--color-text-tertiary)"}}>({minKG.toLocaleString()}–{maxKG.toLocaleString()})</span>
                   </th>
-                  {yd.containers.map(c=>{
+                  {visibleContainers.map((c,ci)=>{
                     const kg=getCKG(c.id);const st=getStatus(kg);const fill=maxKG>0?Math.min(kg/maxKG*100,100):0;
-                    const kgBg=st.s==="ok"?"#e1f5ee":st.s==="close"?"#faeeda":st.s==="low"||st.s==="over"?"#fcebeb":"#ffffff";
-                    return <th key={c.id} style={{background:kgBg,padding:"3px 3px",textAlign:"center",borderBottom:`2px solid ${st.c}`,minWidth:66,transition:"background 0.2s"}}>
+                    const shipped=isShipped(c);
+                    const kgBg=shipped?"#e8e8e4":st.s==="ok"?"#e1f5ee":st.s==="close"?"#faeeda":st.s==="low"||st.s==="over"?"#fcebeb":"#ffffff";
+                    return <th key={c.id} style={{background:kgBg,padding:"3px 3px",textAlign:"center",borderBottom:`2px solid ${shipped?"#888":st.c}`,minWidth:66,transition:"background 0.2s",opacity:shipped?0.7:1}}>
                       <div style={{fontSize:9,fontWeight:700,color:st.c}}>{st.i} {st.l}</div>
                       <div style={{fontSize:10,fontWeight:600,color:st.c}}>{Math.round(kg).toLocaleString()}</div>
                       <div style={{height:4,background:"var(--color-background-tertiary)",borderRadius:2,overflow:"hidden",position:"relative"}}>
@@ -703,8 +707,8 @@ export default function App() {
                   <th style={{position:"sticky",left:384,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#0F6E56"}} title="Toplam Planlanan (sevk edilen dahil)">PLANLI</th>
                   <th style={{position:"sticky",left:432,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#BA7517"}} title="Planlanacak Kalan">P.KALAN</th>
                   <th style={{position:"sticky",left:480,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#E24B4A",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}} title="Sevk Edilecek Kalan (toplam sipariş - sevk edilen)">S.KALAN</th>
-                  {yd.containers.map(c=>(
-                    <th key={c.id} style={{background:"#f7f6f3",padding:"3px 2px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",minWidth:66}}>
+                  {visibleContainers.map((c,ci)=>(
+                    <th key={c.id} style={{background:isShipped(c)?"#e8e8e4":ci%2===0?"#f7f6f3":"#eeeee8",padding:"3px 2px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",minWidth:66,opacity:isShipped(c)?0.7:1}}>
                       {editDateId===c.id?<div>
                         <input type="date" value={editDateVal} onChange={e=>setEditDateVal(e.target.value)} onBlur={()=>saveDate(c.id)} onKeyDown={e=>{if(e.key==="Enter")saveDate(c.id);if(e.key==="Escape")setEditDateId(null);}} autoFocus style={{width:58,fontSize:9,padding:"2px",border:"1px solid #534AB7",borderRadius:3,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                       </div>
@@ -723,7 +727,7 @@ export default function App() {
                   const g=getProductGroup(p.id);
                   const prevG=idx>0?getProductGroup(activeProducts[idx-1].id):null;
                   const showGroupHeader=!prevG||prevG.id!==g.id;
-                  const colCount=6+yd.containers.length+1;
+                  const colCount=6+visibleContainers.length+1;
                   const isSel=selectedRow===p.id;
                   const isZebra=idx%2===1;
                   const rowBg=isSel?g.bgSel:isZebra?g.bgZ:g.bg;
@@ -758,7 +762,7 @@ export default function App() {
                     <td style={{position:"sticky",left:384,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.planned>0?"#0F6E56":"var(--color-text-tertiary)"}}>{s.planned}</td>
                     <td style={{position:"sticky",left:432,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.toBePlanned>0?"#BA7517":"var(--color-text-tertiary)"}}>{s.toBePlanned}</td>
                     <td style={{position:"sticky",left:480,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.remaining>0?"#E24B4A":"var(--color-text-tertiary)",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>{s.remaining}</td>
-                    {yd.containers.map(c=>{
+                    {visibleContainers.map((c,ci)=>{
                       const q=(yd.quantities[c.id]||{})[p.id]||0;
                       const isE=editCell?.cid===c.id&&editCell?.pid===p.id;
                       const linked=isLinkedChild(p.id)&&q>0;
@@ -766,7 +770,10 @@ export default function App() {
                       const linkedParents=linked?getLinkedParents(c.id,p.id):[];
                       const cascadeMin=isLinkedChild(p.id)?getCascadeQty(c.id,p.id,null,0):0;
                       const maxAllowed=s.toBePlanned+q;
-                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!isShipped(c)&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:isShipped(c)||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:isE?"var(--color-background-info)":rowBg}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
+                      const shipped=isShipped(c);
+                      const colZebra=!shipped&&ci%2===1;
+                      const cellBg=isE?"var(--color-background-info)":shipped?(isSel?"#d5d5d0":isZebra?"#ddddd8":"#e5e5e0"):isSel?g.bgSel:colZebra?(isZebra?g.bgSel:g.bgZ):rowBg;
+                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!shipped&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:shipped||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:cellBg,opacity:shipped?0.65:1}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
                         {isE?<div>
                           <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${cascadeMin>0?"#534AB7":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                           <div style={{fontSize:7,marginTop:1,display:"flex",justifyContent:"center",gap:4}}>
