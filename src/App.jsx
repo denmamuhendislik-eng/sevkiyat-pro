@@ -225,36 +225,6 @@ export default function App() {
     }
   };
 
-  // Loading screen
-  if (authLoading) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#f7f6f3"}}>
-    <div style={{textAlign:"center"}}><div style={{fontSize:36,marginBottom:10}}>📦</div><div style={{fontSize:14,color:"#5f5e5a"}}>Yükleniyor...</div></div>
-  </div>;
-
-  // Login screen
-  if (!authUser) return <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"linear-gradient(135deg,#f7f6f3 0%,#e8f4ed 100%)"}}>
-    <div style={{background:"#fff",borderRadius:16,padding:36,width:360,boxShadow:"0 8px 30px rgba(0,0,0,0.12)"}}>
-      <div style={{textAlign:"center",marginBottom:24}}>
-        <div style={{fontSize:40,marginBottom:8}}>📦</div>
-        <h1 style={{fontSize:20,fontWeight:700,color:"#1a1a1a",margin:0}}>Sevkiyat Pro</h1>
-        <p style={{fontSize:12,color:"#888780",marginTop:4}}>Sevkiyat Planlama ve Yönetim Sistemi</p>
-      </div>
-      <div style={{display:"flex",flexDirection:"column",gap:12}}>
-        <div>
-          <label style={{fontSize:11,color:"#5f5e5a",display:"block",marginBottom:4}}>Email</label>
-          <input type="email" value={loginEmail} onChange={e=>setLoginEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}
-            style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid rgba(0,0,0,0.15)",fontSize:13,outline:"none"}} placeholder="email@sirket.com"/>
-        </div>
-        <div>
-          <label style={{fontSize:11,color:"#5f5e5a",display:"block",marginBottom:4}}>Şifre</label>
-          <input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}
-            style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid rgba(0,0,0,0.15)",fontSize:13,outline:"none"}} placeholder="••••••••"/>
-        </div>
-        {loginError&&<div style={{fontSize:11,color:"#E24B4A",padding:"6px 10px",background:"#fdf3f3",borderRadius:6}}>{loginError}</div>}
-        <button onClick={doLogin} style={{padding:"10px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",marginTop:4}}>Giriş Yap</button>
-      </div>
-    </div>
-  </div>;
-
   const yd = yearsData[selYear] || {containers:[],orders:{},carryOver:{},quantities:{}};
 
   const getCKG = useCallback(cid => {
@@ -585,7 +555,33 @@ export default function App() {
   const bS={padding:"8px 18px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"transparent",color:"var(--color-text-primary)",fontSize:13,cursor:"pointer"};
 
   return (
-    <div style={{display:"flex",height:"100vh",fontFamily:"system-ui,sans-serif",color:"var(--color-text-primary)",background:"var(--color-background-tertiary)",overflow:"hidden"}}>
+    authLoading ? <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"#f7f6f3"}}>
+      <div style={{textAlign:"center"}}><div style={{fontSize:36,marginBottom:10}}>📦</div><div style={{fontSize:14,color:"#5f5e5a"}}>Yükleniyor...</div></div>
+    </div>
+    : !authUser ? <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",background:"linear-gradient(135deg,#f7f6f3 0%,#e8f4ed 100%)"}}>
+      <div style={{background:"#fff",borderRadius:16,padding:36,width:360,boxShadow:"0 8px 30px rgba(0,0,0,0.12)"}}>
+        <div style={{textAlign:"center",marginBottom:24}}>
+          <div style={{fontSize:40,marginBottom:8}}>📦</div>
+          <h1 style={{fontSize:20,fontWeight:700,color:"#1a1a1a",margin:0}}>Sevkiyat Pro</h1>
+          <p style={{fontSize:12,color:"#888780",marginTop:4}}>Sevkiyat Planlama ve Yönetim Sistemi</p>
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:12}}>
+          <div>
+            <label style={{fontSize:11,color:"#5f5e5a",display:"block",marginBottom:4}}>Email</label>
+            <input type="email" value={loginEmail} onChange={e=>setLoginEmail(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}
+              style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid rgba(0,0,0,0.15)",fontSize:13,outline:"none"}} placeholder="email@sirket.com"/>
+          </div>
+          <div>
+            <label style={{fontSize:11,color:"#5f5e5a",display:"block",marginBottom:4}}>Şifre</label>
+            <input type="password" value={loginPass} onChange={e=>setLoginPass(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doLogin()}
+              style={{width:"100%",padding:"10px 12px",borderRadius:8,border:"1px solid rgba(0,0,0,0.15)",fontSize:13,outline:"none"}} placeholder="••••••••"/>
+          </div>
+          {loginError&&<div style={{fontSize:11,color:"#E24B4A",padding:"6px 10px",background:"#fdf3f3",borderRadius:6}}>{loginError}</div>}
+          <button onClick={doLogin} style={{padding:"10px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:600,cursor:"pointer",marginTop:4}}>Giriş Yap</button>
+        </div>
+      </div>
+    </div>
+    : <div style={{display:"flex",height:"100vh",fontFamily:"system-ui,sans-serif",color:"var(--color-text-primary)",background:"var(--color-background-tertiary)",overflow:"hidden"}}>
       {/* Sidebar */}
       <div style={{width:sidebar?210:52,background:"var(--color-background-primary)",borderRight:"1px solid var(--color-border-tertiary)",display:"flex",flexDirection:"column",transition:"width 0.2s",flexShrink:0,overflow:"hidden"}}>
         <div style={{padding:sidebar?"14px 14px 6px":"14px 8px 6px",display:"flex",alignItems:"center",gap:10,cursor:"pointer"}} onClick={()=>setSidebar(!sidebar)}>
