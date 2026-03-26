@@ -507,9 +507,9 @@ export default function App() {
 
   const getProductGroup = useCallback(pid => {
     const s = getPStats(pid);
-    if(s.toBePlanned>0) return {id:0,label:"Planlanacak",color:"#1D9E75",bg:"#f3faf7",bgZ:"#e8f4ed",bgSel:"#b8e0cc"};
-    if(s.remaining>0) return {id:1,label:"Sevk bekliyor",color:"#3B8BD4",bg:"#f0f6fc",bgZ:"#e3eef8",bgSel:"#b5d4f0"};
-    return {id:2,label:"Tamamlandı",color:"#E24B4A",bg:"#fdf3f3",bgZ:"#f8eaea",bgSel:"#f0c8c8"};
+    if(s.toBePlanned>0) return {id:0,label:"Planlanacak",color:"#1D9E75",bg:"#f3faf7",bgZ:"#ddf0e5",bgSel:"#b8e0cc"};
+    if(s.remaining>0) return {id:1,label:"Sevk bekliyor",color:"#3B8BD4",bg:"#f0f6fc",bgZ:"#d9e8f5",bgSel:"#b5d4f0"};
+    return {id:2,label:"Tamamlandı",color:"#E24B4A",bg:"#fdf3f3",bgZ:"#f5dede",bgSel:"#f0c8c8"};
   },[getPStats]);
 
   const dashData = useMemo(() => {
@@ -647,13 +647,14 @@ export default function App() {
           {page==="planning"&&<div style={{overflow:"auto",height:"100%"}}>
             <table style={{borderCollapse:"separate",borderSpacing:0,fontSize:11,minWidth:"100%"}}>
               <thead>
-                <tr style={{position:"sticky",top:0,zIndex:20}}>
+                <tr style={{position:"sticky",top:0,zIndex:20,boxShadow:"0 2px 6px rgba(0,0,0,0.08)"}}>
                   <th colSpan={6} style={{position:"sticky",left:0,zIndex:30,background:"#ffffff",padding:"4px 6px",textAlign:"left",borderBottom:"2px solid var(--color-border-tertiary)",fontSize:10,fontWeight:600,color:"var(--color-text-secondary)",minWidth:528,boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>
                     <span>KG </span><span style={{fontSize:9,fontWeight:400,color:"var(--color-text-tertiary)"}}>({minKG.toLocaleString()}–{maxKG.toLocaleString()})</span>
                   </th>
                   {yd.containers.map(c=>{
                     const kg=getCKG(c.id);const st=getStatus(kg);const fill=maxKG>0?Math.min(kg/maxKG*100,100):0;
-                    return <th key={c.id} style={{background:st.bg,padding:"3px 3px",textAlign:"center",borderBottom:`2px solid ${st.c}`,minWidth:66,transition:"background 0.2s"}}>
+                    const kgBg=st.s==="ok"?"#e1f5ee":st.s==="close"?"#faeeda":st.s==="low"||st.s==="over"?"#fcebeb":"#ffffff";
+                    return <th key={c.id} style={{background:kgBg,padding:"3px 3px",textAlign:"center",borderBottom:`2px solid ${st.c}`,minWidth:66,transition:"background 0.2s"}}>
                       <div style={{fontSize:9,fontWeight:700,color:st.c}}>{st.i} {st.l}</div>
                       <div style={{fontSize:10,fontWeight:600,color:st.c}}>{Math.round(kg).toLocaleString()}</div>
                       <div style={{height:4,background:"var(--color-background-tertiary)",borderRadius:2,overflow:"hidden",position:"relative"}}>
@@ -662,9 +663,9 @@ export default function App() {
                       </div>
                     </th>;
                   })}
-                  <th style={{background:"var(--color-background-primary)",borderBottom:"2px solid var(--color-border-tertiary)",minWidth:45}}/>
+                  <th style={{background:"#ffffff",borderBottom:"2px solid var(--color-border-tertiary)",minWidth:45}}/>
                 </tr>
-                <tr style={{position:"sticky",top:46,zIndex:20}}>
+                <tr style={{position:"sticky",top:46,zIndex:20,boxShadow:"0 2px 6px rgba(0,0,0,0.08)"}}>
                   <th style={{position:"sticky",left:0,zIndex:30,background:"#f7f6f3",padding:"6px 6px",textAlign:"left",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:10,fontWeight:600,minWidth:300}}>ÜRÜN</th>
                   <th style={{position:"sticky",left:300,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:42,color:"#D85A30"}} title="Önceki Yıldan Devir">DEVİR</th>
                   <th style={{position:"sticky",left:342,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:42,color:"#534AB7"}} title="Yeni Sipariş">YENİ</th>
@@ -672,7 +673,7 @@ export default function App() {
                   <th style={{position:"sticky",left:432,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#BA7517"}} title="Planlanacak Kalan">P.KALAN</th>
                   <th style={{position:"sticky",left:480,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#E24B4A",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}} title="Sevk Edilecek Kalan (toplam sipariş - sevk edilen)">S.KALAN</th>
                   {yd.containers.map(c=>(
-                    <th key={c.id} style={{background:"var(--color-background-secondary)",padding:"3px 2px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",minWidth:66}}>
+                    <th key={c.id} style={{background:"#f7f6f3",padding:"3px 2px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",minWidth:66}}>
                       {editDateId===c.id?<div>
                         <input type="date" value={editDateVal} onChange={e=>setEditDateVal(e.target.value)} onBlur={()=>saveDate(c.id)} onKeyDown={e=>{if(e.key==="Enter")saveDate(c.id);if(e.key==="Escape")setEditDateId(null);}} autoFocus style={{width:58,fontSize:9,padding:"2px",border:"1px solid #534AB7",borderRadius:3,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                       </div>
@@ -682,7 +683,7 @@ export default function App() {
                       </div>}
                     </th>
                   ))}
-                  <th style={{background:"var(--color-background-secondary)",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:45,color:"#1D9E75"}}>SVK</th>
+                  <th style={{background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:45,color:"#1D9E75"}}>SVK</th>
                 </tr>
               </thead>
               <tbody>
