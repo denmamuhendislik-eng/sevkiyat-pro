@@ -122,6 +122,7 @@ export default function App() {
   const [pdfHtml, setPdfHtml] = useState(null);
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
+  const firestoreReady = useRef(false);
 
   const isAdmin = userRole === "admin";
 
@@ -157,25 +158,26 @@ export default function App() {
         if (d.minKG) setMinKG(d.minKG);
         if (d.maxKG) setMaxKG(d.maxKG);
         setDataLoaded(true);
+        setTimeout(() => { firestoreReady.current = true; }, 2000);
       }
     });
     return () => unsub();
   }, [authUser]);
 
-  // Save to Firestore (debounced, admin only)
+  // Save to Firestore (debounced, admin only, only after user edits)
   const saveToFirestore = useCallback((data) => {
-    if (!isAdmin) return;
+    if (!isAdmin || !firestoreReady.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
         await setDoc(doc(db, "appData", "state"), data, { merge: true });
       } catch (e) { console.error("Save error:", e); }
-    }, 1000);
+    }, 1500);
   }, [isAdmin]);
 
-  // Auto-save when data changes (admin only)
+  // Auto-save when data changes (admin only, after Firestore ready)
   useEffect(() => {
-    if (!isAdmin || !dataLoaded) return;
+    if (!isAdmin || !dataLoaded || !firestoreReady.current) return;
     saveToFirestore({ yearsData, products, combRules, minKG, maxKG });
   }, [yearsData, products, combRules, minKG, maxKG, isAdmin, dataLoaded, saveToFirestore]);
 
@@ -729,7 +731,7 @@ export default function App() {
                       const linkedParents=linked?getLinkedParents(c.id,p.id):[];
                       const cascadeMin=isLinkedChild(p.id)?getCascadeQty(c.id,p.id,null,0):0;
                       const maxAllowed=s.toBePlanned+q;
-                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!isShipped(c)&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:isShipped(c)||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:isE?"var(--color-background-info)":linked?"rgba(83,74,183,0.08)":isShipped(c)?`${g.color}08`:rowBg}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
+                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!isShipped(c)&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:isShipped(c)||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:isE?"var(--color-background-info)":rowBg}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
                         {isE?<div>
                           <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${cascadeMin>0?"#534AB7":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                           <div style={{fontSize:7,marginTop:1,display:"flex",justifyContent:"center",gap:4}}>
