@@ -119,6 +119,7 @@ export default function App() {
   const [exportLang, setExportLang] = useState("EN");
   const [selectedRow, setSelectedRow] = useState(null);
   const [dataLoaded, setDataLoaded] = useState(false);
+  const [pdfHtml, setPdfHtml] = useState(null);
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
 
@@ -420,8 +421,6 @@ export default function App() {
       return{date:c.date,totalKG:kg,status:st,items};
     }).filter(Boolean);
   };
-
-  const [pdfHtml, setPdfHtml] = useState(null);
 
   const exportPDF = () => {
     const data=buildExportData();if(data.length===0) return;
