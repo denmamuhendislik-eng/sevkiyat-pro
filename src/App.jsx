@@ -99,6 +99,7 @@ export default function App() {
   const [showAddO, setShowAddO] = useState(false);
   const [orderPid, setOrderPid] = useState("");
   const [orderQty, setOrderQty] = useState("");
+  const [orderYear, setOrderYear] = useState(new Date().getFullYear());
   const [sidebar, setSidebar] = useState(false);
   const [lang, setLang] = useState("TR");
   const [minKG, setMinKG] = useState(DEFAULT_MIN);
@@ -307,7 +308,7 @@ export default function App() {
   },[combRules, yd]);
 
   const cellClick = (cid,pid,val) => {
-    if(!isAdmin) return;
+    if(!isAdmin || !allowedYears.includes(selYear)) return;
     setEditCell({cid,pid}); setEditValue(val||""); setTimeout(()=>inputRef.current?.focus(),50);
   };
 
@@ -498,12 +499,16 @@ export default function App() {
     setShowAddP(false);setNewP({nameTR:"",nameEN:"",kg:""});
   };
 
+  const currentYear = new Date().getFullYear();
+  const allowedYears = [currentYear, currentYear+1]; // 2026, 2027
+
   const addOrder = () => {
     if(!orderPid||!orderQty) return;
+    if(!allowedYears.includes(orderYear)) return;
     const pid=Number(orderPid);
     const qty=parseInt(orderQty);
     setYearsData(prev=>{
-      const y={...prev[selYear]};
+      const y={...(prev[orderYear]||{containers:[],orders:{},carryOver:{},quantities:{}})};
       const orders={...y.orders,[pid]:(y.orders[pid]||0)+qty};
       // Cascade to linked children
       combRules.filter(r=>r.parent===pid).forEach(rule=>{
@@ -511,7 +516,7 @@ export default function App() {
           orders[childId]=(orders[childId]||0)+qty;
         });
       });
-      return{...prev,[selYear]:{...y,orders}};
+      return{...prev,[orderYear]:{...y,orders}};
     });
     setShowAddO(false);setOrderPid("");setOrderQty("");
   };
@@ -666,8 +671,9 @@ export default function App() {
               {isAdmin&&hasPendingCO&&<button onClick={()=>doCarryOver(selYear,selYear+1)} style={{...bS,padding:"4px 10px",fontSize:10,color:"#BA7517",borderColor:"#BA7517"}} title={`${Object.keys(pendingCarryOver).length} ürün ${selYear+1}'e devredilecek`}>
                 ↗ {selYear+1}'e Devret ({Object.keys(pendingCarryOver).length})
               </button>}
-              {isAdmin&&<button onClick={()=>setShowAddC(true)} style={{...bP,padding:"4px 14px",fontSize:11}}>+ Sevkiyat</button>}
-              {isAdmin&&<button onClick={()=>setShowAddO(true)} style={{...bS,padding:"4px 14px",fontSize:11}}>+ Sipariş</button>}
+              {isAdmin&&allowedYears.includes(selYear)&&<button onClick={()=>setShowAddC(true)} style={{...bP,padding:"4px 14px",fontSize:11}}>+ Sevkiyat</button>}
+              {isAdmin&&allowedYears.includes(selYear)&&<button onClick={()=>{setOrderYear(selYear);setShowAddO(true);}} style={{...bS,padding:"4px 14px",fontSize:11}}>+ Sipariş</button>}
+              {isAdmin&&!allowedYears.includes(selYear)&&<span style={{fontSize:10,padding:"4px 10px",borderRadius:6,background:"rgba(226,75,74,0.1)",color:"#E24B4A"}}>Geçmiş yıl — düzenleme kapalı</span>}
               <button onClick={()=>setHideShipped(!hideShipped)} style={{...bS,padding:"4px 10px",fontSize:10,color:hideShipped?"#1D9E75":"var(--color-text-secondary)",borderColor:hideShipped?"#1D9E75":"var(--color-border-secondary)",background:hideShipped?"rgba(29,158,117,0.08)":"transparent"}}>{hideShipped?"◉ Sevk gizli":"○ Sevk gizle"}</button>
             </>}
             {isAdmin&&page==="products"&&<button onClick={()=>setShowAddP(true)} style={bP}>+ Ürün</button>}
@@ -712,7 +718,7 @@ export default function App() {
                       {editDateId===c.id?<div>
                         <input type="date" value={editDateVal} onChange={e=>setEditDateVal(e.target.value)} onBlur={()=>saveDate(c.id)} onKeyDown={e=>{if(e.key==="Enter")saveDate(c.id);if(e.key==="Escape")setEditDateId(null);}} autoFocus style={{width:58,fontSize:9,padding:"2px",border:"1px solid #534AB7",borderRadius:3,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                       </div>
-                      :<div onClick={()=>{if(isAdmin){setEditDateId(c.id);setEditDateVal(c.date);}}} style={{cursor:isAdmin?"pointer":"default"}} title={isAdmin?"Tarihi değiştirmek için tıklayın":""}>
+                      :<div onClick={()=>{if(isAdmin&&allowedYears.includes(selYear)){setEditDateId(c.id);setEditDateVal(c.date);}}} style={{cursor:isAdmin&&allowedYears.includes(selYear)?"pointer":"default"}} title={isAdmin&&allowedYears.includes(selYear)?"Tarihi değiştirmek için tıklayın":""}>
                         <div style={{fontSize:9,fontWeight:500}}>{shortDate(c.date)}</div>
                         <Badge status={isShipped(c)?"shipped":"planned"}/>
                       </div>}
@@ -752,7 +758,7 @@ export default function App() {
                       </div>
                     </td>
                     <td style={{position:"sticky",left:300,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.carryOver[p.id]||0)>0?"#D85A30":"var(--color-text-tertiary)"}}>{yd.carryOver[p.id]||"–"}</td>
-                    <td onClick={(e)=>{e.stopPropagation();if(isAdmin){setEditOrderPid(p.id);setEditOrderVal((yd.orders[p.id]||0).toString());}}} style={{position:"sticky",left:342,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.orders[p.id]||0)>0?"#534AB7":"var(--color-text-tertiary)",cursor:isAdmin?"pointer":"default"}}>
+                    <td onClick={(e)=>{e.stopPropagation();if(isAdmin&&allowedYears.includes(selYear)){setEditOrderPid(p.id);setEditOrderVal((yd.orders[p.id]||0).toString());}}} style={{position:"sticky",left:342,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.orders[p.id]||0)>0?"#534AB7":"var(--color-text-tertiary)",cursor:isAdmin&&allowedYears.includes(selYear)?"pointer":"default"}} title={!allowedYears.includes(selYear)?"Geçmiş yıl — sipariş düzenlenemez":""}>
                       {editOrderPid===p.id?<div>
                         <input type="number" autoFocus value={editOrderVal} onChange={e=>setEditOrderVal(e.target.value)} onBlur={()=>saveOrder(p.id)} onKeyDown={e=>{if(e.key==="Enter")saveOrder(p.id);if(e.key==="Escape")setEditOrderPid(null);}} style={{width:42,padding:"1px 2px",border:"1px solid #534AB7",borderRadius:3,textAlign:"center",fontSize:10,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                         <div style={{fontSize:7,color:"#BA7517"}}>min:{getPStats(p.id).planned}</div>
@@ -1117,6 +1123,14 @@ export default function App() {
 
       {showAddO&&<Modal title="Sipariş Ekle" onClose={()=>setShowAddO(false)}>
         <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
+          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Yıl</label>
+            <div style={{display:"flex",gap:6}}>
+              {[2024,2025,2026,2027].map(y=>(
+                <button key={y} onClick={()=>allowedYears.includes(y)&&setOrderYear(y)} style={{padding:"6px 14px",borderRadius:6,border:`1px solid ${orderYear===y?"#534AB7":"var(--color-border-tertiary)"}`,background:orderYear===y?"#534AB7":"transparent",color:orderYear===y?"#fff":allowedYears.includes(y)?"var(--color-text-primary)":"var(--color-text-tertiary)",fontSize:12,fontWeight:500,cursor:allowedYears.includes(y)?"pointer":"not-allowed",opacity:allowedYears.includes(y)?1:0.4}}>{y}</button>
+              ))}
+            </div>
+            {!allowedYears.includes(selYear)&&<div style={{fontSize:10,color:"#BA7517",marginTop:4}}>Görüntülediğiniz yıl ({selYear}) geçmiş yıl — sipariş girişi yapılamaz</div>}
+          </div>
           <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Ürün</label>
             <select value={orderPid} onChange={e=>setOrderPid(e.target.value)} style={iS}>
               <option value="">Seçin...</option>
@@ -1124,7 +1138,9 @@ export default function App() {
             </select></div>
           <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Miktar</label>
             <input type="number" value={orderQty} onChange={e=>setOrderQty(e.target.value)} style={iS}/></div>
-          <div style={{fontSize:10,color:"var(--color-text-tertiary)"}}>Yıl: {selYear}</div>
+          <div style={{fontSize:10,color:"var(--color-text-tertiary)",padding:"6px 8px",background:"var(--color-background-secondary)",borderRadius:6}}>
+            Sipariş <b>{orderYear}</b> yılına eklenecek. {orderPid&&(yearsData[orderYear]?.orders[Number(orderPid)]||0)>0&&`Mevcut: ${yearsData[orderYear].orders[Number(orderPid)]} adet → toplam: ${(yearsData[orderYear].orders[Number(orderPid)]||0)+parseInt(orderQty||0)} adet`}
+          </div>
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setShowAddO(false)} style={bS}>İptal</button><button onClick={addOrder} style={bP}>Ekle</button></div>
       </Modal>}
