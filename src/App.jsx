@@ -57,7 +57,8 @@ const shortDate = d => new Date(d).toLocaleDateString("tr-TR",{day:"2-digit",mon
 const TODAY = new Date();
 TODAY.setHours(0,0,0,0);
 const isShipped = (c) => {
-  const d = new Date(c.date);
+  const parts = c.date.split("-");
+  const d = new Date(parts[0], parts[1]-1, parts[2]);
   d.setDate(d.getDate() + 1);
   return d <= TODAY;
 };
