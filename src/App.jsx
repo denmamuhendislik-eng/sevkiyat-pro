@@ -387,7 +387,7 @@ export default function App() {
       const items=Object.entries(yd.quantities[cid]||{}).filter(([,q])=>q>0).map(([pid,qty])=>{
         const p=products.find(pr=>pr.id===Number(pid));
         return p?{name:isEN?p.nameEN:p.nameTR,qty,kg:p.kg,totalKG:p.kg*qty}:null;
-      }).filter(Boolean).sort((a,b)=>b.totalKG-a.totalKG);
+      }).filter(Boolean).sort((a,b)=>b.kg-a.kg);
       return{date:c.date,totalKG:kg,status:st,items};
     }).filter(Boolean);
   };
@@ -728,7 +728,7 @@ export default function App() {
                       const linkedParents=linked?getLinkedParents(c.id,p.id):[];
                       const cascadeMin=isLinkedChild(p.id)?getCascadeQty(c.id,p.id,null,0):0;
                       const maxAllowed=s.toBePlanned+q;
-                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!isShipped(c)&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:isShipped(c)||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:isE?"var(--color-background-info)":linked?"rgba(83,74,183,0.08)":isShipped(c)?`${g.color}08`:"transparent"}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
+                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!isShipped(c)&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:isShipped(c)||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:isE?"var(--color-background-info)":linked?"rgba(83,74,183,0.08)":isShipped(c)?`${g.color}08`:rowBg}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
                         {isE?<div>
                           <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${cascadeMin>0?"#534AB7":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                           <div style={{fontSize:7,marginTop:1,display:"flex",justifyContent:"center",gap:4}}>
@@ -740,7 +740,7 @@ export default function App() {
                         :<span style={{fontSize:11,fontWeight:q>0?500:400,color:q>0?(isShipped(c)?"#1D9E75":"var(--color-text-primary)"):"var(--color-text-tertiary)"}}>{q>0?q:"·"}</span>}
                       </td>;
                     })}
-                    <td style={{padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:11,color:"#1D9E75"}}>{s.shipped}</td>
+                    <td style={{padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:11,color:"#1D9E75",background:rowBg}}>{s.shipped}</td>
                   </tr></>;
                 })}
               </tbody>
@@ -829,7 +829,7 @@ export default function App() {
             // Estimate remaining containers by avg KG per container
             const avgKGperC=(minKG+maxKG)/2;
             const remainingKG=activeProducts.reduce((s,p)=>{const st=getPStats(p.id);return s+Math.max(0,st.toBePlanned)*p.kg;},0);
-            const estRemainingC=avgKGperC>0?Math.ceil(remainingKG/avgKGperC):0;
+            const estRemainingC=remainingKG>=minKG?(avgKGperC>0?Math.ceil(remainingKG/avgKGperC):0):0;
 
             // Remaining months in year
             // Months left: from last planned container to end of year
@@ -1001,7 +1001,7 @@ export default function App() {
               const shipped=isShipped(c);const sel=selectedCids.has(c.id);
               const items=Object.entries(yd.quantities[c.id]||{}).filter(([,q])=>q>0).map(([pid,qty])=>{
                 const p=products.find(pr=>pr.id===Number(pid));return p?{name:lang==="TR"?p.nameTR:p.nameEN,qty,kg:p.kg,totalKG:p.kg*qty}:null;
-              }).filter(Boolean).sort((a,b)=>b.totalKG-a.totalKG);
+              }).filter(Boolean).sort((a,b)=>b.kg-a.kg);
               return <div key={c.id} style={{background:"var(--color-background-primary)",borderRadius:12,padding:14,border:`2px solid ${sel?"#534AB7":st.s==="ok"?"#1D9E75":st.s==="empty"?"var(--color-border-tertiary)":"#E24B4A"}`,opacity:shipped?0.7:1,transition:"border 0.15s"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
