@@ -71,6 +71,18 @@ const KPI = ({label,value,sub,accent}) => (
   </div>
 );
 
+const Modal=({title,onClose,children})=>(
+  <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={onClose}>
+    <div style={{background:"var(--color-background-primary)",borderRadius:16,padding:24,minWidth:380,maxWidth:500,maxHeight:"80vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}} onClick={e=>e.stopPropagation()}>
+      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
+        <h3 style={{margin:0,fontSize:16,fontWeight:600}}>{title}</h3>
+        <button onClick={onClose} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"var(--color-text-secondary)"}}>✕</button>
+      </div>
+      {children}
+    </div>
+  </div>
+);
+
 export default function App() {
   // Auth states
   const [authUser, setAuthUser] = useState(null);
@@ -575,18 +587,6 @@ export default function App() {
   const hasPendingCO = Object.keys(pendingCarryOver).length > 0;
 
   const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"combine",icon:"🔗",l:"Kombine Ürünler"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"}];
-
-  const Modal=({title,onClose,children})=>(
-    <div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:1000}} onClick={onClose}>
-      <div style={{background:"var(--color-background-primary)",borderRadius:16,padding:24,minWidth:380,maxWidth:500,maxHeight:"80vh",overflow:"auto",boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}} onClick={e=>e.stopPropagation()}>
-        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:20}}>
-          <h3 style={{margin:0,fontSize:16,fontWeight:600}}>{title}</h3>
-          <button onClick={onClose} style={{background:"none",border:"none",fontSize:18,cursor:"pointer",color:"var(--color-text-secondary)"}}>✕</button>
-        </div>
-        {children}
-      </div>
-    </div>
-  );
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
