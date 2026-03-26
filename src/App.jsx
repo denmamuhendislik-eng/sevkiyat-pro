@@ -115,6 +115,8 @@ export default function App() {
   const [linkedExtras, setLinkedExtras] = useState({});
   const [editDateId, setEditDateId] = useState(null);
   const [editDateVal, setEditDateVal] = useState("");
+  const [editOrderPid, setEditOrderPid] = useState(null);
+  const [editOrderVal, setEditOrderVal] = useState("");
   const [selectedCids, setSelectedCids] = useState(new Set());
   const [exportLang, setExportLang] = useState("EN");
   const [selectedRow, setSelectedRow] = useState(null);
@@ -375,6 +377,33 @@ export default function App() {
       return{...prev,[selYear]:{...y,containers:cs}};
     });
     setEditDateId(null);
+  };
+
+  const saveOrder = (pid) => {
+    if(editOrderPid === null) return;
+    let newVal = parseInt(editOrderVal) || 0;
+    const stats = getPStats(pid);
+    // Cannot go below already planned amount
+    const minAllowed = stats.planned;
+    if(newVal < minAllowed) newVal = minAllowed;
+    if(newVal < 0) newVal = 0;
+    
+    const oldVal = yd.orders[pid] || 0;
+    const diff = newVal - oldVal;
+    
+    setYearsData(prev => {
+      const y = {...prev[selYear]};
+      const orders = {...y.orders};
+      orders[pid] = newVal;
+      // Cascade to linked children
+      combRules.filter(r => r.parent === pid).forEach(rule => {
+        rule.children.forEach(childId => {
+          orders[childId] = Math.max(0, (orders[childId] || 0) + diff);
+        });
+      });
+      return {...prev, [selYear]: {...y, orders}};
+    });
+    setEditOrderPid(null);
   };
 
   const toggleCid = (cid) => setSelectedCids(prev=>{const s=new Set(prev);if(s.has(cid))s.delete(cid);else s.add(cid);return s;});
@@ -719,7 +748,13 @@ export default function App() {
                       </div>
                     </td>
                     <td style={{position:"sticky",left:300,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.carryOver[p.id]||0)>0?"#D85A30":"var(--color-text-tertiary)"}}>{yd.carryOver[p.id]||"–"}</td>
-                    <td style={{position:"sticky",left:342,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.orders[p.id]||0)>0?"#534AB7":"var(--color-text-tertiary)"}}>{yd.orders[p.id]||"–"}</td>
+                    <td onClick={(e)=>{e.stopPropagation();if(isAdmin){setEditOrderPid(p.id);setEditOrderVal((yd.orders[p.id]||0).toString());}}} style={{position:"sticky",left:342,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.orders[p.id]||0)>0?"#534AB7":"var(--color-text-tertiary)",cursor:isAdmin?"pointer":"default"}}>
+                      {editOrderPid===p.id?<div>
+                        <input type="number" autoFocus value={editOrderVal} onChange={e=>setEditOrderVal(e.target.value)} onBlur={()=>saveOrder(p.id)} onKeyDown={e=>{if(e.key==="Enter")saveOrder(p.id);if(e.key==="Escape")setEditOrderPid(null);}} style={{width:42,padding:"1px 2px",border:"1px solid #534AB7",borderRadius:3,textAlign:"center",fontSize:10,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
+                        <div style={{fontSize:7,color:"#BA7517"}}>min:{getPStats(p.id).planned}</div>
+                      </div>
+                      :(yd.orders[p.id]||0)>0?yd.orders[p.id]:"–"}
+                    </td>
                     <td style={{position:"sticky",left:384,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.planned>0?"#0F6E56":"var(--color-text-tertiary)"}}>{s.planned}</td>
                     <td style={{position:"sticky",left:432,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.toBePlanned>0?"#BA7517":"var(--color-text-tertiary)"}}>{s.toBePlanned}</td>
                     <td style={{position:"sticky",left:480,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.remaining>0?"#E24B4A":"var(--color-text-tertiary)",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>{s.remaining}</td>
