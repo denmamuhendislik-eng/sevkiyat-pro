@@ -895,6 +895,7 @@ export default function App() {
                     </div>
                     <div style={{fontSize:10,color:"var(--color-text-tertiary)",marginBottom:4}}>{p.nameEN}</div>
                     <span style={{fontSize:10,color:"var(--color-text-secondary)"}}>Ağırlık: <b>{p.kg} KG</b></span>
+                    {VIO_CODES[p.id]&&<span style={{fontSize:9,marginLeft:8,padding:"1px 5px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",fontFamily:"monospace"}}>{VIO_CODES[p.id]}</span>}
                   </div>
                 </div>
               ))}
