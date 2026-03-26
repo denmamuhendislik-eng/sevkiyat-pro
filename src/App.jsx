@@ -343,21 +343,21 @@ export default function App() {
       });
       setYearsData(prev=>{
         const y={...prev[selYear]};const q={...y.quantities};const cq={...(q[cid]||{})};
-        if(finalVal===0) delete cq[pid]; else cq[pid]=finalVal;
+        cq[pid]=finalVal;
         q[cid]=cq;y.quantities=q;return{...prev,[selYear]:y};
       });
     } else {
       // Editing a parent (or non-linked product) → cascade to children, preserve extras
       setYearsData(prev=>{
         const y={...prev[selYear]};const q={...y.quantities};const cq={...(q[cid]||{})};
-        if(val===0) delete cq[pid]; else cq[pid]=val;
+        cq[pid]=val;
         // Cascade to children
         combRules.filter(r => r.parent === pid).forEach(rule => {
           rule.children.forEach(childId => {
             const cascadeTotal = getCascadeQty(cid, childId, pid, val);
             const extra = getExtra(cid, childId);
             const childTotal = cascadeTotal + extra;
-            if(childTotal === 0) delete cq[childId]; else cq[childId] = childTotal;
+            cq[childId] = childTotal;
           });
         });
         q[cid]=cq;y.quantities=q;return{...prev,[selYear]:y};
