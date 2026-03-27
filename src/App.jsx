@@ -150,7 +150,6 @@ export default function App() {
   const [kantarBrut, setKantarBrut] = useState("");
   const [kantarApplied, setKantarApplied] = useState(false);
   const [packingStandards, setPackingStandards] = useState({}); // {pid: {qtyPerPallet, ambalajType, dara, descTR, descEN}}
-  const [showStandards, setShowStandards] = useState(false);
   const [editStdPid, setEditStdPid] = useState(null);
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
@@ -985,7 +984,7 @@ export default function App() {
     setPdfHtml(html);
   };
 
-  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"combine",icon:"🔗",l:"Kombine Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"packing",icon:"📦",l:"Paketleme"}];
+  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"combine",icon:"🔗",l:"Kombine Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"packStd",icon:"⚙",l:"Paketleme Standartları"}];
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
@@ -1600,6 +1599,84 @@ export default function App() {
             })}
           </div></div>}
 
+          {/* ========== PACKING STANDARDS PAGE ========== */}
+          {page==="packStd"&&<div>
+            <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>
+              Her ürün için paketleme standardı tanımlayın. "Otomatik Dağıt" sadece standartı tanımlı ürünleri paketler, diğerleri manuel paketlenir.
+            </div>
+            <div style={{marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span style={{fontSize:13,fontWeight:500}}>{Object.values(packingStandards).filter(s=>s.qtyPerPallet>0).length} / {products.filter(p=>{const s=getPStats(p.id);return s.order>0||s.planned>0;}).length} üründe standart tanımlı</span>
+              <input placeholder="Ürün ara..." value={search} onChange={e=>setSearch(e.target.value)} style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--color-border-secondary)",fontSize:12,width:200,outline:"none"}}/>
+            </div>
+            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+              <thead><tr style={{borderBottom:"2px solid var(--color-border-tertiary)",position:"sticky",top:0,background:"var(--color-background-tertiary)",zIndex:2}}>
+                <th style={{textAlign:"left",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600}}>Ürün</th>
+                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:80}}>Birim KG</th>
+                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:90}}>Adet / Palet</th>
+                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:100}}>Ambalaj</th>
+                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:80}}>Dara (kg)</th>
+                <th style={{textAlign:"left",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:180}}>Açıklama (TR)</th>
+                <th style={{textAlign:"left",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:180}}>Açıklama (EN)</th>
+                <th style={{width:70}}></th>
+              </tr></thead>
+              <tbody>
+                {products.filter(p=>{
+                  const s=getPStats(p.id);
+                  if(!(s.order>0||s.planned>0)) return false;
+                  if(search){const q=search.toLowerCase();return p.nameTR.toLowerCase().includes(q)||p.nameEN.toLowerCase().includes(q);}
+                  return true;
+                }).sort((a,b)=>b.kg-a.kg).map(p=>{
+                  const std = packingStandards[p.id];
+                  const hasStd = std && std.qtyPerPallet > 0;
+                  const isEditing = editStdPid === p.id;
+                  const palletKG = hasStd ? (std.qtyPerPallet * p.kg + (std.dara||0)) : 0;
+                  return <tr key={p.id} style={{borderBottom:"0.5px solid var(--color-border-tertiary)",background:hasStd?"rgba(29,158,117,0.04)":"transparent"}}>
+                    <td style={{padding:"8px 6px"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:6}}>
+                        <div style={{width:3,height:24,borderRadius:2,background:hasStd?"#1D9E75":"var(--color-border-tertiary)",flexShrink:0}}/>
+                        <div>
+                          <div style={{fontWeight:500,fontSize:11}}>{lang==="TR"?p.nameTR:p.nameEN}</div>
+                          <div style={{fontSize:9,color:"var(--color-text-tertiary)"}}>#{p.id}</div>
+                        </div>
+                      </div>
+                    </td>
+                    <td style={{textAlign:"center",padding:"8px 4px",fontWeight:500}}>{p.kg}</td>
+                    <td style={{textAlign:"center",padding:"8px 4px"}}>
+                      {isEditing||!hasStd?<input type="number" min="1" value={std?.qtyPerPallet||""} placeholder="—" onChange={e=>{const v=parseInt(e.target.value)||0;setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),qtyPerPallet:v}}));}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
+                      :<span style={{fontWeight:600,color:"#1D9E75",cursor:"pointer"}} onClick={()=>setEditStdPid(p.id)}>{std.qtyPerPallet}</span>}
+                    </td>
+                    <td style={{textAlign:"center",padding:"8px 4px"}}>
+                      {isEditing||!hasStd?<select value={std?.ambalajType??0} onChange={e=>{const v=Number(e.target.value);setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),ambalajType:v,dara:(prev[p.id]?.dara)||AMBALAJ_TYPES[v].defaultDara}}));}} style={{fontSize:10,padding:"3px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
+                        {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
+                      </select>
+                      :<span>{AMBALAJ_TYPES[std.ambalajType??0].label}</span>}
+                    </td>
+                    <td style={{textAlign:"center",padding:"8px 4px"}}>
+                      {isEditing||!hasStd?<input type="number" value={std?.dara??""} placeholder={String(AMBALAJ_TYPES[std?.ambalajType??0].defaultDara)} onChange={e=>{setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),dara:parseFloat(e.target.value)||0}}));}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
+                      :<span>{std.dara}</span>}
+                    </td>
+                    <td style={{padding:"8px 4px"}}>
+                      {isEditing||!hasStd?<input value={std?.descTR||""} placeholder={p.nameTR.substring(0,25)} onChange={e=>{setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),descTR:e.target.value}}));}} style={{width:"100%",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
+                      :<span style={{fontSize:10}}>{std.descTR||<span style={{color:"var(--color-text-tertiary)"}}>—</span>}</span>}
+                    </td>
+                    <td style={{padding:"8px 4px"}}>
+                      {isEditing||!hasStd?<input value={std?.descEN||""} placeholder={p.nameEN.substring(0,25)} onChange={e=>{setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),descEN:e.target.value}}));}} style={{width:"100%",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
+                      :<span style={{fontSize:10}}>{std.descEN||<span style={{color:"var(--color-text-tertiary)"}}>—</span>}</span>}
+                    </td>
+                    <td style={{padding:"8px 4px",textAlign:"center"}}>
+                      {hasStd&&!isEditing&&<div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                        <button onClick={()=>setEditStdPid(p.id)} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:10,cursor:"pointer"}}>Düzenle</button>
+                        <button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[p.id];return n;});}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:10,cursor:"pointer"}}>Sil</button>
+                      </div>}
+                      {hasStd&&isEditing&&<button onClick={()=>setEditStdPid(null)} style={{padding:"3px 10px",borderRadius:4,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:10,fontWeight:500,cursor:"pointer"}}>Tamam</button>}
+                      {hasStd&&<div style={{fontSize:9,color:"var(--color-text-tertiary)",marginTop:3}}>{Math.round(palletKG)} kg/palet</div>}
+                    </td>
+                  </tr>;
+                })}
+              </tbody>
+            </table>
+          </div>}
+
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
             const c = yd.containers.find(ct=>ct.id===packingCid);
@@ -1621,7 +1698,6 @@ export default function App() {
                 </div>
                 <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
                   <button onClick={autoDistribute} style={{padding:"5px 12px",borderRadius:6,border:"1.5px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#0F6E56",fontSize:11,fontWeight:600,cursor:"pointer"}}>⚡ Otomatik Dağıt</button>
-                  <button onClick={()=>setShowStandards(!showStandards)} style={{padding:"5px 12px",borderRadius:6,border:`1.5px solid ${showStandards?"#534AB7":"var(--color-border-secondary)"}`,background:showStandards?"rgba(83,74,183,0.08)":"transparent",color:showStandards?"#534AB7":"var(--color-text-secondary)",fontSize:11,fontWeight:500,cursor:"pointer"}}>⚙ Standartlar ({Object.keys(packingStandards).length})</button>
                   <button onClick={addPallet} style={{padding:"5px 12px",borderRadius:6,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:11,cursor:"pointer"}}>+ Boş Palet</button>
                 </div>
               </div>
@@ -1651,72 +1727,6 @@ export default function App() {
               </div>
 
               {/* Two panel layout */}
-
-              {/* Standards editor */}
-              {showStandards&&<div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,padding:"12px 16px",marginBottom:14}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
-                  <span style={{fontSize:13,fontWeight:500}}>Paketleme standartları</span>
-                  <span style={{fontSize:10,color:"var(--color-text-tertiary)"}}>Standartı olan ürünler otomatik dağıtılır, olmayanlar manuel paketlenir</span>
-                </div>
-                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-                  <thead><tr style={{borderBottom:"1.5px solid var(--color-border-tertiary)"}}>
-                    <th style={{textAlign:"left",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600}}>Ürün</th>
-                    <th style={{textAlign:"center",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:80}}>Adet/Palet</th>
-                    <th style={{textAlign:"center",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:100}}>Ambalaj</th>
-                    <th style={{textAlign:"center",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:70}}>Dara (kg)</th>
-                    <th style={{textAlign:"left",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:160}}>Açıklama (TR)</th>
-                    <th style={{textAlign:"left",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:160}}>Açıklama (EN)</th>
-                    <th style={{width:60}}></th>
-                  </tr></thead>
-                  <tbody>
-                    {getPackingItems().map(item=>{
-                      const std = packingStandards[item.pid];
-                      const hasStd = std && std.qtyPerPallet > 0;
-                      const isEditing = editStdPid === item.pid;
-                      return <tr key={item.pid} style={{borderBottom:"0.5px solid var(--color-border-tertiary)",background:hasStd?"rgba(29,158,117,0.04)":"transparent"}}>
-                        <td style={{padding:"6px 6px"}}>
-                          <div style={{fontWeight:500,fontSize:11}}>{lang==="TR"?item.nameTR:item.nameEN}</div>
-                          <div style={{fontSize:9,color:"var(--color-text-tertiary)"}}>{item.qty} ad × {item.kg} kg = {Math.round(item.qty*item.kg).toLocaleString()} kg</div>
-                        </td>
-                        <td style={{textAlign:"center",padding:"6px 4px"}}>
-                          {isEditing||!hasStd?<input type="number" min="1" value={std?.qtyPerPallet||""} placeholder="—" onChange={e=>{const v=parseInt(e.target.value)||0;setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),qtyPerPallet:v}}));}} style={{width:50,textAlign:"center",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
-                          :<span style={{fontWeight:600,color:"#1D9E75"}}>{std.qtyPerPallet}</span>}
-                        </td>
-                        <td style={{textAlign:"center",padding:"6px 4px"}}>
-                          {isEditing||!hasStd?<select value={std?.ambalajType??0} onChange={e=>{const v=Number(e.target.value);setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),ambalajType:v,dara:(prev[item.pid]?.dara)||AMBALAJ_TYPES[v].defaultDara}}));}} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
-                            {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
-                          </select>
-                          :<span>{AMBALAJ_TYPES[std.ambalajType??0].label}</span>}
-                        </td>
-                        <td style={{textAlign:"center",padding:"6px 4px"}}>
-                          {isEditing||!hasStd?<input type="number" value={std?.dara??""} placeholder={String(AMBALAJ_TYPES[std?.ambalajType??0].defaultDara)} onChange={e=>{setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),dara:parseFloat(e.target.value)||0}}));}} style={{width:50,textAlign:"center",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
-                          :<span>{std.dara}</span>}
-                        </td>
-                        <td style={{padding:"6px 4px"}}>
-                          {isEditing||!hasStd?<input value={std?.descTR||""} placeholder={item.nameTR.substring(0,30)} onChange={e=>{setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),descTR:e.target.value}}));}} style={{width:"100%",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
-                          :<span style={{fontSize:10}}>{std.descTR||"—"}</span>}
-                        </td>
-                        <td style={{padding:"6px 4px"}}>
-                          {isEditing||!hasStd?<input value={std?.descEN||""} placeholder={item.nameEN.substring(0,30)} onChange={e=>{setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),descEN:e.target.value}}));}} style={{width:"100%",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
-                          :<span style={{fontSize:10}}>{std.descEN||"—"}</span>}
-                        </td>
-                        <td style={{padding:"6px 4px",textAlign:"center"}}>
-                          {hasStd&&!isEditing&&<div style={{display:"flex",gap:4,justifyContent:"center"}}>
-                            <button onClick={()=>setEditStdPid(item.pid)} style={{padding:"2px 6px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:9,cursor:"pointer"}}>Düzenle</button>
-                            <button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[item.pid];return n;});}} style={{padding:"2px 6px",borderRadius:3,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:9,cursor:"pointer"}}>Sil</button>
-                          </div>}
-                          {hasStd&&isEditing&&<button onClick={()=>setEditStdPid(null)} style={{padding:"2px 8px",borderRadius:3,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:9,cursor:"pointer"}}>Tamam</button>}
-                        </td>
-                      </tr>;
-                    })}
-                  </tbody>
-                </table>
-                <div style={{marginTop:8,fontSize:10,color:"var(--color-text-tertiary)",display:"flex",justifyContent:"space-between"}}>
-                  <span>{Object.values(packingStandards).filter(s=>s.qtyPerPallet>0).length} / {getPackingItems().length} üründe standart tanımlı</span>
-                  <span>Standartlar tüm sevkiyatlar için geçerli — Firestore'a kaydedilir</span>
-                </div>
-              </div>}
-
               <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,alignItems:"start"}}>
 
                 {/* LEFT: Unpacked items */}
