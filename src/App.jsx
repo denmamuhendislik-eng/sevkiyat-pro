@@ -144,6 +144,14 @@ export default function App() {
   const [importData, setImportData] = useState(null);
   const [importYear, setImportYear] = useState(new Date().getFullYear());
   const [importNewProducts, setImportNewProducts] = useState([]);
+  // Packing states
+  const [packingCid, setPackingCid] = useState(null); // which container is being packed
+  const [pallets, setPallets] = useState([]); // array of pallet objects
+  const [kantarBrut, setKantarBrut] = useState("");
+  const [kantarApplied, setKantarApplied] = useState(false);
+  const [packingStandards, setPackingStandards] = useState({}); // {pid: {qtyPerPallet, ambalajType, dara, descTR, descEN}}
+  const [showStandards, setShowStandards] = useState(false);
+  const [editStdPid, setEditStdPid] = useState(null);
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
@@ -179,6 +187,7 @@ export default function App() {
         if (d.yearsData) setYearsData(d.yearsData);
         if (d.products) setProducts(d.products);
         if (d.combRules) setCombRules(d.combRules);
+        if (d.packingStandards) setPackingStandards(d.packingStandards);
         if (d.minKG) setMinKG(d.minKG);
         if (d.maxKG) setMaxKG(d.maxKG);
         setDataLoaded(true);
@@ -202,8 +211,8 @@ export default function App() {
   // Auto-save when data changes (admin only, after Firestore ready)
   useEffect(() => {
     if (!isAdmin || !dataLoaded || !firestoreReady.current) return;
-    saveToFirestore({ yearsData, products, combRules, minKG, maxKG });
-  }, [yearsData, products, combRules, minKG, maxKG, isAdmin, dataLoaded, saveToFirestore]);
+    saveToFirestore({ yearsData, products, combRules, minKG, maxKG, packingStandards });
+  }, [yearsData, products, combRules, minKG, maxKG, packingStandards, isAdmin, dataLoaded, saveToFirestore]);
 
   // Initial data upload (first time only)
   const uploadInitialData = async () => {
@@ -668,7 +677,315 @@ export default function App() {
   const pendingCarryOver = useMemo(()=>computeCarryOver(selYear),[computeCarryOver,selYear]);
   const hasPendingCO = Object.keys(pendingCarryOver).length > 0;
 
-  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"combine",icon:"🔗",l:"Kombine Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"}];
+  // ============ PACKING FUNCTIONS ============
+  const PALLET_MAX_KG = 1500;
+  const AMBALAJ_TYPES = [{label:"Palet",defaultDara:15},{label:"Sandık",defaultDara:25},{label:"Karton Kutu",defaultDara:5}];
+
+  const openPacking = (cid) => {
+    const q = yd.quantities[cid] || {};
+    const items = Object.entries(q).filter(([,qty])=>qty>0).map(([pid,qty])=>{
+      const p = products.find(pr=>pr.id===Number(pid));
+      return p ? {pid:Number(pid),name:lang==="TR"?p.nameTR:p.nameEN,nameEN:p.nameEN,nameTR:p.nameTR,qty,kg:p.kg,totalKG:p.kg*qty} : null;
+    }).filter(Boolean).sort((a,b)=>b.kg-a.kg);
+    // Load existing packing data from Firestore state or start fresh
+    const existingPacking = yearsData[selYear]?.packingData?.[cid];
+    if(existingPacking && existingPacking.pallets && existingPacking.pallets.length > 0) {
+      setPallets(existingPacking.pallets);
+      setKantarBrut(existingPacking.kantarBrut || "");
+      setKantarApplied(existingPacking.kantarApplied || false);
+    } else {
+      setPallets([]);
+      setKantarBrut("");
+      setKantarApplied(false);
+    }
+    setPackingCid(cid);
+    setPage("packing");
+  };
+
+  const getPackingItems = () => {
+    if(!packingCid) return [];
+    const q = yd.quantities[packingCid] || {};
+    return Object.entries(q).filter(([,qty])=>qty>0).map(([pid,qty])=>{
+      const p = products.find(pr=>pr.id===Number(pid));
+      return p ? {pid:Number(pid),nameTR:p.nameTR,nameEN:p.nameEN,qty,kg:p.kg} : null;
+    }).filter(Boolean).sort((a,b)=>b.kg-a.kg);
+  };
+
+  const getUnpackedItems = () => {
+    const allItems = getPackingItems();
+    const packed = {};
+    pallets.forEach(pl => pl.items.forEach(it => { packed[it.pid] = (packed[it.pid]||0) + it.qty; }));
+    return allItems.map(it => ({...it, remaining: it.qty - (packed[it.pid]||0), packed: packed[it.pid]||0})).filter(it=>it.remaining>0);
+  };
+
+  const getPackedSummary = () => {
+    const allItems = getPackingItems();
+    const packed = {};
+    pallets.forEach(pl => pl.items.forEach(it => { packed[it.pid] = (packed[it.pid]||0) + it.qty; }));
+    return allItems.filter(it=>(packed[it.pid]||0)>=it.qty).map(it => {
+      const palletCount = pallets.filter(pl=>pl.items.some(pi=>pi.pid===it.pid)).length;
+      return {...it, palletCount};
+    });
+  };
+
+  const getPalletNet = (pl) => pl.items.reduce((s,it)=>s+it.kg*it.qty,0);
+  const getPalletBrut = (pl) => getPalletNet(pl) + (pl.dara||0);
+
+  const autoDistribute = () => {
+    const items = getPackingItems();
+    const newPallets = [];
+    let palletNum = 1;
+    items.forEach(item => {
+      const std = packingStandards[item.pid];
+      if(!std || !std.qtyPerPallet) return; // Skip items without standards
+      let remaining = item.qty;
+      const qtyPer = std.qtyPerPallet;
+      const ambType = std.ambalajType ?? 0;
+      const dara = std.dara ?? AMBALAJ_TYPES[ambType].defaultDara;
+      while(remaining > 0) {
+        const fitQty = Math.min(remaining, qtyPer);
+        newPallets.push({
+          id: palletNum++,
+          items:[{pid:item.pid,nameTR:item.nameTR,nameEN:item.nameEN,qty:fitQty,kg:item.kg}],
+          ambalajType:ambType,
+          dara:dara
+        });
+        remaining -= fitQty;
+      }
+    });
+    newPallets.forEach((pl,i)=>pl.id=i+1);
+    setPallets(newPallets);
+    setKantarApplied(false);
+  };
+
+  const addPallet = () => {
+    setPallets(prev=>[...prev,{id:prev.length+1,items:[],ambalajType:0,dara:AMBALAJ_TYPES[0].defaultDara}]);
+  };
+
+  const removePallet = (idx) => {
+    setPallets(prev=>{
+      const np=[...prev];
+      np.splice(idx,1);
+      np.forEach((pl,i)=>pl.id=i+1);
+      return np;
+    });
+    setKantarApplied(false);
+  };
+
+  const addItemToPallet = (palletIdx, pid, qty) => {
+    const p = products.find(pr=>pr.id===pid);
+    if(!p) return;
+    setPallets(prev=>{
+      const np = prev.map((pl,i)=>{
+        if(i!==palletIdx) return pl;
+        const existing = pl.items.find(it=>it.pid===pid);
+        if(existing) {
+          return {...pl, items: pl.items.map(it=>it.pid===pid?{...it,qty:it.qty+qty}:it)};
+        }
+        return {...pl, items:[...pl.items,{pid,nameTR:p.nameTR,nameEN:p.nameEN,qty,kg:p.kg}]};
+      });
+      return np;
+    });
+    setKantarApplied(false);
+  };
+
+  const removeItemFromPallet = (palletIdx, pid) => {
+    setPallets(prev=>prev.map((pl,i)=>{
+      if(i!==palletIdx) return pl;
+      return {...pl, items: pl.items.filter(it=>it.pid!==pid)};
+    }));
+    setKantarApplied(false);
+  };
+
+  const updatePalletDara = (idx, val) => {
+    setPallets(prev=>prev.map((pl,i)=>i===idx?{...pl,dara:parseFloat(val)||0}:pl));
+    setKantarApplied(false);
+  };
+
+  const updatePalletAmbalaj = (idx, typeIdx) => {
+    setPallets(prev=>prev.map((pl,i)=>i===idx?{...pl,ambalajType:typeIdx,dara:AMBALAJ_TYPES[typeIdx].defaultDara}:pl));
+    setKantarApplied(false);
+  };
+
+  const totalPackingNet = pallets.reduce((s,pl)=>s+getPalletNet(pl),0);
+  const totalPackingDara = pallets.reduce((s,pl)=>s+(pl.dara||0),0);
+  const totalPackingBrut = totalPackingNet + totalPackingDara;
+
+  const applyKantar = () => {
+    const kb = parseFloat(kantarBrut);
+    if(!kb || kb <= 0 || pallets.length === 0) return;
+    const diff = kb - totalPackingBrut;
+    // Distribute diff proportionally to each pallet's brüt weight
+    setPallets(prev => {
+      const totalB = prev.reduce((s,pl)=>s+getPalletBrut(pl),0);
+      if(totalB === 0) return prev;
+      return prev.map(pl => {
+        const plBrut = getPalletBrut(pl);
+        const ratio = plBrut / totalB;
+        const adjustment = diff * ratio;
+        return {...pl, dara: Math.round((pl.dara + adjustment)*100)/100};
+      });
+    });
+    setKantarApplied(true);
+  };
+
+  const savePackingData = () => {
+    if(!packingCid || !isAdmin) return;
+    setYearsData(prev => {
+      const y = {...prev[selYear]};
+      const pd = {...(y.packingData||{})};
+      pd[packingCid] = {pallets, kantarBrut, kantarApplied, savedAt: new Date().toISOString()};
+      return {...prev, [selYear]: {...y, packingData: pd}};
+    });
+  };
+
+  // Auto-save packing when pallets change
+  useEffect(() => {
+    if(page === "packing" && packingCid && pallets.length > 0 && isAdmin) {
+      const t = setTimeout(()=>savePackingData(), 2000);
+      return ()=>clearTimeout(t);
+    }
+  }, [pallets, kantarBrut, kantarApplied]);
+
+  // Add qty dialog state
+  const [addQtyDialog, setAddQtyDialog] = useState(null); // {pid, palletIdx, maxQty, name}
+  const [addQtyValue, setAddQtyValue] = useState("");
+
+  // ============ PDF GENERATION ============
+  const DENMA_INFO = {
+    name: "DENMA DIŞ TİCARET LTD.ŞTİ",
+    address: "Fevzi Çakmak Mah. 10670 Sk. No:31/B Karatay - KONYA / TURKEY",
+    tel: "+90 332 606 29 83",
+    vd: "Selçuk V.D. 292 139 2109",
+    web: "www.denma.com.tr",
+    email: "bilgi@denma.com.tr"
+  };
+  const CUSTOMER = {
+    name: "OFMER SRL.",
+    country: "İtalya",
+    city: "MILAN",
+    address: "Via Achille Grandi 20056 Trezzo S/Adda",
+    tel: "0039029090134",
+    fax: "00390290964563"
+  };
+
+  const generatePackingPDF = (pdfLang) => {
+    if(!packingCid||pallets.length===0) return;
+    const c = yd.containers.find(ct=>ct.id===packingCid);
+    if(!c) return;
+    const isEN = pdfLang === "EN";
+    const title = isEN ? "PACK LIST" : "ÇEKİ LİSTESİ";
+    const dateStr = c.date.split("-").reverse().join(".");
+    const invoiceNr = c.id.toUpperCase().replace("C","CI");
+    const totalQty = pallets.reduce((s,pl)=>s+pl.items.reduce((ss,it)=>ss+it.qty,0),0);
+
+    const fk = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
+
+    // Build rows per pallet
+    let rows = "";
+    pallets.forEach(pl => {
+      const plNet = getPalletNet(pl);
+      const plBrut = getPalletBrut(pl);
+      const plQty = pl.items.reduce((s,it)=>s+it.qty,0);
+      pl.items.forEach((it,ii) => {
+        const std = packingStandards[it.pid];
+        const name = isEN ? (std?.descEN||it.nameEN) : (std?.descTR||it.nameTR);
+        rows += `<tr><td style="font-weight:${ii===0?700:400};padding:3px 6px">${ii===0?`<b>${pl.id}</b>  - PALET`:""}</td><td style="text-align:right;padding:3px 6px">${it.qty}</td><td style="text-align:right;padding:3px 6px">${fk(it.kg*it.qty)}</td><td style="padding:3px 6px"></td><td style="padding:3px 6px">${ii===0?(it.nameEN.length>30?name.substring(0,50):name):name}</td></tr>`;
+      });
+      rows += `<tr style="border-bottom:1.5px dotted #999"><td style="padding:3px 6px;font-style:italic;font-size:10px">${isEN?"Total Pallet:":"Palet Toplam:"}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${plQty}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${fk(plNet)}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${fk(plBrut)}</td><td></td></tr>`;
+    });
+
+    // Totals
+    rows += `<tr style="border-top:2px solid #000;font-weight:700"><td style="padding:4px 6px">${isEN?"Total :":"Toplam :"}</td><td style="text-align:right;padding:4px 6px">${totalQty}</td><td style="text-align:right;padding:4px 6px">${fk(totalPackingNet)}</td><td style="text-align:right;padding:4px 6px">${fk(totalPackingBrut)}</td><td></td></tr>`;
+
+    const html = `<div style="font-family:Arial,sans-serif;font-size:11px;color:#000;max-width:780px;margin:0 auto;padding:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
+        <div style="font-size:28px;font-weight:900;letter-spacing:4px">DENMA</div>
+        <div style="text-align:right;font-size:10px;line-height:1.5">${DENMA_INFO.name}<br>${DENMA_INFO.address}<br>Tel: ${DENMA_INFO.tel}<br>${DENMA_INFO.vd}<br>${DENMA_INFO.web}  ${DENMA_INFO.email}</div>
+      </div>
+      <div style="display:flex;justify-content:space-between;margin-bottom:16px;border:1px solid #000;padding:10px">
+        <div style="flex:1">
+          <div style="font-weight:700">${CUSTOMER.name}</div>
+          <div>${CUSTOMER.address}</div>
+          <div style="margin-top:4px"><b>${CUSTOMER.city}</b> &nbsp;&nbsp; ${CUSTOMER.country}</div>
+          <div>${CUSTOMER.tel} &nbsp;&nbsp; ${CUSTOMER.fax}</div>
+        </div>
+        <div style="border-left:1px solid #000;padding-left:14px">
+          <div style="font-size:24px;font-weight:900;margin-bottom:6px">${title}</div>
+          <table style="font-size:11px"><tr><td style="font-weight:700;padding:2px 10px 2px 0">${isEN?"Date":"Tarih"}</td><td>: ${dateStr}</td></tr><tr><td style="font-weight:700;padding:2px 10px 2px 0">${isEN?"Invoice Nr":"Fatura No"}</td><td>: ${invoiceNr}</td></tr><tr><td style="font-weight:700;padding:2px 10px 2px 0">${isEN?"Page":"Sayfa"}</td><td>: 1</td></tr></table>
+        </div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="border-bottom:2px solid #000">
+          <th style="text-align:left;padding:4px 6px">${isEN?"Pack Nr &<br>Description":"Kap No ve<br>Açıklama"}</th>
+          <th style="text-align:right;padding:4px 6px">${isEN?"Quant.":"Miktar"}</th>
+          <th style="text-align:right;padding:4px 6px">${isEN?"Prod.Net<br>Kg":"Ürün Top.<br>Kg"}</th>
+          <th style="text-align:right;padding:4px 6px">${isEN?"Pallet Gross<br>Kg":"Palet Brüt<br>Kg"}</th>
+          <th style="text-align:left;padding:4px 6px">${isEN?"Product Description":"Ürün Açıklaması"}</th>
+        </tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:16px;font-size:12px;line-height:1.8">
+        <div><b>${isEN?"Total Pack":"Toplam Kap"}</b> : ${pallets.length} Palet</div>
+        <div><b>${isEN?"Total Net Weight":"Toplam Net Ağırlık"}</b> : ${fk(totalPackingNet)} Kg</div>
+        <div><b>${isEN?"Total Gross Weight":"Toplam Brüt Ağırlık"}</b> : ${fk(totalPackingBrut)} Kg</div>
+      </div>
+      <div style="margin-top:20px;font-size:12px">
+        <div><b>${isEN?"EXPORTER":"İHRACATÇI"}</b> : ${DENMA_INFO.name}</div>
+        <div><b>${isEN?"IMPORTER":"İTHALATÇI"}</b> : ${CUSTOMER.name}</div>
+      </div>
+    </div>`;
+    setPdfHtml(html);
+  };
+
+  const generatePalletLabelPDF = () => {
+    if(!packingCid||pallets.length===0) return;
+    const c = yd.containers.find(ct=>ct.id===packingCid);
+    if(!c) return;
+    const dateStr = c.date.split("-").reverse().join(".");
+    const invoiceNr = c.id.toUpperCase().replace("C","CI");
+    const fk = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
+
+    // Generate one label per pallet showing ALL products in the shipment
+    const allItems = [];
+    pallets.forEach(pl=>pl.items.forEach(it=>{
+      const existing = allItems.find(a=>a.pid===it.pid);
+      if(existing) existing.qty += it.qty;
+      else allItems.push({...it});
+    }));
+
+    let rows = "";
+    allItems.forEach((it,i) => {
+      rows += `<tr><td style="padding:3px 6px;text-align:center;border:1px solid #000">${i+1}</td><td style="padding:3px 6px;border:1px solid #000">${it.nameEN}</td><td style="padding:3px 6px;text-align:center;border:1px solid #000"></td><td style="padding:3px 6px;text-align:right;border:1px solid #000"></td><td style="padding:3px 6px;text-align:right;border:1px solid #000"></td></tr>`;
+    });
+
+    const html = `<div style="font-family:Arial,sans-serif;font-size:11px;color:#000;max-width:900px;margin:0 auto;padding:20px">
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+        <div><div style="font-size:32px;font-weight:900;letter-spacing:4px">DENMA</div>
+        <div style="font-size:10px;margin-top:4px"><b>${DENMA_INFO.name}</b><br>${DENMA_INFO.address}<br>Tel: ${DENMA_INFO.tel} - ${DENMA_INFO.web}</div></div>
+        <div style="display:flex;gap:0">
+          <div style="border:2px solid #000;padding:8px 14px;text-align:center"><div style="font-size:10px;font-weight:700">INVOICE NR.</div><div style="font-size:16px;font-weight:700">${invoiceNr}</div></div>
+          <div style="border:2px solid #000;border-left:0;padding:8px 14px;text-align:center"><div style="font-size:14px;font-weight:700">${dateStr}</div></div>
+          <div style="border:2px solid #000;border-left:0;padding:8px 20px;text-align:center"><div style="font-size:14px;font-weight:900">PALET</div><div style="font-size:48px;font-weight:900;line-height:1">0</div></div>
+        </div>
+      </div>
+      <div style="border:2px solid #000;padding:10px 14px;margin-bottom:12px;text-align:center">
+        <div style="font-size:12px">TO: <b>${CUSTOMER.name}</b></div>
+        <div style="font-size:18px;font-weight:700;margin-top:4px">${CUSTOMER.city} / ${CUSTOMER.country}</div>
+      </div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <thead><tr style="background:#f5f5f5"><th style="padding:4px 6px;border:1px solid #000">Nr.</th><th style="padding:4px 6px;border:1px solid #000;text-align:left">Description</th><th style="padding:4px 6px;border:1px solid #000">Qnt.</th><th style="padding:4px 6px;border:1px solid #000;text-align:right">Net Kg</th><th style="padding:4px 6px;border:1px solid #000;text-align:right">Gross Kg</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:20px;font-size:14px">
+        <div><b>Total Net Weight</b> : ${fk(totalPackingNet)} Kg</div>
+        <div><b>Total Gross Weight</b> : ${fk(totalPackingBrut)} Kg</div>
+      </div>
+    </div>`;
+    setPdfHtml(html);
+  };
+
+  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"combine",icon:"🔗",l:"Kombine Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"packing",icon:"📦",l:"Paketleme"}];
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
@@ -1278,11 +1595,266 @@ export default function App() {
                   </tbody>
                 </table>
                 :<div style={{color:"var(--color-text-tertiary)",textAlign:"center",padding:10,fontSize:10}}>Boş</div>}
+                {isAdmin&&items.length>0&&<div style={{marginTop:8,textAlign:"right"}}><button onClick={(e)=>{e.stopPropagation();openPacking(c.id);}} style={{padding:"5px 14px",borderRadius:6,border:"1.5px solid #534AB7",background:"rgba(83,74,183,0.08)",color:"#534AB7",fontSize:11,fontWeight:600,cursor:"pointer"}}>📦 Paketle</button></div>}
               </div>;
             })}
           </div></div>}
+
+          {/* ========== PACKING PAGE ========== */}
+          {page==="packing"&&packingCid&&(()=>{
+            const c = yd.containers.find(ct=>ct.id===packingCid);
+            if(!c) return <div style={{padding:40,textAlign:"center",color:"var(--color-text-tertiary)"}}>Sevkiyat bulunamadı</div>;
+            const unpacked = getUnpackedItems();
+            const packedSummary = getPackedSummary();
+            const totalItems = getPackingItems();
+            const allPacked = unpacked.length === 0 && pallets.length > 0;
+            const fmtKG = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
+            return <div>
+              {/* Header */}
+              <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
+                <div style={{display:"flex",alignItems:"center",gap:10}}>
+                  <button onClick={()=>{savePackingData();setPage("shipment");setPackingCid(null);}} style={{padding:"4px 10px",borderRadius:6,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:12,cursor:"pointer"}}>← Geri</button>
+                  <div>
+                    <div style={{fontSize:15,fontWeight:600}}>Paketleme — {fmtDate(c.date)}</div>
+                    <div style={{fontSize:11,color:"var(--color-text-secondary)"}}>OFMER SRL. — {c.id}</div>
+                  </div>
+                </div>
+                <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                  <button onClick={autoDistribute} style={{padding:"5px 12px",borderRadius:6,border:"1.5px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#0F6E56",fontSize:11,fontWeight:600,cursor:"pointer"}}>⚡ Otomatik Dağıt</button>
+                  <button onClick={()=>setShowStandards(!showStandards)} style={{padding:"5px 12px",borderRadius:6,border:`1.5px solid ${showStandards?"#534AB7":"var(--color-border-secondary)"}`,background:showStandards?"rgba(83,74,183,0.08)":"transparent",color:showStandards?"#534AB7":"var(--color-text-secondary)",fontSize:11,fontWeight:500,cursor:"pointer"}}>⚙ Standartlar ({Object.keys(packingStandards).length})</button>
+                  <button onClick={addPallet} style={{padding:"5px 12px",borderRadius:6,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:11,cursor:"pointer"}}>+ Boş Palet</button>
+                </div>
+              </div>
+
+              {/* Summary cards */}
+              <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10,marginBottom:14}}>
+                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Palet</div><div style={{fontSize:18,fontWeight:500}}>{pallets.length}</div></div>
+                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Net</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG(totalPackingNet)} kg</div></div>
+                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Dara</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG(totalPackingDara)} kg</div></div>
+                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Brüt</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG(totalPackingBrut)} kg</div></div>
+              </div>
+
+              {/* Kantar section */}
+              <div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,padding:"12px 16px",marginBottom:14}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",flexWrap:"wrap",gap:8}}>
+                  <span style={{fontSize:13,fontWeight:500}}>Kantar (gerçek ağırlık)</span>
+                  <div style={{display:"flex",alignItems:"center",gap:8}}>
+                    <input type="number" placeholder="Kantar brüt kg" value={kantarBrut} onChange={e=>setKantarBrut(e.target.value)} style={{width:150,padding:"6px 10px",borderRadius:6,border:"1px solid var(--color-border-secondary)",fontSize:12,outline:"none"}}/>
+                    <button onClick={applyKantar} disabled={!kantarBrut||pallets.length===0} style={{padding:"6px 14px",borderRadius:6,border:"none",background:kantarApplied?"#1D9E75":"#534AB7",color:"#fff",fontSize:11,fontWeight:500,cursor:"pointer",opacity:(!kantarBrut||pallets.length===0)?0.4:1}}>{kantarApplied?"✓ Uygulandı":"Dengelemeyi Uygula"}</button>
+                  </div>
+                </div>
+                {kantarBrut&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginTop:10}}>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Hesaplanan brüt</div><div style={{fontSize:16,fontWeight:500}}>{fmtKG(totalPackingBrut)} kg</div></div>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Kantar brüt</div><div style={{fontSize:16,fontWeight:500,color:"var(--color-text-warning)"}}>{fmtKG(parseFloat(kantarBrut)||0)} kg</div></div>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Fark</div><div style={{fontSize:16,fontWeight:500,color:Math.abs((parseFloat(kantarBrut)||0)-totalPackingBrut)<1?"#1D9E75":"#E24B4A"}}>{((parseFloat(kantarBrut)||0)-totalPackingBrut)>0?"+":""}{fmtKG((parseFloat(kantarBrut)||0)-totalPackingBrut)} kg</div></div>
+                </div>}
+              </div>
+
+              {/* Two panel layout */}
+
+              {/* Standards editor */}
+              {showStandards&&<div style={{background:"var(--color-background-primary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,padding:"12px 16px",marginBottom:14}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
+                  <span style={{fontSize:13,fontWeight:500}}>Paketleme standartları</span>
+                  <span style={{fontSize:10,color:"var(--color-text-tertiary)"}}>Standartı olan ürünler otomatik dağıtılır, olmayanlar manuel paketlenir</span>
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead><tr style={{borderBottom:"1.5px solid var(--color-border-tertiary)"}}>
+                    <th style={{textAlign:"left",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600}}>Ürün</th>
+                    <th style={{textAlign:"center",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:80}}>Adet/Palet</th>
+                    <th style={{textAlign:"center",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:100}}>Ambalaj</th>
+                    <th style={{textAlign:"center",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:70}}>Dara (kg)</th>
+                    <th style={{textAlign:"left",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:160}}>Açıklama (TR)</th>
+                    <th style={{textAlign:"left",padding:"6px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:160}}>Açıklama (EN)</th>
+                    <th style={{width:60}}></th>
+                  </tr></thead>
+                  <tbody>
+                    {getPackingItems().map(item=>{
+                      const std = packingStandards[item.pid];
+                      const hasStd = std && std.qtyPerPallet > 0;
+                      const isEditing = editStdPid === item.pid;
+                      return <tr key={item.pid} style={{borderBottom:"0.5px solid var(--color-border-tertiary)",background:hasStd?"rgba(29,158,117,0.04)":"transparent"}}>
+                        <td style={{padding:"6px 6px"}}>
+                          <div style={{fontWeight:500,fontSize:11}}>{lang==="TR"?item.nameTR:item.nameEN}</div>
+                          <div style={{fontSize:9,color:"var(--color-text-tertiary)"}}>{item.qty} ad × {item.kg} kg = {Math.round(item.qty*item.kg).toLocaleString()} kg</div>
+                        </td>
+                        <td style={{textAlign:"center",padding:"6px 4px"}}>
+                          {isEditing||!hasStd?<input type="number" min="1" value={std?.qtyPerPallet||""} placeholder="—" onChange={e=>{const v=parseInt(e.target.value)||0;setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),qtyPerPallet:v}}));}} style={{width:50,textAlign:"center",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
+                          :<span style={{fontWeight:600,color:"#1D9E75"}}>{std.qtyPerPallet}</span>}
+                        </td>
+                        <td style={{textAlign:"center",padding:"6px 4px"}}>
+                          {isEditing||!hasStd?<select value={std?.ambalajType??0} onChange={e=>{const v=Number(e.target.value);setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),ambalajType:v,dara:(prev[item.pid]?.dara)||AMBALAJ_TYPES[v].defaultDara}}));}} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
+                            {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
+                          </select>
+                          :<span>{AMBALAJ_TYPES[std.ambalajType??0].label}</span>}
+                        </td>
+                        <td style={{textAlign:"center",padding:"6px 4px"}}>
+                          {isEditing||!hasStd?<input type="number" value={std?.dara??""} placeholder={String(AMBALAJ_TYPES[std?.ambalajType??0].defaultDara)} onChange={e=>{setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),dara:parseFloat(e.target.value)||0}}));}} style={{width:50,textAlign:"center",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
+                          :<span>{std.dara}</span>}
+                        </td>
+                        <td style={{padding:"6px 4px"}}>
+                          {isEditing||!hasStd?<input value={std?.descTR||""} placeholder={item.nameTR.substring(0,30)} onChange={e=>{setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),descTR:e.target.value}}));}} style={{width:"100%",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
+                          :<span style={{fontSize:10}}>{std.descTR||"—"}</span>}
+                        </td>
+                        <td style={{padding:"6px 4px"}}>
+                          {isEditing||!hasStd?<input value={std?.descEN||""} placeholder={item.nameEN.substring(0,30)} onChange={e=>{setPackingStandards(prev=>({...prev,[item.pid]:{...(prev[item.pid]||{}),descEN:e.target.value}}));}} style={{width:"100%",padding:"3px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
+                          :<span style={{fontSize:10}}>{std.descEN||"—"}</span>}
+                        </td>
+                        <td style={{padding:"6px 4px",textAlign:"center"}}>
+                          {hasStd&&!isEditing&&<div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                            <button onClick={()=>setEditStdPid(item.pid)} style={{padding:"2px 6px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:9,cursor:"pointer"}}>Düzenle</button>
+                            <button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[item.pid];return n;});}} style={{padding:"2px 6px",borderRadius:3,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:9,cursor:"pointer"}}>Sil</button>
+                          </div>}
+                          {hasStd&&isEditing&&<button onClick={()=>setEditStdPid(null)} style={{padding:"2px 8px",borderRadius:3,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:9,cursor:"pointer"}}>Tamam</button>}
+                        </td>
+                      </tr>;
+                    })}
+                  </tbody>
+                </table>
+                <div style={{marginTop:8,fontSize:10,color:"var(--color-text-tertiary)",display:"flex",justifyContent:"space-between"}}>
+                  <span>{Object.values(packingStandards).filter(s=>s.qtyPerPallet>0).length} / {getPackingItems().length} üründe standart tanımlı</span>
+                  <span>Standartlar tüm sevkiyatlar için geçerli — Firestore'a kaydedilir</span>
+                </div>
+              </div>}
+
+              <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14,alignItems:"start"}}>
+
+                {/* LEFT: Unpacked items */}
+                <div style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,overflow:"hidden"}}>
+                  <div style={{padding:"10px 14px",background:"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:13,fontWeight:500}}>Paketlenmemiş ({unpacked.length})</span>
+                    {unpacked.length>0&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#FCEBEB",color:"#791F1F"}}>{fmtKG(unpacked.reduce((s,it)=>s+it.remaining*it.kg,0))} kg bekliyor</span>}
+                  </div>
+                  <div style={{padding:10,maxHeight:400,overflow:"auto"}}>
+                    {unpacked.length===0&&pallets.length>0&&<div style={{textAlign:"center",padding:20,color:"#1D9E75",fontSize:12,fontWeight:500}}>✓ Tüm ürünler paketlendi</div>}
+                    {unpacked.length===0&&pallets.length===0&&<div style={{textAlign:"center",padding:20,color:"var(--color-text-tertiary)",fontSize:12}}>Henüz paketleme başlamadı. "Otomatik Dağıt" veya "Boş Palet" ile başlayın.</div>}
+                    {unpacked.map(it=>(
+                      <div key={it.pid} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,marginBottom:4,border:"0.5px solid var(--color-border-tertiary)",fontSize:12}}>
+                        <div style={{flex:1,minWidth:0}}>
+                          <div style={{fontWeight:500,fontSize:12,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{lang==="TR"?it.nameTR:it.nameEN}</div>
+                          <div style={{fontSize:10,color:"var(--color-text-secondary)"}}>{it.remaining} ad kalan (toplam {it.qty}) — birim {it.kg} kg</div>
+                        </div>
+                        <div style={{fontSize:11,fontWeight:500,whiteSpace:"nowrap"}}>{fmtKG(it.remaining*it.kg)} kg</div>
+                        {pallets.length>0&&<button onClick={()=>{setAddQtyDialog({pid:it.pid,palletIdx:null,maxQty:it.remaining,name:lang==="TR"?it.nameTR:it.nameEN});setAddQtyValue(String(it.remaining));}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:10,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>Palete Ekle</button>}
+                      </div>
+                    ))}
+                    {/* Packed summary */}
+                    {packedSummary.length>0&&<div style={{borderTop:"0.5px solid var(--color-border-tertiary)",marginTop:10,paddingTop:10}}>
+                      <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:6}}>Paketlenmiş ürünler</div>
+                      {packedSummary.map(it=>(
+                        <div key={it.pid} style={{display:"flex",alignItems:"center",gap:8,padding:"6px 10px",fontSize:11,opacity:0.5}}>
+                          <div style={{flex:1}}>{lang==="TR"?it.nameTR:it.nameEN}</div>
+                          <div>{it.qty} ad → {it.palletCount} palet</div>
+                        </div>
+                      ))}
+                    </div>}
+                  </div>
+                </div>
+
+                {/* RIGHT: Pallets */}
+                <div style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,overflow:"hidden"}}>
+                  <div style={{padding:"10px 14px",background:"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                    <span style={{fontSize:13,fontWeight:500}}>Paletler ({pallets.length})</span>
+                    {pallets.length>0&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#EAF3DE",color:"#27500A"}}>{fmtKG(totalPackingNet)} kg net</span>}
+                  </div>
+                  <div style={{padding:10,maxHeight:600,overflow:"auto"}}>
+                    {pallets.length===0&&<div style={{textAlign:"center",padding:20,color:"var(--color-text-tertiary)",fontSize:12}}>Henüz palet yok</div>}
+                    {pallets.map((pl,idx)=>{
+                      const plNet = getPalletNet(pl);
+                      const plBrut = getPalletBrut(pl);
+                      const isOverWeight = plBrut > PALLET_MAX_KG;
+                      const isKarma = pl.items.length > 1;
+                      const weightPct = Math.min((plBrut/PALLET_MAX_KG)*100, 100);
+                      return <div key={idx} style={{border:`1px solid ${isOverWeight?"#E24B4A":"var(--color-border-tertiary)"}`,borderRadius:8,marginBottom:10,overflow:"hidden"}}>
+                        <div style={{padding:"8px 12px",display:"flex",alignItems:"center",justifyContent:"space-between",background:isOverWeight?"#FCEBEB":"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)"}}>
+                          <div style={{display:"flex",alignItems:"center",gap:6}}>
+                            <span style={{fontSize:13,fontWeight:600}}>Palet {pl.id}</span>
+                            {isKarma&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FAEEDA",color:"#633806"}}>Karma</span>}
+                            {isOverWeight&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FCEBEB",color:"#791F1F"}}>⚠ {fmtKG(plBrut)} / {PALLET_MAX_KG} kg</span>}
+                          </div>
+                          <button onClick={()=>removePallet(idx)} style={{padding:"2px 8px",borderRadius:4,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:10,cursor:"pointer"}}>Sil</button>
+                        </div>
+                        <div style={{padding:"6px 10px"}}>
+                          {pl.items.length===0&&<div style={{textAlign:"center",padding:10,color:"var(--color-text-tertiary)",fontSize:11}}>Boş palet — soldan ürün ekleyin</div>}
+                          {pl.items.map(it=>(
+                            <div key={it.pid} style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"5px 0",borderBottom:"0.5px solid var(--color-border-tertiary)",fontSize:11}}>
+                              <div style={{flex:1,minWidth:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{lang==="TR"?it.nameTR:it.nameEN}</div>
+                              <div style={{display:"flex",alignItems:"center",gap:6}}>
+                                <span>{it.qty} ad</span>
+                                <span style={{color:"var(--color-text-secondary)"}}>{fmtKG(it.kg*it.qty)} kg</span>
+                                <button onClick={()=>removeItemFromPallet(idx,it.pid)} style={{padding:"1px 5px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",color:"var(--color-text-secondary)",fontSize:9,cursor:"pointer"}}>✕</button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                        {/* Ambalaj + dara */}
+                        <div style={{display:"flex",gap:8,alignItems:"center",padding:"4px 12px",fontSize:11,color:"var(--color-text-secondary)"}}>
+                          <span>Ambalaj:</span>
+                          <select value={pl.ambalajType} onChange={e=>updatePalletAmbalaj(idx,Number(e.target.value))} style={{fontSize:11,padding:"2px 6px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
+                            {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
+                          </select>
+                          <span>Dara:</span>
+                          <input type="number" value={pl.dara} onChange={e=>updatePalletDara(idx,e.target.value)} style={{width:55,fontSize:11,padding:"2px 6px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}/>
+                          <span>kg</span>
+                        </div>
+                        {/* Footer + weight bar */}
+                        <div style={{height:4,background:"var(--color-background-tertiary)",margin:"4px 12px",borderRadius:2,overflow:"hidden"}}>
+                          <div style={{height:"100%",width:`${weightPct}%`,borderRadius:2,background:isOverWeight?"#E24B4A":weightPct>90?"#EF9F27":"#1D9E75",transition:"width 0.3s"}}/>
+                        </div>
+                        <div style={{display:"flex",justifyContent:"space-between",padding:"6px 12px",fontSize:11,fontWeight:500,borderTop:"0.5px solid var(--color-border-tertiary)"}}>
+                          <span>{pl.items.reduce((s,it)=>s+it.qty,0)} adet — Net: {fmtKG(plNet)} kg</span>
+                          <span>Brüt: {fmtKG(plBrut)} kg</span>
+                        </div>
+                      </div>;
+                    })}
+                  </div>
+                </div>
+              </div>
+
+              {/* PDF buttons */}
+              {allPacked&&<div style={{display:"flex",gap:8,marginTop:14,justifyContent:"center",flexWrap:"wrap"}}>
+                <button onClick={()=>generatePackingPDF("TR")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📄 Çeki Liste (TR)</button>
+                <button onClick={()=>generatePackingPDF("EN")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#185FA5",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📄 Pack List (EN)</button>
+                <button onClick={()=>generatePalletLabelPDF()} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#0F6E56",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>🏷 Palet Etiketi</button>
+              </div>}
+            </div>;
+          })()}
         </div>
       </div>
+
+      {/* Add Qty to Pallet Dialog */}
+      {addQtyDialog&&<div style={{position:"fixed",inset:0,background:"rgba(0,0,0,0.5)",zIndex:1200,display:"flex",alignItems:"center",justifyContent:"center"}} onClick={()=>setAddQtyDialog(null)}>
+        <div onClick={e=>e.stopPropagation()} style={{background:"var(--color-background-primary)",borderRadius:12,padding:20,width:360,boxShadow:"0 20px 60px rgba(0,0,0,0.3)"}}>
+          <h3 style={{margin:"0 0 12px",fontSize:15,fontWeight:600}}>Palete Ekle</h3>
+          <div style={{fontSize:12,color:"var(--color-text-secondary)",marginBottom:12}}>{addQtyDialog.name}</div>
+          <div style={{marginBottom:12}}>
+            <label style={{fontSize:11,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Adet (max: {addQtyDialog.maxQty})</label>
+            <input type="number" value={addQtyValue} onChange={e=>setAddQtyValue(e.target.value)} min="1" max={addQtyDialog.maxQty} style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--color-border-secondary)",fontSize:13,outline:"none"}}/>
+          </div>
+          <div style={{marginBottom:14}}>
+            <label style={{fontSize:11,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Hedef palet</label>
+            <select value={addQtyDialog.palletIdx===null?"":addQtyDialog.palletIdx} onChange={e=>setAddQtyDialog(d=>({...d,palletIdx:e.target.value===""?null:Number(e.target.value)}))} style={{width:"100%",padding:"8px 10px",borderRadius:6,border:"1px solid var(--color-border-secondary)",fontSize:12}}>
+              <option value="">Yeni palet oluştur</option>
+              {pallets.map((pl,i)=><option key={i} value={i}>Palet {pl.id} ({Math.round(getPalletBrut(pl))} kg)</option>)}
+            </select>
+          </div>
+          <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+            <button onClick={()=>setAddQtyDialog(null)} style={{padding:"8px 16px",borderRadius:6,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:12,cursor:"pointer"}}>İptal</button>
+            <button onClick={()=>{
+              const qty = Math.min(parseInt(addQtyValue)||1, addQtyDialog.maxQty);
+              if(qty<=0) return;
+              if(addQtyDialog.palletIdx===null) {
+                const newPl = {id:pallets.length+1,items:[],ambalajType:0,dara:AMBALAJ_TYPES[0].defaultDara};
+                setPallets(prev=>{const np=[...prev,newPl];return np;});
+                setTimeout(()=>addItemToPallet(pallets.length, addQtyDialog.pid, qty),50);
+              } else {
+                addItemToPallet(addQtyDialog.palletIdx, addQtyDialog.pid, qty);
+              }
+              setAddQtyDialog(null);
+            }} style={{padding:"8px 16px",borderRadius:6,border:"none",background:"#534AB7",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>Ekle</button>
+          </div>
+        </div>
+      </div>}
 
       {/* Modals */}
       {showAddC&&<Modal title="Yeni Sevkiyat" onClose={()=>setShowAddC(false)}>
