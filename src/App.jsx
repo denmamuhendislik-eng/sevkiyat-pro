@@ -1162,7 +1162,7 @@ export default function App() {
     setPdfHtml(`<div data-label="true">${pages.join("")}</div>`);
   };
 
-  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"combine",icon:"🔗",l:"Kombine Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"packStd",icon:"⚙",l:"Paketleme Standartları"}];
+  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"}];
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
@@ -1375,51 +1375,116 @@ export default function App() {
             {activeProducts.length===0&&<div style={{textAlign:"center",padding:50,color:"var(--color-text-tertiary)"}}><div style={{fontSize:36,marginBottom:10}}>📦</div>Bu yıl için sipariş bulunmuyor veya arama sonucu yok.</div>}
           </div>}
 
-          {/* PRODUCTS */}
+          {/* PRODUCTS - UNIFIED STOCK CARD */}
           {page==="products"&&<div>
-            <input placeholder="Ürün ara..." value={search} onChange={e=>setSearch(e.target.value)} style={{...iS,width:300,marginBottom:16}}/>
-            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(280px,1fr))",gap:10}}>
-              {products.filter(p=>!search||p.nameTR.toLowerCase().includes(search.toLowerCase())||p.nameEN.toLowerCase().includes(search.toLowerCase())).map(p=>(
-                <div key={p.id} style={{background:"var(--color-background-primary)",borderRadius:10,padding:12,border:"1px solid var(--color-border-tertiary)",display:"flex",gap:10}}>
-                  <div style={{width:4,height:36,borderRadius:2,background:p.color,flexShrink:0,marginTop:2}}/>
-                  <div style={{flex:1,minWidth:0}}>
-                    <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:1}}>
-                      <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:"var(--color-background-tertiary)",color:"var(--color-text-tertiary)",fontWeight:600}}>#{p.id}</span>
-                      {isLinkedChild(p.id)&&<span style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(83,74,183,0.15)",color:"#534AB7",fontWeight:600}}>BAĞLI</span>}
-                      <span style={{fontSize:12,fontWeight:500}}>{p.nameTR}</span>
-                    </div>
-                    <div style={{fontSize:10,color:"var(--color-text-tertiary)",marginBottom:4}}>{p.nameEN}</div>
-                    <span style={{fontSize:10,color:"var(--color-text-secondary)"}}>Ağırlık: <b>{p.kg} KG</b></span>
-                    {VIO_CODES[p.id]&&<span style={{fontSize:9,marginLeft:8,padding:"1px 5px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",fontFamily:"monospace"}}>{VIO_CODES[p.id]}</span>}
-                  </div>
-                </div>
-              ))}
+            <div style={{display:"flex",gap:10,marginBottom:14,alignItems:"center",flexWrap:"wrap"}}>
+              <input placeholder="Ürün ara..." value={search} onChange={e=>setSearch(e.target.value)} style={{...iS,width:260,padding:"6px 12px"}}/>
+              <span style={{fontSize:11,color:"var(--color-text-tertiary)"}}>{products.length} ürün · {Object.values(packingStandards).filter(s=>s.qtyPerPallet>0).length} standart · {combRules.length} kombine kural</span>
             </div>
-          </div>}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))",gap:10}}>
+              {products.filter(p=>!search||p.nameTR.toLowerCase().includes(search.toLowerCase())||p.nameEN.toLowerCase().includes(search.toLowerCase())||String(p.id).includes(search)).sort((a,b)=>{
+                const aStd=packingStandards[a.id]?.qtyPerPallet>0?0:1;
+                const bStd=packingStandards[b.id]?.qtyPerPallet>0?0:1;
+                if(aStd!==bStd) return aStd-bStd;
+                return b.kg-a.kg;
+              }).map(p=>{
+                const std = packingStandards[p.id];
+                const hasStd = std && std.qtyPerPallet > 0;
+                const pSt = getPStats(p.id);
+                const isActive = pSt.order>0||pSt.planned>0;
+                const isChild = isLinkedChild(p.id);
+                const parentRules = combRules.filter(r=>r.parent===p.id);
+                const childOfRules = combRules.filter(r=>r.children.includes(p.id));
+                const isEditingStd = editStdPid === p.id;
 
-          {/* COMBINE RULES */}
-          {page==="combine"&&<div>
-            <div style={{marginBottom:16,padding:12,borderRadius:8,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>
-              Ana ürün planlandığında bağlı ürünler aynı miktarda otomatik eklenir. Bağlı ürün hücreleri mor renkte ve kilitli görünür.
-            </div>
-            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:20}}>
-              {combRules.map((rule,i)=>{
-                const parent=products.find(p=>p.id===rule.parent);
-                const children=rule.children.map(cid=>products.find(p=>p.id===cid)).filter(Boolean);
-                return <div key={i} style={{background:"var(--color-background-primary)",borderRadius:10,padding:14,border:"1px solid var(--color-border-tertiary)",display:"flex",alignItems:"center",gap:12}}>
-                  <div style={{flex:1}}>
-                    <div style={{fontSize:12,fontWeight:500,color:"#534AB7",marginBottom:4}}>{parent?.nameTR||`ID:${rule.parent}`}</div>
-                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
-                      {children.map(ch=><span key={ch.id} style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"rgba(83,74,183,0.1)",color:"#534AB7"}}>{ch.nameTR}</span>)}
+                return <div key={p.id} style={{background:"var(--color-background-primary)",borderRadius:10,padding:14,border:`1px solid ${hasStd?"rgba(29,158,117,0.3)":"var(--color-border-tertiary)"}`,opacity:isActive?1:0.5}}>
+                  {/* Header */}
+                  <div style={{display:"flex",gap:10,marginBottom:8}}>
+                    <div style={{width:4,borderRadius:2,background:hasStd?"#1D9E75":p.color,flexShrink:0}}/>
+                    <div style={{flex:1,minWidth:0}}>
+                      <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:2,flexWrap:"wrap"}}>
+                        <span style={{fontSize:9,padding:"1px 5px",borderRadius:3,background:"var(--color-background-tertiary)",color:"var(--color-text-tertiary)",fontWeight:600}}>#{p.id}</span>
+                        {isChild&&<span style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(83,74,183,0.15)",color:"#534AB7",fontWeight:600}}>BAĞLI</span>}
+                        {hasStd&&<span style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(29,158,117,0.15)",color:"#0F6E56",fontWeight:600}}>STANDART</span>}
+                        {parentRules.length>0&&<span style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(83,74,183,0.15)",color:"#534AB7",fontWeight:600}}>KOMBİNE</span>}
+                      </div>
+                      <div style={{fontSize:12,fontWeight:500}}>{p.nameTR}</div>
+                      <div style={{fontSize:10,color:"var(--color-text-tertiary)"}}>{p.nameEN}</div>
+                    </div>
+                    <div style={{textAlign:"right",flexShrink:0}}>
+                      <div style={{fontSize:16,fontWeight:600}}>{p.kg} <span style={{fontSize:10,fontWeight:400}}>KG</span></div>
+                      {VIO_CODES[p.id]&&<div style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",fontFamily:"monospace",marginTop:2}}>{VIO_CODES[p.id]}</div>}
                     </div>
                   </div>
-                  <div style={{fontSize:11,color:"var(--color-text-tertiary)",whiteSpace:"nowrap"}}>1:1</div>
-                  {isAdmin&&<button onClick={()=>setCombRules(prev=>prev.filter((_,j)=>j!==i))} style={{background:"none",border:"none",fontSize:16,cursor:"pointer",color:"#E24B4A",padding:4}} title="Kuralı sil">✕</button>}
+
+                  {/* Packing Standard */}
+                  <div style={{background:"var(--color-background-secondary)",borderRadius:6,padding:"6px 10px",marginBottom:6,fontSize:11}}>
+                    {isEditingStd?<div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{color:"var(--color-text-secondary)",fontSize:10}}>Adet/Palet:</span>
+                        <input type="number" min="1" autoFocus value={editStdTemp.qtyPerPallet} onChange={e=>setEditStdTemp(prev=>({...prev,qtyPerPallet:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter")saveEditStd(p.id);if(e.key==="Escape")setEditStdPid(null);}} style={{width:50,textAlign:"center",padding:"2px 4px",borderRadius:4,border:"2px solid #534AB7",fontSize:11}}/>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{color:"var(--color-text-secondary)",fontSize:10}}>Ambalaj:</span>
+                        <select value={editStdTemp.ambalajType} onChange={e=>{const v=Number(e.target.value);setEditStdTemp(prev=>({...prev,ambalajType:v,dara:AMBALAJ_TYPES[v].defaultDara}));}} style={{fontSize:10,padding:"2px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
+                          {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
+                        </select>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:4}}>
+                        <span style={{color:"var(--color-text-secondary)",fontSize:10}}>Dara:</span>
+                        <input type="number" value={editStdTemp.dara} onChange={e=>setEditStdTemp(prev=>({...prev,dara:e.target.value}))} style={{width:50,textAlign:"center",padding:"2px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/> kg
+                      </div>
+                      <button onClick={()=>saveEditStd(p.id)} style={{padding:"2px 10px",borderRadius:4,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:10,fontWeight:500,cursor:"pointer"}}>Kaydet</button>
+                      <button onClick={()=>setEditStdPid(null)} style={{padding:"2px 8px",borderRadius:4,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:10,cursor:"pointer"}}>İptal</button>
+                    </div>
+                    :hasStd?<div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                      <div style={{display:"flex",gap:12}}>
+                        <span><b>{std.qtyPerPallet}</b> adet/palet</span>
+                        <span>{AMBALAJ_TYPES[std.ambalajType??0].label}</span>
+                        <span>Dara: {std.dara} kg</span>
+                        <span style={{color:"#0F6E56",fontWeight:500}}>Palet: {Math.round(std.qtyPerPallet*p.kg+(std.dara||0))} kg</span>
+                      </div>
+                      <div style={{display:"flex",gap:4}}>
+                        {isAdmin&&<button onClick={()=>startEditStd(p.id)} style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:9,cursor:"pointer"}}>Düzenle</button>}
+                        {isAdmin&&<button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[p.id];return n;});}} style={{padding:"1px 6px",borderRadius:3,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:9,cursor:"pointer"}}>Sil</button>}
+                      </div>
+                    </div>
+                    :<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",color:"var(--color-text-tertiary)"}}>
+                      <span>Paketleme standardı tanımlı değil</span>
+                      {isAdmin&&<button onClick={()=>startEditStd(p.id)} style={{padding:"1px 8px",borderRadius:3,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:9,cursor:"pointer"}}>Tanımla</button>}
+                    </div>}
+                  </div>
+
+                  {/* Combine Rules */}
+                  {parentRules.length>0&&<div style={{background:"rgba(83,74,183,0.04)",borderRadius:6,padding:"5px 10px",marginBottom:6,fontSize:10}}>
+                    <span style={{color:"#534AB7",fontWeight:500}}>Kombine → </span>
+                    {parentRules.flatMap(r=>r.children).map(cid=>{
+                      const ch=products.find(pr=>pr.id===cid);
+                      return ch?<span key={cid} style={{padding:"1px 6px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",marginLeft:4,fontSize:9}}>{ch.nameTR.substring(0,30)}</span>:null;
+                    })}
+                    {isAdmin&&<button onClick={()=>{setCombRules(prev=>prev.filter(r=>r.parent!==p.id));}} style={{marginLeft:8,padding:"0px 4px",borderRadius:3,border:"none",background:"transparent",color:"#E24B4A",fontSize:12,cursor:"pointer"}} title="Kombine kuralını sil">✕</button>}
+                  </div>}
+                  {childOfRules.length>0&&<div style={{background:"rgba(83,74,183,0.04)",borderRadius:6,padding:"5px 10px",marginBottom:6,fontSize:10}}>
+                    <span style={{color:"#534AB7",fontWeight:500}}>Bağlı olduğu → </span>
+                    {childOfRules.map(r=>{
+                      const par=products.find(pr=>pr.id===r.parent);
+                      return par?<span key={r.parent} style={{padding:"1px 6px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",marginLeft:4,fontSize:9}}>{par.nameTR.substring(0,30)}</span>:null;
+                    })}
+                  </div>}
+
+                  {/* Active order info */}
+                  {isActive&&<div style={{display:"flex",gap:10,fontSize:10,color:"var(--color-text-secondary)",marginTop:4}}>
+                    <span>Sipariş: {pSt.order}</span>
+                    <span>Sevk: {pSt.shipped}</span>
+                    <span>Kalan: {pSt.remaining}</span>
+                  </div>}
                 </div>;
               })}
             </div>
-            {isAdmin&&<div style={{background:"var(--color-background-primary)",borderRadius:10,padding:16,border:"1px dashed var(--color-border-secondary)"}}>
-              <div style={{fontSize:13,fontWeight:500,marginBottom:12}}>Yeni kural ekle</div>
+
+            {/* Add Combine Rule */}
+            {isAdmin&&<div style={{marginTop:20,background:"var(--color-background-primary)",borderRadius:10,padding:16,border:"1px dashed var(--color-border-secondary)"}}>
+              <div style={{fontSize:13,fontWeight:500,marginBottom:12}}>Yeni kombine kural ekle</div>
               <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
                 <div style={{flex:1,minWidth:200}}>
                   <label style={{fontSize:11,color:"var(--color-text-secondary)",display:"block",marginBottom:3}}>Ana ürün</label>
@@ -1439,9 +1504,6 @@ export default function App() {
                   setCombRules(prev=>[...prev,{parent:parseInt(newRuleParent),children}]);
                   setNewRuleParent("");setNewRuleChildren("");
                 }} style={bP}>Ekle</button>
-              </div>
-              <div style={{marginTop:10,fontSize:10,color:"var(--color-text-tertiary)"}}>
-                Ürün ID'lerini Ürünler sayfasından bulabilirsiniz. Birden fazla bağlı ürün eklemek için virgülle ayırın.
               </div>
             </div>}
           </div>}
@@ -1777,90 +1839,6 @@ export default function App() {
             })}
           </div></div>}
 
-          {/* ========== PACKING STANDARDS PAGE ========== */}
-          {page==="packStd"&&<div>
-            <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>
-              Her ürün için paketleme standardı tanımlayın. "Otomatik Dağıt" sadece standartı tanımlı ürünleri paketler. Kombine ürünler otomatik birlikte paketlenir.
-            </div>
-            <div style={{marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontSize:13,fontWeight:500}}>{Object.values(packingStandards).filter(s=>s.qtyPerPallet>0).length} / {products.length} üründe standart tanımlı</span>
-              <input placeholder="Ürün ara..." value={search} onChange={e=>setSearch(e.target.value)} style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--color-border-secondary)",fontSize:12,width:200,outline:"none"}}/>
-            </div>
-            <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
-              <thead><tr style={{borderBottom:"2px solid var(--color-border-tertiary)",position:"sticky",top:0,background:"var(--color-background-tertiary)",zIndex:2}}>
-                <th style={{textAlign:"left",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600}}>Ürün</th>
-                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:80}}>Birim KG</th>
-                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:90}}>Adet / Palet</th>
-                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:100}}>Ambalaj</th>
-                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:80}}>Dara (kg)</th>
-                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:90}}>Palet KG</th>
-                <th style={{width:100}}></th>
-              </tr></thead>
-              <tbody>
-                {products.filter(p=>{
-                  if(search){const q=search.toLowerCase();return p.nameTR.toLowerCase().includes(q)||p.nameEN.toLowerCase().includes(q);}
-                  return true;
-                }).sort((a,b)=>{
-                  const aStd=packingStandards[a.id]?.qtyPerPallet>0?0:1;
-                  const bStd=packingStandards[b.id]?.qtyPerPallet>0?0:1;
-                  if(aStd!==bStd) return aStd-bStd;
-                  const aAct=(getPStats(a.id).order>0||getPStats(a.id).planned>0)?0:1;
-                  const bAct=(getPStats(b.id).order>0||getPStats(b.id).planned>0)?0:1;
-                  if(aAct!==bAct) return aAct-bAct;
-                  return b.kg-a.kg;
-                }).map(p=>{
-                  const std = packingStandards[p.id];
-                  const hasStd = std && std.qtyPerPallet > 0;
-                  const isEditing = editStdPid === p.id;
-                  const palletKG = hasStd ? (std.qtyPerPallet * p.kg + (std.dara||0)) : 0;
-                  const pSt = getPStats(p.id);
-                  const isActive = pSt.order>0||pSt.planned>0;
-                  const isChild = isLinkedChild(p.id);
-                  return <tr key={p.id} style={{borderBottom:"0.5px solid var(--color-border-tertiary)",background:hasStd?"rgba(29,158,117,0.04)":isChild?"rgba(83,74,183,0.03)":"transparent",opacity:isActive?1:0.45}}>
-                    <td style={{padding:"8px 6px"}}>
-                      <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <div style={{width:3,height:24,borderRadius:2,background:hasStd?"#1D9E75":isActive?"#3B8BD4":"var(--color-border-tertiary)",flexShrink:0}}/>
-                        <div>
-                          <div style={{fontWeight:500,fontSize:11}}>
-                            {isChild&&<span style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(83,74,183,0.15)",color:"#534AB7",marginRight:4,fontWeight:600}}>BAĞLI</span>}
-                            {lang==="TR"?p.nameTR:p.nameEN}
-                          </div>
-                          <div style={{fontSize:9,color:"var(--color-text-tertiary)"}}>#{p.id}{isActive?` · ${selYear}: ${pSt.order} sipariş`:""}</div>
-                        </div>
-                      </div>
-                    </td>
-                    <td style={{textAlign:"center",padding:"8px 4px",fontWeight:500}}>{p.kg}</td>
-                    <td style={{textAlign:"center",padding:"8px 4px"}}>
-                      {isEditing?<input type="number" min="1" autoFocus value={editStdTemp.qtyPerPallet} placeholder="—" onChange={e=>setEditStdTemp(prev=>({...prev,qtyPerPallet:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter")saveEditStd(p.id);if(e.key==="Escape")setEditStdPid(null);}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"2px solid #534AB7",fontSize:11,outline:"none"}}/>
-                      :hasStd?<span style={{fontWeight:600,color:"#1D9E75",cursor:"pointer"}} onClick={()=>startEditStd(p.id)}>{std.qtyPerPallet}</span>
-                      :<span style={{color:"var(--color-text-tertiary)",cursor:"pointer"}} onClick={()=>startEditStd(p.id)}>—</span>}
-                    </td>
-                    <td style={{textAlign:"center",padding:"8px 4px"}}>
-                      {isEditing?<select value={editStdTemp.ambalajType} onChange={e=>{const v=Number(e.target.value);setEditStdTemp(prev=>({...prev,ambalajType:v,dara:AMBALAJ_TYPES[v].defaultDara}));}} style={{fontSize:10,padding:"3px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
-                        {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
-                      </select>
-                      :<span>{hasStd?AMBALAJ_TYPES[std.ambalajType??0].label:"—"}</span>}
-                    </td>
-                    <td style={{textAlign:"center",padding:"8px 4px"}}>
-                      {isEditing?<input type="number" value={editStdTemp.dara} onChange={e=>setEditStdTemp(prev=>({...prev,dara:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter")saveEditStd(p.id);}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
-                      :<span>{hasStd?std.dara:"—"}</span>}
-                    </td>
-                    <td style={{textAlign:"center",padding:"8px 4px",fontWeight:500,color:hasStd?(palletKG>PALLET_MAX_KG?"#E24B4A":"#0F6E56"):"var(--color-text-tertiary)"}}>
-                      {hasStd?Math.round(palletKG).toLocaleString():"—"}
-                    </td>
-                    <td style={{padding:"8px 4px",textAlign:"center"}}>
-                      {isEditing&&<div style={{display:"flex",gap:4,justifyContent:"center"}}>
-                        <button onClick={()=>saveEditStd(p.id)} style={{padding:"3px 10px",borderRadius:4,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:10,fontWeight:500,cursor:"pointer"}}>Kaydet</button>
-                        <button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[p.id];return n;});setEditStdPid(null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:10,cursor:"pointer"}}>Sil</button>
-                      </div>}
-                      {hasStd&&!isEditing&&<button onClick={()=>startEditStd(p.id)} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:10,cursor:"pointer"}}>Düzenle</button>}
-                      {!hasStd&&!isEditing&&<button onClick={()=>startEditStd(p.id)} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:10,cursor:"pointer"}}>Tanımla</button>}
-                    </td>
-                  </tr>;
-                })}
-              </tbody>
-            </table>
-          </div>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
