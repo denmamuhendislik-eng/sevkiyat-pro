@@ -149,8 +149,9 @@ export default function App() {
   const [pallets, setPallets] = useState([]); // array of pallet objects
   const [kantarBrut, setKantarBrut] = useState("");
   const [kantarApplied, setKantarApplied] = useState(false);
-  const [packingStandards, setPackingStandards] = useState({}); // {pid: {qtyPerPallet, ambalajType, dara, descTR, descEN}}
+  const [packingStandards, setPackingStandards] = useState({}); // {pid: {qtyPerPallet, ambalajType, dara}}
   const [editStdPid, setEditStdPid] = useState(null);
+  const [editStdTemp, setEditStdTemp] = useState({qtyPerPallet:"",ambalajType:0,dara:""});
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
@@ -680,6 +681,28 @@ export default function App() {
   const PALLET_MAX_KG = 1500;
   const AMBALAJ_TYPES = [{label:"Palet",defaultDara:15},{label:"Sandık",defaultDara:25},{label:"Karton Kutu",defaultDara:5}];
 
+  const startEditStd = (pid) => {
+    const std = packingStandards[pid];
+    setEditStdTemp({
+      qtyPerPallet: std?.qtyPerPallet || "",
+      ambalajType: std?.ambalajType ?? 0,
+      dara: std?.dara ?? AMBALAJ_TYPES[std?.ambalajType??0]?.defaultDara ?? 15
+    });
+    setEditStdPid(pid);
+  };
+
+  const saveEditStd = (pid) => {
+    const qty = parseInt(editStdTemp.qtyPerPallet) || 0;
+    if(qty > 0) {
+      setPackingStandards(prev => ({...prev, [pid]: {
+        qtyPerPallet: qty,
+        ambalajType: editStdTemp.ambalajType,
+        dara: parseFloat(editStdTemp.dara) || AMBALAJ_TYPES[editStdTemp.ambalajType].defaultDara
+      }}));
+    }
+    setEditStdPid(null);
+  };
+
   const openPacking = (cid) => {
     const q = yd.quantities[cid] || {};
     const items = Object.entries(q).filter(([,qty])=>qty>0).map(([pid,qty])=>{
@@ -734,10 +757,59 @@ export default function App() {
     const items = getPackingItems();
     const newPallets = [];
     let palletNum = 1;
+    const packedPids = new Set(); // track which products are already packed (as children)
+
+    // First pass: parent products with standards (+ their linked children)
     items.forEach(item => {
+      if(packedPids.has(item.pid)) return; // already packed as child
       const std = packingStandards[item.pid];
       if(!std || !std.qtyPerPallet) return; // Skip items without standards
+      
+      // Find linked children for this product
+      const childRules = combRules.filter(r => r.parent === item.pid);
+      const childItems = childRules.flatMap(r => r.children.map(cid => items.find(it => it.pid === cid)).filter(Boolean));
+      
       let remaining = item.qty;
+      const qtyPer = std.qtyPerPallet;
+      const ambType = std.ambalajType ?? 0;
+      const dara = std.dara ?? AMBALAJ_TYPES[ambType].defaultDara;
+      
+      while(remaining > 0) {
+        const fitQty = Math.min(remaining, qtyPer);
+        const palletItems = [{pid:item.pid,nameTR:item.nameTR,nameEN:item.nameEN,qty:fitQty,kg:item.kg}];
+        
+        // Add linked children with same quantity
+        childItems.forEach(child => {
+          const childRemaining = child.qty - (newPallets.reduce((s,pl) => s + pl.items.filter(it=>it.pid===child.pid).reduce((ss,it)=>ss+it.qty,0), 0));
+          if(childRemaining > 0) {
+            const childQty = Math.min(fitQty, childRemaining);
+            palletItems.push({pid:child.pid,nameTR:child.nameTR,nameEN:child.nameEN,qty:childQty,kg:child.kg});
+          }
+        });
+        
+        newPallets.push({
+          id: palletNum++,
+          items: palletItems,
+          ambalajType: ambType,
+          dara: dara
+        });
+        remaining -= fitQty;
+      }
+      
+      // Mark children as packed
+      childItems.forEach(child => packedPids.add(child.pid));
+    });
+    
+    // Second pass: standalone products with standards (not yet packed)
+    items.forEach(item => {
+      if(packedPids.has(item.pid)) return;
+      const std = packingStandards[item.pid];
+      if(!std || !std.qtyPerPallet) return;
+      // Check if already fully packed (e.g. as a child)
+      const alreadyPacked = newPallets.reduce((s,pl) => s + pl.items.filter(it=>it.pid===item.pid).reduce((ss,it)=>ss+it.qty,0), 0);
+      let remaining = item.qty - alreadyPacked;
+      if(remaining <= 0) return;
+      
       const qtyPer = std.qtyPerPallet;
       const ambType = std.ambalajType ?? 0;
       const dara = std.dara ?? AMBALAJ_TYPES[ambType].defaultDara;
@@ -752,6 +824,7 @@ export default function App() {
         remaining -= fitQty;
       }
     });
+    
     newPallets.forEach((pl,i)=>pl.id=i+1);
     setPallets(newPallets);
     setKantarApplied(false);
@@ -887,8 +960,7 @@ export default function App() {
       const plBrut = getPalletBrut(pl);
       const plQty = pl.items.reduce((s,it)=>s+it.qty,0);
       pl.items.forEach((it,ii) => {
-        const std = packingStandards[it.pid];
-        const name = isEN ? (std?.descEN||it.nameEN) : (std?.descTR||it.nameTR);
+        const name = isEN ? it.nameEN : it.nameTR;
         rows += `<tr><td style="font-weight:${ii===0?700:400};padding:3px 6px">${ii===0?`<b>${pl.id}</b>  - PALET`:""}</td><td style="text-align:right;padding:3px 6px">${it.qty}</td><td style="text-align:right;padding:3px 6px">${fk(it.kg*it.qty)}</td><td style="padding:3px 6px"></td><td style="padding:3px 6px">${ii===0?(it.nameEN.length>30?name.substring(0,50):name):name}</td></tr>`;
       });
       rows += `<tr style="border-bottom:1.5px dotted #999"><td style="padding:3px 6px;font-style:italic;font-size:10px">${isEN?"Total Pallet:":"Palet Toplam:"}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${plQty}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${fk(plNet)}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${fk(plBrut)}</td><td></td></tr>`;
@@ -1602,10 +1674,10 @@ export default function App() {
           {/* ========== PACKING STANDARDS PAGE ========== */}
           {page==="packStd"&&<div>
             <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>
-              Her ürün için paketleme standardı tanımlayın. "Otomatik Dağıt" sadece standartı tanımlı ürünleri paketler, diğerleri manuel paketlenir.
+              Her ürün için paketleme standardı tanımlayın. "Otomatik Dağıt" sadece standartı tanımlı ürünleri paketler. Kombine ürünler otomatik birlikte paketlenir.
             </div>
             <div style={{marginBottom:12,display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-              <span style={{fontSize:13,fontWeight:500}}>{Object.values(packingStandards).filter(s=>s.qtyPerPallet>0).length} / {products.filter(p=>{const s=getPStats(p.id);return s.order>0||s.planned>0;}).length} üründe standart tanımlı</span>
+              <span style={{fontSize:13,fontWeight:500}}>{Object.values(packingStandards).filter(s=>s.qtyPerPallet>0).length} / {products.length} üründe standart tanımlı</span>
               <input placeholder="Ürün ara..." value={search} onChange={e=>setSearch(e.target.value)} style={{padding:"6px 12px",borderRadius:6,border:"1px solid var(--color-border-secondary)",fontSize:12,width:200,outline:"none"}}/>
             </div>
             <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
@@ -1615,61 +1687,68 @@ export default function App() {
                 <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:90}}>Adet / Palet</th>
                 <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:100}}>Ambalaj</th>
                 <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:80}}>Dara (kg)</th>
-                <th style={{textAlign:"left",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:180}}>Açıklama (TR)</th>
-                <th style={{textAlign:"left",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:180}}>Açıklama (EN)</th>
-                <th style={{width:70}}></th>
+                <th style={{textAlign:"center",padding:"8px 6px",color:"var(--color-text-tertiary)",fontWeight:600,width:90}}>Palet KG</th>
+                <th style={{width:100}}></th>
               </tr></thead>
               <tbody>
                 {products.filter(p=>{
-                  const s=getPStats(p.id);
-                  if(!(s.order>0||s.planned>0)) return false;
                   if(search){const q=search.toLowerCase();return p.nameTR.toLowerCase().includes(q)||p.nameEN.toLowerCase().includes(q);}
                   return true;
-                }).sort((a,b)=>b.kg-a.kg).map(p=>{
+                }).sort((a,b)=>{
+                  const aStd=packingStandards[a.id]?.qtyPerPallet>0?0:1;
+                  const bStd=packingStandards[b.id]?.qtyPerPallet>0?0:1;
+                  if(aStd!==bStd) return aStd-bStd;
+                  const aAct=(getPStats(a.id).order>0||getPStats(a.id).planned>0)?0:1;
+                  const bAct=(getPStats(b.id).order>0||getPStats(b.id).planned>0)?0:1;
+                  if(aAct!==bAct) return aAct-bAct;
+                  return b.kg-a.kg;
+                }).map(p=>{
                   const std = packingStandards[p.id];
                   const hasStd = std && std.qtyPerPallet > 0;
                   const isEditing = editStdPid === p.id;
                   const palletKG = hasStd ? (std.qtyPerPallet * p.kg + (std.dara||0)) : 0;
-                  return <tr key={p.id} style={{borderBottom:"0.5px solid var(--color-border-tertiary)",background:hasStd?"rgba(29,158,117,0.04)":"transparent"}}>
+                  const pSt = getPStats(p.id);
+                  const isActive = pSt.order>0||pSt.planned>0;
+                  const isChild = isLinkedChild(p.id);
+                  return <tr key={p.id} style={{borderBottom:"0.5px solid var(--color-border-tertiary)",background:hasStd?"rgba(29,158,117,0.04)":isChild?"rgba(83,74,183,0.03)":"transparent",opacity:isActive?1:0.45}}>
                     <td style={{padding:"8px 6px"}}>
                       <div style={{display:"flex",alignItems:"center",gap:6}}>
-                        <div style={{width:3,height:24,borderRadius:2,background:hasStd?"#1D9E75":"var(--color-border-tertiary)",flexShrink:0}}/>
+                        <div style={{width:3,height:24,borderRadius:2,background:hasStd?"#1D9E75":isActive?"#3B8BD4":"var(--color-border-tertiary)",flexShrink:0}}/>
                         <div>
-                          <div style={{fontWeight:500,fontSize:11}}>{lang==="TR"?p.nameTR:p.nameEN}</div>
-                          <div style={{fontSize:9,color:"var(--color-text-tertiary)"}}>#{p.id}</div>
+                          <div style={{fontWeight:500,fontSize:11}}>
+                            {isChild&&<span style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(83,74,183,0.15)",color:"#534AB7",marginRight:4,fontWeight:600}}>BAĞLI</span>}
+                            {lang==="TR"?p.nameTR:p.nameEN}
+                          </div>
+                          <div style={{fontSize:9,color:"var(--color-text-tertiary)"}}>#{p.id}{isActive?` · ${selYear}: ${pSt.order} sipariş`:""}</div>
                         </div>
                       </div>
                     </td>
                     <td style={{textAlign:"center",padding:"8px 4px",fontWeight:500}}>{p.kg}</td>
                     <td style={{textAlign:"center",padding:"8px 4px"}}>
-                      {isEditing||!hasStd?<input type="number" min="1" value={std?.qtyPerPallet||""} placeholder="—" onChange={e=>{const v=parseInt(e.target.value)||0;setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),qtyPerPallet:v}}));}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
-                      :<span style={{fontWeight:600,color:"#1D9E75",cursor:"pointer"}} onClick={()=>setEditStdPid(p.id)}>{std.qtyPerPallet}</span>}
+                      {isEditing?<input type="number" min="1" autoFocus value={editStdTemp.qtyPerPallet} placeholder="—" onChange={e=>setEditStdTemp(prev=>({...prev,qtyPerPallet:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter")saveEditStd(p.id);if(e.key==="Escape")setEditStdPid(null);}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"2px solid #534AB7",fontSize:11,outline:"none"}}/>
+                      :hasStd?<span style={{fontWeight:600,color:"#1D9E75",cursor:"pointer"}} onClick={()=>startEditStd(p.id)}>{std.qtyPerPallet}</span>
+                      :<span style={{color:"var(--color-text-tertiary)",cursor:"pointer"}} onClick={()=>startEditStd(p.id)}>—</span>}
                     </td>
                     <td style={{textAlign:"center",padding:"8px 4px"}}>
-                      {isEditing||!hasStd?<select value={std?.ambalajType??0} onChange={e=>{const v=Number(e.target.value);setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),ambalajType:v,dara:(prev[p.id]?.dara)||AMBALAJ_TYPES[v].defaultDara}}));}} style={{fontSize:10,padding:"3px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
+                      {isEditing?<select value={editStdTemp.ambalajType} onChange={e=>{const v=Number(e.target.value);setEditStdTemp(prev=>({...prev,ambalajType:v,dara:AMBALAJ_TYPES[v].defaultDara}));}} style={{fontSize:10,padding:"3px 4px",borderRadius:4,border:"1px solid var(--color-border-secondary)"}}>
                         {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
                       </select>
-                      :<span>{AMBALAJ_TYPES[std.ambalajType??0].label}</span>}
+                      :<span>{hasStd?AMBALAJ_TYPES[std.ambalajType??0].label:"—"}</span>}
                     </td>
                     <td style={{textAlign:"center",padding:"8px 4px"}}>
-                      {isEditing||!hasStd?<input type="number" value={std?.dara??""} placeholder={String(AMBALAJ_TYPES[std?.ambalajType??0].defaultDara)} onChange={e=>{setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),dara:parseFloat(e.target.value)||0}}));}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
-                      :<span>{std.dara}</span>}
+                      {isEditing?<input type="number" value={editStdTemp.dara} onChange={e=>setEditStdTemp(prev=>({...prev,dara:e.target.value}))} onKeyDown={e=>{if(e.key==="Enter")saveEditStd(p.id);}} style={{width:55,textAlign:"center",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:11}}/>
+                      :<span>{hasStd?std.dara:"—"}</span>}
                     </td>
-                    <td style={{padding:"8px 4px"}}>
-                      {isEditing||!hasStd?<input value={std?.descTR||""} placeholder={p.nameTR.substring(0,25)} onChange={e=>{setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),descTR:e.target.value}}));}} style={{width:"100%",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
-                      :<span style={{fontSize:10}}>{std.descTR||<span style={{color:"var(--color-text-tertiary)"}}>—</span>}</span>}
-                    </td>
-                    <td style={{padding:"8px 4px"}}>
-                      {isEditing||!hasStd?<input value={std?.descEN||""} placeholder={p.nameEN.substring(0,25)} onChange={e=>{setPackingStandards(prev=>({...prev,[p.id]:{...(prev[p.id]||{}),descEN:e.target.value}}));}} style={{width:"100%",padding:"4px",borderRadius:4,border:"1px solid var(--color-border-secondary)",fontSize:10}}/>
-                      :<span style={{fontSize:10}}>{std.descEN||<span style={{color:"var(--color-text-tertiary)"}}>—</span>}</span>}
+                    <td style={{textAlign:"center",padding:"8px 4px",fontWeight:500,color:hasStd?(palletKG>PALLET_MAX_KG?"#E24B4A":"#0F6E56"):"var(--color-text-tertiary)"}}>
+                      {hasStd?Math.round(palletKG).toLocaleString():"—"}
                     </td>
                     <td style={{padding:"8px 4px",textAlign:"center"}}>
-                      {hasStd&&!isEditing&&<div style={{display:"flex",gap:4,justifyContent:"center"}}>
-                        <button onClick={()=>setEditStdPid(p.id)} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:10,cursor:"pointer"}}>Düzenle</button>
-                        <button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[p.id];return n;});}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:10,cursor:"pointer"}}>Sil</button>
+                      {isEditing&&<div style={{display:"flex",gap:4,justifyContent:"center"}}>
+                        <button onClick={()=>saveEditStd(p.id)} style={{padding:"3px 10px",borderRadius:4,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:10,fontWeight:500,cursor:"pointer"}}>Kaydet</button>
+                        <button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[p.id];return n;});setEditStdPid(null);}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:10,cursor:"pointer"}}>Sil</button>
                       </div>}
-                      {hasStd&&isEditing&&<button onClick={()=>setEditStdPid(null)} style={{padding:"3px 10px",borderRadius:4,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:10,fontWeight:500,cursor:"pointer"}}>Tamam</button>}
-                      {hasStd&&<div style={{fontSize:9,color:"var(--color-text-tertiary)",marginTop:3}}>{Math.round(palletKG)} kg/palet</div>}
+                      {hasStd&&!isEditing&&<button onClick={()=>startEditStd(p.id)} style={{padding:"3px 8px",borderRadius:4,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:10,cursor:"pointer"}}>Düzenle</button>}
+                      {!hasStd&&!isEditing&&<button onClick={()=>startEditStd(p.id)} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:10,cursor:"pointer"}}>Tanımla</button>}
                     </td>
                   </tr>;
                 })}
