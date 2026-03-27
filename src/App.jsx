@@ -1361,15 +1361,20 @@ export default function App() {
                       const colZebra=!shipped&&ci%2===1;
                       const cellBg=isE?"var(--color-background-info)":shipped?(isSel?"#d5d5d0":isZebra?"#ddddd8":"#e5e5e0"):isSel?g.bgSel:colZebra?(isZebra?g.bgSel:g.bgZ):rowBg;
                       return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!shipped&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:shipped||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:cellBg,opacity:shipped?0.65:1}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
-                        {isE?<div>
-                          <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${cascadeMin>0?"#534AB7":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
+                        {isE?(()=>{
+                          const stdP = packingStandards[p.id];
+                          const evNum = parseInt(editValue)||0;
+                          const notMultiple = stdP?.qtyPerPallet>0 && evNum>0 && evNum%stdP.qtyPerPallet!==0;
+                          return <div>
+                          <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${notMultiple?"#BA7517":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:notMultiple?"#FAEEDA":"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                           <div style={{fontSize:7,marginTop:1,display:"flex",justifyContent:"center",gap:4}}>
                             {cascadeMin>0&&<span style={{color:"#534AB7"}}>min:{cascadeMin}</span>}
                             <span style={{color:"#BA7517"}}>max:{maxAllowed}</span>
                           </div>
-                        </div>
+                          {notMultiple&&<div style={{fontSize:7,color:"#BA7517",marginTop:1,lineHeight:1.2}}>⚠ Palet katı değil ({stdP.qtyPerPallet}'er)</div>}
+                        </div>;})()
                         :linked?<span style={{fontSize:10,fontWeight:500,color:"#534AB7"}}><span style={{fontSize:8}}>&#9741;</span> {q}{extra>0&&<span style={{fontSize:8,color:"#BA7517"}}> +{extra}</span>}</span>
-                        :<span style={{fontSize:11,fontWeight:q>0?500:400,color:q>0?(isShipped(c)?"#1D9E75":"var(--color-text-primary)"):"var(--color-text-tertiary)"}}>{q>0?q:"·"}</span>}
+                        :<span style={{fontSize:11,fontWeight:q>0?500:400,color:q>0?(isShipped(c)?"#1D9E75":"var(--color-text-primary)"):"var(--color-text-tertiary)"}}>{q>0?q:"·"}{q>0&&packingStandards[p.id]?.qtyPerPallet>0&&q%packingStandards[p.id].qtyPerPallet!==0&&<span style={{color:"#BA7517",fontSize:8}} title={`Palet katı değil (${packingStandards[p.id].qtyPerPallet}'er)`}> ⚠</span>}</span>}
                       </td>;
                     })}
                     <td style={{padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:11,color:"#1D9E75",background:rowBg}}>{s.shipped}</td>
