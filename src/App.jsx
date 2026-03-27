@@ -913,16 +913,24 @@ export default function App() {
     const kb = parseFloat(kantarBrut);
     if(!kb || kb <= 0 || pallets.length === 0) return;
     const diff = kb - totalPackingBrut;
-    // Distribute diff proportionally to each pallet's brüt weight
     setPallets(prev => {
       const totalB = prev.reduce((s,pl)=>s+getPalletBrut(pl),0);
       if(totalB === 0) return prev;
-      return prev.map(pl => {
+      // Round each pallet's dara to 1 decimal
+      const updated = prev.map(pl => {
         const plBrut = getPalletBrut(pl);
         const ratio = plBrut / totalB;
         const adjustment = diff * ratio;
-        return {...pl, dara: Math.round((pl.dara + adjustment)*100)/100};
+        return {...pl, dara: Math.round((pl.dara + adjustment)*10)/10};
       });
+      // Fix rounding remainder on last (heaviest) pallet
+      const newTotal = updated.reduce((s,pl)=>s+getPalletNet(pl)+(pl.dara||0),0);
+      const remainder = Math.round((kb - newTotal)*10)/10;
+      if(Math.abs(remainder) > 0.05 && updated.length > 0) {
+        const lastIdx = updated.length - 1;
+        updated[lastIdx] = {...updated[lastIdx], dara: Math.round((updated[lastIdx].dara + remainder)*10)/10};
+      }
+      return updated;
     });
     setKantarApplied(true);
   };
@@ -1791,6 +1799,7 @@ export default function App() {
             const totalItems = getPackingItems();
             const allPacked = unpacked.length === 0 && pallets.length > 0;
             const fmtKG = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
+            const fmtKG1 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
             return <div>
               {/* Header */}
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
@@ -1895,7 +1904,7 @@ export default function App() {
                           <div style={{display:"flex",alignItems:"center",gap:6}}>
                             <span style={{fontSize:13,fontWeight:600}}>Palet {pl.id}</span>
                             {isKarma&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FAEEDA",color:"#633806"}}>Karma</span>}
-                            {isOverWeight&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FCEBEB",color:"#791F1F"}}>⚠ {fmtKG(plBrut)} / {PALLET_MAX_KG} kg</span>}
+                            {isOverWeight&&<span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FCEBEB",color:"#791F1F"}}>⚠ {fmtKG1(plBrut)} / {PALLET_MAX_KG} kg</span>}
                           </div>
                           <button onClick={()=>removePallet(idx)} style={{padding:"2px 8px",borderRadius:4,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:10,cursor:"pointer"}}>Sil</button>
                         </div>
@@ -1906,7 +1915,7 @@ export default function App() {
                               <div style={{flex:1,minWidth:0,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{lang==="TR"?it.nameTR:it.nameEN}</div>
                               <div style={{display:"flex",alignItems:"center",gap:6}}>
                                 <span>{it.qty} ad</span>
-                                <span style={{color:"var(--color-text-secondary)"}}>{fmtKG(it.kg*it.qty)} kg</span>
+                                <span style={{color:"var(--color-text-secondary)"}}>{fmtKG1(it.kg*it.qty)} kg</span>
                                 <button onClick={()=>removeItemFromPallet(idx,it.pid)} style={{padding:"1px 5px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",color:"var(--color-text-secondary)",fontSize:9,cursor:"pointer"}}>✕</button>
                               </div>
                             </div>
@@ -1927,8 +1936,8 @@ export default function App() {
                           <div style={{height:"100%",width:`${weightPct}%`,borderRadius:2,background:isOverWeight?"#E24B4A":weightPct>90?"#EF9F27":"#1D9E75",transition:"width 0.3s"}}/>
                         </div>
                         <div style={{display:"flex",justifyContent:"space-between",padding:"6px 12px",fontSize:11,fontWeight:500,borderTop:"0.5px solid var(--color-border-tertiary)"}}>
-                          <span>{pl.items.reduce((s,it)=>s+it.qty,0)} adet — Net: {fmtKG(plNet)} kg</span>
-                          <span>Brüt: {fmtKG(plBrut)} kg</span>
+                          <span>{pl.items.reduce((s,it)=>s+it.qty,0)} adet — Net: {fmtKG1(plNet)} kg</span>
+                          <span>Brüt: {fmtKG1(plBrut)} kg</span>
                         </div>
                       </div>;
                     })}
