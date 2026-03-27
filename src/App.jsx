@@ -563,7 +563,7 @@ export default function App() {
     document.body.appendChild(iframe);
     const doc=iframe.contentDocument;
     doc.open();
-    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}@media print{div{break-inside:avoid}}</style></head><body>${el.innerHTML}</body></html>`);
+    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>*{margin:0;padding:0;box-sizing:border-box}@media print{div{break-inside:avoid}[style*="page-break-after"]{page-break-after:always}}</style></head><body>${el.innerHTML}</body></html>`);
     doc.close();
     iframe.contentWindow.focus();
     iframe.contentWindow.print();
@@ -984,10 +984,9 @@ export default function App() {
     const dateStr = c.date.split("-").reverse().join(".");
     const invoiceNr = c.id.toUpperCase().replace("C","CI");
     const totalQty = pallets.reduce((s,pl)=>s+pl.items.reduce((ss,it)=>ss+it.qty,0),0);
+    const fk = (v) => Math.round(Number(v)).toLocaleString("tr-TR");
+    const fk2 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
 
-    const fk = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
-
-    // Build rows per pallet
     let rows = "";
     pallets.forEach(pl => {
       const plNet = getPalletNet(pl);
@@ -995,45 +994,77 @@ export default function App() {
       const plQty = pl.items.reduce((s,it)=>s+it.qty,0);
       pl.items.forEach((it,ii) => {
         const name = isEN ? it.nameEN : it.nameTR;
-        rows += `<tr><td style="font-weight:${ii===0?700:400};padding:3px 6px">${ii===0?`<b>${pl.id}</b>  - PALET`:""}</td><td style="text-align:right;padding:3px 6px">${it.qty}</td><td style="text-align:right;padding:3px 6px">${fk(it.kg*it.qty)}</td><td style="padding:3px 6px"></td><td style="padding:3px 6px">${ii===0?(it.nameEN.length>30?name.substring(0,50):name):name}</td></tr>`;
+        rows += `<tr>
+          <td style="padding:4px 8px;font-weight:700">${ii===0?`<b>${pl.id}</b>  - PALET`:""}</td>
+          <td style="text-align:right;padding:4px 8px">${it.qty}</td>
+          <td style="text-align:right;padding:4px 8px">${fk2(it.kg*it.qty)}</td>
+          <td style="padding:4px 8px"></td>
+          <td style="padding:4px 8px">${name}</td>
+        </tr>`;
       });
-      rows += `<tr style="border-bottom:1.5px dotted #999"><td style="padding:3px 6px;font-style:italic;font-size:10px">${isEN?"Total Pallet:":"Palet Toplam:"}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${plQty}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${fk(plNet)}</td><td style="text-align:right;padding:3px 6px;font-style:italic">${fk(plBrut)}</td><td></td></tr>`;
+      rows += `<tr style="border-bottom:1.5px dotted #999">
+        <td style="padding:3px 8px;font-style:italic;font-size:10px;color:#555">${isEN?"Total Pallet:":"Palet Toplam:"}</td>
+        <td style="text-align:right;padding:3px 8px;font-style:italic">${plQty}</td>
+        <td style="text-align:right;padding:3px 8px;font-style:italic">${fk2(plNet)}</td>
+        <td style="text-align:right;padding:3px 8px;font-style:italic">${fk2(plBrut)}</td>
+        <td></td>
+      </tr>`;
     });
 
-    // Totals
-    rows += `<tr style="border-top:2px solid #000;font-weight:700"><td style="padding:4px 6px">${isEN?"Total :":"Toplam :"}</td><td style="text-align:right;padding:4px 6px">${totalQty}</td><td style="text-align:right;padding:4px 6px">${fk(totalPackingNet)}</td><td style="text-align:right;padding:4px 6px">${fk(totalPackingBrut)}</td><td></td></tr>`;
+    rows += `<tr style="border-top:2.5px solid #000;font-weight:700">
+      <td style="padding:5px 8px">${isEN?"Total :":"Toplam :"}</td>
+      <td style="text-align:right;padding:5px 8px">${totalQty}</td>
+      <td style="text-align:right;padding:5px 8px">${fk2(totalPackingNet)}</td>
+      <td style="text-align:right;padding:5px 8px">${fk2(totalPackingBrut)}</td>
+      <td></td>
+    </tr>`;
+
+    const header = `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
+      <div>
+        <div style="font-size:30px;font-weight:900;letter-spacing:6px;font-family:Arial Black,Arial,sans-serif">DENMA</div>
+        <div style="font-size:8px;letter-spacing:3px;color:#555;margin-top:-2px">P O W E R  F O R  M E T A L W O R K I N G</div>
+      </div>
+      <div style="text-align:right;font-size:9.5px;line-height:1.6">
+        <b>${DENMA_INFO.name}</b><br>
+        ${DENMA_INFO.address}<br>
+        Tel: ${DENMA_INFO.tel}<br>
+        ${DENMA_INFO.vd}<br>
+        ${DENMA_INFO.web} &nbsp; ${DENMA_INFO.email}
+      </div>
+    </div>`;
 
     const html = `<div style="font-family:Arial,sans-serif;font-size:11px;color:#000;max-width:780px;margin:0 auto;padding:20px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px">
-        <div style="font-size:28px;font-weight:900;letter-spacing:4px">DENMA</div>
-        <div style="text-align:right;font-size:10px;line-height:1.5">${DENMA_INFO.name}<br>${DENMA_INFO.address}<br>Tel: ${DENMA_INFO.tel}<br>${DENMA_INFO.vd}<br>${DENMA_INFO.web}  ${DENMA_INFO.email}</div>
-      </div>
-      <div style="display:flex;justify-content:space-between;margin-bottom:16px;border:1px solid #000;padding:10px">
-        <div style="flex:1">
-          <div style="font-weight:700">${CUSTOMER.name}</div>
-          <div>${CUSTOMER.address}</div>
-          <div style="margin-top:4px"><b>${CUSTOMER.city}</b> &nbsp;&nbsp; ${CUSTOMER.country}</div>
-          <div>${CUSTOMER.tel} &nbsp;&nbsp; ${CUSTOMER.fax}</div>
+      ${header}
+      <div style="display:flex;margin-bottom:16px;border:1px solid #000">
+        <div style="flex:1;padding:10px 12px">
+          <div style="font-weight:700;font-size:12px">${CUSTOMER.name}</div>
+          <div style="margin-top:4px">${CUSTOMER.address}</div>
+          <div style="margin-top:6px"><b>${CUSTOMER.city}</b> &nbsp;&nbsp;&nbsp; ${CUSTOMER.country}</div>
+          <div style="margin-top:2px">${CUSTOMER.tel} &nbsp;&nbsp;&nbsp; ${CUSTOMER.fax}</div>
         </div>
-        <div style="border-left:1px solid #000;padding-left:14px">
-          <div style="font-size:24px;font-weight:900;margin-bottom:6px">${title}</div>
-          <table style="font-size:11px"><tr><td style="font-weight:700;padding:2px 10px 2px 0">${isEN?"Date":"Tarih"}</td><td>: ${dateStr}</td></tr><tr><td style="font-weight:700;padding:2px 10px 2px 0">${isEN?"Invoice Nr":"Fatura No"}</td><td>: ${invoiceNr}</td></tr><tr><td style="font-weight:700;padding:2px 10px 2px 0">${isEN?"Page":"Sayfa"}</td><td>: 1</td></tr></table>
+        <div style="border-left:1px solid #000;padding:10px 14px;min-width:220px">
+          <div style="font-size:26px;font-weight:900;margin-bottom:8px">${title}</div>
+          <table style="font-size:11px">
+            <tr><td style="font-weight:700;padding:2px 12px 2px 0">${isEN?"Date":"Tarih"}</td><td>: ${dateStr}</td></tr>
+            <tr><td style="font-weight:700;padding:2px 12px 2px 0">${isEN?"Invoice Nr":"Fatura No"}</td><td>: ${invoiceNr}</td></tr>
+            <tr><td style="font-weight:700;padding:2px 12px 2px 0">${isEN?"Page":"Sayfa"}</td><td>: 1</td></tr>
+          </table>
         </div>
       </div>
       <table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead><tr style="border-bottom:2px solid #000">
-          <th style="text-align:left;padding:4px 6px">${isEN?"Pack Nr &<br>Description":"Kap No ve<br>Açıklama"}</th>
-          <th style="text-align:right;padding:4px 6px">${isEN?"Quant.":"Miktar"}</th>
-          <th style="text-align:right;padding:4px 6px">${isEN?"Prod.Net<br>Kg":"Ürün Top.<br>Kg"}</th>
-          <th style="text-align:right;padding:4px 6px">${isEN?"Pallet Gross<br>Kg":"Palet Brüt<br>Kg"}</th>
-          <th style="text-align:left;padding:4px 6px">${isEN?"Product Description":"Ürün Açıklaması"}</th>
+          <th style="text-align:left;padding:5px 8px;font-size:10px">${isEN?"Pack Nr &amp;<br>Description":"Kap No ve<br>Açıklama"}</th>
+          <th style="text-align:right;padding:5px 8px;font-size:10px">${isEN?"Quant.":"Miktar"}</th>
+          <th style="text-align:right;padding:5px 8px;font-size:10px">${isEN?"Prod.Net<br>Kg":"Ürün Top.<br>Kg"}</th>
+          <th style="text-align:right;padding:5px 8px;font-size:10px">${isEN?"Pallet Gross<br>Kg":"Palet Brüt<br>Kg"}</th>
+          <th style="text-align:left;padding:5px 8px;font-size:10px">${isEN?"Product Description":"Ürün Açıklaması"}</th>
         </tr></thead>
         <tbody>${rows}</tbody>
       </table>
-      <div style="margin-top:16px;font-size:12px;line-height:1.8">
-        <div><b>${isEN?"Total Pack":"Toplam Kap"}</b> : ${pallets.length} Palet</div>
-        <div><b>${isEN?"Total Net Weight":"Toplam Net Ağırlık"}</b> : ${fk(totalPackingNet)} Kg</div>
-        <div><b>${isEN?"Total Gross Weight":"Toplam Brüt Ağırlık"}</b> : ${fk(totalPackingBrut)} Kg</div>
+      <div style="margin-top:20px;font-size:12px;line-height:2">
+        <div><b>${isEN?"Total Pack":"Toplam Kap"}</b> : &nbsp; ${pallets.length} Palet</div>
+        <div><b>${isEN?"Total Net Weight":"Toplam Net Ağırlık"}</b> : &nbsp; ${fk2(totalPackingNet)} Kg</div>
+        <div><b>${isEN?"Total Gross Weight":"Toplam Brüt Ağırlık"}</b> : &nbsp; ${fk2(totalPackingBrut)} Kg</div>
       </div>
       <div style="margin-top:20px;font-size:12px">
         <div><b>${isEN?"EXPORTER":"İHRACATÇI"}</b> : ${DENMA_INFO.name}</div>
@@ -1049,45 +1080,83 @@ export default function App() {
     if(!c) return;
     const dateStr = c.date.split("-").reverse().join(".");
     const invoiceNr = c.id.toUpperCase().replace("C","CI");
-    const fk = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
+    const fk2 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
 
-    // Generate one label per pallet showing ALL products in the shipment
-    const allItems = [];
-    pallets.forEach(pl=>pl.items.forEach(it=>{
-      const existing = allItems.find(a=>a.pid===it.pid);
-      if(existing) existing.qty += it.qty;
-      else allItems.push({...it});
-    }));
+    // Generate ONE LABEL PER PALLET
+    const pages = pallets.map(pl => {
+      const plNet = getPalletNet(pl);
+      const plBrut = getPalletBrut(pl);
+      let itemRows = "";
+      pl.items.forEach((it,i) => {
+        itemRows += `<tr>
+          <td style="padding:4px 8px;text-align:center;border:1px solid #000">${i+1}</td>
+          <td style="padding:4px 8px;border:1px solid #000">${it.nameEN}</td>
+          <td style="padding:4px 8px;text-align:center;border:1px solid #000">${it.qty}</td>
+          <td style="padding:4px 8px;text-align:right;border:1px solid #000">${fk2(it.kg*it.qty)}</td>
+          <td style="padding:4px 8px;text-align:right;border:1px solid #000">${fk2(it.kg*it.qty + (i===0 ? pl.dara : 0))}</td>
+        </tr>`;
+      });
 
-    let rows = "";
-    allItems.forEach((it,i) => {
-      rows += `<tr><td style="padding:3px 6px;text-align:center;border:1px solid #000">${i+1}</td><td style="padding:3px 6px;border:1px solid #000">${it.nameEN}</td><td style="padding:3px 6px;text-align:center;border:1px solid #000"></td><td style="padding:3px 6px;text-align:right;border:1px solid #000"></td><td style="padding:3px 6px;text-align:right;border:1px solid #000"></td></tr>`;
+      return `<div style="page-break-after:always;padding:20px;font-family:Arial,sans-serif;font-size:11px;color:#000;max-width:960px;margin:0 auto">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px">
+          <div>
+            <div style="font-size:34px;font-weight:900;letter-spacing:6px;font-family:Arial Black,Arial,sans-serif">DENMA</div>
+            <div style="font-size:8px;letter-spacing:3px;color:#555;margin-top:-2px">P O W E R  F O R  M E T A L W O R K I N G</div>
+            <div style="font-size:9px;margin-top:6px;line-height:1.5">
+              <b>${DENMA_INFO.name}</b><br>
+              ${DENMA_INFO.address}<br>
+              Tel: ${DENMA_INFO.tel} - ${DENMA_INFO.web}
+            </div>
+          </div>
+          <div style="display:flex">
+            <div style="border:2.5px solid #000;padding:8px 16px;text-align:center">
+              <div style="font-size:10px;font-weight:700">INVOICE NR.</div>
+              <div style="font-size:18px;font-weight:800;margin-top:2px">${invoiceNr}</div>
+            </div>
+            <div style="border:2.5px solid #000;border-left:0;padding:8px 16px;text-align:center;display:flex;align-items:center">
+              <div style="font-size:15px;font-weight:700">${dateStr}</div>
+            </div>
+            <div style="border:2.5px solid #000;border-left:0;padding:8px 24px;text-align:center">
+              <div style="font-size:16px;font-weight:900">PALET</div>
+              <div style="font-size:56px;font-weight:900;line-height:1">${pl.id}</div>
+            </div>
+          </div>
+        </div>
+        <div style="border:2.5px solid #000;padding:10px 16px;margin-bottom:12px;text-align:center">
+          <div style="font-size:12px">TO: <b>${CUSTOMER.name}</b></div>
+          <div style="font-size:20px;font-weight:800;margin-top:4px">${CUSTOMER.city} / ${CUSTOMER.country}</div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="background:#f0f0f0">
+            <th style="padding:5px 8px;border:1px solid #000;width:40px">Nr.</th>
+            <th style="padding:5px 8px;border:1px solid #000;text-align:left">Description</th>
+            <th style="padding:5px 8px;border:1px solid #000;width:50px">Qnt.</th>
+            <th style="padding:5px 8px;border:1px solid #000;text-align:right;width:80px">Net Kg</th>
+            <th style="padding:5px 8px;border:1px solid #000;text-align:right;width:80px">Gross Kg</th>
+          </tr></thead>
+          <tbody>${itemRows}
+            <tr style="background:#f0f0f0;font-weight:700">
+              <td colspan="2" style="padding:5px 8px;border:1px solid #000;text-align:right">Total :</td>
+              <td style="padding:5px 8px;border:1px solid #000;text-align:center">${pl.items.reduce((s,it)=>s+it.qty,0)}</td>
+              <td style="padding:5px 8px;border:1px solid #000;text-align:right">${fk2(plNet)}</td>
+              <td style="padding:5px 8px;border:1px solid #000;text-align:right">${fk2(plBrut)}</td>
+            </tr>
+          </tbody>
+        </table>
+        <div style="margin-top:20px;display:flex;justify-content:space-between;align-items:flex-end">
+          <div style="display:flex;gap:16px;align-items:center">
+            <div style="font-size:10px;font-weight:700;border:2px solid #000;border-radius:50%;width:50px;height:50px;display:flex;align-items:center;justify-content:center;text-align:center;line-height:1.1">MADE IN<br>TÜRKİYE</div>
+            <div style="font-size:9px;text-align:center;line-height:1.3"><b>ISO 9001:2015</b><br>Quality Management</div>
+          </div>
+          <div style="text-align:right">
+            <div style="font-size:16px;font-weight:700">Total Net Weight : ${fk2(plNet)} Kg</div>
+            <div style="font-size:16px;font-weight:700;margin-top:2px">Total Gross Weight : ${fk2(plBrut)} Kg</div>
+          </div>
+        </div>
+      </div>`;
     });
 
-    const html = `<div style="font-family:Arial,sans-serif;font-size:11px;color:#000;max-width:900px;margin:0 auto;padding:20px">
-      <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:12px">
-        <div><div style="font-size:32px;font-weight:900;letter-spacing:4px">DENMA</div>
-        <div style="font-size:10px;margin-top:4px"><b>${DENMA_INFO.name}</b><br>${DENMA_INFO.address}<br>Tel: ${DENMA_INFO.tel} - ${DENMA_INFO.web}</div></div>
-        <div style="display:flex;gap:0">
-          <div style="border:2px solid #000;padding:8px 14px;text-align:center"><div style="font-size:10px;font-weight:700">INVOICE NR.</div><div style="font-size:16px;font-weight:700">${invoiceNr}</div></div>
-          <div style="border:2px solid #000;border-left:0;padding:8px 14px;text-align:center"><div style="font-size:14px;font-weight:700">${dateStr}</div></div>
-          <div style="border:2px solid #000;border-left:0;padding:8px 20px;text-align:center"><div style="font-size:14px;font-weight:900">PALET</div><div style="font-size:48px;font-weight:900;line-height:1">0</div></div>
-        </div>
-      </div>
-      <div style="border:2px solid #000;padding:10px 14px;margin-bottom:12px;text-align:center">
-        <div style="font-size:12px">TO: <b>${CUSTOMER.name}</b></div>
-        <div style="font-size:18px;font-weight:700;margin-top:4px">${CUSTOMER.city} / ${CUSTOMER.country}</div>
-      </div>
-      <table style="width:100%;border-collapse:collapse;font-size:11px">
-        <thead><tr style="background:#f5f5f5"><th style="padding:4px 6px;border:1px solid #000">Nr.</th><th style="padding:4px 6px;border:1px solid #000;text-align:left">Description</th><th style="padding:4px 6px;border:1px solid #000">Qnt.</th><th style="padding:4px 6px;border:1px solid #000;text-align:right">Net Kg</th><th style="padding:4px 6px;border:1px solid #000;text-align:right">Gross Kg</th></tr></thead>
-        <tbody>${rows}</tbody>
-      </table>
-      <div style="margin-top:16px;display:flex;justify-content:flex-end;gap:20px;font-size:14px">
-        <div><b>Total Net Weight</b> : ${fk(totalPackingNet)} Kg</div>
-        <div><b>Total Gross Weight</b> : ${fk(totalPackingBrut)} Kg</div>
-      </div>
-    </div>`;
-    setPdfHtml(html);
+    setPdfHtml(pages.join(""));
   };
 
   const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"combine",icon:"🔗",l:"Kombine Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"packStd",icon:"⚙",l:"Paketleme Standartları"}];
