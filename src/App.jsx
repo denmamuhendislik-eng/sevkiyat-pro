@@ -203,7 +203,7 @@ export default function App() {
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
-        await setDoc(doc(db, "appData", "state"), data, { merge: true });
+        await setDoc(doc(db, "appData", "state"), data);
       } catch (e) { console.error("Save error:", e); }
     }, 1500);
   }, [isAdmin]);
