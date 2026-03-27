@@ -847,14 +847,40 @@ export default function App() {
   const addItemToPallet = (palletIdx, pid, qty) => {
     const p = products.find(pr=>pr.id===pid);
     if(!p) return;
+    // Collect items to add: main + linked children
+    const itemsToAdd = [{pid, nameTR:p.nameTR, nameEN:p.nameEN, qty, kg:p.kg}];
+    const childRules = combRules.filter(r => r.parent === pid);
+    if(childRules.length > 0) {
+      const allItems = getPackingItems();
+      const packed = {};
+      pallets.forEach(pl => pl.items.forEach(it => { packed[it.pid] = (packed[it.pid]||0) + it.qty; }));
+      childRules.forEach(rule => {
+        rule.children.forEach(cid => {
+          const child = allItems.find(it => it.pid === cid);
+          if(child) {
+            const childRemaining = child.qty - (packed[cid]||0);
+            const childQty = Math.min(qty, childRemaining);
+            if(childQty > 0) {
+              const cp = products.find(pr=>pr.id===cid);
+              if(cp) itemsToAdd.push({pid:cid, nameTR:cp.nameTR, nameEN:cp.nameEN, qty:childQty, kg:cp.kg});
+            }
+          }
+        });
+      });
+    }
     setPallets(prev=>{
       const np = prev.map((pl,i)=>{
         if(i!==palletIdx) return pl;
-        const existing = pl.items.find(it=>it.pid===pid);
-        if(existing) {
-          return {...pl, items: pl.items.map(it=>it.pid===pid?{...it,qty:it.qty+qty}:it)};
-        }
-        return {...pl, items:[...pl.items,{pid,nameTR:p.nameTR,nameEN:p.nameEN,qty,kg:p.kg}]};
+        let updated = {...pl, items:[...pl.items]};
+        itemsToAdd.forEach(item => {
+          const existing = updated.items.find(it=>it.pid===item.pid);
+          if(existing) {
+            updated.items = updated.items.map(it=>it.pid===item.pid?{...it,qty:it.qty+item.qty}:it);
+          } else {
+            updated.items = [...updated.items, item];
+          }
+        });
+        return updated;
       });
       return np;
     });
@@ -1817,16 +1843,26 @@ export default function App() {
                   <div style={{padding:10,maxHeight:400,overflow:"auto"}}>
                     {unpacked.length===0&&pallets.length>0&&<div style={{textAlign:"center",padding:20,color:"#1D9E75",fontSize:12,fontWeight:500}}>✓ Tüm ürünler paketlendi</div>}
                     {unpacked.length===0&&pallets.length===0&&<div style={{textAlign:"center",padding:20,color:"var(--color-text-tertiary)",fontSize:12}}>Henüz paketleme başlamadı. "Otomatik Dağıt" veya "Boş Palet" ile başlayın.</div>}
-                    {unpacked.map(it=>(
-                      <div key={it.pid} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,marginBottom:4,border:"0.5px solid var(--color-border-tertiary)",fontSize:12}}>
+                    {unpacked.map(it=>{
+                      const itIsChild = isLinkedChild(it.pid);
+                      const itIsParent = combRules.some(r=>r.parent===it.pid);
+                      const childCount = itIsParent ? combRules.filter(r=>r.parent===it.pid).flatMap(r=>r.children).filter(cid=>unpacked.some(u=>u.pid===cid)).length : 0;
+                      return <div key={it.pid} style={{display:"flex",alignItems:"center",gap:8,padding:"8px 10px",borderRadius:8,marginBottom:4,border:`0.5px solid ${itIsChild?"rgba(83,74,183,0.3)":"var(--color-border-tertiary)"}`,background:itIsChild?"rgba(83,74,183,0.03)":"transparent",fontSize:12}}>
                         <div style={{flex:1,minWidth:0}}>
-                          <div style={{fontWeight:500,fontSize:12,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{lang==="TR"?it.nameTR:it.nameEN}</div>
-                          <div style={{fontSize:10,color:"var(--color-text-secondary)"}}>{it.remaining} ad kalan (toplam {it.qty}) — birim {it.kg} kg</div>
+                          <div style={{fontWeight:500,fontSize:12,whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>
+                            {itIsChild&&<span style={{fontSize:8,padding:"1px 4px",borderRadius:3,background:"rgba(83,74,183,0.15)",color:"#534AB7",marginRight:4,fontWeight:600}}>BAĞLI</span>}
+                            {lang==="TR"?it.nameTR:it.nameEN}
+                          </div>
+                          <div style={{fontSize:10,color:"var(--color-text-secondary)"}}>
+                            {it.remaining} ad kalan (toplam {it.qty}) — birim {it.kg} kg
+                            {itIsChild&&<span style={{color:"#534AB7",marginLeft:4}}>· ana ürünle eklenir</span>}
+                            {itIsParent&&childCount>0&&<span style={{color:"#534AB7",marginLeft:4}}>· +{childCount} bağlı ürün</span>}
+                          </div>
                         </div>
                         <div style={{fontSize:11,fontWeight:500,whiteSpace:"nowrap"}}>{fmtKG(it.remaining*it.kg)} kg</div>
-                        {pallets.length>0&&<button onClick={()=>{setAddQtyDialog({pid:it.pid,palletIdx:null,maxQty:it.remaining,name:lang==="TR"?it.nameTR:it.nameEN});setAddQtyValue(String(it.remaining));}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:10,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>Palete Ekle</button>}
-                      </div>
-                    ))}
+                        {pallets.length>0&&!itIsChild&&<button onClick={()=>{setAddQtyDialog({pid:it.pid,palletIdx:null,maxQty:it.remaining,name:lang==="TR"?it.nameTR:it.nameEN});setAddQtyValue(String(it.remaining));}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:10,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>Palete Ekle</button>}
+                      </div>;
+                    })}
                     {/* Packed summary */}
                     {packedSummary.length>0&&<div style={{borderTop:"0.5px solid var(--color-border-tertiary)",marginTop:10,paddingTop:10}}>
                       <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:6}}>Paketlenmiş ürünler</div>
