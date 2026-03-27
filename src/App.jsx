@@ -112,7 +112,7 @@ export default function App() {
   const [showAddC, setShowAddC] = useState(false);
   const [newCDate, setNewCDate] = useState("");
   const [showAddP, setShowAddP] = useState(false);
-  const [newP, setNewP] = useState({nameTR:"",nameEN:"",kg:""});
+  const [newP, setNewP] = useState({nameTR:"",nameEN:"",kg:"",vioCode:"",qtyPerPallet:"",ambalajType:0,dara:""});
   const [showAddO, setShowAddO] = useState(false);
   const [orderPid, setOrderPid] = useState("");
   const [orderQty, setOrderQty] = useState("");
@@ -599,11 +599,16 @@ export default function App() {
   };
 
   const addProduct = () => {
-    if(!newP.nameTR||!newP.kg) return;
+    if(!newP.nameTR||!newP.nameEN||!newP.kg||!newP.vioCode) return;
     const id=Math.max(...products.map(p=>p.id))+1;
     const colors=["#3B8BD4","#1D9E75","#D85A30","#D4537E","#534AB7","#639922","#BA7517","#E24B4A"];
     setProducts(prev=>[...prev,{id,nameTR:newP.nameTR,nameEN:newP.nameEN||newP.nameTR,kg:parseFloat(newP.kg),color:colors[id%colors.length]}]);
-    setShowAddP(false);setNewP({nameTR:"",nameEN:"",kg:""});
+    // Save packing standard if provided
+    const qpp = parseInt(newP.qtyPerPallet)||0;
+    if(qpp > 0) {
+      setPackingStandards(prev=>({...prev,[id]:{qtyPerPallet:qpp,ambalajType:newP.ambalajType||0,dara:parseFloat(newP.dara)||AMBALAJ_TYPES[newP.ambalajType||0].defaultDara}}));
+    }
+    setShowAddP(false);setNewP({nameTR:"",nameEN:"",kg:"",vioCode:"",qtyPerPallet:"",ambalajType:0,dara:""});
   };
 
   const currentYear = new Date().getFullYear();
@@ -2053,12 +2058,29 @@ export default function App() {
 
       {showAddP&&<Modal title="Yeni Ürün" onClose={()=>setShowAddP(false)}>
         <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
-          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Adı (TR)</label>
-            <input value={newP.nameTR} onChange={e=>setNewP({...newP,nameTR:e.target.value})} style={iS}/></div>
-          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Adı (EN)</label>
-            <input value={newP.nameEN} onChange={e=>setNewP({...newP,nameEN:e.target.value})} style={iS}/></div>
-          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>KG</label>
-            <input type="number" value={newP.kg} onChange={e=>setNewP({...newP,kg:e.target.value})} style={iS}/></div>
+          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Adı (TR) *</label>
+            <input value={newP.nameTR} onChange={e=>setNewP({...newP,nameTR:e.target.value})} style={iS} placeholder="Ürün adı Türkçe"/></div>
+          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Adı (EN) *</label>
+            <input value={newP.nameEN} onChange={e=>setNewP({...newP,nameEN:e.target.value})} style={iS} placeholder="Product name English"/></div>
+          <div style={{display:"flex",gap:10}}>
+            <div style={{flex:1}}><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Birim KG *</label>
+              <input type="number" value={newP.kg} onChange={e=>setNewP({...newP,kg:e.target.value})} style={iS} placeholder="0"/></div>
+            <div style={{flex:1}}><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>VIO Kodu *</label>
+              <input value={newP.vioCode} onChange={e=>setNewP({...newP,vioCode:e.target.value})} style={iS} placeholder="152-XXXX"/></div>
+          </div>
+          <div style={{borderTop:"1px solid var(--color-border-tertiary)",paddingTop:10,marginTop:4}}>
+            <div style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",marginBottom:8}}>Paketleme Standardı (opsiyonel)</div>
+            <div style={{display:"flex",gap:10}}>
+              <div style={{flex:1}}><label style={{fontSize:11,color:"var(--color-text-tertiary)",display:"block",marginBottom:3}}>Adet / Palet</label>
+                <input type="number" value={newP.qtyPerPallet} onChange={e=>setNewP({...newP,qtyPerPallet:e.target.value})} style={iS} placeholder="—"/></div>
+              <div style={{flex:1}}><label style={{fontSize:11,color:"var(--color-text-tertiary)",display:"block",marginBottom:3}}>Ambalaj</label>
+                <select value={newP.ambalajType} onChange={e=>setNewP({...newP,ambalajType:Number(e.target.value)})} style={iS}>
+                  {AMBALAJ_TYPES.map((a,ai)=><option key={ai} value={ai}>{a.label}</option>)}
+                </select></div>
+              <div style={{flex:1}}><label style={{fontSize:11,color:"var(--color-text-tertiary)",display:"block",marginBottom:3}}>Dara (kg)</label>
+                <input type="number" value={newP.dara} onChange={e=>setNewP({...newP,dara:e.target.value})} style={iS} placeholder={String(AMBALAJ_TYPES[newP.ambalajType||0].defaultDara)}/></div>
+            </div>
+          </div>
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setShowAddP(false)} style={bS}>İptal</button><button onClick={addProduct} style={bP}>Ekle</button></div>
       </Modal>}
