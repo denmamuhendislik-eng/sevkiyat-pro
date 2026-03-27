@@ -1800,6 +1800,7 @@ export default function App() {
             const allPacked = unpacked.length === 0 && pallets.length > 0;
             const fmtKG = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:2,maximumFractionDigits:2});
             const fmtKG1 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
+            const fmtKG0 = (v) => Math.round(Number(v)).toLocaleString("tr-TR");
             return <div>
               {/* Header */}
               <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:14,flexWrap:"wrap",gap:8}}>
@@ -1819,9 +1820,9 @@ export default function App() {
               {/* Summary cards */}
               <div style={{display:"grid",gridTemplateColumns:"repeat(4,minmax(0,1fr))",gap:10,marginBottom:14}}>
                 <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Palet</div><div style={{fontSize:18,fontWeight:500}}>{pallets.length}</div></div>
-                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Net</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG(totalPackingNet)} kg</div></div>
-                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Dara</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG(totalPackingDara)} kg</div></div>
-                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Brüt</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG(totalPackingBrut)} kg</div></div>
+                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Net</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG0(totalPackingNet)} kg</div></div>
+                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Dara</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG0(totalPackingDara)} kg</div></div>
+                <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Brüt</div><div style={{fontSize:18,fontWeight:500}}>{fmtKG0(totalPackingBrut)} kg</div></div>
               </div>
 
               {/* Kantar section */}
@@ -1834,9 +1835,9 @@ export default function App() {
                   </div>
                 </div>
                 {kantarBrut&&<div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:12,marginTop:10}}>
-                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Hesaplanan brüt</div><div style={{fontSize:16,fontWeight:500}}>{fmtKG(totalPackingBrut)} kg</div></div>
-                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Kantar brüt</div><div style={{fontSize:16,fontWeight:500,color:"var(--color-text-warning)"}}>{fmtKG(parseFloat(kantarBrut)||0)} kg</div></div>
-                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Fark</div><div style={{fontSize:16,fontWeight:500,color:Math.abs((parseFloat(kantarBrut)||0)-totalPackingBrut)<1?"#1D9E75":"#E24B4A"}}>{((parseFloat(kantarBrut)||0)-totalPackingBrut)>0?"+":""}{fmtKG((parseFloat(kantarBrut)||0)-totalPackingBrut)} kg</div></div>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Hesaplanan brüt</div><div style={{fontSize:16,fontWeight:500}}>{fmtKG0(totalPackingBrut)} kg</div></div>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Kantar brüt</div><div style={{fontSize:16,fontWeight:500,color:"var(--color-text-warning)"}}>{fmtKG0(parseFloat(kantarBrut)||0)} kg</div></div>
+                  <div style={{textAlign:"center"}}><div style={{fontSize:11,color:"var(--color-text-secondary)"}}>Fark</div><div style={{fontSize:16,fontWeight:500,color:Math.abs((parseFloat(kantarBrut)||0)-totalPackingBrut)<1?"#1D9E75":"#E24B4A"}}>{((parseFloat(kantarBrut)||0)-totalPackingBrut)>0?"+":""}{fmtKG0((parseFloat(kantarBrut)||0)-totalPackingBrut)} kg</div></div>
                 </div>}
               </div>
 
@@ -1847,7 +1848,7 @@ export default function App() {
                 <div style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,overflow:"hidden"}}>
                   <div style={{padding:"10px 14px",background:"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <span style={{fontSize:13,fontWeight:500}}>Paketlenmemiş ({unpacked.length})</span>
-                    {unpacked.length>0&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#FCEBEB",color:"#791F1F"}}>{fmtKG(unpacked.reduce((s,it)=>s+it.remaining*it.kg,0))} kg bekliyor</span>}
+                    {unpacked.length>0&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#FCEBEB",color:"#791F1F"}}>{fmtKG0(unpacked.reduce((s,it)=>s+it.remaining*it.kg,0))} kg bekliyor</span>}
                   </div>
                   <div style={{padding:10,maxHeight:400,overflow:"auto"}}>
                     {unpacked.length===0&&pallets.length>0&&<div style={{textAlign:"center",padding:20,color:"#1D9E75",fontSize:12,fontWeight:500}}>✓ Tüm ürünler paketlendi</div>}
@@ -1868,7 +1869,7 @@ export default function App() {
                             {itIsParent&&childCount>0&&<span style={{color:"#534AB7",marginLeft:4}}>· +{childCount} bağlı ürün</span>}
                           </div>
                         </div>
-                        <div style={{fontSize:11,fontWeight:500,whiteSpace:"nowrap"}}>{fmtKG(it.remaining*it.kg)} kg</div>
+                        <div style={{fontSize:11,fontWeight:500,whiteSpace:"nowrap"}}>{fmtKG0(it.remaining*it.kg)} kg</div>
                         {pallets.length>0&&!itIsChild&&<button onClick={()=>{setAddQtyDialog({pid:it.pid,palletIdx:null,maxQty:it.remaining,name:lang==="TR"?it.nameTR:it.nameEN});setAddQtyValue(String(it.remaining));}} style={{padding:"3px 8px",borderRadius:4,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:10,fontWeight:500,cursor:"pointer",whiteSpace:"nowrap"}}>Palete Ekle</button>}
                       </div>;
                     })}
@@ -1889,7 +1890,7 @@ export default function App() {
                 <div style={{border:"0.5px solid var(--color-border-tertiary)",borderRadius:10,overflow:"hidden"}}>
                   <div style={{padding:"10px 14px",background:"var(--color-background-secondary)",borderBottom:"0.5px solid var(--color-border-tertiary)",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
                     <span style={{fontSize:13,fontWeight:500}}>Paletler ({pallets.length})</span>
-                    {pallets.length>0&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#EAF3DE",color:"#27500A"}}>{fmtKG(totalPackingNet)} kg net</span>}
+                    {pallets.length>0&&<span style={{fontSize:10,padding:"2px 8px",borderRadius:4,background:"#EAF3DE",color:"#27500A"}}>{fmtKG0(totalPackingNet)} kg net</span>}
                   </div>
                   <div style={{padding:10,maxHeight:600,overflow:"auto"}}>
                     {pallets.length===0&&<div style={{textAlign:"center",padding:20,color:"var(--color-text-tertiary)",fontSize:12}}>Henüz palet yok</div>}
