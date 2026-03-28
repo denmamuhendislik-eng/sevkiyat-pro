@@ -140,7 +140,7 @@ export default function App() {
   const [selectedRow, setSelectedRow] = useState(null);
   const [dataLoaded, setDataLoaded] = useState(false);
   const [pdfHtml, setPdfHtml] = useState(null);
-  const [hideShipped, setHideShipped] = useState(false);
+  const [hideShipped, setHideShipped] = useState(true);
   const [importData, setImportData] = useState(null);
   const [importYear, setImportYear] = useState(new Date().getFullYear());
   const [importNewProducts, setImportNewProducts] = useState([]);
