@@ -2549,20 +2549,34 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     return t;
   }, [ms]);
 
-  // --- Sevkiyat hazırlık durumu (plan + mevcut stok vs hedef) ---
+  // --- Sevkiyat hazırlık durumu (kümülatif, PLN + GER senaryoları) ---
   const shipStatus = useMemo(() => {
-    return allContainers.filter(c => !c.shipped).slice(0,3).map(c => {
+    const activeShips = allContainers.filter(c => !c.shipped);
+    const cumDeducted = {};
+    ANA_IDS.forEach(pid => { cumDeducted[pid] = 0; });
+
+    return activeShips.map(c => {
       const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
       const results = {};
       ANA_IDS.forEach(pid => {
         const target = Number(q[pid]) || 0;
         if (!target) return;
-        const planned = Object.entries(ms.days||{})
-          .filter(([d]) => d >= today && d <= c.date)
+        // PLN: stok + bugünden sonra sevkiyata kadar planlanan üretim − önceki sevkiyatlar
+        const plannedProd = Object.entries(ms.days||{})
+          .filter(([d]) => d > today && d <= c.date)
           .reduce((s,[,day]) => s+(Number(day.planned?.[pid])||0), 0);
-        const available = (stockCalc[pid]||0) + planned;
-        results[pid] = { target, planned, available, ok: available>=target, diff: available-target };
+        const availPln = (stockCalc[pid]||0) + plannedProd - cumDeducted[pid];
+        // GER: sadece mevcut stok − önceki sevkiyatlar (gelecek üretim sayılmaz)
+        const availGer = (stockCalc[pid]||0) - cumDeducted[pid];
+        results[pid] = {
+          target, plannedProd,
+          availPln, availGer,
+          okPln: availPln >= target, okGer: availGer >= target,
+          diffPln: availPln - target, diffGer: availGer - target
+        };
       });
+      // Bu sevkiyatın miktarlarını sonraki sevkiyatlar için düş
+      ANA_IDS.forEach(pid => { cumDeducted[pid] += Number(q[pid]) || 0; });
       return { container:c, results };
     });
   }, [allContainers, yearsData, selectedYear, ms, stockCalc, today]);
@@ -2628,40 +2642,64 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         })()}
       </div>
 
-      {/* Sevkiyat hazırlık durumu */}
+      {/* Sevkiyat hazırlık durumu — tüm aktif sevkiyatlar, PLN + GER */}
       {shipStatus.length > 0 && (
-        <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(shipStatus.length,3)},minmax(0,1fr))`,gap:6,marginBottom:"1rem"}}>
+        <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(shipStatus.length,4)},minmax(0,1fr))`,gap:6,marginBottom:"1rem"}}>
           {shipStatus.map(({container:c, results}) => {
             const entries = Object.entries(results);
-            const allOk   = entries.length > 0 && entries.every(([,r]) => r.ok);
-            const noneOk  = entries.length > 0 && entries.every(([,r]) => !r.ok);
-            const borderC = allOk?"var(--color-border-success)":noneOk?"var(--color-border-danger)":"var(--color-border-warning)";
-            const txtC    = allOk?"var(--color-text-success)":noneOk?"var(--color-text-danger)":"var(--color-text-warning)";
-            const bgC     = allOk?"var(--color-background-success)":noneOk?"var(--color-background-danger)":"var(--color-background-warning)";
-            const label   = allOk?"Yetişecek":noneOk?"Yetişemeyecek":"Kısmen yetişecek";
+            const allOkP  = entries.length > 0 && entries.every(([,r]) => r.okPln);
+            const noneOkP = entries.length > 0 && entries.every(([,r]) => !r.okPln);
+            const allOkG  = entries.length > 0 && entries.every(([,r]) => r.okGer);
+            const noneOkG = entries.length > 0 && entries.every(([,r]) => !r.okGer);
+            const borderC = allOkP?"var(--color-border-success)":noneOkP?"var(--color-border-danger)":"var(--color-border-warning)";
+            const badgeInfo = (allOk,noneOk) => {
+              const txt = allOk?"var(--color-text-success)":noneOk?"var(--color-text-danger)":"var(--color-text-warning)";
+              const bg  = allOk?"var(--color-background-success)":noneOk?"var(--color-background-danger)":"var(--color-background-warning)";
+              const lbl = allOk?"Yetişecek":noneOk?"Yetişemeyecek":"Kısmen";
+              return {txt,bg,lbl};
+            };
+            const bP = badgeInfo(allOkP,noneOkP);
+            const bG = badgeInfo(allOkG,noneOkG);
             return (
               <div key={c.id} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"9px 10px",border:`0.5px solid ${borderC}`}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
                   <div style={{fontSize:"11px",fontWeight:500}}>{new Date(c.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})} sevkiyatı</div>
-                  <span style={{fontSize:"10px",fontWeight:500,color:txtC,background:bgC,padding:"1px 6px",borderRadius:3}}>{label}</span>
+                </div>
+                <div style={{display:"flex",gap:4,marginBottom:6}}>
+                  <span style={{fontSize:"9px",fontWeight:600,color:bP.txt,background:bP.bg,padding:"1px 5px",borderRadius:3}}>PLN: {bP.lbl}</span>
+                  <span style={{fontSize:"9px",fontWeight:600,color:bG.txt,background:bG.bg,padding:"1px 5px",borderRadius:3}}>GER: {bG.lbl}</span>
                 </div>
                 {entries.map(([pid,r]) => {
                   const p = anaProducts.find(x => x.id===Number(pid));
                   if (!p) return null;
-                  const pct = r.target > 0 ? Math.min(100,Math.round((r.available/r.target)*100)) : 0;
+                  const pctP = r.target > 0 ? Math.min(100,Math.round((r.availPln/r.target)*100)) : 0;
+                  const pctG = r.target > 0 ? Math.min(100,Math.round((r.availGer/r.target)*100)) : 0;
                   return (
-                    <div key={pid} style={{marginBottom:4}}>
-                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
-                        <div style={{display:"flex",alignItems:"center",gap:4}}>
-                          <div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/>
-                          <span style={{fontSize:"10px",color:"var(--color-text-secondary)"}}>{kisaAd(p.nameTR)}</span>
+                    <div key={pid} style={{marginBottom:5}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}>
+                        <div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/>
+                        <span style={{fontSize:"10px",color:"var(--color-text-secondary)",flex:1}}>{kisaAd(p.nameTR)}</span>
+                        <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>hedef: {r.target}</span>
+                      </div>
+                      {/* PLN satırı */}
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10,marginBottom:1}}>
+                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>PLN</span>
+                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
+                          <div style={{height:"100%",width:`${pctP}%`,background:r.okPln?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
                         </div>
-                        <span style={{fontSize:"10px",fontWeight:500,color:r.ok?"var(--color-text-success)":"var(--color-text-danger)"}}>
-                          {r.available}/{r.target} ({r.diff>=0?"+":""}{r.diff})
+                        <span style={{fontSize:"10px",fontWeight:500,color:r.okPln?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
+                          {r.availPln}/{r.target} ({r.diffPln>=0?"+":""}{r.diffPln})
                         </span>
                       </div>
-                      <div style={{height:2,background:"var(--color-border-tertiary)",borderRadius:1,marginTop:2}}>
-                        <div style={{height:"100%",width:`${pct}%`,background:r.ok?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:1,transition:"width 0.3s"}}/>
+                      {/* GER satırı */}
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10}}>
+                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>GER</span>
+                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
+                          <div style={{height:"100%",width:`${pctG}%`,background:r.okGer?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
+                        </div>
+                        <span style={{fontSize:"10px",fontWeight:500,color:r.okGer?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
+                          {r.availGer}/{r.target} ({r.diffGer>=0?"+":""}{r.diffGer})
+                        </span>
                       </div>
                     </div>
                   );
