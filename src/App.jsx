@@ -2441,6 +2441,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const [showStockEdit, setShowStockEdit] = useState(false);
   const [tmpStock, setTmpStock]           = useState({});
   const [autoPlanPreview, setAutoPlanPreview] = useState(null); // { newMs, summary }
+  const [newHolidayDate, setNewHolidayDate] = useState("");
 
   // --- Firestore yükle ---
   useEffect(() => {
@@ -3074,19 +3075,18 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             <div style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",marginBottom:8}}>Resmi tatiller (otomatik plan bu günleri atlar)</div>
             <div style={{marginBottom:"0.75rem"}}>
               <div style={{display:"flex",gap:6,marginBottom:6}}>
-                <input type="date" id="_newHoliday" style={{flex:1,fontSize:13,padding:"5px 8px",borderRadius:6}}/>
+                <input type="date" value={newHolidayDate} onChange={e=>setNewHolidayDate(e.target.value)} style={{flex:1,fontSize:13,padding:"5px 8px",borderRadius:6}}/>
                 <button onClick={()=>{
-                  const inp=document.getElementById("_newHoliday");
-                  if(!inp.value)return;
-                  setTmpCap(prev=>{const n=deepClone(prev);if(!n.holidays)n.holidays=[];if(!n.holidays.includes(inp.value)){n.holidays.push(inp.value);n.holidays.sort();}return n;});
-                  inp.value="";
+                  if(!newHolidayDate)return;
+                  setTmpCap(prev=>{const n=deepClone(prev);if(!n.holidays)n.holidays=[];if(!n.holidays.includes(newHolidayDate)){n.holidays.push(newHolidayDate);n.holidays.sort();}return n;});
+                  setNewHolidayDate("");
                 }} style={{fontSize:12,padding:"5px 10px",cursor:"pointer"}}>+ Ekle</button>
               </div>
               {(tmpCap.holidays||[]).length>0 ? (
                 <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
                   {(tmpCap.holidays||[]).map(h=>(
                     <span key={h} style={{fontSize:11,background:"var(--color-background-warning)",color:"var(--color-text-warning)",padding:"2px 8px",borderRadius:4,display:"inline-flex",alignItems:"center",gap:4}}>
-                      {new Date(h).toLocaleDateString("tr-TR",{day:"2-digit",month:"short",weekday:"short"})}
+                      {new Date(h+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short",weekday:"short"})}
                       <span onClick={()=>setTmpCap(prev=>{const n=deepClone(prev);n.holidays=(n.holidays||[]).filter(x=>x!==h);return n;})} style={{cursor:"pointer",fontSize:13,lineHeight:1}}>×</span>
                     </span>
                   ))}
