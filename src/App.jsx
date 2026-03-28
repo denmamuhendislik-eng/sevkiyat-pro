@@ -1201,6 +1201,88 @@ export default function App() {
     setPdfHtml(`<div data-label="true">${pages.join("")}</div>`);
   };
 
+  const exportPackingExcel = (exLang) => {
+    if(!packingCid||pallets.length===0) return;
+    const c = yd.containers.find(ct=>ct.id===packingCid);
+    if(!c) return;
+    const isEN = exLang === "EN";
+    const dateStr = c.date.split("-").reverse().join(".");
+
+    const rows = [];
+    // Header row
+    rows.push([
+      isEN?"Pack Nr":"Kap No",
+      isEN?"Description":"Açıklama",
+      isEN?"Quantity":"Miktar",
+      isEN?"Net Kg":"Net Kg",
+      isEN?"Tare Kg":"Dara Kg",
+      isEN?"Gross Kg":"Brüt Kg"
+    ]);
+
+    pallets.forEach(pl => {
+      const plNet = getPalletNet(pl);
+      const plBrut = getPalletBrut(pl);
+      pl.items.forEach((it,ii) => {
+        rows.push([
+          ii===0 ? `${pl.id} - ${isEN?"PALLET":"PALET"}` : "",
+          isEN ? it.nameEN : it.nameTR,
+          it.qty,
+          Math.round(it.kg*it.qty*10)/10,
+          ii===0 ? Math.round(pl.dara*10)/10 : "",
+          ""
+        ]);
+      });
+      // Pallet total row
+      rows.push([
+        isEN?"Pallet Total":"Palet Toplam",
+        "",
+        pl.items.reduce((s,it)=>s+it.qty,0),
+        Math.round(plNet*10)/10,
+        Math.round(pl.dara*10)/10,
+        Math.round(plBrut*10)/10
+      ]);
+      rows.push([]); // Empty row between pallets
+    });
+
+    // Grand total
+    const totalQty = pallets.reduce((s,pl)=>s+pl.items.reduce((ss,it)=>ss+it.qty,0),0);
+    rows.push([
+      isEN?"TOTAL":"TOPLAM",
+      "",
+      totalQty,
+      Math.round(totalPackingNet),
+      Math.round(totalPackingDara),
+      Math.round(totalPackingBrut)
+    ]);
+
+    // Add header info rows at top
+    const headerRows = [
+      [DENMA_INFO.name],
+      [DENMA_INFO.address],
+      [`Tel: ${DENMA_INFO.tel}`],
+      [],
+      [isEN?"PACK LIST":"ÇEKİ LİSTESİ"],
+      [`${isEN?"Date":"Tarih"}: ${dateStr}`],
+      [],
+      [`${isEN?"Customer":"Müşteri"}: ${CUSTOMER.name}`],
+      [`${CUSTOMER.address}, ${CUSTOMER.city} / ${CUSTOMER.country}`],
+      [],
+      [`${isEN?"Total Pallets":"Toplam Palet"}: ${pallets.length}`],
+      [`${isEN?"Total Net Weight":"Toplam Net Ağırlık"}: ${Math.round(totalPackingNet)} Kg`],
+      [`${isEN?"Total Gross Weight":"Toplam Brüt Ağırlık"}: ${Math.round(totalPackingBrut)} Kg`],
+      []
+    ];
+
+    const allRows = [...headerRows, ...rows];
+
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    // Set column widths
+    ws["!cols"] = [{wch:18},{wch:45},{wch:10},{wch:12},{wch:12},{wch:12}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, isEN?"Pack List":"Çeki Liste");
+    XLSX.writeFile(wb, `${isEN?"PackList":"CekiListe"}_${dateStr.replace(/\./g,"")}.xlsx`);
+  };
+
   const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"}];
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
@@ -2023,6 +2105,8 @@ export default function App() {
               {allPacked&&<div style={{display:"flex",gap:8,marginTop:14,justifyContent:"center",flexWrap:"wrap"}}>
                 <button onClick={()=>generatePackingPDF("TR")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📄 Çeki Liste (TR)</button>
                 <button onClick={()=>generatePackingPDF("EN")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#185FA5",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📄 Pack List (EN)</button>
+                <button onClick={()=>exportPackingExcel("TR")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#BA7517",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📊 Excel (TR)</button>
+                <button onClick={()=>exportPackingExcel("EN")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#BA7517",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📊 Excel (EN)</button>
                 <button onClick={()=>generatePalletLabelPDF()} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#0F6E56",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>🏷 Palet Etiketi</button>
               </div>}
             </div>;
