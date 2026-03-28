@@ -2426,9 +2426,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving]   = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [tmpCap, setTmpCap]   = useState(null);
-  const [showStockEdit, setShowStockEdit] = useState(false);
-  const [tmpStock, setTmpStock] = useState({});
+  const [tmpCap, setTmpCap]   = useState(null); // settings edit state
 
   const deepClone = o => JSON.parse(JSON.stringify(o));
 
@@ -2490,12 +2488,15 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   }, [allContainers, yearsData, selectedYear]);
 
   // --- Stok hesabı ---
+  const todayStr = new Date().toISOString().slice(0,10);
+
   const stockCalc = useMemo(() => {
     const { initialStock = {}, days = {} } = ms;
     const stock = {};
     ANA_IDS.forEach(pid => { stock[pid] = Number(initialStock[pid]) || 0; });
-    // Tüm günlerin gerçekleşenlerini ekle
-    Object.values(days).forEach(day => {
+    // Sadece bugüne kadarki gerçekleşenleri ekle
+    Object.entries(days).forEach(([date, day]) => {
+      if (date > todayStr) return;
       ANA_IDS.forEach(pid => { stock[pid] += Number(day.actual?.[pid]) || 0; });
     });
     // Sevk edilmiş konteynerlerin miktarını düş
@@ -2505,7 +2506,29 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       ANA_IDS.forEach(pid => { stock[pid] -= Number(q[pid]) || 0; });
     });
     return stock;
-  }, [ms, allContainers, yearsData, selectedYear]);
+  }, [ms, allContainers, yearsData, selectedYear, todayStr]);
+
+  // --- Sevkiyat bazlı plan durumu ---
+  // Her yaklaşan sevkiyat için: stok + planlanan >= hedef mi?
+  const shipStatus = useMemo(() => {
+    const upcoming = allContainers.filter(c => !c.shipped).slice(0,3);
+    return upcoming.map(c => {
+      const yd = yearsData[selectedYear] || {};
+      const q = yd.quantities?.[c.id] || {};
+      const results = {};
+      ANA_IDS.forEach(pid => {
+        const target = Number(q[pid]) || 0;
+        if (!target) return;
+        // Bugünden sevkiyat tarihine kadar planlanan toplam
+        const planned = Object.entries(ms.days||{})
+          .filter(([d]) => d >= todayStr && d <= c.date)
+          .reduce((s,[,day]) => s + (Number(day.planned?.[pid])||0), 0);
+        const available = (stockCalc[pid]||0) + planned;
+        results[pid] = { target, planned, available, ok: available >= target, diff: available - target };
+      });
+      return { container: c, results };
+    });
+  }, [allContainers, yearsData, selectedYear, ms, stockCalc, todayStr]);
 
   // --- Toplam gerçekleşen (tüm takvim) ---
   const totalActuals = useMemo(() => {
@@ -2569,39 +2592,92 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         <h2 style={{margin:0,fontSize:"17px",fontWeight:500}}>🔧 Montaj Planı</h2>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {saving && <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
-          {isAdmin && <button onClick={()=>{setTmpStock(deepClone(ms.initialStock||{}));setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
         </div>
       </div>
 
       {/* Stok kartları */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(5,minmax(0,1fr))",gap:6,marginBottom:"1rem"}}>
+      <div style={{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:6,marginBottom:"1rem"}}>
         {anaProducts.map(p => {
           const pid = p.id;
           const stock = stockCalc[pid] ?? 0;
           const isNeg = stock < 0;
-          const target = shipTargets[pid] || 0;
-          const actual = totalActuals[pid] || 0;
-          const pct = target > 0 ? Math.min(100, Math.round((actual/target)*100)) : 0;
-          const barColor = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
           return (
             <div key={pid} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"9px 10px",border:`0.5px solid ${isNeg?"var(--color-border-danger)":"var(--color-border-tertiary)"}`}}>
               <div style={{fontSize:"10px",color:"var(--color-text-secondary)",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{kisaAd(p.nameTR)}</div>
               <div style={{display:"flex",alignItems:"baseline",gap:4}}>
                 <span style={{fontSize:"20px",fontWeight:500,color:isNeg?"var(--color-text-danger)":"var(--color-text-primary)"}}>{stock}</span>
-                <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>stok</span>
+                <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>bugün</span>
               </div>
-              {target > 0 && <>
-                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>{actual}/{target} hazır</div>
-                <div style={{height:3,background:"var(--color-border-tertiary)",borderRadius:2,marginTop:3}}>
-                  <div style={{height:"100%",width:`${pct}%`,background:barColor,borderRadius:2,transition:"width 0.4s"}}/>
-                </div>
-              </>}
               <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>max {getModelMax(pid)}/gün</div>
             </div>
           );
         })}
+        {/* Toplam makine stok kartı */}
+        {(()=>{
+          const totalStock = anaProducts.reduce((s,p) => s+(stockCalc[p.id]||0), 0);
+          const totalTarget = anaProducts.reduce((s,p) => s+(shipTargets[p.id]||0), 0);
+          const isNeg = totalStock < 0;
+          return (
+            <div style={{background:"var(--color-background-primary)",borderRadius:8,padding:"9px 10px",border:`1px solid ${isNeg?"var(--color-border-danger)":"var(--color-border-secondary)"}`}}>
+              <div style={{fontSize:"10px",color:"var(--color-text-secondary)",marginBottom:2,fontWeight:500}}>Toplam stok</div>
+              <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+                <span style={{fontSize:"20px",fontWeight:500,color:isNeg?"var(--color-text-danger)":"var(--color-text-primary)"}}>{totalStock}</span>
+                <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>adet</span>
+              </div>
+              <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>Hedef: {totalTarget} adet</div>
+              <div style={{height:3,background:"var(--color-border-tertiary)",borderRadius:2,marginTop:3}}>
+                <div style={{height:"100%",width:`${totalTarget>0?Math.min(100,Math.round((totalStock/totalTarget)*100)):0}%`,background:totalStock>=totalTarget?"var(--color-background-success)":"var(--color-background-warning)",borderRadius:2}}/>
+              </div>
+            </div>
+          );
+        })()}
       </div>
+
+      {/* Sevkiyat hazırlık durumu */}
+      {shipStatus.length > 0 && (
+        <div style={{display:"grid",gridTemplateColumns:`repeat(${shipStatus.length},minmax(0,1fr))`,gap:6,marginBottom:"1rem"}}>
+          {shipStatus.map(({container:c, results}) => {
+            const entries = Object.entries(results);
+            const allOk = entries.every(([,r]) => r.ok);
+            const someOk = entries.some(([,r]) => r.ok);
+            const statusColor = allOk?"var(--color-background-success)":someOk?"var(--color-background-warning)":"var(--color-background-danger)";
+            const statusText = allOk?"Yetişecek":someOk?"Kısmen yetişecek":"Yetişemeyecek";
+            const statusTxtColor = allOk?"var(--color-text-success)":someOk?"var(--color-text-warning)":"var(--color-text-danger)";
+            return (
+              <div key={c.id} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"9px 10px",border:`0.5px solid ${allOk?"var(--color-border-success)":someOk?"var(--color-border-warning)":"var(--color-border-danger)"}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{fontSize:"11px",fontWeight:500}}>
+                    {new Date(c.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})} sevkiyatı
+                  </div>
+                  <span style={{fontSize:"10px",fontWeight:500,color:statusTxtColor,background:statusColor,padding:"1px 6px",borderRadius:3}}>{statusText}</span>
+                </div>
+                {entries.map(([pid,r]) => {
+                  const p = anaProducts.find(x=>x.id===Number(pid));
+                  if(!p) return null;
+                  const pct = Math.min(100,Math.round((r.available/r.target)*100));
+                  return (
+                    <div key={pid} style={{marginBottom:4}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/>
+                          <span style={{fontSize:"10px",color:"var(--color-text-secondary)"}}>{kisaAd(p.nameTR)}</span>
+                        </div>
+                        <span style={{fontSize:"10px",fontWeight:500,color:r.ok?"var(--color-text-success)":"var(--color-text-danger)"}}>
+                          {r.available}/{r.target} {r.diff>=0?`(+${r.diff})`:`(${r.diff})`}
+                        </span>
+                      </div>
+                      <div style={{height:2,background:"var(--color-border-tertiary)",borderRadius:1,marginTop:2}}>
+                        <div style={{height:"100%",width:`${pct}%`,background:r.ok?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:1,transition:"width 0.3s"}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Ana tablo */}
       <div style={{overflowX:"auto"}}>
@@ -2745,32 +2821,6 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           </div>
         ))}
       </div>
-
-      {/* Başlangıç Stoku Modal */}
-      {showStockEdit && (
-        <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
-          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:340,border:"0.5px solid var(--color-border-tertiary)"}}>
-            <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>Başlangıç Stoku</h3>
-            <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>Tüm hesaplamaların başlangıç noktası. Mevcut fiziksel stoğu girin.</p>
-            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:"1.25rem"}}>
-              {anaProducts.map(p=>(
-                <div key={p.id} style={{display:"flex",alignItems:"center",gap:10}}>
-                  <div style={{width:8,height:8,borderRadius:"50%",background:p.color,flexShrink:0}}/>
-                  <span style={{flex:1,fontSize:13}}>{kisaAd(p.nameTR)}</span>
-                  <input type="number" min="0" value={tmpStock[p.id]??""} placeholder="0"
-                    onChange={e=>setTmpStock(prev=>({...prev,[p.id]:Number(e.target.value)||0}))}
-                    style={{width:70,fontSize:14,padding:"5px 8px",borderRadius:6,textAlign:"center",fontWeight:500}}/>
-                  <span style={{fontSize:11,color:"var(--color-text-tertiary)",width:24}}>adet</span>
-                </div>
-              ))}
-            </div>
-            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
-              <button onClick={()=>setShowStockEdit(false)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
-              <button onClick={()=>{const newMs=deepClone(ms);newMs.initialStock=deepClone(tmpStock);save(newMs);setShowStockEdit(false);}} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* Kapasite Ayarları Modal */}
       {showSettings && tmpCap && (
