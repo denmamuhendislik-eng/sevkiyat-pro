@@ -1034,7 +1034,7 @@ export default function App() {
 
     const header = `<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:14px">
       <div>
-        <img src="${LOGO_DENMA}" style="height:40px" alt="DENMA"/>
+        <img src="${LOGO_DENMA}" style="width:180px;height:auto" alt="DENMA"/>
       </div>
       <div style="text-align:right;font-size:9.5px;line-height:1.6">
         <b>${DENMA_INFO.name}</b><br>
@@ -1117,7 +1117,7 @@ export default function App() {
         <!-- Header: Logo + Pallet No -->
         <div style="display:flex;justify-content:space-between;align-items:stretch;margin-bottom:2mm">
           <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
-            <img src="${LOGO_DENMA}" style="height:26px;display:block" alt="DENMA"/>
+            <img src="${LOGO_DENMA}" style="width:36mm;height:auto;display:block" alt="DENMA"/>
             <div style="font-size:7px;margin-top:1.5mm;line-height:1.5">
               <b>${DENMA_INFO.name}</b><br>
               Fevzi Çakmak Mah. 10670 Sk. No:31/B<br>
@@ -1175,19 +1175,15 @@ export default function App() {
           </div>
         </div>
 
-        <!-- Bottom: Logos + ISO text + QR Code -->
-        <div style="display:flex;justify-content:space-between;align-items:flex-end">
-          <div style="display:flex;gap:3mm;align-items:center">
-            <img src="${LOGO_MADE}" style="height:16mm" alt="Made in Türkiye"/>
-            <div style="border:1.5px solid #000;padding:1.5mm 2mm;text-align:center;font-size:7px;line-height:1.4">
-              <div style="font-weight:900;font-size:8px;margin-bottom:1px">INTEGRATED<br>MANAGEMENT SYSTEM</div>
-              <div>ISO 9001 · ISO 14001 · ISO 45001</div>
-              <div style="font-size:6px;margin-top:1px">Quality · Environment · Health &amp; Safety</div>
-            </div>
+        <!-- Bottom: Made in Turkey + ISO text + QR Code — all same height -->
+        <div style="display:flex;justify-content:space-between;align-items:center;height:20mm">
+          <img src="${LOGO_MADE}" style="height:20mm;width:auto" alt="Made in Türkiye"/>
+          <div style="border:1.5px solid #000;padding:1.5mm 3mm;text-align:center;font-size:7px;line-height:1.4;height:20mm;display:flex;flex-direction:column;justify-content:center">
+            <div style="font-weight:900;font-size:8px;margin-bottom:1px">INTEGRATED<br>MANAGEMENT SYSTEM</div>
+            <div>ISO 9001 · ISO 14001 · ISO 45001</div>
+            <div style="font-size:6px;margin-top:1px">Quality · Environment · Health &amp; Safety</div>
           </div>
-          <div style="text-align:center">
-            <img src="${qrUrl}" style="width:18mm;height:18mm" alt="QR"/>
-          </div>
+          <img src="${qrUrl}" style="width:20mm;height:20mm" alt="QR"/>
         </div>
       </div>`;
     });
