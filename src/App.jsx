@@ -2923,7 +2923,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                         <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"middle",paddingBottom:1}}>
                           <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>pln</div>
                           {canPlan
-                            ? <input type="number" min="0" defaultValue={v||""} placeholder="—" onBlur={e=>updateCell(d,pid,"planned",e.target.value)}
+                            ? <input key={d+"-p-"+pid+"-"+(v||0)} type="number" min="0" defaultValue={v||""} placeholder="—" onBlur={e=>updateCell(d,pid,"planned",e.target.value)}
                                 style={{...INP,color:overModel?"var(--color-text-warning)":v?"var(--color-text-secondary)":"var(--color-text-tertiary)"}}/>
                             : <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>{v||"—"}</span>
                           }
@@ -2949,7 +2949,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                         <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"top",paddingTop:1}}>
                           <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>ger</div>
                           {canActual
-                            ? <input type="number" min="0" defaultValue={av!==undefined&&av!==0?av:""} placeholder="—" onBlur={e=>updateCell(d,pid,"actual",e.target.value)}
+                            ? <input key={d+"-a-"+pid+"-"+(av||0)} type="number" min="0" defaultValue={av!==undefined&&av!==0?av:""} placeholder="—" onBlur={e=>updateCell(d,pid,"actual",e.target.value)}
                                 style={{...INP,color:behind?"var(--color-text-danger)":av?"var(--color-text-primary)":"var(--color-text-tertiary)",borderBottom:behind?"1px solid var(--color-border-danger)":""}}/>
                             : <span style={{fontSize:"12px",color:behind?"var(--color-text-danger)":"var(--color-text-secondary)"}}>{av!==undefined?av:"—"}</span>
                           }
