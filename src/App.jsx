@@ -2561,10 +2561,14 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       ANA_IDS.forEach(pid => {
         const target = Number(q[pid]) || 0;
         if (!target) return;
-        // PLN: stok + bugünden sonra sevkiyata kadar planlanan üretim − önceki sevkiyatlar
+        // PLN: stok + bugünden itibaren sevkiyata kadar (plan − gerçekleşen fark) − önceki sevkiyatlar
         const plannedProd = Object.entries(ms.days||{})
-          .filter(([d]) => d > today && d <= c.date)
-          .reduce((s,[,day]) => s+(Number(day.planned?.[pid])||0), 0);
+          .filter(([d]) => d >= today && d <= c.date)
+          .reduce((s,[,day]) => {
+            const ger = Number(day.actual?.[pid]) || 0;
+            const pln = Number(day.planned?.[pid]) || 0;
+            return s + Math.max(0, pln - ger);
+          }, 0);
         const availPln = (stockCalc[pid]||0) + plannedProd - cumDeducted[pid];
         // GER: sadece mevcut stok − önceki sevkiyatlar (gelecek üretim sayılmaz)
         const availGer = (stockCalc[pid]||0) - cumDeducted[pid];
