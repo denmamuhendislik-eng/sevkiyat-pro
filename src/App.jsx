@@ -291,9 +291,9 @@ export default function App() {
     }
   };
 
-  // Migrate current user to registry on login (one-time)
+  // Register current user in registry on login (all roles)
   useEffect(() => {
-    if (!isAdmin || !authUser) return;
+    if (!authUser || !userRole) return;
     (async () => {
       try {
         const regDoc = await getDoc(doc(db, "appData", "userRegistry"));
@@ -307,7 +307,7 @@ export default function App() {
         }
       } catch (e) { console.error("Registry migration:", e); }
     })();
-  }, [isAdmin, authUser]);
+  }, [authUser, userRole]);
 
   const yd = yearsData[selYear] || {containers:[],orders:{},carryOver:{},quantities:{}};
   const visibleContainers = hideShipped ? yd.containers.filter(c=>!isShipped(c)) : yd.containers;
