@@ -2496,7 +2496,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     ANA_IDS.forEach(pid => { stock[pid] = Number(initialStock[pid]) || 0; });
     // Sadece bugüne kadarki gerçekleşenleri ekle
     Object.entries(days).forEach(([date, day]) => {
-      if (date > todayStr) return;
+      if (date > today) return;
       ANA_IDS.forEach(pid => { stock[pid] += Number(day.actual?.[pid]) || 0; });
     });
     // Sadece initDate'ten SONRA sevk edilmiş konteynerleri düş
@@ -2508,7 +2508,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       ANA_IDS.forEach(pid => { stock[pid] -= Number(q[pid]) || 0; });
     });
     return stock;
-  }, [ms, allContainers, yearsData, selectedYear, todayStr]);
+  }, [ms, allContainers, yearsData, selectedYear, today]);
 
   // --- Toplam gerçekleşen (tüm takvim) ---
   const totalActuals = useMemo(() => {
@@ -2572,7 +2572,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         <h2 style={{margin:0,fontSize:"17px",fontWeight:500}}>🔧 Montaj Planı</h2>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {saving && <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
-          {isAdmin && <button onClick={()=>{setTmpStock({...deepClone(ms.initialStock||{}), _date: ms.initDate||todayStr});setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
+          {isAdmin && <button onClick={()=>{setTmpStock({...deepClone(ms.initialStock||{}), _date: ms.initDate||today});setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
         </div>
       </div>
@@ -2759,7 +2759,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             </p>
             <div style={{marginBottom:"1rem"}}>
               <label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Stok tarihi</label>
-              <input type="date" value={tmpStock._date||todayStr}
+              <input type="date" value={tmpStock._date||today}
                 onChange={e=>setTmpStock(prev=>({...prev,_date:e.target.value}))}
                 style={{width:"100%",fontSize:13,padding:"6px 10px",borderRadius:6}}/>
             </div>
@@ -2781,7 +2781,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 const newMs=deepClone(ms);
                 const {_date,...stockVals}=tmpStock;
                 newMs.initialStock=stockVals;
-                newMs.initDate=_date||todayStr;
+                newMs.initDate=_date||today;
                 save(newMs);
                 setShowStockEdit(false);
               }} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
