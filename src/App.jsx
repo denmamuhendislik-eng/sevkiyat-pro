@@ -2534,7 +2534,10 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       totalNeed[pid] = Math.max(0, shipTotal + getSafetyStock(pid) - (stockCalc[pid]||0));
     });
 
-    // Gün gün planla — aciliyet bazlı (en acil model önce, kapasiteyi doldurur)
+    // Gün gün planla — günde tek model, max kapasitede, max 3 gün üst üste
+    let lastModel = null;
+    let streak = 0;
+
     for (const day of planDays) {
       if (!newMs.days[day]) newMs.days[day] = { planned:{}, actual:{} };
 
@@ -2550,36 +2553,41 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           cumTarget += sd.targets[pid];
           const cumNeeded = cumTarget + getSafetyStock(pid) - (stockCalc[pid]||0) - produced[pid];
           if (cumNeeded <= 0) continue;
-          // Kalan iş günlerini say (haftasonu/tatil hariç)
           const daysLeft = Math.max(1, allDays.filter(dd => dd >= day && dd <= sd.date && !isOffDay(dd)).length);
           maxUrgency = Math.max(maxUrgency, cumNeeded / daysLeft);
         }
         if (maxUrgency > 0) urgencies.push({ pid, remaining, urgency: maxUrgency });
       });
 
-      // Aciliyete göre sırala — en acil model kapasiteyi doldurana kadar alır
+      if (!urgencies.length) { newMs.days[day].planned = {}; continue; }
+
+      // Aciliyete göre sırala
       urgencies.sort((a,b) => b.urgency - a.urgency);
 
-      let dayTotal = 0;
-      const dayPlan = {};
-      for (const { pid, remaining } of urgencies) {
-        if (dayTotal >= hatMax) break;
-        const mMax = getModelMax(pid);
-        const canDo = Math.min(remaining, mMax, hatMax - dayTotal);
-        if (canDo > 0) {
-          dayPlan[pid] = canDo;
-          dayTotal += canDo;
-        }
+      // Model seç: 3 gün üst üste aynı modelse zorunlu değişim
+      let chosen = null;
+      if (lastModel !== null && streak >= 3) {
+        // Son 3 gün aynı modeldeyse, o model hariç en acil olanı seç
+        chosen = urgencies.find(u => u.pid !== lastModel) || urgencies[0];
+      } else {
+        chosen = urgencies[0];
       }
 
-      // PLN yaz (mevcut actual'a dokunma)
+      // Günde sadece 1 model, kendi max kapasitesi kadar
+      const mMax = getModelMax(chosen.pid);
+      const qty = Math.min(chosen.remaining, mMax);
+
       newMs.days[day].planned = {};
-      ANA_IDS.forEach(pid => {
-        if (dayPlan[pid]) {
-          newMs.days[day].planned[String(pid)] = dayPlan[pid];
-          produced[pid] += dayPlan[pid];
-        }
-      });
+      newMs.days[day].planned[String(chosen.pid)] = qty;
+      produced[chosen.pid] += qty;
+
+      // Streak takibi
+      if (chosen.pid === lastModel) {
+        streak++;
+      } else {
+        lastModel = chosen.pid;
+        streak = 1;
+      }
     }
 
     // Özet oluştur
