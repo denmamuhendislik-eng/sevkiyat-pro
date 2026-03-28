@@ -1995,7 +1995,7 @@ export default function App() {
 
 
           {/* ========== MONTAJ PAGE ========== */}
-          {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={role} selectedYear={selectedYear}/>}
+          {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={userRole} selectedYear={selYear}/>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
