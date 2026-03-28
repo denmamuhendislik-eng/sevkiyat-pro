@@ -2551,8 +2551,10 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         const daysLeft = Math.max(1, allDays.filter(dd => dd >= day && dd <= sd.date && !isOffDay(dd)).length);
 
         // Bu sevkiyata kadar kümülatif hedefler ve eksik modelleri bul
+        // Sadece bu sevkiyatta gidecek modellere odaklan (targets > 0)
         const shortModels = [];
         ANA_IDS.forEach(pid => {
+          if (sd.targets[pid] <= 0) return; // bu sevkiyatta gitmiyor, atla
           let cumTarget = 0;
           for (let sj = 0; sj <= si; sj++) cumTarget += shipDeadlines[sj].targets[pid];
           const safetyVal = si === lastShipIdx ? getSafetyStock(pid) : 0;
