@@ -2410,27 +2410,36 @@ export default function App() {
 // ============================================================
 // MontajPlani v2 — Tarih bazlı, sürekli takvim, kapasite kısıtlı
 // ============================================================
+
+// ============================================================
+// MontajPlani v3 — Tarih bazlı, sürekli takvim, kapasite kısıtlı
+// ============================================================
 function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const DC = "montajData"; const DD = "state";
   const isAdmin   = userRole === "admin";
   const isUretim  = userRole === "uretim";
   const canPlan   = isAdmin;
   const canActual = isAdmin || isUretim;
+  const ANA_IDS   = [1,2,3,4,5];
 
-  // --- Sadece izlenen ürünler (5 ana model) ---
-  const ANA_IDS = [1,2,3,4,5];
+  // today en başta tanımlanıyor — tüm useMemo'lar kullanabilsin
+  const today = new Date().toISOString().slice(0,10);
+
   const anaProducts = products.filter(p => ANA_IDS.includes(p.id));
+  const deepClone   = o => JSON.parse(JSON.stringify(o));
+  const kisaAd      = n => n.replace("REDÜKTÖR DİŞLİ TAKIMLARI ","").replace("REDÜKTÖR DİŞLİ TAKIMI ","");
+  const fmtDate     = d => new Date(d).toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"});
+  const GUNLER      = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
+  const isWeekend   = d => { const g=new Date(d).getDay(); return g===0||g===6; };
 
   // --- State ---
-  const [ms, setMs]           = useState({ initialStock:{}, days:{}, capacity:{hatMax:8, modelMax:{}} });
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving]   = useState(false);
-  const [showSettings, setShowSettings] = useState(false);
-  const [tmpCap, setTmpCap]   = useState(null);
+  const [ms, setMs]               = useState({ initialStock:{}, initDate:"", days:{}, capacity:{hatMax:8,modelMax:{}} });
+  const [loading, setLoading]     = useState(true);
+  const [saving, setSaving]       = useState(false);
+  const [showSettings, setShowSettings]   = useState(false);
+  const [tmpCap, setTmpCap]               = useState(null);
   const [showStockEdit, setShowStockEdit] = useState(false);
-  const [tmpStock, setTmpStock] = useState({}); // settings edit state
-
-  const deepClone = o => JSON.parse(JSON.stringify(o));
+  const [tmpStock, setTmpStock]           = useState({});
 
   // --- Firestore yükle ---
   useEffect(() => {
@@ -2451,96 +2460,6 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     setSaving(false);
   };
 
-  // --- Takvim günleri: bugün-7 → son sevkiyat+14 ---
-  const allContainers = useMemo(() => {
-    const yd = yearsData[selectedYear] || {};
-    return (yd.containers || []).slice().sort((a,b) => a.date.localeCompare(b.date));
-  }, [yearsData, selectedYear]);
-
-  const calDays = useMemo(() => {
-    const today = new Date(); today.setHours(0,0,0,0);
-    const start = new Date(today); start.setDate(start.getDate() - 3);
-    const lastC = allContainers.filter(c => !c.shipped).slice(-1)[0];
-    const end = lastC ? new Date(lastC.date) : new Date(today);
-    end.setDate(end.getDate() + 7);
-    const days = [];
-    const cur = new Date(start);
-    while (cur <= end) {
-      days.push(cur.toISOString().slice(0,10));
-      cur.setDate(cur.getDate() + 1);
-    }
-    return days;
-  }, [allContainers]);
-
-  // Sevkiyat tarihleri seti
-  const shipDates = useMemo(() => new Set(allContainers.map(c => c.date)), [allContainers]);
-
-  // Sevkiyat hedefleri (tüm aktif konteynerlerin toplamı, model bazında)
-  const shipTargets = useMemo(() => {
-    const totals = {};
-    allContainers.filter(c => !c.shipped).forEach(c => {
-      const yd = yearsData[selectedYear] || {};
-      const q = yd.quantities?.[c.id] || {};
-      ANA_IDS.forEach(pid => {
-        const v = Number(q[pid]) || 0;
-        if (v > 0) totals[pid] = (totals[pid] || 0) + v;
-      });
-    });
-    return totals;
-  }, [allContainers, yearsData, selectedYear]);
-
-  // --- Stok hesabı ---
-  const stockCalc = useMemo(() => {
-    const { initialStock = {}, days = {}, initDate } = ms;
-    const stock = {};
-    ANA_IDS.forEach(pid => { stock[pid] = Number(initialStock[pid]) || 0; });
-    // Sadece bugüne kadarki gerçekleşenleri ekle
-    Object.entries(days).forEach(([date, day]) => {
-      if (date > today) return;
-      ANA_IDS.forEach(pid => { stock[pid] += Number(day.actual?.[pid]) || 0; });
-    });
-    // Sadece initDate'ten SONRA sevk edilmiş konteynerleri düş
-    // (initDate'ten öncekilerin etkisi zaten başlangıç stokuna dahil)
-    allContainers.filter(c => c.shipped).forEach(c => {
-      if (initDate && c.date <= initDate) return;
-      const yd = yearsData[selectedYear] || {};
-      const q = yd.quantities?.[c.id] || {};
-      ANA_IDS.forEach(pid => { stock[pid] -= Number(q[pid]) || 0; });
-    });
-    return stock;
-  }, [ms, allContainers, yearsData, selectedYear, today]);
-
-  // --- Toplam gerçekleşen (tüm takvim) ---
-  const totalActuals = useMemo(() => {
-    const t = {};
-    ANA_IDS.forEach(pid => { t[pid] = 0; });
-    Object.values(ms.days || {}).forEach(day => {
-      ANA_IDS.forEach(pid => { t[pid] += Number(day.actual?.[pid]) || 0; });
-    });
-    return t;
-  }, [ms]);
-
-  // --- Hücre güncelle ---
-  const updateCell = (date, pid, field, rawVal) => {
-    const val = rawVal === "" ? 0 : Number(rawVal);
-    if (isNaN(val) || val < 0) return;
-    const newMs = deepClone(ms);
-    if (!newMs.days) newMs.days = {};
-    if (!newMs.days[date]) newMs.days[date] = { planned:{}, actual:{} };
-    if (!newMs.days[date][field]) newMs.days[date][field] = {};
-    newMs.days[date][field][String(pid)] = val;
-    save(newMs);
-  };
-
-  const updateInitStock = (pid, rawVal) => {
-    const val = rawVal === "" ? 0 : Number(rawVal);
-    if (isNaN(val)) return;
-    const newMs = deepClone(ms);
-    if (!newMs.initialStock) newMs.initialStock = {};
-    newMs.initialStock[String(pid)] = val;
-    save(newMs);
-  };
-
   const saveCapacity = () => {
     const newMs = deepClone(ms);
     newMs.capacity = deepClone(tmpCap);
@@ -2548,21 +2467,113 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     setShowSettings(false);
   };
 
-  const fmtDate = d => new Date(d).toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"});
-  const GUNLER = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
-  const isWeekend = d => { const g = new Date(d).getDay(); return g===0||g===6; };
-  const kisaAd = n => n.replace("REDÜKTÖR DİŞLİ TAKIMLARI ","").replace("REDÜKTÖR DİŞLİ TAKIMI ","");
+  const saveStock = () => {
+    const { _date, ...stockVals } = tmpStock;
+    const newMs = deepClone(ms);
+    newMs.initialStock = stockVals;
+    newMs.initDate = _date || today;
+    save(newMs);
+    setShowStockEdit(false);
+  };
 
-  const hatMax = ms.capacity?.hatMax || 8;
+  const updateCell = (date, pid, field, rawVal) => {
+    const val = rawVal === "" ? 0 : Number(rawVal);
+    if (isNaN(val) || val < 0) return;
+    const newMs = deepClone(ms);
+    if (!newMs.days) newMs.days = {};
+    if (!newMs.days[date]) newMs.days[date] = { planned:{}, actual:{} };
+    newMs.days[date][field][String(pid)] = val;
+    save(newMs);
+  };
+
+  // --- Konteynerler ---
+  const allContainers = useMemo(() => {
+    const yd = yearsData[selectedYear] || {};
+    return (yd.containers || []).slice().sort((a,b) => a.date.localeCompare(b.date));
+  }, [yearsData, selectedYear]);
+
+  // --- Takvim günleri ---
+  const calDays = useMemo(() => {
+    const startD = new Date(today); startD.setDate(startD.getDate() - 3);
+    const lastC  = allContainers.filter(c => !c.shipped).slice(-1)[0];
+    const endD   = lastC ? new Date(lastC.date) : new Date(today);
+    endD.setDate(endD.getDate() + 7);
+    const days = []; const cur = new Date(startD);
+    while (cur <= endD) { days.push(cur.toISOString().slice(0,10)); cur.setDate(cur.getDate()+1); }
+    return days;
+  }, [allContainers, today]);
+
+  const shipDates = useMemo(() => new Set(allContainers.map(c => c.date)), [allContainers]);
+
+  // --- Sevkiyat hedefleri (aktif konteynerler toplamı) ---
+  const shipTargets = useMemo(() => {
+    const t = {};
+    allContainers.filter(c => !c.shipped).forEach(c => {
+      const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+      ANA_IDS.forEach(pid => {
+        const v = Number(q[pid]) || 0;
+        if (v > 0) t[pid] = (t[pid]||0) + v;
+      });
+    });
+    return t;
+  }, [allContainers, yearsData, selectedYear]);
+
+  // --- Bugünkü stok ---
+  // = başlangıç stoku + bugüne kadarki gerçekleşenler − initDate'ten sonra sevk edilenler
+  const stockCalc = useMemo(() => {
+    const { initialStock={}, initDate="", days={} } = ms;
+    const stock = {};
+    ANA_IDS.forEach(pid => { stock[pid] = Number(initialStock[pid]) || 0; });
+    // Bugüne kadar gerçekleşenleri ekle
+    Object.entries(days).forEach(([date, day]) => {
+      if (date > today) return;
+      ANA_IDS.forEach(pid => { stock[pid] += Number(day.actual?.[pid]) || 0; });
+    });
+    // initDate'ten SONRA sevk edilmiş konteynerleri düş
+    allContainers.filter(c => c.shipped).forEach(c => {
+      if (initDate && c.date <= initDate) return;
+      const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+      ANA_IDS.forEach(pid => { stock[pid] -= Number(q[pid]) || 0; });
+    });
+    return stock;
+  }, [ms, allContainers, yearsData, selectedYear, today]);
+
+  // --- Toplam gerçekleşen ---
+  const totalActuals = useMemo(() => {
+    const t = {};
+    ANA_IDS.forEach(pid => { t[pid] = 0; });
+    Object.values(ms.days||{}).forEach(day => {
+      ANA_IDS.forEach(pid => { t[pid] += Number(day.actual?.[pid]) || 0; });
+    });
+    return t;
+  }, [ms]);
+
+  // --- Sevkiyat hazırlık durumu (plan + mevcut stok vs hedef) ---
+  const shipStatus = useMemo(() => {
+    return allContainers.filter(c => !c.shipped).slice(0,3).map(c => {
+      const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+      const results = {};
+      ANA_IDS.forEach(pid => {
+        const target = Number(q[pid]) || 0;
+        if (!target) return;
+        const planned = Object.entries(ms.days||{})
+          .filter(([d]) => d >= today && d <= c.date)
+          .reduce((s,[,day]) => s+(Number(day.planned?.[pid])||0), 0);
+        const available = (stockCalc[pid]||0) + planned;
+        results[pid] = { target, planned, available, ok: available>=target, diff: available-target };
+      });
+      return { container:c, results };
+    });
+  }, [allContainers, yearsData, selectedYear, ms, stockCalc, today]);
+
+  const hatMax      = ms.capacity?.hatMax || 8;
   const getModelMax = pid => ms.capacity?.modelMax?.[pid] || 99;
 
-  const TD  = { border:"0.5px solid var(--color-border-tertiary)", padding:0, margin:0 };
+  const TD  = { border:"0.5px solid var(--color-border-tertiary)", padding:0 };
   const TH  = { ...TD, background:"var(--color-background-secondary)", fontWeight:500, fontSize:"11px", padding:"5px 4px", textAlign:"center", whiteSpace:"nowrap" };
   const INP = { width:"38px", textAlign:"center", border:"none", background:"transparent", fontSize:"12px", fontWeight:500, color:"var(--color-text-primary)", padding:"2px" };
 
   if (loading) return <div style={{padding:"3rem",textAlign:"center",color:"var(--color-text-secondary)"}}>Yükleniyor…</div>;
-
-  const today = new Date().toISOString().slice(0,10);
 
   return (
     <div style={{padding:"1rem 1.25rem"}}>
@@ -2570,41 +2581,95 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       {/* Başlık */}
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem",flexWrap:"wrap",gap:8}}>
         <h2 style={{margin:0,fontSize:"17px",fontWeight:500}}>🔧 Montaj Planı</h2>
-        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+        <div style={{display:"flex",gap:8,alignItems:"center",flexWrap:"wrap"}}>
           {saving && <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
-          {isAdmin && <button onClick={()=>{setTmpStock({...deepClone(ms.initialStock||{}), _date: ms.initDate||today});setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
+          {isAdmin && <button onClick={()=>{setTmpStock({...deepClone(ms.initialStock||{}),_date:ms.initDate||today});setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
         </div>
       </div>
 
-      {/* Stok kartları */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(5,minmax(0,1fr))",gap:6,marginBottom:"1rem"}}>
+      {/* Stok kartları — 5 model + toplam */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:6,marginBottom:"1rem"}}>
         {anaProducts.map(p => {
-          const pid = p.id;
+          const pid   = p.id;
           const stock = stockCalc[pid] ?? 0;
           const isNeg = stock < 0;
-          const target = shipTargets[pid] || 0;
-          const actual = totalActuals[pid] || 0;
-          const pct = target > 0 ? Math.min(100, Math.round((actual/target)*100)) : 0;
-          const barColor = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
           return (
             <div key={pid} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"9px 10px",border:`0.5px solid ${isNeg?"var(--color-border-danger)":"var(--color-border-tertiary)"}`}}>
               <div style={{fontSize:"10px",color:"var(--color-text-secondary)",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{kisaAd(p.nameTR)}</div>
               <div style={{display:"flex",alignItems:"baseline",gap:4}}>
                 <span style={{fontSize:"20px",fontWeight:500,color:isNeg?"var(--color-text-danger)":"var(--color-text-primary)"}}>{stock}</span>
-                <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>stok</span>
+                <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>bugün</span>
               </div>
-              {target > 0 && <>
-                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>{actual}/{target} hazır</div>
-                <div style={{height:3,background:"var(--color-border-tertiary)",borderRadius:2,marginTop:3}}>
-                  <div style={{height:"100%",width:`${pct}%`,background:barColor,borderRadius:2,transition:"width 0.4s"}}/>
-                </div>
-              </>}
               <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>max {getModelMax(pid)}/gün</div>
             </div>
           );
         })}
+        {/* Toplam makine stok kartı */}
+        {(()=>{
+          const totalStock  = anaProducts.reduce((s,p) => s+(stockCalc[p.id]||0), 0);
+          const totalTarget = anaProducts.reduce((s,p) => s+(shipTargets[p.id]||0), 0);
+          const isNeg = totalStock < 0;
+          const pct = totalTarget > 0 ? Math.min(100,Math.round((totalStock/totalTarget)*100)) : 0;
+          return (
+            <div style={{background:"var(--color-background-primary)",borderRadius:8,padding:"9px 10px",border:`1px solid ${isNeg?"var(--color-border-danger)":"var(--color-border-secondary)"}`}}>
+              <div style={{fontSize:"10px",color:"var(--color-text-secondary)",marginBottom:2,fontWeight:500}}>Toplam stok</div>
+              <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+                <span style={{fontSize:"20px",fontWeight:500,color:isNeg?"var(--color-text-danger)":"var(--color-text-primary)"}}>{totalStock}</span>
+                <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>adet</span>
+              </div>
+              <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>Hedef: {totalTarget}</div>
+              <div style={{height:3,background:"var(--color-border-tertiary)",borderRadius:2,marginTop:3}}>
+                <div style={{height:"100%",width:`${pct}%`,background:totalStock>=totalTarget?"var(--color-background-success)":"var(--color-background-warning)",borderRadius:2}}/>
+              </div>
+            </div>
+          );
+        })()}
       </div>
+
+      {/* Sevkiyat hazırlık durumu */}
+      {shipStatus.length > 0 && (
+        <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(shipStatus.length,3)},minmax(0,1fr))`,gap:6,marginBottom:"1rem"}}>
+          {shipStatus.map(({container:c, results}) => {
+            const entries = Object.entries(results);
+            const allOk   = entries.length > 0 && entries.every(([,r]) => r.ok);
+            const noneOk  = entries.length > 0 && entries.every(([,r]) => !r.ok);
+            const borderC = allOk?"var(--color-border-success)":noneOk?"var(--color-border-danger)":"var(--color-border-warning)";
+            const txtC    = allOk?"var(--color-text-success)":noneOk?"var(--color-text-danger)":"var(--color-text-warning)";
+            const bgC     = allOk?"var(--color-background-success)":noneOk?"var(--color-background-danger)":"var(--color-background-warning)";
+            const label   = allOk?"Yetişecek":noneOk?"Yetişemeyecek":"Kısmen yetişecek";
+            return (
+              <div key={c.id} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"9px 10px",border:`0.5px solid ${borderC}`}}>
+                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
+                  <div style={{fontSize:"11px",fontWeight:500}}>{new Date(c.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})} sevkiyatı</div>
+                  <span style={{fontSize:"10px",fontWeight:500,color:txtC,background:bgC,padding:"1px 6px",borderRadius:3}}>{label}</span>
+                </div>
+                {entries.map(([pid,r]) => {
+                  const p = anaProducts.find(x => x.id===Number(pid));
+                  if (!p) return null;
+                  const pct = r.target > 0 ? Math.min(100,Math.round((r.available/r.target)*100)) : 0;
+                  return (
+                    <div key={pid} style={{marginBottom:4}}>
+                      <div style={{display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+                        <div style={{display:"flex",alignItems:"center",gap:4}}>
+                          <div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/>
+                          <span style={{fontSize:"10px",color:"var(--color-text-secondary)"}}>{kisaAd(p.nameTR)}</span>
+                        </div>
+                        <span style={{fontSize:"10px",fontWeight:500,color:r.ok?"var(--color-text-success)":"var(--color-text-danger)"}}>
+                          {r.available}/{r.target} ({r.diff>=0?"+":""}{r.diff})
+                        </span>
+                      </div>
+                      <div style={{height:2,background:"var(--color-border-tertiary)",borderRadius:1,marginTop:2}}>
+                        <div style={{height:"100%",width:`${pct}%`,background:r.ok?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:1,transition:"width 0.3s"}}/>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Ana tablo */}
       <div style={{overflowX:"auto"}}>
@@ -2613,9 +2678,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             <tr>
               <th style={{...TH,textAlign:"left",minWidth:110,position:"sticky",left:0,zIndex:3,padding:"5px 8px"}}>Ürün</th>
               {calDays.map(d => {
-                const isS = shipDates.has(d);
-                const isW = isWeekend(d);
-                const isT = d === today;
+                const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
                 return (
                   <th key={d} style={{...TH,minWidth:50,background:isS?"rgba(56,138,221,0.1)":isW?"rgba(250,200,50,0.07)":isT?"var(--color-background-info)":"var(--color-background-secondary)",borderLeft:isT?"2px solid var(--color-border-info)":""}}>
                     {isS && <div style={{fontSize:"9px",color:"#185FA5",fontWeight:600,lineHeight:1.1,marginBottom:1}}>SEVKİYAT</div>}
@@ -2624,21 +2687,20 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                   </th>
                 );
               })}
-              <th style={{...TH,minWidth:52}}>Toplam</th>
-              <th style={{...TH,minWidth:52}}>Hedef</th>
-              <th style={{...TH,minWidth:52}}>Kalan</th>
+              <th style={{...TH,minWidth:46}}>Toplam</th>
+              <th style={{...TH,minWidth:46}}>Hedef</th>
+              <th style={{...TH,minWidth:46}}>Kalan</th>
             </tr>
           </thead>
           <tbody>
             {anaProducts.map(p => {
-              const pid = p.id;
-              const modelMax = getModelMax(pid);
-              const actual = totalActuals[pid] || 0;
-              const target = shipTargets[pid] || 0;
-              const kalan = target - actual;
-              const kalanColor = kalan>0?"var(--color-text-danger)":kalan<0?"var(--color-text-warning)":"var(--color-text-success)";
-              let cumActual = 0;
-
+              const pid       = p.id;
+              const modelMax  = getModelMax(pid);
+              const actual    = totalActuals[pid] || 0;
+              const target    = shipTargets[pid] || 0;
+              const kalan     = target - actual;
+              const kalanC    = kalan>0?"var(--color-text-danger)":kalan<0?"var(--color-text-warning)":"var(--color-text-success)";
+              let cumActual   = 0;
               return (
                 <Fragment key={pid}>
                   {/* PLN satırı */}
@@ -2651,9 +2713,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                       <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:2,paddingLeft:12}}>max {modelMax}/gün</div>
                     </td>
                     {calDays.map(d => {
-                      const isS = shipDates.has(d);
-                      const isW = isWeekend(d);
-                      const isT = d === today;
+                      const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
                       const v = ms.days?.[d]?.planned?.[pid];
                       const overModel = v > modelMax;
                       const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
@@ -2670,21 +2730,19 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                     })}
                     <td rowSpan={2} style={{...TD,textAlign:"center",background:"var(--color-background-secondary)",verticalAlign:"middle",fontWeight:500,fontSize:"14px"}}>{actual}</td>
                     <td rowSpan={2} style={{...TD,textAlign:"center",background:"var(--color-background-secondary)",verticalAlign:"middle",fontWeight:500,fontSize:"14px"}}>{target||"—"}</td>
-                    <td rowSpan={2} style={{...TD,textAlign:"center",background:"var(--color-background-secondary)",verticalAlign:"middle",fontWeight:600,fontSize:"14px",color:kalanColor}}>{target>0?(kalan>0?"+"+kalan:kalan):"—"}</td>
+                    <td rowSpan={2} style={{...TD,textAlign:"center",background:"var(--color-background-secondary)",verticalAlign:"middle",fontWeight:600,fontSize:"14px",color:kalanC}}>{target>0?(kalan>0?"+"+kalan:kalan):"—"}</td>
                   </tr>
                   {/* GER satırı */}
                   <tr>
                     {calDays.map(d => {
-                      const isS = shipDates.has(d);
-                      const isW = isWeekend(d);
-                      const isT = d === today;
+                      const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
                       const av = ms.days?.[d]?.actual?.[pid];
                       const pv = ms.days?.[d]?.planned?.[pid];
-                      const behind = pv > 0 && av !== undefined && Number(av) < Number(pv);
+                      const behind = pv>0 && av!==undefined && Number(av)<Number(pv);
                       const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
                       cumActual += Number(av)||0;
-                      const pct = target > 0 ? Math.min(100,Math.round((cumActual/target)*100)) : 0;
-                      const barCol = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
+                      const pct = target>0 ? Math.min(100,Math.round((cumActual/target)*100)) : 0;
+                      const barC = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
                       return (
                         <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"top",paddingTop:1}}>
                           <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>ger</div>
@@ -2694,7 +2752,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                             : <span style={{fontSize:"12px",color:behind?"var(--color-text-danger)":"var(--color-text-secondary)"}}>{av!==undefined?av:"—"}</span>
                           }
                           {target>0 && <div style={{height:2,background:"var(--color-border-tertiary)",borderRadius:1,margin:"2px 3px 0"}}>
-                            <div style={{height:"100%",width:`${pct}%`,background:barCol,borderRadius:1}}/>
+                            <div style={{height:"100%",width:`${pct}%`,background:barC,borderRadius:1}}/>
                           </div>}
                         </td>
                       );
@@ -2711,23 +2769,20 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 <div style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>max {hatMax}/gün</div>
               </td>
               {calDays.map(d => {
-                const isS = shipDates.has(d);
-                const isW = isWeekend(d);
-                const isT = d === today;
-                const dayData = ms.days?.[d] || {};
+                const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
+                const dayData   = ms.days?.[d] || {};
                 const planTotal = anaProducts.reduce((s,p) => s+(Number(dayData.planned?.[p.id])||0), 0);
                 const actTotal  = anaProducts.reduce((s,p) => s+(Number(dayData.actual?.[p.id])||0), 0);
                 const pPct = Math.min(100,Math.round((planTotal/hatMax)*100));
-                const aPct = Math.min(100,Math.round((actTotal/hatMax)*100));
                 const over = planTotal > hatMax;
-                const barCol = over?"var(--color-background-danger)":pPct>80?"var(--color-background-warning)":"var(--color-background-success)";
-                const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"var(--color-background-secondary)";
+                const barC = over?"var(--color-background-danger)":pPct>80?"var(--color-background-warning)":"var(--color-background-success)";
+                const bg   = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"var(--color-background-secondary)";
                 return (
                   <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",padding:"4px 3px",verticalAlign:"middle"}}>
                     <div style={{fontSize:"11px",fontWeight:500,color:over?"var(--color-text-danger)":"var(--color-text-primary)"}}>{planTotal||"—"}</div>
-                    {actTotal>0&&<div style={{fontSize:"10px",color:"var(--color-text-secondary)"}}>/{actTotal}</div>}
+                    {actTotal>0 && <div style={{fontSize:"10px",color:"var(--color-text-secondary)"}}>/{actTotal}</div>}
                     <div style={{height:3,background:"var(--color-border-tertiary)",borderRadius:2,margin:"3px 2px 1px"}}>
-                      <div style={{height:"100%",width:`${pPct}%`,background:barCol,borderRadius:2}}/>
+                      <div style={{height:"100%",width:`${pPct}%`,background:barC,borderRadius:2}}/>
                     </div>
                     {over && <div style={{fontSize:"9px",color:"var(--color-text-danger)",lineHeight:1}}>⚠ FM</div>}
                   </td>
@@ -2754,13 +2809,10 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
           <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:360,border:"0.5px solid var(--color-border-tertiary)"}}>
             <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>Başlangıç Stoku</h3>
-            <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>
-              Bu tarihteki fiziksel stoku gir. Sistem bu tarihten sonraki sevkiyatları düşecek.
-            </p>
+            <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>Bu tarihteki fiziksel stoku gir. Sistem bu tarihten sonraki sevkiyatları düşecek.</p>
             <div style={{marginBottom:"1rem"}}>
               <label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Stok tarihi</label>
-              <input type="date" value={tmpStock._date||today}
-                onChange={e=>setTmpStock(prev=>({...prev,_date:e.target.value}))}
+              <input type="date" value={tmpStock._date||today} onChange={e=>setTmpStock(prev=>({...prev,_date:e.target.value}))}
                 style={{width:"100%",fontSize:13,padding:"6px 10px",borderRadius:6}}/>
             </div>
             <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:"1.25rem"}}>
@@ -2777,14 +2829,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             </div>
             <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
               <button onClick={()=>setShowStockEdit(false)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
-              <button onClick={()=>{
-                const newMs=deepClone(ms);
-                const {_date,...stockVals}=tmpStock;
-                newMs.initialStock=stockVals;
-                newMs.initDate=_date||today;
-                save(newMs);
-                setShowStockEdit(false);
-              }} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
+              <button onClick={saveStock} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
             </div>
           </div>
         </div>
