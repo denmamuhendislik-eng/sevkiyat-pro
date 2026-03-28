@@ -2486,11 +2486,12 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     save(newMs);
   };
 
-  // --- Konteynerler ---
+  // --- Konteynerler (tarihi geçmiş olanlar otomatik shipped sayılır) ---
   const allContainers = useMemo(() => {
     const yd = yearsData[selectedYear] || {};
-    return (yd.containers || []).slice().sort((a,b) => a.date.localeCompare(b.date));
-  }, [yearsData, selectedYear]);
+    return (yd.containers || []).slice().sort((a,b) => a.date.localeCompare(b.date))
+      .map(c => (!c.shipped && c.date < today) ? { ...c, shipped: true, autoShipped: true } : c);
+  }, [yearsData, selectedYear, today]);
 
   // --- Takvim günleri ---
   const calDays = useMemo(() => {
@@ -2503,7 +2504,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     return days;
   }, [allContainers, today]);
 
-  const shipDates = useMemo(() => new Set(allContainers.map(c => c.date)), [allContainers]);
+  const shipDates = useMemo(() => new Set(allContainers.filter(c => !c.shipped).map(c => c.date)), [allContainers]);
 
   // --- Sevkiyat hedefleri (aktif konteynerler toplamı) ---
   const shipTargets = useMemo(() => {
