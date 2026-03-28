@@ -2704,6 +2704,44 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                     </div>
                   );
                 })}
+                {/* Toplam satırı */}
+                {(()=>{
+                  const totTarget  = entries.reduce((s,[,r]) => s+r.target, 0);
+                  const totAvailP  = entries.reduce((s,[,r]) => s+r.availPln, 0);
+                  const totAvailG  = entries.reduce((s,[,r]) => s+r.availGer, 0);
+                  const totDiffP   = totAvailP - totTarget;
+                  const totDiffG   = totAvailG - totTarget;
+                  const totOkP     = totDiffP >= 0;
+                  const totOkG     = totDiffG >= 0;
+                  const pctTP = totTarget > 0 ? Math.min(100,Math.round((totAvailP/totTarget)*100)) : 0;
+                  const pctTG = totTarget > 0 ? Math.min(100,Math.round((totAvailG/totTarget)*100)) : 0;
+                  return (
+                    <div style={{borderTop:"1px solid var(--color-border-tertiary)",paddingTop:5,marginTop:2}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}>
+                        <span style={{fontSize:"10px",fontWeight:600,color:"var(--color-text-primary)",flex:1}}>Toplam</span>
+                        <span style={{fontSize:"10px",fontWeight:500,color:"var(--color-text-tertiary)"}}>hedef: {totTarget}</span>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10,marginBottom:1}}>
+                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>PLN</span>
+                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
+                          <div style={{height:"100%",width:`${pctTP}%`,background:totOkP?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
+                        </div>
+                        <span style={{fontSize:"10px",fontWeight:600,color:totOkP?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
+                          {totAvailP}/{totTarget} ({totDiffP>=0?"+":""}{totDiffP})
+                        </span>
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10}}>
+                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>GER</span>
+                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
+                          <div style={{height:"100%",width:`${pctTG}%`,background:totOkG?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
+                        </div>
+                        <span style={{fontSize:"10px",fontWeight:600,color:totOkG?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
+                          {totAvailG}/{totTarget} ({totDiffG>=0?"+":""}{totDiffG})
+                        </span>
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
