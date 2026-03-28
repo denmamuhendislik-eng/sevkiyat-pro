@@ -569,9 +569,19 @@ export default function App() {
       : `*{margin:0;padding:0;box-sizing:border-box}@media print{div{break-inside:avoid}[style*="page-break-after"]{page-break-after:always}}`;
     doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>${pageStyle}</style></head><body>${el.innerHTML}</body></html>`);
     doc.close();
-    iframe.contentWindow.focus();
-    iframe.contentWindow.print();
-    setTimeout(()=>document.body.removeChild(iframe),1000);
+    // Wait for all images (including external QR codes) to load before printing
+    const imgs = doc.querySelectorAll("img");
+    if(imgs.length > 0) {
+      let loaded = 0;
+      const onReady = () => { loaded++; if(loaded >= imgs.length) { iframe.contentWindow.focus(); iframe.contentWindow.print(); setTimeout(()=>document.body.removeChild(iframe),2000); }};
+      imgs.forEach(img => { if(img.complete) onReady(); else { img.onload = onReady; img.onerror = onReady; }});
+      // Fallback: print after 5 seconds even if images didn't load
+      setTimeout(() => { if(loaded < imgs.length) { iframe.contentWindow.focus(); iframe.contentWindow.print(); setTimeout(()=>document.body.removeChild(iframe),2000); }}, 5000);
+    } else {
+      iframe.contentWindow.focus();
+      iframe.contentWindow.print();
+      setTimeout(()=>document.body.removeChild(iframe),1000);
+    }
   };
 
   const exportMail = () => {
