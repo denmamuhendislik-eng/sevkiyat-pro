@@ -157,6 +157,8 @@ export default function App() {
   const firestoreReady = useRef(false);
 
   const isAdmin = userRole === "admin";
+  const isPacker = userRole === "packer";
+  const canPack = isAdmin || isPacker;
 
   // Auth listener
   useEffect(() => {
@@ -197,22 +199,22 @@ export default function App() {
     return () => unsub();
   }, [authUser]);
 
-  // Save to Firestore (debounced, admin only, only after user edits)
+  // Save to Firestore (debounced, admin/packer only, only after user edits)
   const saveToFirestore = useCallback((data) => {
-    if (!isAdmin || !firestoreReady.current) return;
+    if (!canPack || !firestoreReady.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
       try {
         await setDoc(doc(db, "appData", "state"), data);
       } catch (e) { console.error("Save error:", e); }
     }, 1500);
-  }, [isAdmin]);
+  }, [canPack]);
 
-  // Auto-save when data changes (admin only, after Firestore ready)
+  // Auto-save when data changes (admin/packer only, after Firestore ready)
   useEffect(() => {
-    if (!isAdmin || !dataLoaded || !firestoreReady.current) return;
+    if (!canPack || !dataLoaded || !firestoreReady.current) return;
     saveToFirestore({ yearsData, products, combRules, minKG, maxKG, packingStandards });
-  }, [yearsData, products, combRules, minKG, maxKG, packingStandards, isAdmin, dataLoaded, saveToFirestore]);
+  }, [yearsData, products, combRules, minKG, maxKG, packingStandards, canPack, dataLoaded, saveToFirestore]);
 
   // Initial data upload (first time only)
   const uploadInitialData = async () => {
@@ -955,7 +957,7 @@ export default function App() {
   };
 
   const savePackingData = () => {
-    if(!packingCid || !isAdmin) return;
+    if(!packingCid || !canPack) return;
     setYearsData(prev => {
       const y = {...prev[selYear]};
       const pd = {...(y.packingData||{})};
@@ -966,7 +968,7 @@ export default function App() {
 
   // Auto-save packing when pallets change
   useEffect(() => {
-    if(page === "packing" && packingCid && pallets.length > 0 && isAdmin) {
+    if(page === "packing" && packingCid && pallets.length > 0 && canPack) {
       const t = setTimeout(()=>savePackingData(), 2000);
       return ()=>clearTimeout(t);
     }
@@ -1337,7 +1339,7 @@ export default function App() {
             <button onClick={()=>setLang("EN")} style={{...bS,padding:"2px 8px",fontSize:10,fontWeight:lang==="EN"?600:400,background:lang==="EN"?"var(--color-background-info)":"transparent"}}>EN</button>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-            <span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:isAdmin?"rgba(83,74,183,0.15)":"rgba(29,158,117,0.15)",color:isAdmin?"#534AB7":"#1D9E75"}}>{isAdmin?"ADMİN":"GÖRÜNTÜLEYICI"}</span>
+            <span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:isAdmin?"rgba(83,74,183,0.15)":isPacker?"rgba(186,117,23,0.15)":"rgba(29,158,117,0.15)",color:isAdmin?"#534AB7":isPacker?"#BA7517":"#1D9E75"}}>{isAdmin?"ADMİN":isPacker?"PAKETÇİ":"GÖRÜNTÜLEYICI"}</span>
             <span style={{fontSize:9,overflow:"hidden",textOverflow:"ellipsis"}}>{authUser?.email}</span>
           </div>
           <div style={{display:"flex",gap:4}}>
@@ -1375,7 +1377,7 @@ export default function App() {
             </>}
             {isAdmin&&page==="products"&&<button onClick={()=>setShowAddP(true)} style={bP}>+ Ürün</button>}
             {isAdmin&&page==="products"&&<button onClick={()=>setShowCombEdit(true)} style={{...bS,fontSize:13}}>+ Kombine</button>}
-            {!isAdmin&&<span style={{fontSize:10,padding:"4px 10px",borderRadius:6,background:"rgba(29,158,117,0.1)",color:"#1D9E75"}}>Görüntüleme modu</span>}
+            {!isAdmin&&!isPacker&&<span style={{fontSize:10,padding:"4px 10px",borderRadius:6,background:"rgba(29,158,117,0.1)",color:"#1D9E75"}}>Görüntüleme modu</span>}
           </div>
         </div>
 
@@ -1575,13 +1577,13 @@ export default function App() {
                         <span style={{color:"#0F6E56",fontWeight:500}}>Palet: {Math.round(std.qtyPerPallet*p.kg+(std.dara||0))} kg</span>
                       </div>
                       <div style={{display:"flex",gap:4}}>
-                        {isAdmin&&<button onClick={()=>startEditStd(p.id)} style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:9,cursor:"pointer"}}>Düzenle</button>}
-                        {isAdmin&&<button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[p.id];return n;});}} style={{padding:"1px 6px",borderRadius:3,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:9,cursor:"pointer"}}>Sil</button>}
+                        {canPack&&<button onClick={()=>startEditStd(p.id)} style={{padding:"1px 6px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:9,cursor:"pointer"}}>Düzenle</button>}
+                        {canPack&&<button onClick={()=>{setPackingStandards(prev=>{const n={...prev};delete n[p.id];return n;});}} style={{padding:"1px 6px",borderRadius:3,border:"1px solid #E24B4A",background:"transparent",color:"#E24B4A",fontSize:9,cursor:"pointer"}}>Sil</button>}
                       </div>
                     </div>
                     :<div style={{display:"flex",justifyContent:"space-between",alignItems:"center",color:"var(--color-text-tertiary)"}}>
                       <span>Paketleme standardı tanımlı değil</span>
-                      {isAdmin&&<button onClick={()=>startEditStd(p.id)} style={{padding:"1px 8px",borderRadius:3,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:9,cursor:"pointer"}}>Tanımla</button>}
+                      {canPack&&<button onClick={()=>startEditStd(p.id)} style={{padding:"1px 8px",borderRadius:3,border:"1px solid #534AB7",background:"rgba(83,74,183,0.06)",color:"#534AB7",fontSize:9,cursor:"pointer"}}>Tanımla</button>}
                     </div>}
                   </div>
 
@@ -1939,7 +1941,7 @@ export default function App() {
                   </tbody>
                 </table>
                 :<div style={{color:"var(--color-text-tertiary)",textAlign:"center",padding:10,fontSize:10}}>Boş</div>}
-                {isAdmin&&items.length>0&&<div style={{marginTop:8,textAlign:"right"}}><button onClick={(e)=>{e.stopPropagation();openPacking(c.id);}} style={{padding:"5px 14px",borderRadius:6,border:"1.5px solid #534AB7",background:"rgba(83,74,183,0.08)",color:"#534AB7",fontSize:11,fontWeight:600,cursor:"pointer"}}>📦 Paketle</button></div>}
+                {canPack&&items.length>0&&<div style={{marginTop:8,textAlign:"right"}}><button onClick={(e)=>{e.stopPropagation();openPacking(c.id);}} style={{padding:"5px 14px",borderRadius:6,border:"1.5px solid #534AB7",background:"rgba(83,74,183,0.08)",color:"#534AB7",fontSize:11,fontWeight:600,cursor:"pointer"}}>📦 Paketle</button></div>}
               </div>;
             })}
           </div></div>}
@@ -2292,6 +2294,7 @@ export default function App() {
               <label style={{fontSize:11,color:"var(--color-text-secondary)",display:"block",marginBottom:3}}>Rol</label>
               <div style={{display:"flex",gap:8}}>
                 <button onClick={()=>setNewUserRole("admin")} style={{flex:1,padding:"8px",borderRadius:6,border:`2px solid ${newUserRole==="admin"?"#534AB7":"rgba(0,0,0,0.12)"}`,background:newUserRole==="admin"?"rgba(83,74,183,0.1)":"transparent",color:newUserRole==="admin"?"#534AB7":"var(--color-text-secondary)",fontSize:12,fontWeight:500,cursor:"pointer"}}>Admin</button>
+                <button onClick={()=>setNewUserRole("packer")} style={{flex:1,padding:"8px",borderRadius:6,border:`2px solid ${newUserRole==="packer"?"#BA7517":"rgba(0,0,0,0.12)"}`,background:newUserRole==="packer"?"rgba(186,117,23,0.1)":"transparent",color:newUserRole==="packer"?"#BA7517":"var(--color-text-secondary)",fontSize:12,fontWeight:500,cursor:"pointer"}}>Paketçi</button>
                 <button onClick={()=>setNewUserRole("viewer")} style={{flex:1,padding:"8px",borderRadius:6,border:`2px solid ${newUserRole==="viewer"?"#1D9E75":"rgba(0,0,0,0.12)"}`,background:newUserRole==="viewer"?"rgba(29,158,117,0.1)":"transparent",color:newUserRole==="viewer"?"#1D9E75":"var(--color-text-secondary)",fontSize:12,fontWeight:500,cursor:"pointer"}}>Görüntüleyici</button>
               </div>
             </div>
