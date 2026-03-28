@@ -996,7 +996,6 @@ export default function App() {
     const isEN = pdfLang === "EN";
     const title = isEN ? "PACK LIST" : "ÇEKİ LİSTESİ";
     const dateStr = c.date.split("-").reverse().join(".");
-    const invoiceNr = c.id.toUpperCase().replace("C","CI");
     const totalQty = pallets.reduce((s,pl)=>s+pl.items.reduce((ss,it)=>ss+it.qty,0),0);
     const fk = (v) => Math.round(Number(v)).toLocaleString("tr-TR");
     const fk2 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
@@ -1059,7 +1058,6 @@ export default function App() {
           <div style="font-size:26px;font-weight:900;margin-bottom:8px">${title}</div>
           <table style="font-size:11px">
             <tr><td style="font-weight:700;padding:2px 12px 2px 0">${isEN?"Date":"Tarih"}</td><td>: ${dateStr}</td></tr>
-            <tr><td style="font-weight:700;padding:2px 12px 2px 0">${isEN?"Invoice Nr":"Fatura No"}</td><td>: ${invoiceNr}</td></tr>
             <tr><td style="font-weight:700;padding:2px 12px 2px 0">${isEN?"Page":"Sayfa"}</td><td>: 1</td></tr>
           </table>
         </div>
@@ -1092,7 +1090,6 @@ export default function App() {
     const c = yd.containers.find(ct=>ct.id===packingCid);
     if(!c) return;
     const dateStr = c.date.split("-").reverse().join(".");
-    const invoiceNr = c.id.toUpperCase().replace("C","CI");
     const fk2 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
 
     const pages = pallets.map(pl => {
@@ -1109,7 +1106,9 @@ export default function App() {
         </tr>`;
       });
 
-      return `<div class="label-page" style="width:200mm;height:100mm;padding:4mm 5mm;font-family:Arial,sans-serif;color:#000;box-sizing:border-box;page-break-after:always;overflow:hidden">
+      const isHeavy = plBrut > 1500;
+
+      return `<div class="label-page" style="width:200mm;height:100mm;padding:4mm 5mm;font-family:Arial,sans-serif;color:#000;box-sizing:border-box;page-break-after:always;overflow:hidden;${isHeavy?'border:3px solid #C00;':''}">
         <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3mm">
           <div>
             <img src="${LOGO_DENMA}" style="height:28px" alt="DENMA"/>
@@ -1120,16 +1119,12 @@ export default function App() {
             </div>
           </div>
           <div style="display:flex;align-items:stretch">
-            <div style="border:2px solid #000;padding:2mm 4mm;text-align:center">
-              <div style="font-size:8px;font-weight:700">INVOICE NR.</div>
-              <div style="font-size:13px;font-weight:800">${invoiceNr}</div>
+            <div style="border:2px solid #000;padding:2mm 5mm;text-align:center;display:flex;align-items:center">
+              <div style="font-size:13px;font-weight:700">${dateStr}</div>
             </div>
-            <div style="border:2px solid #000;border-left:0;padding:2mm 4mm;text-align:center;display:flex;align-items:center">
-              <div style="font-size:11px;font-weight:700">${dateStr}</div>
-            </div>
-            <div style="border:2px solid #000;border-left:0;padding:1mm 6mm;text-align:center">
-              <div style="font-size:12px;font-weight:900">PALET</div>
-              <div style="font-size:40px;font-weight:900;line-height:1">${pl.id}</div>
+            <div style="border:2px solid #000;border-left:0;padding:1mm 7mm;text-align:center">
+              <div style="font-size:14px;font-weight:900">PALET</div>
+              <div style="font-size:46px;font-weight:900;line-height:1">${pl.id}</div>
             </div>
           </div>
         </div>
@@ -1146,22 +1141,22 @@ export default function App() {
             <th style="padding:2px 6px;border:1px solid #000;font-size:8px;text-align:right;width:60px">Gross Kg</th>
           </tr></thead>
           <tbody>${itemRows}
-            <tr style="background:#eee;font-weight:700">
-              <td colspan="2" style="padding:2px 6px;border:1px solid #000;text-align:right;font-size:9px">Total :</td>
+            <tr style="background:${isHeavy?'#FCEBEB':'#eee'};font-weight:700">
+              <td colspan="2" style="padding:2px 6px;border:1px solid #000;text-align:right;font-size:9px">${isHeavy?'⚠ AĞIR PALET — ':''}Total :</td>
               <td style="padding:2px 6px;border:1px solid #000;text-align:center;font-size:9px">${pl.items.reduce((s,it)=>s+it.qty,0)}</td>
               <td style="padding:2px 6px;border:1px solid #000;text-align:right;font-size:9px">${fk2(plNet)}</td>
-              <td style="padding:2px 6px;border:1px solid #000;text-align:right;font-size:9px">${fk2(plBrut)}</td>
+              <td style="padding:2px 6px;border:1px solid #000;text-align:right;font-size:9px;${isHeavy?'color:#C00;':''}">${fk2(plBrut)}</td>
             </tr>
           </tbody>
         </table>
         <div style="margin-top:2mm;display:flex;justify-content:space-between;align-items:center">
-          <div style="display:flex;gap:3mm;align-items:center">
-            <img src="${LOGO_MADE}" style="height:14mm" alt="Made in Türkiye"/>
-            <img src="${LOGO_ISO}" style="height:12mm" alt="ISO"/>
+          <div style="display:flex;gap:4mm;align-items:center">
+            <img src="${LOGO_MADE}" style="height:16mm" alt="Made in Türkiye"/>
+            <img src="${LOGO_ISO}" style="height:14mm" alt="ISO"/>
           </div>
           <div style="text-align:right">
-            <div style="font-size:11px;font-weight:700">Total Net Weight : ${fk2(plNet)} Kg</div>
-            <div style="font-size:11px;font-weight:700;margin-top:1mm">Total Gross Weight : ${fk2(plBrut)} Kg</div>
+            <div style="font-size:13px;font-weight:700">Net Weight : ${fk2(plNet)} Kg</div>
+            <div style="font-size:13px;font-weight:700;margin-top:1mm;${isHeavy?'color:#C00;':''}">Gross Weight : ${fk2(plBrut)} Kg${isHeavy?' ⚠':''}</div>
           </div>
         </div>
       </div>`;
