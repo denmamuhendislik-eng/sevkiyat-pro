@@ -2488,6 +2488,9 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   };
 
   // --- Otomatik Planlama Motoru ---
+  const holidays = useMemo(() => new Set(ms.capacity?.holidays || []), [ms.capacity]);
+  const isOffDay = d => isWeekend(d) || holidays.has(d);
+
   const generateAutoPlan = () => {
     const activeShips = allContainers.filter(c => !c.shipped);
     if (!activeShips.length) { alert("Aktif sevkiyat yok"); return; }
@@ -2506,46 +2509,58 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       })()
     }));
 
-    // Planlama günleri: bugünden son sevkiyata kadar
+    // Planlama günleri: bugünden son sevkiyata kadar (haftasonu + tatil atla)
     const lastDate = activeShips[activeShips.length - 1].date;
     const planDays = [];
+    const allDays = [];
     const cur = new Date(today);
     const end = new Date(lastDate);
-    while (cur <= end) { planDays.push(cur.toISOString().slice(0,10)); cur.setDate(cur.getDate()+1); }
+    while (cur <= end) {
+      const ds = cur.toISOString().slice(0,10);
+      allDays.push(ds);
+      if (!isOffDay(ds)) planDays.push(ds);
+      cur.setDate(cur.getDate()+1);
+    }
 
     // Kümülatif üretim takibi
     const produced = {};
     ANA_IDS.forEach(pid => { produced[pid] = 0; });
 
-    // Gün gün planla
+    // Toplam ihtiyaç = tüm sevkiyat hedefleri + emniyet stoku (son sevkiyat sonrası kalan) − mevcut stok
+    const totalNeed = {};
+    ANA_IDS.forEach(pid => {
+      const shipTotal = shipDeadlines.reduce((s,sd) => s+sd.targets[pid], 0);
+      totalNeed[pid] = Math.max(0, shipTotal + getSafetyStock(pid) - (stockCalc[pid]||0));
+    });
+
+    // Gün gün planla — aciliyet bazlı (en acil model önce, kapasiteyi doldurur)
     for (const day of planDays) {
       if (!newMs.days[day]) newMs.days[day] = { planned:{}, actual:{} };
 
       // Her model için aciliyet hesapla
       const urgencies = [];
       ANA_IDS.forEach(pid => {
+        const remaining = Math.max(0, totalNeed[pid] - produced[pid]);
+        if (remaining <= 0) return;
+
         let cumTarget = 0;
         let maxUrgency = 0;
         for (const sd of shipDeadlines) {
           cumTarget += sd.targets[pid];
-          const cumNeeded = cumTarget - (stockCalc[pid]||0) - produced[pid];
+          const cumNeeded = cumTarget + getSafetyStock(pid) - (stockCalc[pid]||0) - produced[pid];
           if (cumNeeded <= 0) continue;
-          const daysLeft = Math.max(1, Math.ceil((new Date(sd.date) - new Date(day)) / 86400000) + 1);
+          // Kalan iş günlerini say (haftasonu/tatil hariç)
+          const daysLeft = Math.max(1, allDays.filter(dd => dd >= day && dd <= sd.date && !isOffDay(dd)).length);
           maxUrgency = Math.max(maxUrgency, cumNeeded / daysLeft);
         }
-        if (maxUrgency > 0) {
-          const totalTarget = shipDeadlines.reduce((s,sd) => s+sd.targets[pid], 0);
-          const totalRemaining = Math.max(0, totalTarget - (stockCalc[pid]||0) - produced[pid]);
-          if (totalRemaining > 0) urgencies.push({ pid, urgency: maxUrgency, remaining: totalRemaining });
-        }
+        if (maxUrgency > 0) urgencies.push({ pid, remaining, urgency: maxUrgency });
       });
 
-      // Aciliyete göre sırala
+      // Aciliyete göre sırala — en acil model kapasiteyi doldurana kadar alır
       urgencies.sort((a,b) => b.urgency - a.urgency);
 
       let dayTotal = 0;
       const dayPlan = {};
-
       for (const { pid, remaining } of urgencies) {
         if (dayTotal >= hatMax) break;
         const mMax = getModelMax(pid);
@@ -2569,13 +2584,14 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     // Özet oluştur
     const summary = {};
     ANA_IDS.forEach(pid => {
-      const totalTarget = shipDeadlines.reduce((s,sd) => s+sd.targets[pid], 0);
+      const shipTotal = shipDeadlines.reduce((s,sd) => s+sd.targets[pid], 0);
+      const safety = getSafetyStock(pid);
       const stock = stockCalc[pid]||0;
-      const needed = Math.max(0, totalTarget - stock);
-      summary[pid] = { totalTarget, stock, needed, planned: produced[pid], ok: produced[pid] >= needed };
+      const needed = Math.max(0, shipTotal + safety - stock);
+      summary[pid] = { totalTarget: shipTotal, safety, stock, needed, planned: produced[pid], ok: produced[pid] >= needed };
     });
 
-    setAutoPlanPreview({ newMs, summary, dayCount: planDays.length, shipCount: activeShips.length });
+    setAutoPlanPreview({ newMs, summary, dayCount: planDays.length, totalDays: allDays.length, shipCount: activeShips.length, skippedDays: allDays.length - planDays.length });
   };
 
   // --- Konteynerler (tarihi geçmiş olanlar otomatik shipped sayılır) ---
@@ -2679,6 +2695,16 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
   const hatMax      = ms.capacity?.hatMax || 8;
   const getModelMax = pid => ms.capacity?.modelMax?.[pid] || 99;
+  const getSafetyStock = pid => Number(ms.capacity?.safetyStock?.[pid]) || 0;
+
+  const clearPlan = () => {
+    if (!confirm("Bugünden itibaren tüm PLN değerleri silinecek. GER'lere dokunulmaz. Devam?")) return;
+    const newMs = deepClone(ms);
+    Object.entries(newMs.days||{}).forEach(([date, day]) => {
+      if (date >= today) day.planned = {};
+    });
+    save(newMs);
+  };
 
   const TD  = { border:"0.5px solid var(--color-border-tertiary)", padding:0 };
   const TH  = { ...TD, background:"var(--color-background-secondary)", fontWeight:500, fontSize:"11px", padding:"5px 4px", textAlign:"center", whiteSpace:"nowrap" };
@@ -2697,6 +2723,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           {isAdmin && <button onClick={()=>{setTmpStock({...deepClone(ms.initialStock||{}),_date:ms.initDate||today});setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
           {isAdmin && <button onClick={generateAutoPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>🤖 Otomatik Planla</button>}
+          {isAdmin && <button onClick={clearPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",color:"var(--color-text-danger)"}}>🗑 Planı Temizle</button>}
         </div>
       </div>
 
@@ -2852,10 +2879,11 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             <tr>
               <th style={{...TH,textAlign:"left",minWidth:110,position:"sticky",left:0,zIndex:3,padding:"5px 8px"}}>Ürün</th>
               {calDays.map(d => {
-                const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
+                const isS=shipDates.has(d), isW=isWeekend(d), isH=holidays.has(d), isT=d===today;
                 return (
-                  <th key={d} style={{...TH,minWidth:50,background:isS?"rgba(56,138,221,0.1)":isW?"rgba(250,200,50,0.07)":isT?"var(--color-background-info)":"var(--color-background-secondary)",borderLeft:isT?"2px solid var(--color-border-info)":""}}>
+                  <th key={d} style={{...TH,minWidth:50,background:isS?"rgba(56,138,221,0.1)":(isW||isH)?"rgba(250,200,50,0.07)":isT?"var(--color-background-info)":"var(--color-background-secondary)",borderLeft:isT?"2px solid var(--color-border-info)":""}}>
                     {isS && <div style={{fontSize:"9px",color:"#185FA5",fontWeight:600,lineHeight:1.1,marginBottom:1}}>SEVKİYAT</div>}
+                    {isH && !isS && <div style={{fontSize:"9px",color:"#B8860B",fontWeight:600,lineHeight:1.1,marginBottom:1}}>TATİL</div>}
                     <div style={{fontSize:"10px",color:"var(--color-text-secondary)",lineHeight:1}}>{GUNLER[new Date(d).getDay()]}</div>
                     <div style={{fontSize:"11px",fontWeight:500}}>{fmtDate(d)}</div>
                   </th>
@@ -2887,10 +2915,10 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                       <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:2,paddingLeft:12}}>max {modelMax}/gün</div>
                     </td>
                     {calDays.map(d => {
-                      const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
+                      const isS=shipDates.has(d), isW=isWeekend(d), isH=holidays.has(d), isT=d===today;
                       const v = ms.days?.[d]?.planned?.[pid];
                       const overModel = v > modelMax;
-                      const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
+                      const bg = isS?"rgba(56,138,221,0.06)":(isW||isH)?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
                       return (
                         <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"middle",paddingBottom:1}}>
                           <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>pln</div>
@@ -2909,11 +2937,11 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                   {/* GER satırı */}
                   <tr>
                     {calDays.map(d => {
-                      const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
+                      const isS=shipDates.has(d), isW=isWeekend(d), isH=holidays.has(d), isT=d===today;
                       const av = ms.days?.[d]?.actual?.[pid];
                       const pv = ms.days?.[d]?.planned?.[pid];
                       const behind = pv>0 && av!==undefined && Number(av)<Number(pv);
-                      const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
+                      const bg = isS?"rgba(56,138,221,0.06)":(isW||isH)?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
                       cumActual += Number(av)||0;
                       const pct = target>0 ? Math.min(100,Math.round((cumActual/target)*100)) : 0;
                       const barC = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
@@ -2943,14 +2971,14 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 <div style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>max {hatMax}/gün</div>
               </td>
               {calDays.map(d => {
-                const isS=shipDates.has(d), isW=isWeekend(d), isT=d===today;
+                const isS=shipDates.has(d), isW=isWeekend(d), isH=holidays.has(d), isT=d===today;
                 const dayData   = ms.days?.[d] || {};
                 const planTotal = anaProducts.reduce((s,p) => s+(Number(dayData.planned?.[p.id])||0), 0);
                 const actTotal  = anaProducts.reduce((s,p) => s+(Number(dayData.actual?.[p.id])||0), 0);
                 const pPct = Math.min(100,Math.round((planTotal/hatMax)*100));
                 const over = planTotal > hatMax;
                 const barC = over?"var(--color-background-danger)":pPct>80?"var(--color-background-warning)":"var(--color-background-success)";
-                const bg   = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"var(--color-background-secondary)";
+                const bg   = isS?"rgba(56,138,221,0.06)":(isW||isH)?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"var(--color-background-secondary)";
                 return (
                   <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",padding:"4px 3px",verticalAlign:"middle"}}>
                     <div style={{fontSize:"11px",fontWeight:500,color:over?"var(--color-text-danger)":"var(--color-text-primary)"}}>{planTotal||"—"}</div>
@@ -2970,7 +2998,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
       {/* Legend */}
       <div style={{display:"flex",gap:14,marginTop:10,flexWrap:"wrap"}}>
-        {[["rgba(56,138,221,0.15)","Sevkiyat günü"],["rgba(250,200,50,0.15)","Haftasonu"],["var(--color-background-danger)","Kapasite aşımı / ⚠ FM = fazla mesai"]].map(([c,l])=>(
+        {[["rgba(56,138,221,0.15)","Sevkiyat günü"],["rgba(250,200,50,0.15)","Haftasonu / Tatil"],["var(--color-background-danger)","Kapasite aşımı / ⚠ FM = fazla mesai"]].map(([c,l])=>(
           <div key={l} style={{display:"flex",alignItems:"center",gap:5,fontSize:"11px",color:"var(--color-text-secondary)"}}>
             <div style={{width:12,height:12,borderRadius:2,background:c}}/>
             {l}
@@ -3012,7 +3040,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       {/* Kapasite Ayarları Modal */}
       {showSettings && tmpCap && (
         <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
-          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:360,border:"0.5px solid var(--color-border-tertiary)"}}>
+          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:400,maxHeight:"85vh",overflowY:"auto",border:"0.5px solid var(--color-border-tertiary)"}}>
             <h3 style={{margin:"0 0 1rem",fontSize:15,fontWeight:500}}>Kapasite Ayarları</h3>
             <div style={{marginBottom:"1rem"}}>
               <label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Günlük hat kapasitesi (toplam adet)</label>
@@ -3031,6 +3059,40 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 </div>
               ))}
             </div>
+            <div style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",marginBottom:8}}>Emniyet stoku (son sevkiyat sonrası elde kalacak adet)</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:"1rem"}}>
+              {anaProducts.map(p=>(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:p.color,flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:13}}>{kisaAd(p.nameTR)}</span>
+                  <input type="number" min="0" value={tmpCap.safetyStock?.[p.id]||""} placeholder="0"
+                    onChange={e=>setTmpCap(prev=>{const n=deepClone(prev);if(!n.safetyStock)n.safetyStock={};n.safetyStock[p.id]=Number(e.target.value)||0;return n;})}
+                    style={{width:70,fontSize:13,padding:"4px 8px",borderRadius:6,textAlign:"center"}}/>
+                </div>
+              ))}
+            </div>
+            <div style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",marginBottom:8}}>Resmi tatiller (otomatik plan bu günleri atlar)</div>
+            <div style={{marginBottom:"0.75rem"}}>
+              <div style={{display:"flex",gap:6,marginBottom:6}}>
+                <input type="date" id="_newHoliday" style={{flex:1,fontSize:13,padding:"5px 8px",borderRadius:6}}/>
+                <button onClick={()=>{
+                  const inp=document.getElementById("_newHoliday");
+                  if(!inp.value)return;
+                  setTmpCap(prev=>{const n=deepClone(prev);if(!n.holidays)n.holidays=[];if(!n.holidays.includes(inp.value)){n.holidays.push(inp.value);n.holidays.sort();}return n;});
+                  inp.value="";
+                }} style={{fontSize:12,padding:"5px 10px",cursor:"pointer"}}>+ Ekle</button>
+              </div>
+              {(tmpCap.holidays||[]).length>0 ? (
+                <div style={{display:"flex",flexWrap:"wrap",gap:4}}>
+                  {(tmpCap.holidays||[]).map(h=>(
+                    <span key={h} style={{fontSize:11,background:"var(--color-background-warning)",color:"var(--color-text-warning)",padding:"2px 8px",borderRadius:4,display:"inline-flex",alignItems:"center",gap:4}}>
+                      {new Date(h).toLocaleDateString("tr-TR",{day:"2-digit",month:"short",weekday:"short"})}
+                      <span onClick={()=>setTmpCap(prev=>{const n=deepClone(prev);n.holidays=(n.holidays||[]).filter(x=>x!==h);return n;})} style={{cursor:"pointer",fontSize:13,lineHeight:1}}>×</span>
+                    </span>
+                  ))}
+                </div>
+              ) : <div style={{fontSize:11,color:"var(--color-text-tertiary)"}}>Tanımlı tatil yok</div>}
+            </div>
             <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
               <button onClick={()=>setShowSettings(false)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
               <button onClick={saveCapacity} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
@@ -3042,10 +3104,11 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       {/* Otomatik Plan Onay Modalı */}
       {autoPlanPreview && (
         <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
-          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:420,border:"0.5px solid var(--color-border-tertiary)"}}>
+          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:480,border:"0.5px solid var(--color-border-tertiary)"}}>
             <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>🤖 Otomatik Plan Özeti</h3>
             <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>
-              {autoPlanPreview.shipCount} sevkiyat için {autoPlanPreview.dayCount} günlük plan oluşturuldu. Mevcut PLN değerleri üzerine yazılacak, GER'lere dokunulmaz.
+              {autoPlanPreview.shipCount} sevkiyat için {autoPlanPreview.dayCount} iş günü planlandı{autoPlanPreview.skippedDays>0?` (${autoPlanPreview.skippedDays} gün haftasonu/tatil atlandı)`:""}.
+              Mevcut PLN değerleri üzerine yazılacak, GER'lere dokunulmaz.
             </p>
             <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:"1.25rem"}}>
               {anaProducts.map(p => {
@@ -3060,9 +3123,10 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                         {s.ok?"Yetişecek":"Kapasite yetersiz"}
                       </span>
                     </div>
-                    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,fontSize:11}}>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:4,fontSize:11}}>
                       <div><span style={{color:"var(--color-text-tertiary)"}}>Stok:</span> <span style={{fontWeight:500}}>{s.stock}</span></div>
                       <div><span style={{color:"var(--color-text-tertiary)"}}>Hedef:</span> <span style={{fontWeight:500}}>{s.totalTarget}</span></div>
+                      <div><span style={{color:"var(--color-text-tertiary)"}}>Emniyet:</span> <span style={{fontWeight:500}}>{s.safety||0}</span></div>
                       <div><span style={{color:"var(--color-text-tertiary)"}}>Üretilecek:</span> <span style={{fontWeight:500}}>{s.needed}</span></div>
                       <div><span style={{color:"var(--color-text-tertiary)"}}>Planlanan:</span> <span style={{fontWeight:500,color:s.ok?"var(--color-text-success)":"var(--color-text-danger)"}}>{s.planned}</span></div>
                     </div>
