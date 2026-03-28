@@ -2549,9 +2549,13 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
         let cumTarget = 0;
         let maxUrgency = 0;
-        for (const sd of shipDeadlines) {
+        const lastShipIdx = shipDeadlines.length - 1;
+        for (let si = 0; si < shipDeadlines.length; si++) {
+          const sd = shipDeadlines[si];
           cumTarget += sd.targets[pid];
-          const cumNeeded = cumTarget + getSafetyStock(pid) - (stockCalc[pid]||0) - produced[pid];
+          // Emniyet stoku sadece son sevkiyata eklenir
+          const safety = si === lastShipIdx ? getSafetyStock(pid) : 0;
+          const cumNeeded = cumTarget + safety - (stockCalc[pid]||0) - produced[pid];
           if (cumNeeded <= 0) continue;
           const daysLeft = Math.max(1, allDays.filter(dd => dd >= day && dd <= sd.date && !isOffDay(dd)).length);
           maxUrgency = Math.max(maxUrgency, cumNeeded / daysLeft);
