@@ -1258,6 +1258,7 @@ export default function App() {
               <button onClick={()=>setHideShipped(!hideShipped)} style={{...bS,padding:"4px 10px",fontSize:10,color:hideShipped?"#1D9E75":"var(--color-text-secondary)",borderColor:hideShipped?"#1D9E75":"var(--color-border-secondary)",background:hideShipped?"rgba(29,158,117,0.08)":"transparent"}}>{hideShipped?"◉ Sevk gizli":"○ Sevk gizle"}</button>
             </>}
             {isAdmin&&page==="products"&&<button onClick={()=>setShowAddP(true)} style={bP}>+ Ürün</button>}
+            {isAdmin&&page==="products"&&<button onClick={()=>setShowCombEdit(true)} style={{...bS,fontSize:13}}>+ Kombine</button>}
             {!isAdmin&&<span style={{fontSize:10,padding:"4px 10px",borderRadius:6,background:"rgba(29,158,117,0.1)",color:"#1D9E75"}}>Görüntüleme modu</span>}
           </div>
         </div>
@@ -1393,6 +1394,9 @@ export default function App() {
             </div>
             <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(360px,1fr))",gap:10}}>
               {products.filter(p=>!search||p.nameTR.toLowerCase().includes(search.toLowerCase())||p.nameEN.toLowerCase().includes(search.toLowerCase())||String(p.id).includes(search)).sort((a,b)=>{
+                const aAct=(getPStats(a.id).order>0||getPStats(a.id).planned>0)?0:1;
+                const bAct=(getPStats(b.id).order>0||getPStats(b.id).planned>0)?0:1;
+                if(aAct!==bAct) return aAct-bAct;
                 const aStd=packingStandards[a.id]?.qtyPerPallet>0?0:1;
                 const bStd=packingStandards[b.id]?.qtyPerPallet>0?0:1;
                 if(aStd!==bStd) return aStd-bStd;
@@ -1492,30 +1496,7 @@ export default function App() {
               })}
             </div>
 
-            {/* Add Combine Rule */}
-            {isAdmin&&<div style={{marginTop:20,background:"var(--color-background-primary)",borderRadius:10,padding:16,border:"1px dashed var(--color-border-secondary)"}}>
-              <div style={{fontSize:13,fontWeight:500,marginBottom:12}}>Yeni kombine kural ekle</div>
-              <div style={{display:"flex",gap:10,flexWrap:"wrap",alignItems:"flex-end"}}>
-                <div style={{flex:1,minWidth:200}}>
-                  <label style={{fontSize:11,color:"var(--color-text-secondary)",display:"block",marginBottom:3}}>Ana ürün</label>
-                  <select value={newRuleParent} onChange={e=>setNewRuleParent(e.target.value)} style={iS}>
-                    <option value="">Seçin...</option>
-                    {products.filter(p=>!isLinkedChild(p.id)).map(p=><option key={p.id} value={p.id}>{p.nameTR} ({p.kg} KG)</option>)}
-                  </select>
-                </div>
-                <div style={{flex:2,minWidth:300}}>
-                  <label style={{fontSize:11,color:"var(--color-text-secondary)",display:"block",marginBottom:3}}>Bağlı ürünler (virgülle ID)</label>
-                  <input value={newRuleChildren} onChange={e=>setNewRuleChildren(e.target.value)} style={iS} placeholder="Ürün ID'leri: 17, 14"/>
-                </div>
-                <button onClick={()=>{
-                  if(!newRuleParent||!newRuleChildren) return;
-                  const children=newRuleChildren.split(",").map(s=>parseInt(s.trim())).filter(n=>n>0);
-                  if(children.length===0) return;
-                  setCombRules(prev=>[...prev,{parent:parseInt(newRuleParent),children}]);
-                  setNewRuleParent("");setNewRuleChildren("");
-                }} style={bP}>Ekle</button>
-              </div>
-            </div>}
+            </div>
           </div>}
 
           {/* VIO IMPORT */}
@@ -2088,6 +2069,32 @@ export default function App() {
           </div>
         </div>
         <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}><button onClick={()=>setShowAddP(false)} style={bS}>İptal</button><button onClick={addProduct} style={bP}>Ekle</button></div>
+      </Modal>}
+
+      {/* Combine Rule Modal */}
+      {showCombEdit&&<Modal title="Yeni Kombine Kural" onClose={()=>setShowCombEdit(false)}>
+        <div style={{marginBottom:12,padding:10,borderRadius:8,background:"var(--color-background-info)",fontSize:11,color:"var(--color-text-info)"}}>
+          Ana ürün planlandığında bağlı ürünler aynı miktarda otomatik eklenir ve birlikte paketlenir.
+        </div>
+        <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:14}}>
+          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Ana ürün</label>
+            <select value={newRuleParent} onChange={e=>setNewRuleParent(e.target.value)} style={iS}>
+              <option value="">Seçin...</option>
+              {products.filter(p=>!isLinkedChild(p.id)).map(p=><option key={p.id} value={p.id}>#{p.id} {p.nameTR} ({p.kg} KG)</option>)}
+            </select></div>
+          <div><label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Bağlı ürünler (virgülle ID)</label>
+            <input value={newRuleChildren} onChange={e=>setNewRuleChildren(e.target.value)} style={iS} placeholder="Ürün ID'leri: 17, 14"/></div>
+        </div>
+        <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+          <button onClick={()=>setShowCombEdit(false)} style={bS}>İptal</button>
+          <button onClick={()=>{
+            if(!newRuleParent||!newRuleChildren) return;
+            const children=newRuleChildren.split(",").map(s=>parseInt(s.trim())).filter(n=>n>0);
+            if(children.length===0) return;
+            setCombRules(prev=>[...prev,{parent:parseInt(newRuleParent),children}]);
+            setNewRuleParent("");setNewRuleChildren("");setShowCombEdit(false);
+          }} style={bP}>Ekle</button>
+        </div>
       </Modal>}
 
       {showAddO&&<Modal title="Sipariş Ekle" onClose={()=>setShowAddO(false)}>
