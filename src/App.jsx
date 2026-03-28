@@ -2440,6 +2440,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const [tmpCap, setTmpCap]               = useState(null);
   const [showStockEdit, setShowStockEdit] = useState(false);
   const [tmpStock, setTmpStock]           = useState({});
+  const [autoPlanPreview, setAutoPlanPreview] = useState(null); // { newMs, summary }
 
   // --- Firestore yükle ---
   useEffect(() => {
@@ -2484,6 +2485,97 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     if (!newMs.days[date]) newMs.days[date] = { planned:{}, actual:{} };
     newMs.days[date][field][String(pid)] = val;
     save(newMs);
+  };
+
+  // --- Otomatik Planlama Motoru ---
+  const generateAutoPlan = () => {
+    const activeShips = allContainers.filter(c => !c.shipped);
+    if (!activeShips.length) { alert("Aktif sevkiyat yok"); return; }
+
+    const newMs = deepClone(ms);
+    if (!newMs.days) newMs.days = {};
+
+    // Sevkiyat bazlı hedefler (tarihe göre sıralı)
+    const shipDeadlines = activeShips.map(c => ({
+      date: c.date, id: c.id,
+      targets: (() => {
+        const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+        const t = {};
+        ANA_IDS.forEach(pid => { t[pid] = Number(q[pid]) || 0; });
+        return t;
+      })()
+    }));
+
+    // Planlama günleri: bugünden son sevkiyata kadar
+    const lastDate = activeShips[activeShips.length - 1].date;
+    const planDays = [];
+    const cur = new Date(today);
+    const end = new Date(lastDate);
+    while (cur <= end) { planDays.push(cur.toISOString().slice(0,10)); cur.setDate(cur.getDate()+1); }
+
+    // Kümülatif üretim takibi
+    const produced = {};
+    ANA_IDS.forEach(pid => { produced[pid] = 0; });
+
+    // Gün gün planla
+    for (const day of planDays) {
+      if (!newMs.days[day]) newMs.days[day] = { planned:{}, actual:{} };
+
+      // Her model için aciliyet hesapla
+      const urgencies = [];
+      ANA_IDS.forEach(pid => {
+        let cumTarget = 0;
+        let maxUrgency = 0;
+        for (const sd of shipDeadlines) {
+          cumTarget += sd.targets[pid];
+          const cumNeeded = cumTarget - (stockCalc[pid]||0) - produced[pid];
+          if (cumNeeded <= 0) continue;
+          const daysLeft = Math.max(1, Math.ceil((new Date(sd.date) - new Date(day)) / 86400000) + 1);
+          maxUrgency = Math.max(maxUrgency, cumNeeded / daysLeft);
+        }
+        if (maxUrgency > 0) {
+          const totalTarget = shipDeadlines.reduce((s,sd) => s+sd.targets[pid], 0);
+          const totalRemaining = Math.max(0, totalTarget - (stockCalc[pid]||0) - produced[pid]);
+          if (totalRemaining > 0) urgencies.push({ pid, urgency: maxUrgency, remaining: totalRemaining });
+        }
+      });
+
+      // Aciliyete göre sırala
+      urgencies.sort((a,b) => b.urgency - a.urgency);
+
+      let dayTotal = 0;
+      const dayPlan = {};
+
+      for (const { pid, remaining } of urgencies) {
+        if (dayTotal >= hatMax) break;
+        const mMax = getModelMax(pid);
+        const canDo = Math.min(remaining, mMax, hatMax - dayTotal);
+        if (canDo > 0) {
+          dayPlan[pid] = canDo;
+          dayTotal += canDo;
+        }
+      }
+
+      // PLN yaz (mevcut actual'a dokunma)
+      newMs.days[day].planned = {};
+      ANA_IDS.forEach(pid => {
+        if (dayPlan[pid]) {
+          newMs.days[day].planned[String(pid)] = dayPlan[pid];
+          produced[pid] += dayPlan[pid];
+        }
+      });
+    }
+
+    // Özet oluştur
+    const summary = {};
+    ANA_IDS.forEach(pid => {
+      const totalTarget = shipDeadlines.reduce((s,sd) => s+sd.targets[pid], 0);
+      const stock = stockCalc[pid]||0;
+      const needed = Math.max(0, totalTarget - stock);
+      summary[pid] = { totalTarget, stock, needed, planned: produced[pid], ok: produced[pid] >= needed };
+    });
+
+    setAutoPlanPreview({ newMs, summary, dayCount: planDays.length, shipCount: activeShips.length });
   };
 
   // --- Konteynerler (tarihi geçmiş olanlar otomatik shipped sayılır) ---
@@ -2604,6 +2696,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           {saving && <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
           {isAdmin && <button onClick={()=>{setTmpStock({...deepClone(ms.initialStock||{}),_date:ms.initDate||today});setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
+          {isAdmin && <button onClick={generateAutoPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>🤖 Otomatik Planla</button>}
         </div>
       </div>
 
@@ -2941,6 +3034,51 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
               <button onClick={()=>setShowSettings(false)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
               <button onClick={saveCapacity} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Otomatik Plan Onay Modalı */}
+      {autoPlanPreview && (
+        <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
+          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:420,border:"0.5px solid var(--color-border-tertiary)"}}>
+            <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>🤖 Otomatik Plan Özeti</h3>
+            <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>
+              {autoPlanPreview.shipCount} sevkiyat için {autoPlanPreview.dayCount} günlük plan oluşturuldu. Mevcut PLN değerleri üzerine yazılacak, GER'lere dokunulmaz.
+            </p>
+            <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:"1.25rem"}}>
+              {anaProducts.map(p => {
+                const s = autoPlanPreview.summary[p.id];
+                if (!s || !s.totalTarget) return null;
+                return (
+                  <div key={p.id} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"8px 10px"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+                      <div style={{width:8,height:8,borderRadius:"50%",background:p.color,flexShrink:0}}/>
+                      <span style={{fontSize:13,fontWeight:500,flex:1}}>{kisaAd(p.nameTR)}</span>
+                      <span style={{fontSize:11,fontWeight:600,color:s.ok?"var(--color-text-success)":"var(--color-text-danger)",background:s.ok?"var(--color-background-success)":"var(--color-background-danger)",padding:"1px 6px",borderRadius:3}}>
+                        {s.ok?"Yetişecek":"Kapasite yetersiz"}
+                      </span>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:4,fontSize:11}}>
+                      <div><span style={{color:"var(--color-text-tertiary)"}}>Stok:</span> <span style={{fontWeight:500}}>{s.stock}</span></div>
+                      <div><span style={{color:"var(--color-text-tertiary)"}}>Hedef:</span> <span style={{fontWeight:500}}>{s.totalTarget}</span></div>
+                      <div><span style={{color:"var(--color-text-tertiary)"}}>Üretilecek:</span> <span style={{fontWeight:500}}>{s.needed}</span></div>
+                      <div><span style={{color:"var(--color-text-tertiary)"}}>Planlanan:</span> <span style={{fontWeight:500,color:s.ok?"var(--color-text-success)":"var(--color-text-danger)"}}>{s.planned}</span></div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            {(()=>{ const totalNeeded=Object.values(autoPlanPreview.summary).reduce((s,v)=>s+v.needed,0); const totalPlanned=Object.values(autoPlanPreview.summary).reduce((s,v)=>s+v.planned,0); return (
+              <div style={{display:"flex",justifyContent:"space-between",fontSize:12,fontWeight:500,padding:"6px 0",borderTop:"1px solid var(--color-border-tertiary)",marginBottom:"1rem"}}>
+                <span>Toplam: {totalPlanned} adet planlandı / {totalNeeded} adet gerekli</span>
+                <span style={{color:totalPlanned>=totalNeeded?"var(--color-text-success)":"var(--color-text-danger)"}}>{totalPlanned>=totalNeeded?"Tamamı karşılanıyor":"Kapasite yetersiz"}</span>
+              </div>
+            );})()}
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setAutoPlanPreview(null)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
+              <button onClick={()=>{save(autoPlanPreview.newMs);setAutoPlanPreview(null);}} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Planı Uygula</button>
             </div>
           </div>
         </div>
