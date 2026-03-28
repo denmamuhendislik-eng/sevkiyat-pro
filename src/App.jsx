@@ -1091,10 +1091,13 @@ export default function App() {
     if(!c) return;
     const dateStr = c.date.split("-").reverse().join(".");
     const fk2 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
+    const properCase = (s) => s?s.charAt(0).toUpperCase()+s.slice(1).toLowerCase():"";
 
     const pages = pallets.map(pl => {
       const plNet = getPalletNet(pl);
       const plBrut = getPalletBrut(pl);
+      const isHeavy = plBrut > 1500;
+
       let itemRows = "";
       pl.items.forEach((it,i) => {
         itemRows += `<tr>
@@ -1102,77 +1105,89 @@ export default function App() {
           <td style="padding:2px 5px;border:1px solid #000;font-size:10px">${it.nameEN}</td>
           <td style="padding:2px 5px;text-align:center;border:1px solid #000;font-size:10px">${it.qty}</td>
           <td style="padding:2px 5px;text-align:right;border:1px solid #000;font-size:10px">${fk2(it.kg*it.qty)}</td>
-          <td style="padding:2px 5px;text-align:right;border:1px solid #000;font-size:10px">${fk2(it.kg*it.qty + (i===0 ? pl.dara : 0))}</td>
         </tr>`;
       });
 
-      const isHeavy = plBrut > 1500;
+      // QR code data: VIO codes + quantities
+      const qrLines = pl.items.map(it => `${VIO_CODES[it.pid]||it.pid}: ${it.qty} pcs`);
+      const qrData = `PALLET ${pl.id} | ${dateStr}\n${qrLines.join('\n')}\nNet: ${fk2(plNet)} Kg | Gross: ${fk2(plBrut)} Kg`;
+      const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=120x120&data=${encodeURIComponent(qrData)}`;
 
-      return `<div class="label-page" style="width:100mm;height:200mm;padding:5mm;font-family:Arial,sans-serif;color:#000;box-sizing:border-box;page-break-after:always;overflow:hidden;${isHeavy?'border:3px solid #000;':''}">
-        <!-- Header: Logo + Palet No -->
-        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:3mm">
-          <div>
-            <img src="${LOGO_DENMA}" style="height:22px" alt="DENMA"/>
-            <div style="font-size:7px;margin-top:1mm;line-height:1.4">
+      return `<div class="label-page" style="width:100mm;height:200mm;padding:4mm 5mm;font-family:Arial,sans-serif;color:#000;box-sizing:border-box;page-break-after:always;overflow:hidden;${isHeavy?'border:3px solid #000;':''}">
+        <!-- Header: Logo + Pallet No -->
+        <div style="display:flex;justify-content:space-between;align-items:stretch;margin-bottom:2mm">
+          <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
+            <img src="${LOGO_DENMA}" style="height:26px;display:block" alt="DENMA"/>
+            <div style="font-size:7px;margin-top:1.5mm;line-height:1.5">
               <b>${DENMA_INFO.name}</b><br>
-              ${DENMA_INFO.address}
+              Fevzi Çakmak Mah. 10670 Sk. No:31/B<br>
+              Karatay - KONYA / <b>TURKEY</b><br>
+              Tel: ${DENMA_INFO.tel}<br>
+              ${DENMA_INFO.web} — ${DENMA_INFO.email}
             </div>
           </div>
-          <div style="border:2px solid #000;padding:2mm 5mm;text-align:center">
-            <div style="font-size:12px;font-weight:900">PALET</div>
+          <div style="border:2.5px solid #000;padding:2mm 6mm;text-align:center;margin-left:3mm">
+            <div style="font-size:14px;font-weight:900;letter-spacing:1px">PALLET</div>
             <div style="font-size:52px;font-weight:900;line-height:1">${pl.id}</div>
           </div>
         </div>
 
         <!-- Date -->
-        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:3mm;text-align:center">
-          <div style="font-size:18px;font-weight:800">${dateStr}</div>
+        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:2mm;text-align:center">
+          <div style="font-size:20px;font-weight:800;letter-spacing:1px">${dateStr}</div>
         </div>
 
         <!-- Customer -->
-        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:3mm;text-align:center">
-          <div style="font-size:9px">TO: <b>${CUSTOMER.name}</b></div>
-          <div style="font-size:16px;font-weight:800;margin-top:1mm">${CUSTOMER.city} / ${CUSTOMER.country}</div>
+        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:2mm;text-align:center">
+          <div style="font-size:10px">TO: <b>${CUSTOMER.name}</b></div>
+          <div style="font-size:18px;font-weight:800;margin-top:1mm">${properCase(CUSTOMER.city)} / ITALY</div>
         </div>
 
         <!-- Heavy warning -->
-        ${isHeavy?`<div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:3mm;text-align:center;background:#000;color:#fff">
-          <div style="font-size:16px;font-weight:900;letter-spacing:2px">⚠ HEAVY PALLET ⚠</div>
+        ${isHeavy?`<div style="border:2.5px solid #000;padding:2mm 4mm;margin-bottom:2mm;text-align:center;background:#000;color:#fff">
+          <div style="font-size:16px;font-weight:900;letter-spacing:3px">⚠ HEAVY PALLET ⚠</div>
         </div>`:''}
 
-        <!-- Product table -->
-        <table style="width:100%;border-collapse:collapse;margin-bottom:3mm">
+        <!-- Product table (no Gross column) -->
+        <table style="width:100%;border-collapse:collapse;margin-bottom:2mm">
           <thead><tr style="background:#eee">
             <th style="padding:2px 5px;border:1px solid #000;font-size:8px;width:20px">Nr.</th>
             <th style="padding:2px 5px;border:1px solid #000;font-size:8px;text-align:left">Description</th>
-            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;width:30px">Qnt.</th>
-            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;text-align:right;width:50px">Net Kg</th>
-            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;text-align:right;width:50px">Gross Kg</th>
+            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;width:35px">Qnt.</th>
+            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;text-align:right;width:55px">Net Kg</th>
           </tr></thead>
           <tbody>${itemRows}
             <tr style="background:#eee;font-weight:700">
               <td colspan="2" style="padding:2px 5px;border:1px solid #000;text-align:right;font-size:10px">Total :</td>
               <td style="padding:2px 5px;border:1px solid #000;text-align:center;font-size:10px">${pl.items.reduce((s,it)=>s+it.qty,0)}</td>
               <td style="padding:2px 5px;border:1px solid #000;text-align:right;font-size:10px">${fk2(plNet)}</td>
-              <td style="padding:2px 5px;border:1px solid #000;text-align:right;font-size:10px;${isHeavy?'font-weight:900;':''}">${fk2(plBrut)}</td>
             </tr>
           </tbody>
         </table>
 
         <!-- Weights -->
-        <div style="border:2px solid #000;padding:3mm 4mm;margin-bottom:3mm">
+        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:2mm">
           <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:700">
             <span>Net Weight</span><span>${fk2(plNet)} Kg</span>
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:${isHeavy?'16':'14'}px;font-weight:${isHeavy?'900':'700'};margin-top:2mm">
+          <div style="display:flex;justify-content:space-between;font-size:${isHeavy?'16':'14'}px;font-weight:${isHeavy?'900':'700'};margin-top:1.5mm">
             <span>Gross Weight</span><span>${fk2(plBrut)} Kg${isHeavy?' ⚠':''}</span>
           </div>
         </div>
 
-        <!-- Logos -->
-        <div style="display:flex;justify-content:center;align-items:center;gap:6mm">
-          <img src="${LOGO_MADE}" style="height:18mm" alt="Made in Türkiye"/>
-          <img src="${LOGO_ISO}" style="height:16mm" alt="ISO"/>
+        <!-- Bottom: Logos + ISO text + QR Code -->
+        <div style="display:flex;justify-content:space-between;align-items:flex-end">
+          <div style="display:flex;gap:3mm;align-items:center">
+            <img src="${LOGO_MADE}" style="height:16mm" alt="Made in Türkiye"/>
+            <div style="border:1.5px solid #000;padding:1.5mm 2mm;text-align:center;font-size:7px;line-height:1.4">
+              <div style="font-weight:900;font-size:8px;margin-bottom:1px">INTEGRATED<br>MANAGEMENT SYSTEM</div>
+              <div>ISO 9001 · ISO 14001 · ISO 45001</div>
+              <div style="font-size:6px;margin-top:1px">Quality · Environment · Health &amp; Safety</div>
+            </div>
+          </div>
+          <div style="text-align:center">
+            <img src="${qrUrl}" style="width:18mm;height:18mm" alt="QR"/>
+          </div>
         </div>
       </div>`;
     });
