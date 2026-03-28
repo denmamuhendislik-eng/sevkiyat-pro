@@ -159,6 +159,7 @@ export default function App() {
 
   const isAdmin = userRole === "admin";
   const isPacker = userRole === "packer";
+  const isUretim = userRole === "uretim";
   const canPack = isAdmin || isPacker;
 
   // Auth listener
@@ -1386,7 +1387,7 @@ export default function App() {
             <button onClick={()=>setLang("EN")} style={{...bS,padding:"2px 8px",fontSize:10,fontWeight:lang==="EN"?600:400,background:lang==="EN"?"var(--color-background-info)":"transparent"}}>EN</button>
           </div>
           <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:6}}>
-            <span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:isAdmin?"rgba(83,74,183,0.15)":isPacker?"rgba(186,117,23,0.15)":"rgba(29,158,117,0.15)",color:isAdmin?"#534AB7":isPacker?"#BA7517":"#1D9E75"}}>{isAdmin?"ADMİN":isPacker?"PAKETÇİ":"GÖRÜNTÜLEYICI"}</span>
+            <span style={{padding:"1px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:isAdmin?"rgba(83,74,183,0.15)":isPacker?"rgba(186,117,23,0.15)":isUretim?"rgba(29,158,117,0.15)":"rgba(136,135,128,0.15)",color:isAdmin?"#534AB7":isPacker?"#BA7517":isUretim?"#1D9E75":"#888780"}}>{isAdmin?"ADMİN":isPacker?"PAKETÇİ":isUretim?"ÜRETİM":"GÖRÜNTÜLEYICI"}</span>
             <span style={{fontSize:9,overflow:"hidden",textOverflow:"ellipsis"}}>{authUser?.email}</span>
           </div>
           <div style={{display:"flex",gap:4}}>
@@ -2333,7 +2334,7 @@ export default function App() {
             <div style={{fontSize:12,fontWeight:600,color:"var(--color-text-secondary)",marginBottom:8}}>Mevcut Kullanıcılar</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {allUsers.map(u=>{
-                const roleColors = {admin:{bg:"rgba(83,74,183,0.1)",c:"#534AB7",l:"Admin"},packer:{bg:"rgba(186,117,23,0.1)",c:"#BA7517",l:"Paketçi"},viewer:{bg:"rgba(29,158,117,0.1)",c:"#1D9E75",l:"Görüntüleyici"}};
+                const roleColors = {admin:{bg:"rgba(83,74,183,0.1)",c:"#534AB7",l:"Admin"},packer:{bg:"rgba(186,117,23,0.1)",c:"#BA7517",l:"Paketçi"},uretim:{bg:"rgba(29,158,117,0.1)",c:"#1D9E75",l:"Üretim"},viewer:{bg:"rgba(136,135,128,0.1)",c:"#888780",l:"Görüntüleyici"}};
                 const rc = roleColors[u.role]||roleColors.viewer;
                 const isSelf = authUser && u.uid === authUser.uid;
                 return <div key={u.uid} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-tertiary)",background:isSelf?"rgba(83,74,183,0.03)":"transparent"}}>
@@ -2342,7 +2343,7 @@ export default function App() {
                     <div style={{fontSize:10,color:"var(--color-text-tertiary)"}}>{u.email}</div>
                   </div>
                   <div style={{display:"flex",gap:4}}>
-                    {["admin","packer","viewer"].map(r=>{
+                    {["admin","packer","uretim","viewer"].map(r=>{
                       const active = u.role === r;
                       const rc2 = roleColors[r];
                       return <button key={r} onClick={()=>{if(!isSelf&&!active)updateUserRole(u.uid,r);}} disabled={isSelf} style={{padding:"3px 8px",borderRadius:4,border:`1.5px solid ${active?rc2.c:"rgba(0,0,0,0.08)"}`,background:active?rc2.bg:"transparent",color:active?rc2.c:"var(--color-text-tertiary)",fontSize:9,fontWeight:active?600:400,cursor:isSelf?"not-allowed":"pointer",opacity:isSelf&&!active?0.3:1}}>{rc2.l}</button>;
@@ -2377,7 +2378,8 @@ export default function App() {
                   <div style={{display:"flex",gap:4}}>
                     <button onClick={()=>setNewUserRole("admin")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="admin"?"#534AB7":"rgba(0,0,0,0.12)"}`,background:newUserRole==="admin"?"rgba(83,74,183,0.1)":"transparent",color:newUserRole==="admin"?"#534AB7":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Admin</button>
                     <button onClick={()=>setNewUserRole("packer")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="packer"?"#BA7517":"rgba(0,0,0,0.12)"}`,background:newUserRole==="packer"?"rgba(186,117,23,0.1)":"transparent",color:newUserRole==="packer"?"#BA7517":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Paketçi</button>
-                    <button onClick={()=>setNewUserRole("viewer")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="viewer"?"#1D9E75":"rgba(0,0,0,0.12)"}`,background:newUserRole==="viewer"?"rgba(29,158,117,0.1)":"transparent",color:newUserRole==="viewer"?"#1D9E75":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Görüntüleyici</button>
+                    <button onClick={()=>setNewUserRole("uretim")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="uretim"?"#1D9E75":"rgba(0,0,0,0.12)"}`,background:newUserRole==="uretim"?"rgba(29,158,117,0.1)":"transparent",color:newUserRole==="uretim"?"#1D9E75":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Üretim</button>
+                    <button onClick={()=>setNewUserRole("viewer")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="viewer"?"#888780":"rgba(0,0,0,0.12)"}`,background:newUserRole==="viewer"?"rgba(136,135,128,0.1)":"transparent",color:newUserRole==="viewer"?"#888780":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Görüntüleyici</button>
                   </div>
                 </div>
               </div>
@@ -2404,332 +2406,372 @@ export default function App() {
   );
 }
 
+
 // ============================================================
-// MontajPlani — Montaj Planlama Modülü
+// MontajPlani v2 — Tarih bazlı, sürekli takvim, kapasite kısıtlı
 // ============================================================
 function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
-  const MONTAJ_COL = "montajData";
-  const MONTAJ_DOC = "state";
-  const TH = { padding:"7px 10px", border:"0.5px solid var(--color-border-tertiary)", fontWeight:500, fontSize:"12px", textAlign:"center", whiteSpace:"nowrap", background:"var(--color-background-secondary)" };
-  const TD = { padding:"5px 7px", border:"0.5px solid var(--color-border-tertiary)", fontSize:"13px" };
-  const INPUT_CELL = { width:"46px", textAlign:"center", fontSize:"13px", fontWeight:500, padding:"2px 4px", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"4px", background:"transparent", color:"var(--color-text-primary)" };
-  const GUNLER = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
-  const fmtTR = (d) => new Date(d).toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"});
-  const isHaftasonu = (d) => { const g=new Date(d).getDay(); return g===0||g===6; };
-  const kisaAd = (n) => n.replace("REDÜKTÖR DİŞLİ TAKIMLARI ","").replace("REDÜKTÖR DİŞLİ TAKIMI ","");
-  const deepClone = (o) => JSON.parse(JSON.stringify(o));
+  const DC = "montajData"; const DD = "state";
+  const isAdmin   = userRole === "admin";
+  const isUretim  = userRole === "uretim";
+  const canPlan   = isAdmin;
+  const canActual = isAdmin || isUretim;
 
-  const [ms, setMs] = useState({ initialStock:{}, plans:{} });
+  // --- Sadece izlenen ürünler (5 ana model) ---
+  const ANA_IDS = [1,2,3,4,5];
+  const anaProducts = products.filter(p => ANA_IDS.includes(p.id));
+
+  // --- State ---
+  const [ms, setMs]           = useState({ initialStock:{}, days:{}, capacity:{hatMax:8, modelMax:{}} });
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [selCId, setSelCId] = useState(null);
-  const [showAdd, setShowAdd] = useState(false);
-  const [newDate, setNewDate] = useState("");
-  const [stockEdit, setStockEdit] = useState(false);
+  const [saving, setSaving]   = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [tmpCap, setTmpCap]   = useState(null); // settings edit state
 
-  const canEdit = userRole==="admin"||userRole==="packer";
+  const deepClone = o => JSON.parse(JSON.stringify(o));
 
-  const containers = useMemo(()=>{
-    const yd=yearsData[selectedYear]||{};
-    return (yd.containers||[]).slice().sort((a,b)=>a.date.localeCompare(b.date));
-  },[yearsData,selectedYear]);
-
-  const getTargets = (cId) => {
-    const yd=yearsData[selectedYear]||{};
-    const q=yd.quantities?.[cId]||{};
-    const result={};
-    Object.entries(q).forEach(([k,v])=>{ const n=Number(v); if(n>0) result[String(k)]=n; });
-    return result;
-  };
-
-  useEffect(()=>{
-    (async()=>{
+  // --- Firestore yükle ---
+  useEffect(() => {
+    (async () => {
       setLoading(true);
-      try { const snap=await getDoc(doc(db,MONTAJ_COL,MONTAJ_DOC)); if(snap.exists()) setMs(snap.data()); }
-      catch(e){ console.error("Montaj yüklenemedi:",e); }
+      try {
+        const snap = await getDoc(doc(db, DC, DD));
+        if (snap.exists()) setMs(snap.data());
+      } catch(e) { console.error(e); }
       setLoading(false);
     })();
-  },[db]);
+  }, [db]);
 
-  useEffect(()=>{
-    if(containers.length&&!selCId){
-      const first=containers.find(c=>!c.shipped)||containers[0];
-      setSelCId(first.id);
-    }
-  },[containers]);
-
-  const save = async(newState)=>{
+  const save = async newState => {
     setSaving(true);
-    try { await setDoc(doc(db,MONTAJ_COL,MONTAJ_DOC),newState); setMs(newState); }
-    catch(e){ alert("Kaydetme hatası: "+e.message); }
+    try { await setDoc(doc(db, DC, DD), newState); setMs(newState); }
+    catch(e) { alert("Kaydetme hatası: " + e.message); }
     setSaving(false);
   };
 
-  const stockCalc = useMemo(()=>{
-    const {initialStock={},plans={}}=ms;
-    const stock={};
-    products.forEach(p=>{ stock[String(p.id)]=Number(initialStock[String(p.id)])||0; });
-    const containerResults={};
-    containers.forEach(c=>{
-      const plan=plans[c.id]||{workDays:[]};
-      const targets=getTargets(c.id);
-      const actuals={};
-      plan.workDays.forEach(day=>{ Object.entries(day.actual||{}).forEach(([pid,qty])=>{ actuals[String(pid)]=(actuals[String(pid)]||0)+(Number(qty)||0); }); });
-      Object.entries(actuals).forEach(([pid,qty])=>{ stock[pid]=(stock[pid]||0)+qty; });
-      const kalan={};
-      Object.entries(targets).forEach(([pid,tgt])=>{ kalan[pid]=tgt-(actuals[pid]||0); });
-      const stockBeforeShip={...stock};
-      if(c.shipped){ Object.entries(targets).forEach(([pid,tgt])=>{ stock[pid]=(stock[pid]||0)-tgt; }); }
-      containerResults[c.id]={actuals,kalan,stockBeforeShip:{...stockBeforeShip},stockAfterShip:{...stock}};
+  // --- Takvim günleri: bugün-7 → son sevkiyat+14 ---
+  const allContainers = useMemo(() => {
+    const yd = yearsData[selectedYear] || {};
+    return (yd.containers || []).slice().sort((a,b) => a.date.localeCompare(b.date));
+  }, [yearsData, selectedYear]);
+
+  const calDays = useMemo(() => {
+    const today = new Date(); today.setHours(0,0,0,0);
+    const start = new Date(today); start.setDate(start.getDate() - 3);
+    const lastC = allContainers.filter(c => !c.shipped).slice(-1)[0];
+    const end = lastC ? new Date(lastC.date) : new Date(today);
+    end.setDate(end.getDate() + 7);
+    const days = [];
+    const cur = new Date(start);
+    while (cur <= end) {
+      days.push(cur.toISOString().slice(0,10));
+      cur.setDate(cur.getDate() + 1);
+    }
+    return days;
+  }, [allContainers]);
+
+  // Sevkiyat tarihleri seti
+  const shipDates = useMemo(() => new Set(allContainers.map(c => c.date)), [allContainers]);
+
+  // Sevkiyat hedefleri (tüm aktif konteynerlerin toplamı, model bazında)
+  const shipTargets = useMemo(() => {
+    const totals = {};
+    allContainers.filter(c => !c.shipped).forEach(c => {
+      const yd = yearsData[selectedYear] || {};
+      const q = yd.quantities?.[c.id] || {};
+      ANA_IDS.forEach(pid => {
+        const v = Number(q[pid]) || 0;
+        if (v > 0) totals[pid] = (totals[pid] || 0) + v;
+      });
     });
-    return {currentStock:stock,containerResults};
-  },[ms,containers,products,yearsData,selectedYear]);
+    return totals;
+  }, [allContainers, yearsData, selectedYear]);
 
-  const addWorkDay=()=>{
-    if(!newDate||!selCId) return;
-    const newMs=deepClone(ms);
-    if(!newMs.plans[selCId]) newMs.plans[selCId]={workDays:[]};
-    const days=newMs.plans[selCId].workDays;
-    if(days.some(d=>d.date===newDate)){alert("Bu tarih zaten mevcut.");return;}
-    days.push({date:newDate,planned:{},actual:{}});
-    days.sort((a,b)=>a.date.localeCompare(b.date));
-    save(newMs); setShowAdd(false); setNewDate("");
-  };
+  // --- Stok hesabı ---
+  const stockCalc = useMemo(() => {
+    const { initialStock = {}, days = {} } = ms;
+    const stock = {};
+    ANA_IDS.forEach(pid => { stock[pid] = Number(initialStock[pid]) || 0; });
+    // Tüm günlerin gerçekleşenlerini ekle
+    Object.values(days).forEach(day => {
+      ANA_IDS.forEach(pid => { stock[pid] += Number(day.actual?.[pid]) || 0; });
+    });
+    // Sevk edilmiş konteynerlerin miktarını düş
+    allContainers.filter(c => c.shipped).forEach(c => {
+      const yd = yearsData[selectedYear] || {};
+      const q = yd.quantities?.[c.id] || {};
+      ANA_IDS.forEach(pid => { stock[pid] -= Number(q[pid]) || 0; });
+    });
+    return stock;
+  }, [ms, allContainers, yearsData, selectedYear]);
 
-  const removeWorkDay=(date)=>{
-    if(!confirm(`${fmtTR(date)} tarihli günü silmek istiyor musunuz?`)) return;
-    const newMs=deepClone(ms);
-    newMs.plans[selCId].workDays=newMs.plans[selCId].workDays.filter(d=>d.date!==date);
+  // --- Toplam gerçekleşen (tüm takvim) ---
+  const totalActuals = useMemo(() => {
+    const t = {};
+    ANA_IDS.forEach(pid => { t[pid] = 0; });
+    Object.values(ms.days || {}).forEach(day => {
+      ANA_IDS.forEach(pid => { t[pid] += Number(day.actual?.[pid]) || 0; });
+    });
+    return t;
+  }, [ms]);
+
+  // --- Hücre güncelle ---
+  const updateCell = (date, pid, field, rawVal) => {
+    const val = rawVal === "" ? 0 : Number(rawVal);
+    if (isNaN(val) || val < 0) return;
+    const newMs = deepClone(ms);
+    if (!newMs.days) newMs.days = {};
+    if (!newMs.days[date]) newMs.days[date] = { planned:{}, actual:{} };
+    if (!newMs.days[date][field]) newMs.days[date][field] = {};
+    newMs.days[date][field][String(pid)] = val;
     save(newMs);
   };
 
-  const updateCell=(date,pid,field,rawVal)=>{
-    const val=rawVal===""?0:Number(rawVal);
-    if(isNaN(val)) return;
-    const newMs=deepClone(ms);
-    if(!newMs.plans[selCId]) newMs.plans[selCId]={workDays:[]};
-    newMs.plans[selCId].workDays=newMs.plans[selCId].workDays.map(d=>d.date!==date?d:{...d,[field]:{...d[field],[String(pid)]:val}});
+  const updateInitStock = (pid, rawVal) => {
+    const val = rawVal === "" ? 0 : Number(rawVal);
+    if (isNaN(val)) return;
+    const newMs = deepClone(ms);
+    if (!newMs.initialStock) newMs.initialStock = {};
+    newMs.initialStock[String(pid)] = val;
     save(newMs);
   };
 
-  const updateInitStock=(pid,rawVal)=>{
-    const val=rawVal===""?0:Number(rawVal);
-    if(isNaN(val)) return;
-    const newMs=deepClone(ms);
-    if(!newMs.initialStock) newMs.initialStock={};
-    newMs.initialStock[String(pid)]=val;
+  const saveCapacity = () => {
+    const newMs = deepClone(ms);
+    newMs.capacity = deepClone(tmpCap);
     save(newMs);
+    setShowSettings(false);
   };
 
-  if(loading) return <div style={{padding:"3rem",textAlign:"center",color:"var(--color-text-secondary)"}}>Yükleniyor…</div>;
+  const fmtDate = d => new Date(d).toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"});
+  const GUNLER = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
+  const isWeekend = d => { const g = new Date(d).getDay(); return g===0||g===6; };
+  const kisaAd = n => n.replace("REDÜKTÖR DİŞLİ TAKIMLARI ","").replace("REDÜKTÖR DİŞLİ TAKIMI ","");
 
-  const selContainer=containers.find(c=>c.id===selCId);
-  const targets=selCId?getTargets(selCId):{};
-  const workDays=ms.plans[selCId]?.workDays||[];
-  const cResult=stockCalc.containerResults[selCId];
-  const activeProducts=products.filter(p=>targets[String(p.id)]>0);
+  const hatMax = ms.capacity?.hatMax || 8;
+  const getModelMax = pid => ms.capacity?.modelMax?.[pid] || 99;
+
+  const TD  = { border:"0.5px solid var(--color-border-tertiary)", padding:0, margin:0 };
+  const TH  = { ...TD, background:"var(--color-background-secondary)", fontWeight:500, fontSize:"11px", padding:"5px 4px", textAlign:"center", whiteSpace:"nowrap" };
+  const INP = { width:"38px", textAlign:"center", border:"none", background:"transparent", fontSize:"12px", fontWeight:500, color:"var(--color-text-primary)", padding:"2px" };
+
+  if (loading) return <div style={{padding:"3rem",textAlign:"center",color:"var(--color-text-secondary)"}}>Yükleniyor…</div>;
+
+  const today = new Date().toISOString().slice(0,10);
 
   return (
-    <div style={{padding:"1rem 1.25rem",maxWidth:"100%",overflow:"hidden"}}>
+    <div style={{padding:"1rem 1.25rem"}}>
+
       {/* Başlık */}
-      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.25rem",flexWrap:"wrap",gap:"0.5rem"}}>
-        <h2 style={{margin:0,fontSize:"18px",fontWeight:500}}>🔧 Montaj Planı</h2>
-        <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
-          {saving&&<span style={{fontSize:"13px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
-          {canEdit&&<button onClick={()=>setStockEdit(v=>!v)} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>{stockEdit?"✓ Tamam":"📦 Başlangıç Stoku"}</button>}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1rem",flexWrap:"wrap",gap:8}}>
+        <h2 style={{margin:0,fontSize:"17px",fontWeight:500}}>🔧 Montaj Planı</h2>
+        <div style={{display:"flex",gap:8,alignItems:"center"}}>
+          {saving && <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
+          {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
         </div>
       </div>
 
       {/* Stok kartları */}
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(0,1fr))",gap:"8px",marginBottom:"1.5rem"}}>
-        {products.filter(p=>[1,2,3,4,5].includes(p.id)).map(p=>{
-          const pid=String(p.id);
-          const stock=stockCalc.currentStock[pid]??0;
-          const isNeg=stock<0;
+      <div style={{display:"grid",gridTemplateColumns:"repeat(5,minmax(0,1fr))",gap:6,marginBottom:"1rem"}}>
+        {anaProducts.map(p => {
+          const pid = p.id;
+          const stock = stockCalc[pid] ?? 0;
+          const isNeg = stock < 0;
+          const target = shipTargets[pid] || 0;
+          const actual = totalActuals[pid] || 0;
+          const pct = target > 0 ? Math.min(100, Math.round((actual/target)*100)) : 0;
+          const barColor = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
           return (
-            <div key={pid} style={{background:"var(--color-background-secondary)",borderRadius:"8px",padding:"10px 12px",border:isNeg?"0.5px solid var(--color-border-danger)":"0.5px solid var(--color-border-tertiary)"}}>
-              <div style={{fontSize:"11px",color:"var(--color-text-secondary)",marginBottom:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{kisaAd(p.nameTR)}</div>
-              {stockEdit&&canEdit
-                ? <input type="number" defaultValue={ms.initialStock?.[pid]??0} onBlur={e=>updateInitStock(pid,e.target.value)} style={{...INPUT_CELL,width:"60px",fontSize:"18px",fontWeight:500}}/>
-                : <span style={{fontSize:"22px",fontWeight:500,color:isNeg?"var(--color-text-danger)":"var(--color-text-primary)"}}>{stock}</span>
-              }
-              <span style={{fontSize:"11px",color:"var(--color-text-tertiary)",marginLeft:"4px"}}>adet</span>
+            <div key={pid} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"9px 10px",border:`0.5px solid ${isNeg?"var(--color-border-danger)":"var(--color-border-tertiary)"}`}}>
+              <div style={{fontSize:"10px",color:"var(--color-text-secondary)",marginBottom:2,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{kisaAd(p.nameTR)}</div>
+              <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+                <span style={{fontSize:"20px",fontWeight:500,color:isNeg?"var(--color-text-danger)":"var(--color-text-primary)"}}>{stock}</span>
+                <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>stok</span>
+              </div>
+              {target > 0 && <>
+                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>{actual}/{target} hazır</div>
+                <div style={{height:3,background:"var(--color-border-tertiary)",borderRadius:2,marginTop:3}}>
+                  <div style={{height:"100%",width:`${pct}%`,background:barColor,borderRadius:2,transition:"width 0.4s"}}/>
+                </div>
+              </>}
+              <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:3}}>max {getModelMax(pid)}/gün</div>
             </div>
           );
         })}
       </div>
 
-      {/* Konteyner sekmeleri */}
-      <div style={{display:"flex",gap:"4px",overflowX:"auto",marginBottom:"1rem",paddingBottom:"4px"}}>
-        {containers.map(c=>{
-          const cr=stockCalc.containerResults[c.id];
-          const hasShortage=cr&&Object.values(cr.kalan).some(v=>v>0)&&!c.shipped;
-          const isSel=c.id===selCId;
-          return (
-            <button key={c.id} onClick={()=>setSelCId(c.id)} style={{padding:"6px 14px",fontSize:"13px",fontWeight:isSel?500:400,background:isSel?"var(--color-background-primary)":"transparent",border:isSel?"0.5px solid var(--color-border-primary)":"0.5px solid var(--color-border-tertiary)",borderRadius:"6px",cursor:"pointer",whiteSpace:"nowrap",color:c.shipped?"var(--color-text-tertiary)":"var(--color-text-primary)"}}>
-              {new Date(c.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"})}
-              {hasShortage&&<span style={{marginLeft:"4px",color:"var(--color-text-warning)"}}>⚠</span>}
-              {c.shipped&&<span style={{marginLeft:"4px",fontSize:"11px",color:"var(--color-text-success)"}}>✓</span>}
-            </button>
-          );
-        })}
-      </div>
+      {/* Ana tablo */}
+      <div style={{overflowX:"auto"}}>
+        <table style={{borderCollapse:"collapse",fontSize:"12px",tableLayout:"auto"}}>
+          <thead>
+            <tr>
+              <th style={{...TH,textAlign:"left",minWidth:110,position:"sticky",left:0,zIndex:3,padding:"5px 8px"}}>Ürün</th>
+              {calDays.map(d => {
+                const isS = shipDates.has(d);
+                const isW = isWeekend(d);
+                const isT = d === today;
+                return (
+                  <th key={d} style={{...TH,minWidth:50,background:isS?"rgba(56,138,221,0.1)":isW?"rgba(250,200,50,0.07)":isT?"var(--color-background-info)":"var(--color-background-secondary)",borderLeft:isT?"2px solid var(--color-border-info)":""}}>
+                    {isS && <div style={{fontSize:"9px",color:"#185FA5",fontWeight:600,lineHeight:1.1,marginBottom:1}}>SEVKİYAT</div>}
+                    <div style={{fontSize:"10px",color:"var(--color-text-secondary)",lineHeight:1}}>{GUNLER[new Date(d).getDay()]}</div>
+                    <div style={{fontSize:"11px",fontWeight:500}}>{fmtDate(d)}</div>
+                  </th>
+                );
+              })}
+              <th style={{...TH,minWidth:52}}>Toplam</th>
+              <th style={{...TH,minWidth:52}}>Hedef</th>
+              <th style={{...TH,minWidth:52}}>Kalan</th>
+            </tr>
+          </thead>
+          <tbody>
+            {anaProducts.map(p => {
+              const pid = p.id;
+              const modelMax = getModelMax(pid);
+              const actual = totalActuals[pid] || 0;
+              const target = shipTargets[pid] || 0;
+              const kalan = target - actual;
+              const kalanColor = kalan>0?"var(--color-text-danger)":kalan<0?"var(--color-text-warning)":"var(--color-text-success)";
+              let cumActual = 0;
 
-      {/* Seçili konteyner detay */}
-      {selContainer&&<div>
-        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"0.75rem",flexWrap:"wrap",gap:"0.5rem"}}>
-          <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
-            <span style={{fontWeight:500,fontSize:"15px"}}>
-              Sevkiyat: {new Date(selContainer.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"long",year:"numeric"})}
-            </span>
-            {selContainer.shipped&&<span style={{fontSize:"12px",background:"var(--color-background-success)",color:"var(--color-text-success)",padding:"2px 10px",borderRadius:"4px"}}>Sevk Edildi</span>}
-          </div>
-          {canEdit&&<button onClick={()=>setShowAdd(true)} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>+ İş Günü Ekle</button>}
-        </div>
-
-        {showAdd&&<div style={{display:"flex",gap:"10px",alignItems:"center",flexWrap:"wrap",marginBottom:"1rem",padding:"0.75rem 1rem",background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"8px"}}>
-          <span style={{fontSize:"13px",color:"var(--color-text-secondary)"}}>Tarih seç (haftasonları dahil):</span>
-          <input type="date" value={newDate} onChange={e=>setNewDate(e.target.value)} style={{fontSize:"14px"}}/>
-          <button onClick={addWorkDay} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>Ekle</button>
-          <button onClick={()=>{setShowAdd(false);setNewDate("");}} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>İptal</button>
-        </div>}
-
-        {workDays.length===0
-          ? <div style={{textAlign:"center",padding:"3rem",color:"var(--color-text-secondary)",border:"0.5px dashed var(--color-border-tertiary)",borderRadius:"8px"}}>
-              Henüz iş günü eklenmemiş.<br/>
-              <span style={{fontSize:"13px"}}>\"+ İş Günü Ekle\" ile herhangi bir tarihi ekleyebilirsiniz.</span>
-            </div>
-          : <div style={{overflowX:"auto"}}>
-              <table style={{borderCollapse:"collapse",fontSize:"13px",minWidth:"100%",tableLayout:"auto"}}>
-                <thead>
-                  <tr>
-                    <th style={{...TH,textAlign:"left",minWidth:"130px",position:"sticky",left:0,zIndex:3}}>Ürün</th>
-                    <th style={{...TH,minWidth:"60px"}}>Hedef</th>
-                    {workDays.map(day=>{
-                      const hs=isHaftasonu(day.date);
+              return (
+                <Fragment key={pid}>
+                  {/* PLN satırı */}
+                  <tr style={{borderTop:"1.5px solid var(--color-border-secondary)"}}>
+                    <td rowSpan={2} style={{...TD,position:"sticky",left:0,background:"var(--color-background-primary)",zIndex:2,padding:"6px 8px",verticalAlign:"middle"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:5}}>
+                        <div style={{width:7,height:7,borderRadius:"50%",background:p.color,flexShrink:0}}/>
+                        <span style={{fontWeight:500,fontSize:"12px"}}>{kisaAd(p.nameTR)}</span>
+                      </div>
+                      <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:2,paddingLeft:12}}>max {modelMax}/gün</div>
+                    </td>
+                    {calDays.map(d => {
+                      const isS = shipDates.has(d);
+                      const isW = isWeekend(d);
+                      const isT = d === today;
+                      const v = ms.days?.[d]?.planned?.[pid];
+                      const overModel = v > modelMax;
+                      const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
                       return (
-                        <th key={day.date} style={{...TH,minWidth:"88px",background:hs?"var(--color-background-warning)":"var(--color-background-secondary)"}}>
-                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"2px"}}>
-                            <span style={{fontSize:"11px",fontWeight:400,color:"var(--color-text-secondary)"}}>{GUNLER[new Date(day.date).getDay()]}{hs&&" ☀"}</span>
-                            <span style={{fontWeight:500}}>{fmtTR(day.date)}</span>
-                            {canEdit&&<button onClick={()=>removeWorkDay(day.date)} title="Günü sil" style={{fontSize:"10px",padding:"1px 5px",cursor:"pointer",opacity:0.55}}>✕</button>}
-                          </div>
-                        </th>
+                        <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"middle",paddingBottom:1}}>
+                          <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>pln</div>
+                          {canPlan
+                            ? <input type="number" min="0" defaultValue={v||""} placeholder="—" onBlur={e=>updateCell(d,pid,"planned",e.target.value)}
+                                style={{...INP,color:overModel?"var(--color-text-warning)":v?"var(--color-text-secondary)":"var(--color-text-tertiary)"}}/>
+                            : <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>{v||"—"}</span>
+                          }
+                        </td>
                       );
                     })}
-                    <th style={{...TH,minWidth:"60px"}}>Toplam</th>
-                    <th style={{...TH,minWidth:"60px"}}>Kalan</th>
+                    <td rowSpan={2} style={{...TD,textAlign:"center",background:"var(--color-background-secondary)",verticalAlign:"middle",fontWeight:500,fontSize:"14px"}}>{actual}</td>
+                    <td rowSpan={2} style={{...TD,textAlign:"center",background:"var(--color-background-secondary)",verticalAlign:"middle",fontWeight:500,fontSize:"14px"}}>{target||"—"}</td>
+                    <td rowSpan={2} style={{...TD,textAlign:"center",background:"var(--color-background-secondary)",verticalAlign:"middle",fontWeight:600,fontSize:"14px",color:kalanColor}}>{target>0?(kalan>0?"+"+kalan:kalan):"—"}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {activeProducts.length===0&&<tr><td colSpan={workDays.length+4} style={{...TD,padding:"1.5rem",textAlign:"center",color:"var(--color-text-secondary)"}}>Bu konteyner için sevkiyat planında miktar tanımlanmamış.</td></tr>}
-                  {activeProducts.map(p=>{
-                    const pid=String(p.id);
-                    const target=targets[pid]||0;
-                    const totalActual=cResult?.actuals?.[pid]||0;
-                    const kalan=target-totalActual;
-                    const kalanColor=kalan>0?"var(--color-text-danger)":kalan<0?"var(--color-text-warning)":"var(--color-text-success)";
-                    let runningActual=0;
-                    return (
-                      <Fragment key={pid}>
-                        <tr style={{borderTop:"1px solid var(--color-border-tertiary)"}}>
-                          <td rowSpan={2} style={{...TD,position:"sticky",left:0,background:"var(--color-background-primary)",zIndex:2,verticalAlign:"middle",fontWeight:500}}>
-                            <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
-                              <div style={{width:"8px",height:"8px",borderRadius:"50%",background:p.color||"#888",flexShrink:0}}/>
-                              <span style={{fontSize:"12px",lineHeight:1.3}}>{kisaAd(p.nameTR)}</span>
-                            </div>
-                          </td>
-                          <td rowSpan={2} style={{...TD,textAlign:"center",fontWeight:500,background:"var(--color-background-secondary)",verticalAlign:"middle"}}>{target}</td>
-                          {workDays.map(day=>{
-                            const planVal=day.planned?.[pid];
-                            const hs=isHaftasonu(day.date);
-                            return (
-                              <td key={day.date} style={{...TD,textAlign:"center",background:hs?"rgba(250,200,50,0.06)":undefined,verticalAlign:"bottom",paddingBottom:"2px"}}>
-                                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:"2px"}}>PLN</div>
-                                {canEdit
-                                  ? <input type="number" min="0" defaultValue={planVal!==undefined&&planVal!==0?planVal:""} placeholder="—" onBlur={e=>updateCell(day.date,pid,"planned",e.target.value)} style={{...INPUT_CELL,color:"var(--color-text-secondary)"}}/>
-                                  : <span style={{color:"var(--color-text-secondary)"}}>{planVal||"—"}</span>
-                                }
-                              </td>
-                            );
-                          })}
-                          <td rowSpan={2} style={{...TD,textAlign:"center",fontWeight:500,background:"var(--color-background-secondary)",verticalAlign:"middle",fontSize:"15px"}}>{totalActual}</td>
-                          <td rowSpan={2} style={{...TD,textAlign:"center",fontWeight:600,color:kalanColor,background:"var(--color-background-secondary)",verticalAlign:"middle",fontSize:"15px"}}>{kalan>0?`+${kalan}`:kalan}</td>
-                        </tr>
-                        <tr>
-                          {workDays.map(day=>{
-                            const actualVal=day.actual?.[pid];
-                            const planVal=day.planned?.[pid];
-                            const isBehind=planVal>0&&actualVal!==undefined&&Number(actualVal)<Number(planVal);
-                            const hs=isHaftasonu(day.date);
-                            runningActual+=Number(actualVal)||0;
-                            const pct=target>0?Math.min(100,Math.round((runningActual/target)*100)):0;
-                            return (
-                              <td key={day.date} style={{...TD,textAlign:"center",background:hs?"rgba(250,200,50,0.06)":undefined,verticalAlign:"top",paddingTop:"2px"}}>
-                                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:"2px"}}>GER</div>
-                                {canEdit
-                                  ? <input type="number" min="0" defaultValue={actualVal!==undefined&&actualVal!==0?actualVal:""} placeholder="—" onBlur={e=>updateCell(day.date,pid,"actual",e.target.value)} style={{...INPUT_CELL,color:isBehind?"var(--color-text-danger)":undefined,borderColor:isBehind?"var(--color-border-danger)":undefined}}/>
-                                  : <span style={{color:isBehind?"var(--color-text-danger)":undefined}}>{actualVal!==undefined?actualVal:"—"}</span>
-                                }
-                                {target>0&&<div style={{height:"2px",background:"var(--color-border-tertiary)",borderRadius:"1px",marginTop:"3px"}}>
-                                  <div style={{height:"100%",width:`${pct}%`,background:pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)",borderRadius:"1px",transition:"width 0.3s"}}/>
-                                </div>}
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      </Fragment>
-                    );
-                  })}
-                  {activeProducts.length>0&&(
-                    <tr style={{borderTop:"1.5px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",fontWeight:500}}>
-                      <td style={{...TD,position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:2,fontSize:"12px",fontWeight:500}}>Günlük toplam</td>
-                      <td style={{...TD,textAlign:"center"}}>{Object.values(targets).reduce((s,v)=>s+v,0)}</td>
-                      {workDays.map(day=>{
-                        const pT=activeProducts.reduce((s,p)=>s+(Number(day.planned?.[String(p.id)])||0),0);
-                        const aT=activeProducts.reduce((s,p)=>s+(Number(day.actual?.[String(p.id)])||0),0);
-                        return (
-                          <td key={day.date} style={{...TD,textAlign:"center",fontSize:"12px"}}>
-                            <div style={{color:"var(--color-text-secondary)"}}>PLN: {pT||"—"}</div>
-                            <div style={{fontWeight:600}}>GER: {aT||"—"}</div>
-                          </td>
-                        );
-                      })}
-                      <td style={{...TD,textAlign:"center"}}>{activeProducts.reduce((s,p)=>s+(cResult?.actuals?.[String(p.id)]||0),0)}</td>
-                      <td style={{...TD,textAlign:"center"}}>—</td>
-                    </tr>
-                  )}
-                </tbody>
-              </table>
-            </div>
-        }
-
-        {/* Sevkiyat hazırlık barları */}
-        {activeProducts.length>0&&<div style={{marginTop:"1.25rem",padding:"1rem 1.25rem",background:"var(--color-background-secondary)",borderRadius:"8px",border:"0.5px solid var(--color-border-tertiary)"}}>
-          <div style={{fontSize:"13px",fontWeight:500,marginBottom:"0.75rem"}}>Sevkiyat hazırlık durumu</div>
-          <div style={{display:"flex",flexWrap:"wrap",gap:"1.25rem"}}>
-            {activeProducts.map(p=>{
-              const pid=String(p.id);
-              const target=targets[pid]||0;
-              const actual=cResult?.actuals?.[pid]||0;
-              const pct=target>0?Math.min(100,Math.round((actual/target)*100)):100;
-              const barColor=pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
-              const txtColor=pct>=100?"var(--color-text-success)":pct>=60?"var(--color-text-warning)":"var(--color-text-danger)";
-              return (
-                <div key={pid} style={{display:"flex",flexDirection:"column",gap:"5px",minWidth:"100px",flex:"1 1 100px"}}>
-                  <div style={{fontSize:"11px",color:"var(--color-text-secondary)"}}>{kisaAd(p.nameTR)}</div>
-                  <div style={{height:"6px",background:"var(--color-border-tertiary)",borderRadius:"3px"}}>
-                    <div style={{height:"100%",width:`${pct}%`,background:barColor,borderRadius:"3px",transition:"width 0.4s"}}/>
-                  </div>
-                  <div style={{fontSize:"12px",fontWeight:500,color:txtColor}}>
-                    {actual} / {target} <span style={{fontSize:"11px",fontWeight:400,color:"var(--color-text-tertiary)"}}>({pct}%)</span>
-                  </div>
-                </div>
+                  {/* GER satırı */}
+                  <tr>
+                    {calDays.map(d => {
+                      const isS = shipDates.has(d);
+                      const isW = isWeekend(d);
+                      const isT = d === today;
+                      const av = ms.days?.[d]?.actual?.[pid];
+                      const pv = ms.days?.[d]?.planned?.[pid];
+                      const behind = pv > 0 && av !== undefined && Number(av) < Number(pv);
+                      const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
+                      cumActual += Number(av)||0;
+                      const pct = target > 0 ? Math.min(100,Math.round((cumActual/target)*100)) : 0;
+                      const barCol = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
+                      return (
+                        <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"top",paddingTop:1}}>
+                          <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>ger</div>
+                          {canActual
+                            ? <input type="number" min="0" defaultValue={av!==undefined&&av!==0?av:""} placeholder="—" onBlur={e=>updateCell(d,pid,"actual",e.target.value)}
+                                style={{...INP,color:behind?"var(--color-text-danger)":av?"var(--color-text-primary)":"var(--color-text-tertiary)",borderBottom:behind?"1px solid var(--color-border-danger)":""}}/>
+                            : <span style={{fontSize:"12px",color:behind?"var(--color-text-danger)":"var(--color-text-secondary)"}}>{av!==undefined?av:"—"}</span>
+                          }
+                          {target>0 && <div style={{height:2,background:"var(--color-border-tertiary)",borderRadius:1,margin:"2px 3px 0"}}>
+                            <div style={{height:"100%",width:`${pct}%`,background:barCol,borderRadius:1}}/>
+                          </div>}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                </Fragment>
               );
             })}
+
+            {/* Hat kapasitesi satırı */}
+            <tr style={{borderTop:"2px solid var(--color-border-secondary)"}}>
+              <td style={{...TD,position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:2,padding:"5px 8px"}}>
+                <div style={{fontSize:"11px",fontWeight:500,color:"var(--color-text-secondary)"}}>Hat kapasitesi</div>
+                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>max {hatMax}/gün</div>
+              </td>
+              {calDays.map(d => {
+                const isS = shipDates.has(d);
+                const isW = isWeekend(d);
+                const isT = d === today;
+                const dayData = ms.days?.[d] || {};
+                const planTotal = anaProducts.reduce((s,p) => s+(Number(dayData.planned?.[p.id])||0), 0);
+                const actTotal  = anaProducts.reduce((s,p) => s+(Number(dayData.actual?.[p.id])||0), 0);
+                const pPct = Math.min(100,Math.round((planTotal/hatMax)*100));
+                const aPct = Math.min(100,Math.round((actTotal/hatMax)*100));
+                const over = planTotal > hatMax;
+                const barCol = over?"var(--color-background-danger)":pPct>80?"var(--color-background-warning)":"var(--color-background-success)";
+                const bg = isS?"rgba(56,138,221,0.06)":isW?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"var(--color-background-secondary)";
+                return (
+                  <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",padding:"4px 3px",verticalAlign:"middle"}}>
+                    <div style={{fontSize:"11px",fontWeight:500,color:over?"var(--color-text-danger)":"var(--color-text-primary)"}}>{planTotal||"—"}</div>
+                    {actTotal>0&&<div style={{fontSize:"10px",color:"var(--color-text-secondary)"}}>/{actTotal}</div>}
+                    <div style={{height:3,background:"var(--color-border-tertiary)",borderRadius:2,margin:"3px 2px 1px"}}>
+                      <div style={{height:"100%",width:`${pPct}%`,background:barCol,borderRadius:2}}/>
+                    </div>
+                    {over && <div style={{fontSize:"9px",color:"var(--color-text-danger)",lineHeight:1}}>⚠ FM</div>}
+                  </td>
+                );
+              })}
+              <td colSpan={3} style={{...TD,background:"var(--color-background-secondary)"}}/>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* Legend */}
+      <div style={{display:"flex",gap:14,marginTop:10,flexWrap:"wrap"}}>
+        {[["rgba(56,138,221,0.15)","Sevkiyat günü"],["rgba(250,200,50,0.15)","Haftasonu"],["var(--color-background-danger)","Kapasite aşımı / ⚠ FM = fazla mesai"]].map(([c,l])=>(
+          <div key={l} style={{display:"flex",alignItems:"center",gap:5,fontSize:"11px",color:"var(--color-text-secondary)"}}>
+            <div style={{width:12,height:12,borderRadius:2,background:c}}/>
+            {l}
           </div>
-        </div>}
-      </div>}
+        ))}
+      </div>
+
+      {/* Kapasite Ayarları Modal */}
+      {showSettings && tmpCap && (
+        <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
+          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:360,border:"0.5px solid var(--color-border-tertiary)"}}>
+            <h3 style={{margin:"0 0 1rem",fontSize:15,fontWeight:500}}>Kapasite Ayarları</h3>
+            <div style={{marginBottom:"1rem"}}>
+              <label style={{fontSize:12,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>Günlük hat kapasitesi (toplam adet)</label>
+              <input type="number" min="1" value={tmpCap.hatMax||8} onChange={e=>setTmpCap(p=>({...p,hatMax:Number(e.target.value)}))}
+                style={{width:"100%",fontSize:14,padding:"6px 10px",borderRadius:6}}/>
+            </div>
+            <div style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)",marginBottom:8}}>Model bazlı günlük maksimum</div>
+            <div style={{display:"flex",flexDirection:"column",gap:8,marginBottom:"1rem"}}>
+              {anaProducts.map(p=>(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:p.color,flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:13}}>{kisaAd(p.nameTR)}</span>
+                  <input type="number" min="1" value={tmpCap.modelMax?.[p.id]||""} placeholder="sınırsız"
+                    onChange={e=>setTmpCap(prev=>{const n=deepClone(prev);if(!n.modelMax)n.modelMax={};n.modelMax[p.id]=Number(e.target.value)||0;return n;})}
+                    style={{width:70,fontSize:13,padding:"4px 8px",borderRadius:6,textAlign:"center"}}/>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setShowSettings(false)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
+              <button onClick={saveCapacity} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
