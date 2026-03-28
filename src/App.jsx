@@ -2426,7 +2426,9 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving]   = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [tmpCap, setTmpCap]   = useState(null); // settings edit state
+  const [tmpCap, setTmpCap]   = useState(null);
+  const [showStockEdit, setShowStockEdit] = useState(false);
+  const [tmpStock, setTmpStock] = useState({});
 
   const deepClone = o => JSON.parse(JSON.stringify(o));
 
@@ -2567,6 +2569,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         <h2 style={{margin:0,fontSize:"17px",fontWeight:500}}>🔧 Montaj Planı</h2>
         <div style={{display:"flex",gap:8,alignItems:"center"}}>
           {saving && <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
+          {isAdmin && <button onClick={()=>{setTmpStock(deepClone(ms.initialStock||{}));setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
         </div>
       </div>
@@ -2742,6 +2745,32 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           </div>
         ))}
       </div>
+
+      {/* Başlangıç Stoku Modal */}
+      {showStockEdit && (
+        <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
+          <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:340,border:"0.5px solid var(--color-border-tertiary)"}}>
+            <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>Başlangıç Stoku</h3>
+            <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>Tüm hesaplamaların başlangıç noktası. Mevcut fiziksel stoğu girin.</p>
+            <div style={{display:"flex",flexDirection:"column",gap:10,marginBottom:"1.25rem"}}>
+              {anaProducts.map(p=>(
+                <div key={p.id} style={{display:"flex",alignItems:"center",gap:10}}>
+                  <div style={{width:8,height:8,borderRadius:"50%",background:p.color,flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:13}}>{kisaAd(p.nameTR)}</span>
+                  <input type="number" min="0" value={tmpStock[p.id]??""} placeholder="0"
+                    onChange={e=>setTmpStock(prev=>({...prev,[p.id]:Number(e.target.value)||0}))}
+                    style={{width:70,fontSize:14,padding:"5px 8px",borderRadius:6,textAlign:"center",fontWeight:500}}/>
+                  <span style={{fontSize:11,color:"var(--color-text-tertiary)",width:24}}>adet</span>
+                </div>
+              ))}
+            </div>
+            <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
+              <button onClick={()=>setShowStockEdit(false)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
+              <button onClick={()=>{const newMs=deepClone(ms);newMs.initialStock=deepClone(tmpStock);save(newMs);setShowStockEdit(false);}} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Kaydet</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Kapasite Ayarları Modal */}
       {showSettings && tmpCap && (
