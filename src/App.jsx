@@ -2576,9 +2576,14 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       // Aciliyete göre sırala
       urgencies.sort((a,b) => b.urgency - a.urgency);
 
-      // Model seç: 3 gün üst üste aynı modelse zorunlu değişim
+      // Model seç: min 2 gün aynı modelde kal, max 3 gün sonra zorunlu değişim
       let chosen = null;
-      if (lastModel !== null && streak >= 3) {
+      const lastStillNeeded = lastModel !== null && urgencies.some(u => u.pid === lastModel);
+      if (lastModel !== null && streak < 2 && lastStillNeeded) {
+        // Min 2 gün dolmadı, aynı modelde devam et (hâlâ ihtiyaç varsa)
+        chosen = urgencies.find(u => u.pid === lastModel);
+      } else if (lastModel !== null && streak >= 3) {
+        // Max 3 gün doldu, zorunlu değişim
         chosen = urgencies.find(u => u.pid !== lastModel) || urgencies[0];
       } else {
         chosen = urgencies[0];
