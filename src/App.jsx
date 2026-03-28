@@ -2541,26 +2541,27 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     for (const day of planDays) {
       if (!newMs.days[day]) newMs.days[day] = { planned:{}, actual:{} };
 
-      // Her model için aciliyet hesapla
+      // Her model için aciliyet hesapla — en yakın eksik sevkiyata odaklan
       const urgencies = [];
       ANA_IDS.forEach(pid => {
         const remaining = Math.max(0, totalNeed[pid] - produced[pid]);
         if (remaining <= 0) return;
 
         let cumTarget = 0;
-        let maxUrgency = 0;
+        let urgency = 0;
         const lastShipIdx = shipDeadlines.length - 1;
         for (let si = 0; si < shipDeadlines.length; si++) {
           const sd = shipDeadlines[si];
           cumTarget += sd.targets[pid];
-          // Emniyet stoku sadece son sevkiyata eklenir
           const safety = si === lastShipIdx ? getSafetyStock(pid) : 0;
           const cumNeeded = cumTarget + safety - (stockCalc[pid]||0) - produced[pid];
-          if (cumNeeded <= 0) continue;
+          if (cumNeeded <= 0) continue; // bu sevkiyat için yeterli, sonrakine bak
+          // İlk eksik sevkiyat — aciliyeti buna göre hesapla
           const daysLeft = Math.max(1, allDays.filter(dd => dd >= day && dd <= sd.date && !isOffDay(dd)).length);
-          maxUrgency = Math.max(maxUrgency, cumNeeded / daysLeft);
+          urgency = cumNeeded / daysLeft;
+          break; // sadece en yakın eksik sevkiyata odaklan
         }
-        if (maxUrgency > 0) urgencies.push({ pid, remaining, urgency: maxUrgency });
+        if (urgency > 0) urgencies.push({ pid, remaining, urgency });
       });
 
       if (!urgencies.length) { newMs.days[day].planned = {}; continue; }
