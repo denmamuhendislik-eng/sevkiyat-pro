@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback, useRef } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "react";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend, ReferenceLine } from "recharts";
 import { auth, db } from "./firebase";
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword } from "firebase/auth";
@@ -1332,7 +1332,7 @@ export default function App() {
     XLSX.writeFile(wb, `${isEN?"PackList":"CekiListe"}_${dateStr.replace(/\./g,"")}.xlsx`);
   };
 
-  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"}];
+  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"}];
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
@@ -1994,6 +1994,9 @@ export default function App() {
           </div></div>}
 
 
+          {/* ========== MONTAJ PAGE ========== */}
+          {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={role} selectedYear={selectedYear}/>}
+
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
             const c = yd.containers.find(ct=>ct.id===packingCid);
@@ -2396,6 +2399,336 @@ export default function App() {
         <div style={{fontSize:13,fontWeight:600,marginBottom:6}}>İlk Kurulum</div>
         <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:10}}>Veritabanı boş. Excel verilerini Firestore'a yüklemek ister misiniz?</div>
         <button onClick={uploadInitialData} style={{padding:"8px 16px",borderRadius:6,border:"none",background:"#534AB7",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer",width:"100%"}}>Verileri Yükle</button>
+      </div>}
+    </div>
+  );
+}
+
+// ============================================================
+// MontajPlani — Montaj Planlama Modülü
+// ============================================================
+function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
+  const MONTAJ_COL = "montajData";
+  const MONTAJ_DOC = "state";
+  const TH = { padding:"7px 10px", border:"0.5px solid var(--color-border-tertiary)", fontWeight:500, fontSize:"12px", textAlign:"center", whiteSpace:"nowrap", background:"var(--color-background-secondary)" };
+  const TD = { padding:"5px 7px", border:"0.5px solid var(--color-border-tertiary)", fontSize:"13px" };
+  const INPUT_CELL = { width:"46px", textAlign:"center", fontSize:"13px", fontWeight:500, padding:"2px 4px", border:"0.5px solid var(--color-border-tertiary)", borderRadius:"4px", background:"transparent", color:"var(--color-text-primary)" };
+  const GUNLER = ["Paz","Pzt","Sal","Çar","Per","Cum","Cmt"];
+  const fmtTR = (d) => new Date(d).toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"});
+  const isHaftasonu = (d) => { const g=new Date(d).getDay(); return g===0||g===6; };
+  const kisaAd = (n) => n.replace("REDÜKTÖR DİŞLİ TAKIMLARI ","").replace("REDÜKTÖR DİŞLİ TAKIMI ","");
+  const deepClone = (o) => JSON.parse(JSON.stringify(o));
+
+  const [ms, setMs] = useState({ initialStock:{}, plans:{} });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [selCId, setSelCId] = useState(null);
+  const [showAdd, setShowAdd] = useState(false);
+  const [newDate, setNewDate] = useState("");
+  const [stockEdit, setStockEdit] = useState(false);
+
+  const canEdit = userRole==="admin"||userRole==="packer";
+
+  const containers = useMemo(()=>{
+    const yd=yearsData[selectedYear]||{};
+    return (yd.containers||[]).slice().sort((a,b)=>a.date.localeCompare(b.date));
+  },[yearsData,selectedYear]);
+
+  const getTargets = (cId) => {
+    const yd=yearsData[selectedYear]||{};
+    const q=yd.quantities?.[cId]||{};
+    const result={};
+    Object.entries(q).forEach(([k,v])=>{ const n=Number(v); if(n>0) result[String(k)]=n; });
+    return result;
+  };
+
+  useEffect(()=>{
+    (async()=>{
+      setLoading(true);
+      try { const snap=await getDoc(doc(db,MONTAJ_COL,MONTAJ_DOC)); if(snap.exists()) setMs(snap.data()); }
+      catch(e){ console.error("Montaj yüklenemedi:",e); }
+      setLoading(false);
+    })();
+  },[db]);
+
+  useEffect(()=>{
+    if(containers.length&&!selCId){
+      const first=containers.find(c=>!c.shipped)||containers[0];
+      setSelCId(first.id);
+    }
+  },[containers]);
+
+  const save = async(newState)=>{
+    setSaving(true);
+    try { await setDoc(doc(db,MONTAJ_COL,MONTAJ_DOC),newState); setMs(newState); }
+    catch(e){ alert("Kaydetme hatası: "+e.message); }
+    setSaving(false);
+  };
+
+  const stockCalc = useMemo(()=>{
+    const {initialStock={},plans={}}=ms;
+    const stock={};
+    products.forEach(p=>{ stock[String(p.id)]=Number(initialStock[String(p.id)])||0; });
+    const containerResults={};
+    containers.forEach(c=>{
+      const plan=plans[c.id]||{workDays:[]};
+      const targets=getTargets(c.id);
+      const actuals={};
+      plan.workDays.forEach(day=>{ Object.entries(day.actual||{}).forEach(([pid,qty])=>{ actuals[String(pid)]=(actuals[String(pid)]||0)+(Number(qty)||0); }); });
+      Object.entries(actuals).forEach(([pid,qty])=>{ stock[pid]=(stock[pid]||0)+qty; });
+      const kalan={};
+      Object.entries(targets).forEach(([pid,tgt])=>{ kalan[pid]=tgt-(actuals[pid]||0); });
+      const stockBeforeShip={...stock};
+      if(c.shipped){ Object.entries(targets).forEach(([pid,tgt])=>{ stock[pid]=(stock[pid]||0)-tgt; }); }
+      containerResults[c.id]={actuals,kalan,stockBeforeShip:{...stockBeforeShip},stockAfterShip:{...stock}};
+    });
+    return {currentStock:stock,containerResults};
+  },[ms,containers,products,yearsData,selectedYear]);
+
+  const addWorkDay=()=>{
+    if(!newDate||!selCId) return;
+    const newMs=deepClone(ms);
+    if(!newMs.plans[selCId]) newMs.plans[selCId]={workDays:[]};
+    const days=newMs.plans[selCId].workDays;
+    if(days.some(d=>d.date===newDate)){alert("Bu tarih zaten mevcut.");return;}
+    days.push({date:newDate,planned:{},actual:{}});
+    days.sort((a,b)=>a.date.localeCompare(b.date));
+    save(newMs); setShowAdd(false); setNewDate("");
+  };
+
+  const removeWorkDay=(date)=>{
+    if(!confirm(`${fmtTR(date)} tarihli günü silmek istiyor musunuz?`)) return;
+    const newMs=deepClone(ms);
+    newMs.plans[selCId].workDays=newMs.plans[selCId].workDays.filter(d=>d.date!==date);
+    save(newMs);
+  };
+
+  const updateCell=(date,pid,field,rawVal)=>{
+    const val=rawVal===""?0:Number(rawVal);
+    if(isNaN(val)) return;
+    const newMs=deepClone(ms);
+    if(!newMs.plans[selCId]) newMs.plans[selCId]={workDays:[]};
+    newMs.plans[selCId].workDays=newMs.plans[selCId].workDays.map(d=>d.date!==date?d:{...d,[field]:{...d[field],[String(pid)]:val}});
+    save(newMs);
+  };
+
+  const updateInitStock=(pid,rawVal)=>{
+    const val=rawVal===""?0:Number(rawVal);
+    if(isNaN(val)) return;
+    const newMs=deepClone(ms);
+    if(!newMs.initialStock) newMs.initialStock={};
+    newMs.initialStock[String(pid)]=val;
+    save(newMs);
+  };
+
+  if(loading) return <div style={{padding:"3rem",textAlign:"center",color:"var(--color-text-secondary)"}}>Yükleniyor…</div>;
+
+  const selContainer=containers.find(c=>c.id===selCId);
+  const targets=selCId?getTargets(selCId):{};
+  const workDays=ms.plans[selCId]?.workDays||[];
+  const cResult=stockCalc.containerResults[selCId];
+  const activeProducts=products.filter(p=>targets[String(p.id)]>0);
+
+  return (
+    <div style={{padding:"1rem 1.25rem",maxWidth:"100%",overflow:"hidden"}}>
+      {/* Başlık */}
+      <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"1.25rem",flexWrap:"wrap",gap:"0.5rem"}}>
+        <h2 style={{margin:0,fontSize:"18px",fontWeight:500}}>🔧 Montaj Planı</h2>
+        <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+          {saving&&<span style={{fontSize:"13px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
+          {canEdit&&<button onClick={()=>setStockEdit(v=>!v)} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>{stockEdit?"✓ Tamam":"📦 Başlangıç Stoku"}</button>}
+        </div>
+      </div>
+
+      {/* Stok kartları */}
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fit,minmax(0,1fr))",gap:"8px",marginBottom:"1.5rem"}}>
+        {products.filter(p=>[1,2,3,4,5].includes(p.id)).map(p=>{
+          const pid=String(p.id);
+          const stock=stockCalc.currentStock[pid]??0;
+          const isNeg=stock<0;
+          return (
+            <div key={pid} style={{background:"var(--color-background-secondary)",borderRadius:"8px",padding:"10px 12px",border:isNeg?"0.5px solid var(--color-border-danger)":"0.5px solid var(--color-border-tertiary)"}}>
+              <div style={{fontSize:"11px",color:"var(--color-text-secondary)",marginBottom:"4px",whiteSpace:"nowrap",overflow:"hidden",textOverflow:"ellipsis"}}>{kisaAd(p.nameTR)}</div>
+              {stockEdit&&canEdit
+                ? <input type="number" defaultValue={ms.initialStock?.[pid]??0} onBlur={e=>updateInitStock(pid,e.target.value)} style={{...INPUT_CELL,width:"60px",fontSize:"18px",fontWeight:500}}/>
+                : <span style={{fontSize:"22px",fontWeight:500,color:isNeg?"var(--color-text-danger)":"var(--color-text-primary)"}}>{stock}</span>
+              }
+              <span style={{fontSize:"11px",color:"var(--color-text-tertiary)",marginLeft:"4px"}}>adet</span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Konteyner sekmeleri */}
+      <div style={{display:"flex",gap:"4px",overflowX:"auto",marginBottom:"1rem",paddingBottom:"4px"}}>
+        {containers.map(c=>{
+          const cr=stockCalc.containerResults[c.id];
+          const hasShortage=cr&&Object.values(cr.kalan).some(v=>v>0)&&!c.shipped;
+          const isSel=c.id===selCId;
+          return (
+            <button key={c.id} onClick={()=>setSelCId(c.id)} style={{padding:"6px 14px",fontSize:"13px",fontWeight:isSel?500:400,background:isSel?"var(--color-background-primary)":"transparent",border:isSel?"0.5px solid var(--color-border-primary)":"0.5px solid var(--color-border-tertiary)",borderRadius:"6px",cursor:"pointer",whiteSpace:"nowrap",color:c.shipped?"var(--color-text-tertiary)":"var(--color-text-primary)"}}>
+              {new Date(c.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"})}
+              {hasShortage&&<span style={{marginLeft:"4px",color:"var(--color-text-warning)"}}>⚠</span>}
+              {c.shipped&&<span style={{marginLeft:"4px",fontSize:"11px",color:"var(--color-text-success)"}}>✓</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Seçili konteyner detay */}
+      {selContainer&&<div>
+        <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:"0.75rem",flexWrap:"wrap",gap:"0.5rem"}}>
+          <div style={{display:"flex",alignItems:"center",gap:"10px"}}>
+            <span style={{fontWeight:500,fontSize:"15px"}}>
+              Sevkiyat: {new Date(selContainer.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"long",year:"numeric"})}
+            </span>
+            {selContainer.shipped&&<span style={{fontSize:"12px",background:"var(--color-background-success)",color:"var(--color-text-success)",padding:"2px 10px",borderRadius:"4px"}}>Sevk Edildi</span>}
+          </div>
+          {canEdit&&<button onClick={()=>setShowAdd(true)} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>+ İş Günü Ekle</button>}
+        </div>
+
+        {showAdd&&<div style={{display:"flex",gap:"10px",alignItems:"center",flexWrap:"wrap",marginBottom:"1rem",padding:"0.75rem 1rem",background:"var(--color-background-secondary)",border:"0.5px solid var(--color-border-tertiary)",borderRadius:"8px"}}>
+          <span style={{fontSize:"13px",color:"var(--color-text-secondary)"}}>Tarih seç (haftasonları dahil):</span>
+          <input type="date" value={newDate} onChange={e=>setNewDate(e.target.value)} style={{fontSize:"14px"}}/>
+          <button onClick={addWorkDay} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>Ekle</button>
+          <button onClick={()=>{setShowAdd(false);setNewDate("");}} style={{fontSize:"13px",padding:"6px 14px",cursor:"pointer"}}>İptal</button>
+        </div>}
+
+        {workDays.length===0
+          ? <div style={{textAlign:"center",padding:"3rem",color:"var(--color-text-secondary)",border:"0.5px dashed var(--color-border-tertiary)",borderRadius:"8px"}}>
+              Henüz iş günü eklenmemiş.<br/>
+              <span style={{fontSize:"13px"}}>\"+ İş Günü Ekle\" ile herhangi bir tarihi ekleyebilirsiniz.</span>
+            </div>
+          : <div style={{overflowX:"auto"}}>
+              <table style={{borderCollapse:"collapse",fontSize:"13px",minWidth:"100%",tableLayout:"auto"}}>
+                <thead>
+                  <tr>
+                    <th style={{...TH,textAlign:"left",minWidth:"130px",position:"sticky",left:0,zIndex:3}}>Ürün</th>
+                    <th style={{...TH,minWidth:"60px"}}>Hedef</th>
+                    {workDays.map(day=>{
+                      const hs=isHaftasonu(day.date);
+                      return (
+                        <th key={day.date} style={{...TH,minWidth:"88px",background:hs?"var(--color-background-warning)":"var(--color-background-secondary)"}}>
+                          <div style={{display:"flex",flexDirection:"column",alignItems:"center",gap:"2px"}}>
+                            <span style={{fontSize:"11px",fontWeight:400,color:"var(--color-text-secondary)"}}>{GUNLER[new Date(day.date).getDay()]}{hs&&" ☀"}</span>
+                            <span style={{fontWeight:500}}>{fmtTR(day.date)}</span>
+                            {canEdit&&<button onClick={()=>removeWorkDay(day.date)} title="Günü sil" style={{fontSize:"10px",padding:"1px 5px",cursor:"pointer",opacity:0.55}}>✕</button>}
+                          </div>
+                        </th>
+                      );
+                    })}
+                    <th style={{...TH,minWidth:"60px"}}>Toplam</th>
+                    <th style={{...TH,minWidth:"60px"}}>Kalan</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activeProducts.length===0&&<tr><td colSpan={workDays.length+4} style={{...TD,padding:"1.5rem",textAlign:"center",color:"var(--color-text-secondary)"}}>Bu konteyner için sevkiyat planında miktar tanımlanmamış.</td></tr>}
+                  {activeProducts.map(p=>{
+                    const pid=String(p.id);
+                    const target=targets[pid]||0;
+                    const totalActual=cResult?.actuals?.[pid]||0;
+                    const kalan=target-totalActual;
+                    const kalanColor=kalan>0?"var(--color-text-danger)":kalan<0?"var(--color-text-warning)":"var(--color-text-success)";
+                    let runningActual=0;
+                    return (
+                      <Fragment key={pid}>
+                        <tr style={{borderTop:"1px solid var(--color-border-tertiary)"}}>
+                          <td rowSpan={2} style={{...TD,position:"sticky",left:0,background:"var(--color-background-primary)",zIndex:2,verticalAlign:"middle",fontWeight:500}}>
+                            <div style={{display:"flex",alignItems:"center",gap:"6px"}}>
+                              <div style={{width:"8px",height:"8px",borderRadius:"50%",background:p.color||"#888",flexShrink:0}}/>
+                              <span style={{fontSize:"12px",lineHeight:1.3}}>{kisaAd(p.nameTR)}</span>
+                            </div>
+                          </td>
+                          <td rowSpan={2} style={{...TD,textAlign:"center",fontWeight:500,background:"var(--color-background-secondary)",verticalAlign:"middle"}}>{target}</td>
+                          {workDays.map(day=>{
+                            const planVal=day.planned?.[pid];
+                            const hs=isHaftasonu(day.date);
+                            return (
+                              <td key={day.date} style={{...TD,textAlign:"center",background:hs?"rgba(250,200,50,0.06)":undefined,verticalAlign:"bottom",paddingBottom:"2px"}}>
+                                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:"2px"}}>PLN</div>
+                                {canEdit
+                                  ? <input type="number" min="0" defaultValue={planVal!==undefined&&planVal!==0?planVal:""} placeholder="—" onBlur={e=>updateCell(day.date,pid,"planned",e.target.value)} style={{...INPUT_CELL,color:"var(--color-text-secondary)"}}/>
+                                  : <span style={{color:"var(--color-text-secondary)"}}>{planVal||"—"}</span>
+                                }
+                              </td>
+                            );
+                          })}
+                          <td rowSpan={2} style={{...TD,textAlign:"center",fontWeight:500,background:"var(--color-background-secondary)",verticalAlign:"middle",fontSize:"15px"}}>{totalActual}</td>
+                          <td rowSpan={2} style={{...TD,textAlign:"center",fontWeight:600,color:kalanColor,background:"var(--color-background-secondary)",verticalAlign:"middle",fontSize:"15px"}}>{kalan>0?`+${kalan}`:kalan}</td>
+                        </tr>
+                        <tr>
+                          {workDays.map(day=>{
+                            const actualVal=day.actual?.[pid];
+                            const planVal=day.planned?.[pid];
+                            const isBehind=planVal>0&&actualVal!==undefined&&Number(actualVal)<Number(planVal);
+                            const hs=isHaftasonu(day.date);
+                            runningActual+=Number(actualVal)||0;
+                            const pct=target>0?Math.min(100,Math.round((runningActual/target)*100)):0;
+                            return (
+                              <td key={day.date} style={{...TD,textAlign:"center",background:hs?"rgba(250,200,50,0.06)":undefined,verticalAlign:"top",paddingTop:"2px"}}>
+                                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:"2px"}}>GER</div>
+                                {canEdit
+                                  ? <input type="number" min="0" defaultValue={actualVal!==undefined&&actualVal!==0?actualVal:""} placeholder="—" onBlur={e=>updateCell(day.date,pid,"actual",e.target.value)} style={{...INPUT_CELL,color:isBehind?"var(--color-text-danger)":undefined,borderColor:isBehind?"var(--color-border-danger)":undefined}}/>
+                                  : <span style={{color:isBehind?"var(--color-text-danger)":undefined}}>{actualVal!==undefined?actualVal:"—"}</span>
+                                }
+                                {target>0&&<div style={{height:"2px",background:"var(--color-border-tertiary)",borderRadius:"1px",marginTop:"3px"}}>
+                                  <div style={{height:"100%",width:`${pct}%`,background:pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)",borderRadius:"1px",transition:"width 0.3s"}}/>
+                                </div>}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      </Fragment>
+                    );
+                  })}
+                  {activeProducts.length>0&&(
+                    <tr style={{borderTop:"1.5px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",fontWeight:500}}>
+                      <td style={{...TD,position:"sticky",left:0,background:"var(--color-background-secondary)",zIndex:2,fontSize:"12px",fontWeight:500}}>Günlük toplam</td>
+                      <td style={{...TD,textAlign:"center"}}>{Object.values(targets).reduce((s,v)=>s+v,0)}</td>
+                      {workDays.map(day=>{
+                        const pT=activeProducts.reduce((s,p)=>s+(Number(day.planned?.[String(p.id)])||0),0);
+                        const aT=activeProducts.reduce((s,p)=>s+(Number(day.actual?.[String(p.id)])||0),0);
+                        return (
+                          <td key={day.date} style={{...TD,textAlign:"center",fontSize:"12px"}}>
+                            <div style={{color:"var(--color-text-secondary)"}}>PLN: {pT||"—"}</div>
+                            <div style={{fontWeight:600}}>GER: {aT||"—"}</div>
+                          </td>
+                        );
+                      })}
+                      <td style={{...TD,textAlign:"center"}}>{activeProducts.reduce((s,p)=>s+(cResult?.actuals?.[String(p.id)]||0),0)}</td>
+                      <td style={{...TD,textAlign:"center"}}>—</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+        }
+
+        {/* Sevkiyat hazırlık barları */}
+        {activeProducts.length>0&&<div style={{marginTop:"1.25rem",padding:"1rem 1.25rem",background:"var(--color-background-secondary)",borderRadius:"8px",border:"0.5px solid var(--color-border-tertiary)"}}>
+          <div style={{fontSize:"13px",fontWeight:500,marginBottom:"0.75rem"}}>Sevkiyat hazırlık durumu</div>
+          <div style={{display:"flex",flexWrap:"wrap",gap:"1.25rem"}}>
+            {activeProducts.map(p=>{
+              const pid=String(p.id);
+              const target=targets[pid]||0;
+              const actual=cResult?.actuals?.[pid]||0;
+              const pct=target>0?Math.min(100,Math.round((actual/target)*100)):100;
+              const barColor=pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
+              const txtColor=pct>=100?"var(--color-text-success)":pct>=60?"var(--color-text-warning)":"var(--color-text-danger)";
+              return (
+                <div key={pid} style={{display:"flex",flexDirection:"column",gap:"5px",minWidth:"100px",flex:"1 1 100px"}}>
+                  <div style={{fontSize:"11px",color:"var(--color-text-secondary)"}}>{kisaAd(p.nameTR)}</div>
+                  <div style={{height:"6px",background:"var(--color-border-tertiary)",borderRadius:"3px"}}>
+                    <div style={{height:"100%",width:`${pct}%`,background:barColor,borderRadius:"3px",transition:"width 0.4s"}}/>
+                  </div>
+                  <div style={{fontSize:"12px",fontWeight:500,color:txtColor}}>
+                    {actual} / {target} <span style={{fontSize:"11px",fontWeight:400,color:"var(--color-text-tertiary)"}}>({pct}%)</span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>}
       </div>}
     </div>
   );
