@@ -2735,6 +2735,193 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const getModelMax = pid => ms.capacity?.modelMax?.[pid] || 99;
   const getSafetyStock = pid => Number(ms.capacity?.safetyStock?.[pid]) || 0;
 
+  // --- KPI Hesaplamaları ---
+  const kpiData = useMemo(() => {
+    const days = ms.days || {};
+    const dayEntries = Object.entries(days).filter(([d]) => d <= today).sort((a,b) => a[0].localeCompare(b[0]));
+
+    // 1) Plan Uyum Oranı — model bazlı ve genel
+    const compliance = {};
+    let totalPln = 0, totalGer = 0;
+    ANA_IDS.forEach(pid => {
+      let pln = 0, ger = 0, daysWithPlan = 0, daysOnTarget = 0;
+      dayEntries.forEach(([, day]) => {
+        const p = Number(day.planned?.[pid]) || 0;
+        const g = Number(day.actual?.[pid]) || 0;
+        if (p > 0) { pln += p; ger += g; daysWithPlan++; if (g >= p) daysOnTarget++; }
+      });
+      compliance[pid] = { pln, ger, pct: pln > 0 ? Math.round((ger / pln) * 100) : null, daysWithPlan, daysOnTarget };
+      totalPln += pln; totalGer += ger;
+    });
+    const overallCompliance = totalPln > 0 ? Math.round((totalGer / totalPln) * 100) : null;
+
+    // 2) Kapasite Kullanım Oranı — günlük ve genel
+    let capDays = 0, capUsed = 0;
+    dayEntries.forEach(([d, day]) => {
+      if (isWeekend(d) || holidays.has(d)) return;
+      const dayActual = ANA_IDS.reduce((s, pid) => s + (Number(day.actual?.[pid]) || 0), 0);
+      if (dayActual > 0) { capDays++; capUsed += dayActual; }
+    });
+    const avgDaily = capDays > 0 ? (capUsed / capDays).toFixed(1) : 0;
+    const capUtilPct = capDays > 0 ? Math.round((capUsed / (capDays * hatMax)) * 100) : 0;
+
+    // 3) Sevkiyat hazırlık — tahmini hazır olma günü (PLN bazlı)
+    const shipReadiness = allContainers.filter(c => !c.shipped).map(c => {
+      const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+      let allReady = true;
+      let worstPid = null, worstDiff = 0;
+      const models = [];
+      ANA_IDS.forEach(pid => {
+        const target = Number(q[pid]) || 0;
+        if (!target) return;
+        // Gün gün stok simüle et — hangi gün hazır olacak
+        let simStock = stockCalc[pid] || 0;
+        let readyDate = simStock >= target ? today : null;
+        const futureDays = Object.entries(days).filter(([d]) => d >= today).sort((a,b) => a[0].localeCompare(b[0]));
+        for (const [d, day] of futureDays) {
+          simStock += Number(day.planned?.[pid]) || 0;
+          if (!readyDate && simStock >= target) readyDate = d;
+        }
+        const daysEarly = readyDate && readyDate <= c.date
+          ? calDays.filter(dd => dd >= readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length
+          : null;
+        const diff = (stockCalc[pid]||0) - target;
+        if (diff < worstDiff) { worstDiff = diff; worstPid = pid; }
+        if (!readyDate || readyDate > c.date) allReady = false;
+        models.push({ pid, target, readyDate, daysEarly, ok: readyDate && readyDate <= c.date });
+      });
+      return { container: c, allReady, models, worstPid, worstDiff };
+    });
+
+    // 4) En çok geciken model
+    const behindModels = [];
+    ANA_IDS.forEach(pid => {
+      const c = compliance[pid];
+      if (c && c.pln > 0 && c.ger < c.pln) {
+        behindModels.push({ pid, diff: c.ger - c.pln, pct: c.pct });
+      }
+    });
+    behindModels.sort((a,b) => a.diff - b.diff);
+
+    // 5) Haftalık trend (son 4 hafta)
+    const weeklyTrend = [];
+    if (dayEntries.length > 0) {
+      const firstDay = dayEntries[0][0];
+      const d = new Date(firstDay);
+      d.setDate(d.getDate() - d.getDay() + 1); // Pazartesi
+      while (d.toISOString().slice(0,10) <= today) {
+        const wStart = d.toISOString().slice(0,10);
+        const wEnd = new Date(d); wEnd.setDate(wEnd.getDate()+4);
+        const wEndStr = wEnd.toISOString().slice(0,10);
+        let wPln=0, wGer=0;
+        dayEntries.forEach(([dd, day]) => {
+          if (dd >= wStart && dd <= wEndStr) {
+            ANA_IDS.forEach(pid => {
+              wPln += Number(day.planned?.[pid]) || 0;
+              wGer += Number(day.actual?.[pid]) || 0;
+            });
+          }
+        });
+        if (wPln > 0 || wGer > 0) weeklyTrend.push({ week: fmtDate(wStart), pln: wPln, ger: wGer });
+        d.setDate(d.getDate()+7);
+      }
+    }
+
+    return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend };
+  }, [ms, today, allContainers, yearsData, selectedYear, stockCalc, calDays, hatMax, holidays]);
+
+  // --- Haftalık İş Planı Çıktısı ---
+  const printWeeklyPlan = () => {
+    // Bu haftanın Pazartesi-Cuma günlerini bul
+    const d = new Date(today);
+    const dow = d.getDay();
+    const mon = new Date(d); mon.setDate(mon.getDate() - (dow === 0 ? 6 : dow - 1));
+    const weekDays = [];
+    for (let i = 0; i < 5; i++) {
+      const wd = new Date(mon); wd.setDate(wd.getDate() + i);
+      weekDays.push(wd.toISOString().slice(0,10));
+    }
+    const wStart = weekDays[0], wEnd = weekDays[4];
+
+    let html = `<html><head><title>Haftalık Montaj Planı</title><style>
+      body{font-family:Arial,sans-serif;margin:20px;color:#222}
+      h1{font-size:18px;margin:0 0 4px} h2{font-size:14px;margin:0 0 16px;color:#666;font-weight:normal}
+      table{border-collapse:collapse;width:100%;margin-bottom:20px}
+      th,td{border:1px solid #ccc;padding:8px 10px;text-size:13px}
+      th{background:#f0f0f0;font-weight:600;text-align:center}
+      .model{font-weight:600} .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
+      .ok{background:#dcfce7;color:#16a34a} .warn{background:#fefce8;color:#f59e0b} .bad{background:#fef2f2;color:#dc2626}
+      .ship{background:#dbeafe;color:#1d4ed8;font-weight:600;font-size:11px}
+      .holiday{background:#fefce8;color:#a16207}
+      @media print{body{margin:10px} button{display:none}}
+    </style></head><body>`;
+    html += `<h1>🔧 Haftalık Montaj İş Planı</h1>`;
+    html += `<h2>${new Date(wStart+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"long",year:"numeric"})} — ${new Date(wEnd+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"long",year:"numeric"})}</h2>`;
+
+    // Özet tablo
+    html += `<table><thead><tr><th style="text-align:left;min-width:120px">Model</th>`;
+    weekDays.forEach(wd => {
+      const isS = shipDates.has(wd), isH = holidays.has(wd);
+      const lbl = new Date(wd+"T00:00:00").toLocaleDateString("tr-TR",{weekday:"short",day:"2-digit",month:"2-digit"});
+      html += `<th>${isS?'<div class="ship">SEVKİYAT</div>':''}${isH?'<div class="holiday">TATİL</div>':''}${lbl}</th>`;
+    });
+    html += `<th>Hafta Toplam</th></tr></thead><tbody>`;
+
+    anaProducts.forEach(p => {
+      html += `<tr><td class="model" style="color:${p.color}">● ${kisaAd(p.nameTR)}<br><span style="font-weight:normal;font-size:11px;color:#888">max ${getModelMax(p.id)}/gün</span></td>`;
+      let weekTotal = 0;
+      weekDays.forEach(wd => {
+        const v = ms.days?.[wd]?.planned?.[p.id];
+        const val = Number(v) || 0;
+        weekTotal += val;
+        html += `<td style="text-align:center;font-size:16px;font-weight:${val?'600':'400'};color:${val?'#222':'#ccc'}">${val || '—'}</td>`;
+      });
+      html += `<td style="text-align:center;font-weight:700;font-size:15px">${weekTotal}</td></tr>`;
+    });
+
+    // Hat kapasitesi satırı
+    html += `<tr style="border-top:2px solid #999"><td style="font-weight:600;color:#666">Hat Kapasitesi<br><span style="font-size:11px">max ${hatMax}/gün</span></td>`;
+    weekDays.forEach(wd => {
+      const total = anaProducts.reduce((s,p) => s+(Number(ms.days?.[wd]?.planned?.[p.id])||0), 0);
+      const over = total > hatMax;
+      html += `<td style="text-align:center;font-weight:600;color:${over?'#dc2626':'#222'}">${total || '—'}${over?' ⚠':''}</td>`;
+    });
+    const weekGrand = anaProducts.reduce((s,p) => { let t=0; weekDays.forEach(wd => t+=(Number(ms.days?.[wd]?.planned?.[p.id])||0)); return s+t; }, 0);
+    html += `<td style="text-align:center;font-weight:700">${weekGrand}</td></tr>`;
+    html += `</tbody></table>`;
+
+    // Sevkiyat durumu
+    const activeShips = allContainers.filter(c => !c.shipped).slice(0,4);
+    if (activeShips.length > 0) {
+      html += `<h3 style="font-size:14px;margin:16px 0 8px">Yaklaşan Sevkiyatlar</h3><table><thead><tr><th>Sevkiyat</th>`;
+      ANA_IDS.forEach(pid => { const p=anaProducts.find(x=>x.id===pid); if(p) html+=`<th>${kisaAd(p.nameTR)}</th>`; });
+      html += `<th>Toplam</th><th>Durum</th></tr></thead><tbody>`;
+      activeShips.forEach(c => {
+        const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+        html += `<tr><td style="font-weight:600">${new Date(c.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})}</td>`;
+        let tot=0, allOk=true;
+        ANA_IDS.forEach(pid => {
+          const target = Number(q[pid])||0;
+          const avail = stockCalc[pid]||0;
+          tot += target;
+          if (target > 0 && avail < target) allOk = false;
+          html += `<td style="text-align:center">${target||'—'}</td>`;
+        });
+        html += `<td style="text-align:center;font-weight:600">${tot}</td>`;
+        html += `<td><span class="badge ${allOk?'ok':'bad'}">${allOk?'Hazır':'Eksik'}</span></td></tr>`;
+      });
+      html += `</tbody></table>`;
+    }
+
+    html += `<div style="margin-top:20px;color:#999;font-size:11px">Oluşturulma: ${new Date().toLocaleString("tr-TR")} — Sevkiyat Pro</div>`;
+    html += `<button onclick="window.print()" style="margin-top:12px;padding:8px 20px;font-size:14px;cursor:pointer">🖨 Yazdır</button>`;
+    html += `</body></html>`;
+
+    const w = window.open('','_blank','width=900,height=700');
+    w.document.write(html);
+    w.document.close();
+  };
+
   const clearPlan = () => {
     if (!confirm("Bugünden itibaren tüm PLN değerleri silinecek. GER'lere dokunulmaz. Devam?")) return;
     const newMs = deepClone(ms);
@@ -2762,6 +2949,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
           {isAdmin && <button onClick={generateAutoPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>🤖 Otomatik Planla</button>}
           {isAdmin && <button onClick={clearPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",color:"var(--color-text-danger)"}}>🗑 Planı Temizle</button>}
+          <button onClick={printWeeklyPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📄 Haftalık Plan</button>
         </div>
       </div>
 
@@ -2920,6 +3108,134 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           })}
         </div>
       )}
+
+      {/* KPI Dashboard */}
+      {(()=>{
+        const kpi = kpiData;
+        const KCard = ({title,value,sub,color}) => (
+          <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
+            <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:2}}>{title}</div>
+            <div style={{fontSize:"22px",fontWeight:600,color:color||"var(--color-text-primary)"}}>{value}</div>
+            {sub && <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginTop:2}}>{sub}</div>}
+          </div>
+        );
+        return (
+          <div style={{marginBottom:"1rem"}}>
+            <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:8}}>
+              <span style={{fontSize:"13px",fontWeight:600,color:"var(--color-text-secondary)"}}>📊 KPI</span>
+              <div style={{flex:1,height:1,background:"var(--color-border-tertiary)"}}/>
+            </div>
+
+            {/* Üst satır: Ana metrikler */}
+            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
+              <KCard title="Plan Uyum Oranı" value={kpi.overallCompliance!==null?kpi.overallCompliance+"%":"—"}
+                sub={kpi.overallCompliance!==null?`${kpiData.compliance[ANA_IDS[0]]?.daysOnTarget||0} gün hedefe ulaştı`:""} color={kpi.overallCompliance>=90?"#16a34a":kpi.overallCompliance>=70?"#f59e0b":"#dc2626"}/>
+              <KCard title="Kapasite Kullanımı" value={kpi.capUtilPct+"%"}
+                sub={`Ort. ${kpi.avgDaily} adet/gün (${kpi.capDays} gün)`} color={kpi.capUtilPct>=80?"#16a34a":kpi.capUtilPct>=50?"#f59e0b":"#dc2626"}/>
+              <KCard title="Ort. Günlük Üretim" value={kpi.avgDaily}
+                sub={`Hat kapasitesi: ${hatMax}/gün`} color="var(--color-text-primary)"/>
+              {kpi.behindModels.length>0 ? (
+                <KCard title="En Çok Geciken" value={kisaAd(anaProducts.find(p=>p.id===kpi.behindModels[0].pid)?.nameTR||"")}
+                  sub={`${kpi.behindModels[0].diff} adet (${kpi.behindModels[0].pct}%)`} color="#dc2626"/>
+              ) : (
+                <KCard title="En Çok Geciken" value="—" sub="Tüm modeller planda" color="#16a34a"/>
+              )}
+            </div>
+
+            {/* Model bazlı plan uyum */}
+            <div style={{display:"grid",gridTemplateColumns:`repeat(${ANA_IDS.length},1fr)`,gap:6,marginBottom:8}}>
+              {anaProducts.map(p => {
+                const c = kpi.compliance[p.id];
+                if (!c || c.pct===null) return (
+                  <div key={p.id} style={{background:"var(--color-background-secondary)",borderRadius:6,padding:"6px 8px",border:"0.5px solid var(--color-border-tertiary)"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}>
+                      <div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/>
+                      <span style={{fontSize:"10px",color:"var(--color-text-secondary)"}}>{kisaAd(p.nameTR)}</span>
+                    </div>
+                    <div style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>Veri yok</div>
+                  </div>
+                );
+                const pctColor = c.pct>=90?"#16a34a":c.pct>=70?"#f59e0b":"#dc2626";
+                return (
+                  <div key={p.id} style={{background:"var(--color-background-secondary)",borderRadius:6,padding:"6px 8px",border:"0.5px solid var(--color-border-tertiary)"}}>
+                    <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:3}}>
+                      <div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/>
+                      <span style={{fontSize:"10px",fontWeight:500,color:"var(--color-text-secondary)",flex:1}}>{kisaAd(p.nameTR)}</span>
+                      <span style={{fontSize:"12px",fontWeight:700,color:pctColor}}>{c.pct}%</span>
+                    </div>
+                    <div style={{height:4,background:"var(--color-border-tertiary)",borderRadius:2}}>
+                      <div style={{height:"100%",width:`${Math.min(100,c.pct)}%`,background:pctColor,borderRadius:2}}/>
+                    </div>
+                    <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",marginTop:2}}>GER {c.ger} / PLN {c.pln}</div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Sevkiyat tahmini hazır olma */}
+            {kpi.shipReadiness.length > 0 && (
+              <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
+                <div style={{fontSize:"11px",fontWeight:600,color:"var(--color-text-secondary)",marginBottom:6}}>Sevkiyat Tahmini Hazır Olma</div>
+                <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(kpi.shipReadiness.length,4)},1fr)`,gap:8}}>
+                  {kpi.shipReadiness.map(({container:c, allReady, models, worstPid}) => {
+                    const statusC = allReady?"#16a34a":"#dc2626";
+                    return (
+                      <div key={c.id} style={{borderLeft:`3px solid ${statusC}`,paddingLeft:8}}>
+                        <div style={{fontSize:"12px",fontWeight:600,marginBottom:3}}>{new Date(c.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})}</div>
+                        {models.map(m => {
+                          const p = anaProducts.find(x=>x.id===m.pid);
+                          if (!p) return null;
+                          return (
+                            <div key={m.pid} style={{display:"flex",alignItems:"center",gap:4,marginBottom:1}}>
+                              <div style={{width:5,height:5,borderRadius:"50%",background:p.color}}/>
+                              <span style={{fontSize:"10px",color:"var(--color-text-secondary)",flex:1}}>{kisaAd(p.nameTR)}</span>
+                              {m.ok ? (
+                                <span style={{fontSize:"10px",color:"#16a34a",fontWeight:500}}>
+                                  ✓ {m.daysEarly>0?m.daysEarly+" gün önce":"zamanında"}
+                                </span>
+                              ) : (
+                                <span style={{fontSize:"10px",color:"#dc2626",fontWeight:500}}>
+                                  ✗ {m.readyDate ? new Date(m.readyDate+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"}) : "yetişemez"}
+                                </span>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* Haftalık trend */}
+            {kpi.weeklyTrend.length > 1 && (
+              <div style={{marginTop:8}}>
+                <div style={{display:"flex",gap:8,alignItems:"flex-end",height:60}}>
+                  {kpi.weeklyTrend.slice(-8).map((w,i) => {
+                    const maxVal = Math.max(...kpi.weeklyTrend.slice(-8).map(x=>Math.max(x.pln,x.ger)),1);
+                    const hP = Math.round((w.pln/maxVal)*50);
+                    const hG = Math.round((w.ger/maxVal)*50);
+                    return (
+                      <div key={i} style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",gap:1}}>
+                        <div style={{display:"flex",gap:1,alignItems:"flex-end",height:52}}>
+                          <div style={{width:8,height:hP,background:"#93c5fd",borderRadius:2}} title={`PLN: ${w.pln}`}/>
+                          <div style={{width:8,height:hG,background:"#16a34a",borderRadius:2}} title={`GER: ${w.ger}`}/>
+                        </div>
+                        <div style={{fontSize:"8px",color:"var(--color-text-tertiary)"}}>{w.week}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div style={{display:"flex",gap:10,justifyContent:"center",marginTop:4}}>
+                  <div style={{display:"flex",alignItems:"center",gap:3,fontSize:"9px",color:"var(--color-text-tertiary)"}}><div style={{width:8,height:8,background:"#93c5fd",borderRadius:1}}/>PLN</div>
+                  <div style={{display:"flex",alignItems:"center",gap:3,fontSize:"9px",color:"var(--color-text-tertiary)"}}><div style={{width:8,height:8,background:"#16a34a",borderRadius:1}}/>GER</div>
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       {/* Ana tablo */}
       <div style={{overflowX:"auto"}}>
