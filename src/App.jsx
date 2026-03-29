@@ -2820,7 +2820,9 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           if (d > today) simBeforeShip += Number(days[d]?.planned?.[pid]) || 0;
           // Aradaki DAHA ÖNCEKİ sevkiyatların miktarlarını düş (bu sevkiyat hariç)
           if (shipQtyMap[d] && d < c.date) simBeforeShip -= (shipQtyMap[d][pid] || 0);
-          if (!readyDate && simBeforeShip >= target) readyDate = d;
+          // Stok hedefe ulaştıysa readyDate set et, düştüyse sıfırla
+          if (simBeforeShip >= target) { if (!readyDate) readyDate = d; }
+          else readyDate = null;
         }
 
         const daysEarly = readyDate && readyDate <= c.date
