@@ -2820,33 +2820,47 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           if (simNoProd < target) { noProductionOk = false; break; }
         }
 
-        // Aşama 2: Üretimli simülasyon — gün gün stok takibi
-        let readyDate = null;
-        let simStock = stockCalc[pid] || 0;
+        // Gün gün stok simülasyonu
+        const dailyStock = [];
+        let sim = stockCalc[pid] || 0;
         for (const d of simDays) {
-          if (d > today) simStock += Number(days[d]?.planned?.[pid]) || 0;
-          if (shipQtyMap[d] && d < c.date) simStock -= (shipQtyMap[d][pid] || 0);
-          if (simStock >= target) { if (!readyDate) readyDate = d; }
-          else readyDate = null;
-          if (d >= c.date && readyDate) break;
+          if (d > today) sim += Number(days[d]?.planned?.[pid]) || 0;
+          if (shipQtyMap[d] && d < c.date) sim -= (shipQtyMap[d][pid] || 0);
+          dailyStock.push({ d, stock: sim });
+          if (d > c.date) break;
         }
-        // readyDate hâlâ null ise sevkiyattan sonrasına bak (geç kalma)
-        if (!readyDate) {
-          simStock = stockCalc[pid] || 0;
+
+        const shipDayIdx = dailyStock.findIndex(x => x.d >= c.date);
+        const finalStock = shipDayIdx >= 0 ? dailyStock[shipDayIdx].stock : (dailyStock[dailyStock.length-1]?.stock || 0);
+        let readyDate = null;
+        let ok = false;
+
+        if (finalStock >= target) {
+          ok = true;
+          // Geriye doğru bak: stokun target altına SON düştüğü günün ertesi = son kritik üretim
+          readyDate = dailyStock[0]?.d || today; // default: en baştan hazır
+          for (let i = (shipDayIdx >= 0 ? shipDayIdx : dailyStock.length - 1); i >= 1; i--) {
+            if (dailyStock[i-1].stock < target) {
+              readyDate = dailyStock[i].d;
+              break;
+            }
+          }
+        } else {
+          // Sevkiyattan sonra ne zaman yetişecek
+          let simLate = stockCalc[pid] || 0;
           for (const d of simDays) {
-            if (d > today) simStock += Number(days[d]?.planned?.[pid]) || 0;
-            if (shipQtyMap[d]) simStock -= (shipQtyMap[d][pid] || 0);
-            if (d > c.date && simStock >= target) { readyDate = d; break; }
+            if (d > today) simLate += Number(days[d]?.planned?.[pid]) || 0;
+            if (shipQtyMap[d]) simLate -= (shipQtyMap[d][pid] || 0);
+            if (d > c.date && simLate >= target) { readyDate = d; break; }
           }
         }
 
-        const ok = readyDate && readyDate <= c.date;
-        const daysEarly = readyDate && readyDate <= c.date
+        const daysEarly = readyDate && ok
           ? calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length
-          : readyDate && readyDate > c.date
+          : readyDate && !ok
           ? -calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length
           : null;
-        const diff = simStock - target;
+        const diff = finalStock - target;
         if (diff < worstDiff) { worstDiff = diff; worstPid = pid; }
         if (!ok) allReady = false;
         models.push({ pid, target, readyDate, daysEarly, ok, noProductionOk });
