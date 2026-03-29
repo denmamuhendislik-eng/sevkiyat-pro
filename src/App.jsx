@@ -2877,8 +2877,8 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
   // --- Haftalık İş Planı Çıktısı ---
   const printWeeklyPlan = () => {
-    // Bu haftanın Pazartesi-Cuma günlerini bul
-    const d = new Date(today);
+    // Bu haftanın Pazartesi-Cuma günlerini bul (local timezone)
+    const d = new Date(today+"T00:00:00");
     const dow = d.getDay();
     const mon = new Date(d); mon.setDate(mon.getDate() - (dow === 0 ? 6 : dow - 1));
     const weekDays = [];
@@ -2892,7 +2892,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       body{font-family:Arial,sans-serif;margin:20px;color:#222}
       h1{font-size:18px;margin:0 0 4px} h2{font-size:14px;margin:0 0 16px;color:#666;font-weight:normal}
       table{border-collapse:collapse;width:100%;margin-bottom:20px}
-      th,td{border:1px solid #ccc;padding:8px 10px;text-size:13px}
+      th,td{border:1px solid #ccc;padding:8px 10px;font-size:13px}
       th{background:#f0f0f0;font-weight:600;text-align:center}
       .model{font-weight:600} .badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:11px;font-weight:600}
       .ok{background:#dcfce7;color:#16a34a} .warn{background:#fefce8;color:#f59e0b} .bad{background:#fef2f2;color:#dc2626}
@@ -2935,25 +2935,23 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     html += `<td style="text-align:center;font-weight:700">${weekGrand}</td></tr>`;
     html += `</tbody></table>`;
 
-    // Sevkiyat durumu
-    const activeShips = allContainers.filter(c => !c.shipped).slice(0,4);
-    if (activeShips.length > 0) {
-      html += `<h3 style="font-size:14px;margin:16px 0 8px">Yaklaşan Sevkiyatlar</h3><table><thead><tr><th>Sevkiyat</th>`;
+    // Sevkiyat durumu — KPI shipReadiness verisini kullan
+    const kpi = kpiData;
+    if (kpi.shipReadiness.length > 0) {
+      html += `<h3 style="font-size:14px;margin:16px 0 8px">Yaklaşan Sevkiyatlar</h3><table><thead><tr><th>Sevkiyat</th><th>Kalan</th>`;
       ANA_IDS.forEach(pid => { const p=anaProducts.find(x=>x.id===pid); if(p) html+=`<th>${kisaAd(p.nameTR)}</th>`; });
-      html += `<th>Toplam</th><th>Durum</th></tr></thead><tbody>`;
-      activeShips.forEach(c => {
-        const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+      html += `<th>Durum</th></tr></thead><tbody>`;
+      kpi.shipReadiness.forEach(({container:c, allReady, models}) => {
+        const daysToShip = calDays.filter(dd => dd >= today && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
         html += `<tr><td style="font-weight:600">${new Date(c.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})}</td>`;
-        let tot=0, allOk=true;
+        html += `<td style="text-align:center;font-weight:500;${daysToShip<=3?'color:#dc2626':''}">${daysToShip} gün</td>`;
         ANA_IDS.forEach(pid => {
-          const target = Number(q[pid])||0;
-          const avail = stockCalc[pid]||0;
-          tot += target;
-          if (target > 0 && avail < target) allOk = false;
-          html += `<td style="text-align:center">${target||'—'}</td>`;
+          const m = models.find(x=>x.pid===pid);
+          if (!m) { html += `<td style="text-align:center;color:#ccc">—</td>`; return; }
+          const lbl = m.ok ? (m.daysEarly>0?`✓ ${m.daysEarly}g önce`:"✓ zamanında") : (m.daysEarly!==null?`✗ ${Math.abs(m.daysEarly)}g geç`:"✗ yetişemez");
+          html += `<td style="text-align:center;color:${m.ok?'#16a34a':'#dc2626'};font-weight:500;font-size:12px">${m.target} adet<br><span style="font-size:11px">${lbl}</span></td>`;
         });
-        html += `<td style="text-align:center;font-weight:600">${tot}</td>`;
-        html += `<td><span class="badge ${allOk?'ok':'bad'}">${allOk?'Hazır':'Eksik'}</span></td></tr>`;
+        html += `<td><span class="badge ${allReady?'ok':'bad'}">${allReady?'✓ Hazır':'✗ Eksik'}</span></td></tr>`;
       });
       html += `</tbody></table>`;
     }
