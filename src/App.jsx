@@ -2948,7 +2948,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         ANA_IDS.forEach(pid => {
           const m = models.find(x=>x.pid===pid);
           if (!m) { html += `<td style="text-align:center;color:#ccc">—</td>`; return; }
-          const lbl = m.ok ? (m.daysEarly>0?`✓ ${m.daysEarly}g önce`:"✓ zamanında") : (m.daysEarly!==null?`✗ ${Math.abs(m.daysEarly)}g geç`:"✗ yetişemez");
+          const lbl = m.ok ? (m.readyDate===today?"✓ stok yeterli":m.daysEarly>0?`✓ ${m.daysEarly}g önce`:"✓ zamanında") : (m.daysEarly!==null?`✗ ${Math.abs(m.daysEarly)}g geç`:"✗ yetişemez");
           html += `<td style="text-align:center;color:${m.ok?'#16a34a':'#dc2626'};font-weight:500;font-size:12px">${m.target} adet<br><span style="font-size:11px">${lbl}</span></td>`;
         });
         html += `<td><span class="badge ${allReady?'ok':'bad'}">${allReady?'✓ Hazır':'✗ Eksik'}</span></td></tr>`;
@@ -3238,7 +3238,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                               <span style={{fontSize:"10px",color:"var(--color-text-secondary)",flex:1}}>{kisaAd(p.nameTR)}</span>
                               {m.ok ? (
                                 <span style={{fontSize:"10px",color:"#16a34a",fontWeight:500}}>
-                                  ✓ {m.daysEarly>0?m.daysEarly+" gün önce":"zamanında"}
+                                  ✓ {m.readyDate===today?"stok yeterli":m.daysEarly>0?m.daysEarly+" gün önce":"zamanında"}
                                 </span>
                               ) : (
                                 <span style={{fontSize:"10px",color:"#dc2626",fontWeight:500}}>
