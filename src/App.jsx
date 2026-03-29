@@ -2783,7 +2783,9 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           if (!readyDate && simStock >= target) readyDate = d;
         }
         const daysEarly = readyDate && readyDate <= c.date
-          ? calDays.filter(dd => dd >= readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length
+          ? calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length
+          : readyDate && readyDate > c.date
+          ? -calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length
           : null;
         const diff = (stockCalc[pid]||0) - target;
         if (diff < worstDiff) { worstDiff = diff; worstPid = pid; }
@@ -3179,9 +3181,13 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(kpi.shipReadiness.length,4)},1fr)`,gap:8}}>
                   {kpi.shipReadiness.map(({container:c, allReady, models, worstPid}) => {
                     const statusC = allReady?"#16a34a":"#dc2626";
+                    const daysToShip = calDays.filter(dd => dd >= today && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
                     return (
                       <div key={c.id} style={{borderLeft:`3px solid ${statusC}`,paddingLeft:8}}>
-                        <div style={{fontSize:"12px",fontWeight:600,marginBottom:3}}>{new Date(c.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})}</div>
+                        <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:3}}>
+                          <span style={{fontSize:"12px",fontWeight:600}}>{new Date(c.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})}</span>
+                          <span style={{fontSize:"10px",fontWeight:500,color:daysToShip<=3?"#dc2626":"var(--color-text-tertiary)",background:daysToShip<=3?"#fef2f2":"var(--color-background-secondary)",padding:"1px 6px",borderRadius:3}}>{daysToShip} iş günü</span>
+                        </div>
                         {models.map(m => {
                           const p = anaProducts.find(x=>x.id===m.pid);
                           if (!p) return null;
@@ -3195,7 +3201,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                                 </span>
                               ) : (
                                 <span style={{fontSize:"10px",color:"#dc2626",fontWeight:500}}>
-                                  ✗ {m.readyDate ? new Date(m.readyDate+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"2-digit"}) : "yetişemez"}
+                                  ✗ {m.daysEarly!==null ? Math.abs(m.daysEarly)+" gün geç" : "yetişemez"}
                                 </span>
                               )}
                             </div>
