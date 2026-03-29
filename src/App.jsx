@@ -2492,6 +2492,14 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const holidays = useMemo(() => new Set(ms.capacity?.holidays || []), [ms.capacity]);
   const isOffDay = d => isWeekend(d) || holidays.has(d);
 
+  // GER giriş sınırı: bugün ve 5 iş günü öncesine kadar
+  const gerMinDate = useMemo(() => {
+    let count = 0; const d = new Date(today);
+    while (count < 5) { d.setDate(d.getDate()-1); const ds=d.toISOString().slice(0,10); if (!isWeekend(ds) && !holidays.has(ds)) count++; }
+    return d.toISOString().slice(0,10);
+  }, [today, holidays]);
+  const canEditGer = d => d >= gerMinDate && d <= today;
+
   const generateAutoPlan = () => {
     const activeShips = allContainers.filter(c => !c.shipped);
     if (!activeShips.length) { alert("Aktif sevkiyat yok"); return; }
@@ -2798,61 +2806,71 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
       {/* Sevkiyat hazırlık durumu — tüm aktif sevkiyatlar, PLN + GER */}
       {shipStatus.length > 0 && (
-        <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(shipStatus.length,4)},minmax(0,1fr))`,gap:6,marginBottom:"1rem"}}>
+        <div style={{display:"grid",gridTemplateColumns:`repeat(${Math.min(shipStatus.length,4)},minmax(0,1fr))`,gap:8,marginBottom:"1rem"}}>
           {shipStatus.map(({container:c, results}) => {
             const entries = Object.entries(results);
             const allOkP  = entries.length > 0 && entries.every(([,r]) => r.okPln);
             const noneOkP = entries.length > 0 && entries.every(([,r]) => !r.okPln);
             const allOkG  = entries.length > 0 && entries.every(([,r]) => r.okGer);
             const noneOkG = entries.length > 0 && entries.every(([,r]) => !r.okGer);
-            const borderC = allOkP?"var(--color-border-success)":noneOkP?"var(--color-border-danger)":"var(--color-border-warning)";
+            // Kalan iş günü
+            const daysRemaining = calDays.filter(dd => dd >= today && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
+            const isUrgent = daysRemaining <= 3;
+            const statusColor = allOkP?"#16a34a":noneOkP?"#dc2626":"#f59e0b";
+            const statusBg = allOkP?"#dcfce7":noneOkP?"#fef2f2":"#fefce8";
             const badgeInfo = (allOk,noneOk) => {
-              const txt = allOk?"var(--color-text-success)":noneOk?"var(--color-text-danger)":"var(--color-text-warning)";
-              const bg  = allOk?"var(--color-background-success)":noneOk?"var(--color-background-danger)":"var(--color-background-warning)";
-              const lbl = allOk?"Yetişecek":noneOk?"Yetişemeyecek":"Kısmen";
+              const txt = allOk?"#16a34a":noneOk?"#dc2626":"#f59e0b";
+              const bg  = allOk?"#dcfce7":noneOk?"#fef2f2":"#fefce8";
+              const lbl = allOk?"✓ Yetişecek":noneOk?"✗ Yetişemeyecek":"⚠ Kısmen";
               return {txt,bg,lbl};
             };
             const bP = badgeInfo(allOkP,noneOkP);
             const bG = badgeInfo(allOkG,noneOkG);
             return (
-              <div key={c.id} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"9px 10px",border:`0.5px solid ${borderC}`}}>
-                <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
-                  <div style={{fontSize:"11px",fontWeight:500}}>{new Date(c.date).toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})} sevkiyatı</div>
+              <div key={c.id} style={{background:"var(--color-background-primary)",borderRadius:10,padding:0,border:`1px solid var(--color-border-tertiary)`,borderLeft:`4px solid ${statusColor}`,overflow:"hidden"}}>
+                {/* Kart başlık */}
+                <div style={{background:statusBg,padding:"10px 12px 8px",borderBottom:`1px solid var(--color-border-tertiary)`}}>
+                  <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:4}}>
+                    <span style={{fontSize:"14px",fontWeight:600,color:"var(--color-text-primary)"}}>{new Date(c.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"long"})}</span>
+                    <span style={{fontSize:"11px",fontWeight:600,color:isUrgent?statusColor:"var(--color-text-secondary)",background:isUrgent?"rgba(220,38,38,0.1)":"var(--color-background-secondary)",padding:"2px 8px",borderRadius:4}}>{daysRemaining} iş günü</span>
+                  </div>
+                  <div style={{display:"flex",gap:6}}>
+                    <span style={{fontSize:"11px",fontWeight:600,color:bP.txt,background:bP.bg,padding:"2px 8px",borderRadius:4,border:`1px solid ${bP.txt}22`}}>PLN: {bP.lbl}</span>
+                    <span style={{fontSize:"11px",fontWeight:600,color:bG.txt,background:bG.bg,padding:"2px 8px",borderRadius:4,border:`1px solid ${bG.txt}22`}}>GER: {bG.lbl}</span>
+                  </div>
                 </div>
-                <div style={{display:"flex",gap:4,marginBottom:6}}>
-                  <span style={{fontSize:"9px",fontWeight:600,color:bP.txt,background:bP.bg,padding:"1px 5px",borderRadius:3}}>PLN: {bP.lbl}</span>
-                  <span style={{fontSize:"9px",fontWeight:600,color:bG.txt,background:bG.bg,padding:"1px 5px",borderRadius:3}}>GER: {bG.lbl}</span>
-                </div>
+                {/* Kart içerik */}
+                <div style={{padding:"8px 12px 10px"}}>
                 {entries.map(([pid,r]) => {
                   const p = anaProducts.find(x => x.id===Number(pid));
                   if (!p) return null;
                   const pctP = r.target > 0 ? Math.min(100,Math.round((r.availPln/r.target)*100)) : 0;
                   const pctG = r.target > 0 ? Math.min(100,Math.round((r.availGer/r.target)*100)) : 0;
                   return (
-                    <div key={pid} style={{marginBottom:5}}>
-                      <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}>
-                        <div style={{width:6,height:6,borderRadius:"50%",background:p.color}}/>
-                        <span style={{fontSize:"10px",color:"var(--color-text-secondary)",flex:1}}>{kisaAd(p.nameTR)}</span>
-                        <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>hedef: {r.target}</span>
+                    <div key={pid} style={{marginBottom:6}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:3}}>
+                        <div style={{width:8,height:8,borderRadius:"50%",background:p.color}}/>
+                        <span style={{fontSize:"11px",fontWeight:500,color:"var(--color-text-primary)",flex:1}}>{kisaAd(p.nameTR)}</span>
+                        <span style={{fontSize:"11px",fontWeight:600,color:"var(--color-text-secondary)"}}>hedef: {r.target}</span>
                       </div>
-                      {/* PLN satırı */}
-                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10,marginBottom:1}}>
-                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>PLN</span>
-                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
-                          <div style={{height:"100%",width:`${pctP}%`,background:r.okPln?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
+                      {/* PLN bar */}
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:12,marginBottom:2}}>
+                        <span style={{fontSize:"10px",color:"var(--color-text-tertiary)",width:24,fontWeight:500}}>PLN</span>
+                        <div style={{flex:1,height:5,background:"var(--color-border-tertiary)",borderRadius:3}}>
+                          <div style={{height:"100%",width:`${pctP}%`,background:r.okPln?"#16a34a":"#dc2626",borderRadius:3,transition:"width 0.3s"}}/>
                         </div>
-                        <span style={{fontSize:"10px",fontWeight:500,color:r.okPln?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
-                          {r.availPln}/{r.target} ({r.diffPln>=0?"+":""}{r.diffPln})
+                        <span style={{fontSize:"11px",fontWeight:600,color:r.okPln?"#16a34a":"#dc2626",minWidth:62,textAlign:"right"}}>
+                          {r.availPln}/{r.target} <span style={{fontSize:"10px"}}>({r.diffPln>=0?"+":""}{r.diffPln})</span>
                         </span>
                       </div>
-                      {/* GER satırı */}
-                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10}}>
-                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>GER</span>
-                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
-                          <div style={{height:"100%",width:`${pctG}%`,background:r.okGer?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
+                      {/* GER bar */}
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:12}}>
+                        <span style={{fontSize:"10px",color:"var(--color-text-tertiary)",width:24,fontWeight:500}}>GER</span>
+                        <div style={{flex:1,height:5,background:"var(--color-border-tertiary)",borderRadius:3}}>
+                          <div style={{height:"100%",width:`${pctG}%`,background:r.okGer?"#16a34a":"#dc2626",borderRadius:3,transition:"width 0.3s"}}/>
                         </div>
-                        <span style={{fontSize:"10px",fontWeight:500,color:r.okGer?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
-                          {r.availGer}/{r.target} ({r.diffGer>=0?"+":""}{r.diffGer})
+                        <span style={{fontSize:"11px",fontWeight:600,color:r.okGer?"#16a34a":"#dc2626",minWidth:62,textAlign:"right"}}>
+                          {r.availGer}/{r.target} <span style={{fontSize:"10px"}}>({r.diffGer>=0?"+":""}{r.diffGer})</span>
                         </span>
                       </div>
                     </div>
@@ -2870,32 +2888,33 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                   const pctTP = totTarget > 0 ? Math.min(100,Math.round((totAvailP/totTarget)*100)) : 0;
                   const pctTG = totTarget > 0 ? Math.min(100,Math.round((totAvailG/totTarget)*100)) : 0;
                   return (
-                    <div style={{borderTop:"1px solid var(--color-border-tertiary)",paddingTop:5,marginTop:2}}>
-                      <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:2}}>
-                        <span style={{fontSize:"10px",fontWeight:600,color:"var(--color-text-primary)",flex:1}}>Toplam</span>
-                        <span style={{fontSize:"10px",fontWeight:500,color:"var(--color-text-tertiary)"}}>hedef: {totTarget}</span>
+                    <div style={{borderTop:"1.5px solid var(--color-border-secondary)",paddingTop:6,marginTop:4}}>
+                      <div style={{display:"flex",alignItems:"center",gap:4,marginBottom:3}}>
+                        <span style={{fontSize:"12px",fontWeight:700,color:"var(--color-text-primary)",flex:1}}>TOPLAM</span>
+                        <span style={{fontSize:"12px",fontWeight:700,color:"var(--color-text-secondary)"}}>{totTarget} adet</span>
                       </div>
-                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10,marginBottom:1}}>
-                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>PLN</span>
-                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
-                          <div style={{height:"100%",width:`${pctTP}%`,background:totOkP?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:12,marginBottom:2}}>
+                        <span style={{fontSize:"10px",color:"var(--color-text-tertiary)",width:24,fontWeight:500}}>PLN</span>
+                        <div style={{flex:1,height:5,background:"var(--color-border-tertiary)",borderRadius:3}}>
+                          <div style={{height:"100%",width:`${pctTP}%`,background:totOkP?"#16a34a":"#dc2626",borderRadius:3,transition:"width 0.3s"}}/>
                         </div>
-                        <span style={{fontSize:"10px",fontWeight:600,color:totOkP?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
-                          {totAvailP}/{totTarget} ({totDiffP>=0?"+":""}{totDiffP})
+                        <span style={{fontSize:"11px",fontWeight:700,color:totOkP?"#16a34a":"#dc2626",minWidth:62,textAlign:"right"}}>
+                          {totAvailP}/{totTarget} <span style={{fontSize:"10px"}}>({totDiffP>=0?"+":""}{totDiffP})</span>
                         </span>
                       </div>
-                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:10}}>
-                        <span style={{fontSize:"9px",color:"var(--color-text-tertiary)",width:22}}>GER</span>
-                        <div style={{flex:1,height:3,background:"var(--color-border-tertiary)",borderRadius:2}}>
-                          <div style={{height:"100%",width:`${pctTG}%`,background:totOkG?"var(--color-background-success)":"var(--color-background-danger)",borderRadius:2,transition:"width 0.3s"}}/>
+                      <div style={{display:"flex",alignItems:"center",gap:4,paddingLeft:12}}>
+                        <span style={{fontSize:"10px",color:"var(--color-text-tertiary)",width:24,fontWeight:500}}>GER</span>
+                        <div style={{flex:1,height:5,background:"var(--color-border-tertiary)",borderRadius:3}}>
+                          <div style={{height:"100%",width:`${pctTG}%`,background:totOkG?"#16a34a":"#dc2626",borderRadius:3,transition:"width 0.3s"}}/>
                         </div>
-                        <span style={{fontSize:"10px",fontWeight:600,color:totOkG?"var(--color-text-success)":"var(--color-text-danger)",minWidth:56,textAlign:"right"}}>
-                          {totAvailG}/{totTarget} ({totDiffG>=0?"+":""}{totDiffG})
+                        <span style={{fontSize:"11px",fontWeight:700,color:totOkG?"#16a34a":"#dc2626",minWidth:62,textAlign:"right"}}>
+                          {totAvailG}/{totTarget} <span style={{fontSize:"10px"}}>({totDiffG>=0?"+":""}{totDiffG})</span>
                         </span>
                       </div>
                     </div>
                   );
                 })()}
+                </div>
               </div>
             );
           })}
@@ -2977,15 +2996,19 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                       const barC = pct>=100?"var(--color-background-success)":pct>=60?"var(--color-background-warning)":"var(--color-background-danger)";
                       return (
                         <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"top",paddingTop:1}}>
-                          <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>ger</div>
-                          {canActual
-                            ? <input key={d+"-a-"+pid+"-"+(av||0)} type="number" min="0" defaultValue={av!==undefined&&av!==0?av:""} placeholder="—" onBlur={e=>updateCell(d,pid,"actual",e.target.value)}
-                                style={{...INP,color:behind?"var(--color-text-danger)":av?"var(--color-text-primary)":"var(--color-text-tertiary)",borderBottom:behind?"1px solid var(--color-border-danger)":""}}/>
-                            : <span style={{fontSize:"12px",color:behind?"var(--color-text-danger)":"var(--color-text-secondary)"}}>{av!==undefined?av:"—"}</span>
-                          }
-                          {target>0 && <div style={{height:2,background:"var(--color-border-tertiary)",borderRadius:1,margin:"2px 3px 0"}}>
-                            <div style={{height:"100%",width:`${pct}%`,background:barC,borderRadius:1}}/>
-                          </div>}
+                          {d > today ? (
+                            <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2,padding:"2px 0"}}>&nbsp;</div>
+                          ) : (<>
+                            <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>ger</div>
+                            {canActual && canEditGer(d)
+                              ? <input key={d+"-a-"+pid+"-"+(av||0)} type="number" min="0" defaultValue={av!==undefined&&av!==0?av:""} placeholder="—" onBlur={e=>updateCell(d,pid,"actual",e.target.value)}
+                                  style={{...INP,color:behind?"var(--color-text-danger)":av?"var(--color-text-primary)":"var(--color-text-tertiary)",borderBottom:behind?"1px solid var(--color-border-danger)":""}}/>
+                              : <span style={{fontSize:"12px",color:behind?"var(--color-text-danger)":"var(--color-text-secondary)"}}>{av!==undefined?av:"—"}</span>
+                            }
+                            {target>0 && <div style={{height:2,background:"var(--color-border-tertiary)",borderRadius:1,margin:"2px 3px 0"}}>
+                              <div style={{height:"100%",width:`${pct}%`,background:barC,borderRadius:1}}/>
+                            </div>}
+                          </>)}
                         </td>
                       );
                     })}
