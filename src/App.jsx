@@ -2811,29 +2811,45 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         const target = Number(q[pid]) || 0;
         if (!target) return;
 
-        // Sevkiyat günündeki stok — sevkiyat düşülmeden ÖNCE yeterli mi?
-        // Sevkiyattan önceki günlere bakarak ne zaman target'a ulaşıldığını bul
-        let readyDate = null;
-        let simBeforeShip = stockCalc[pid] || 0;
+        // Aşama 1: Üretimsiz kontrol — sadece stok − aradaki sevkiyatlar
+        let noProductionOk = true;
+        let simNoProd = stockCalc[pid] || 0;
         for (const d of simDays) {
           if (d > c.date) break;
-          if (d > today) simBeforeShip += Number(days[d]?.planned?.[pid]) || 0;
-          // Aradaki DAHA ÖNCEKİ sevkiyatların miktarlarını düş (bu sevkiyat hariç)
-          if (shipQtyMap[d] && d < c.date) simBeforeShip -= (shipQtyMap[d][pid] || 0);
-          // Stok hedefe ulaştıysa readyDate set et, düştüyse sıfırla
-          if (simBeforeShip >= target) { if (!readyDate) readyDate = d; }
-          else readyDate = null;
+          if (shipQtyMap[d] && d < c.date) simNoProd -= (shipQtyMap[d][pid] || 0);
+          if (simNoProd < target) { noProductionOk = false; break; }
         }
 
+        // Aşama 2: Üretimli simülasyon — gün gün stok takibi
+        let readyDate = null;
+        let simStock = stockCalc[pid] || 0;
+        for (const d of simDays) {
+          if (d > today) simStock += Number(days[d]?.planned?.[pid]) || 0;
+          if (shipQtyMap[d] && d < c.date) simStock -= (shipQtyMap[d][pid] || 0);
+          if (simStock >= target) { if (!readyDate) readyDate = d; }
+          else readyDate = null;
+          if (d >= c.date && readyDate) break;
+        }
+        // readyDate hâlâ null ise sevkiyattan sonrasına bak (geç kalma)
+        if (!readyDate) {
+          simStock = stockCalc[pid] || 0;
+          for (const d of simDays) {
+            if (d > today) simStock += Number(days[d]?.planned?.[pid]) || 0;
+            if (shipQtyMap[d]) simStock -= (shipQtyMap[d][pid] || 0);
+            if (d > c.date && simStock >= target) { readyDate = d; break; }
+          }
+        }
+
+        const ok = readyDate && readyDate <= c.date;
         const daysEarly = readyDate && readyDate <= c.date
           ? calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length
           : readyDate && readyDate > c.date
           ? -calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length
           : null;
-        const diff = simBeforeShip - target;
+        const diff = simStock - target;
         if (diff < worstDiff) { worstDiff = diff; worstPid = pid; }
-        if (!readyDate || readyDate > c.date) allReady = false;
-        models.push({ pid, target, readyDate, daysEarly, ok: readyDate && readyDate <= c.date });
+        if (!ok) allReady = false;
+        models.push({ pid, target, readyDate, daysEarly, ok, noProductionOk });
       });
       return { container: c, allReady, models, worstPid, worstDiff };
     });
@@ -2948,7 +2964,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         ANA_IDS.forEach(pid => {
           const m = models.find(x=>x.pid===pid);
           if (!m) { html += `<td style="text-align:center;color:#ccc">—</td>`; return; }
-          const lbl = m.ok ? (m.readyDate===today?"✓ stok yeterli":m.daysEarly>0?`✓ ${m.daysEarly}g önce`:"✓ zamanında") : (m.daysEarly!==null?`✗ ${Math.abs(m.daysEarly)}g geç`:"✗ yetişemez");
+          const lbl = m.ok ? (m.daysEarly>0?`✓ ${m.daysEarly}g önce`:"✓ zamanında") : (m.daysEarly!==null?`✗ ${Math.abs(m.daysEarly)}g geç`:"✗ yetişemez");
           html += `<td style="text-align:center;color:${m.ok?'#16a34a':'#dc2626'};font-weight:500;font-size:12px">${m.target} adet<br><span style="font-size:11px">${lbl}</span></td>`;
         });
         html += `<td><span class="badge ${allReady?'ok':'bad'}">${allReady?'✓ Hazır':'✗ Eksik'}</span></td></tr>`;
@@ -3238,7 +3254,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                               <span style={{fontSize:"10px",color:"var(--color-text-secondary)",flex:1}}>{kisaAd(p.nameTR)}</span>
                               {m.ok ? (
                                 <span style={{fontSize:"10px",color:"#16a34a",fontWeight:500}}>
-                                  ✓ {m.readyDate===today?"stok yeterli":m.daysEarly>0?m.daysEarly+" gün önce":"zamanında"}
+                                  ✓ {m.daysEarly>0?m.daysEarly+" gün önce":"zamanında"}
                                 </span>
                               ) : (
                                 <span style={{fontSize:"10px",color:"#dc2626",fontWeight:500}}>
