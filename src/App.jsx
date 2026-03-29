@@ -2765,41 +2765,8 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const avgDaily = capDays > 0 ? (capUsed / capDays).toFixed(1) : 0;
     const capUtilPct = capDays > 0 ? Math.round((capUsed / (capDays * hatMax)) * 100) : 0;
 
-    // 3) Sevkiyat hazırlık — tahmini hazır olma günü (PLN bazlı)
-    // Gün gün stok simüle et: üretim ekle, sevkiyat günlerinde düş
+    // 3) Sevkiyat hazırlık — kümülatif hedef mantığı
     const activeShipsSorted = allContainers.filter(c => !c.shipped).slice().sort((a,b) => a.date.localeCompare(b.date));
-    const shipQtyMap = {}; // date → { pid → qty }
-    activeShipsSorted.forEach(c => {
-      const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
-      if (!shipQtyMap[c.date]) shipQtyMap[c.date] = {};
-      ANA_IDS.forEach(pid => {
-        shipQtyMap[c.date][pid] = (shipQtyMap[c.date][pid]||0) + (Number(q[pid])||0);
-      });
-    });
-
-    // Tüm gelecek günleri sırala
-    const simDays = Object.keys({ ...days, ...shipQtyMap })
-      .filter(d => d >= today)
-      .concat(activeShipsSorted.map(c => c.date))
-      .filter((v,i,a) => a.indexOf(v)===i)
-      .sort();
-
-    // Her model için gün gün simülasyon
-    const simStockByDay = {}; // pid → { date → stock }
-    ANA_IDS.forEach(pid => {
-      let sim = stockCalc[pid] || 0;
-      const track = {};
-      track[today] = sim;
-      for (const d of simDays) {
-        if (d > today) {
-          sim += Number(days[d]?.planned?.[pid]) || 0;
-        }
-        // Sevkiyat günü: miktarları düş
-        if (shipQtyMap[d]) sim -= (shipQtyMap[d][pid] || 0);
-        track[d] = sim;
-      }
-      simStockByDay[pid] = track;
-    });
 
     // Her sevkiyat için hazırlık durumu
     const shipReadiness = activeShipsSorted.map(c => {
@@ -2811,59 +2778,27 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         const target = Number(q[pid]) || 0;
         if (!target) return;
 
-        // Aşama 1: Üretimsiz kontrol — sadece stok − aradaki sevkiyatlar
-        let noProductionOk = true;
-        let simNoProd = stockCalc[pid] || 0;
-        for (const d of simDays) {
-          if (d > c.date) break;
-          if (shipQtyMap[d] && d < c.date) simNoProd -= (shipQtyMap[d][pid] || 0);
-          if (simNoProd < target) { noProductionOk = false; break; }
-        }
-
-        // Gün gün stok simülasyonu
-        const dailyStock = [];
-        let sim = stockCalc[pid] || 0;
-        for (const d of simDays) {
-          if (d > today) sim += Number(days[d]?.planned?.[pid]) || 0;
-          if (shipQtyMap[d] && d < c.date) sim -= (shipQtyMap[d][pid] || 0);
-          dailyStock.push({ d, stock: sim });
-          if (d > c.date) break;
-        }
-
-        const shipDayIdx = dailyStock.findIndex(x => x.d >= c.date);
-        const finalStock = shipDayIdx >= 0 ? dailyStock[shipDayIdx].stock : (dailyStock[dailyStock.length-1]?.stock || 0);
+        // Plandan bak: sevkiyat tarihine kadar bu modelin en son üretildiği gün
         let readyDate = null;
-        let ok = false;
-
-        if (finalStock >= target) {
-          ok = true;
-          // Geriye doğru bak: stokun target altına SON düştüğü günün ertesi = son kritik üretim
-          readyDate = dailyStock[0]?.d || today; // default: en baştan hazır
-          for (let i = (shipDayIdx >= 0 ? shipDayIdx : dailyStock.length - 1); i >= 1; i--) {
-            if (dailyStock[i-1].stock < target) {
-              readyDate = dailyStock[i].d;
-              break;
-            }
-          }
+        const planDays = Object.entries(days)
+          .filter(([d, day]) => d <= c.date && Number(day.planned?.[pid]) > 0)
+          .sort((a,b) => a[0].localeCompare(b[0]));
+        
+        if (planDays.length > 0) {
+          readyDate = planDays[planDays.length - 1][0]; // son üretim günü
         } else {
-          // Sevkiyattan sonra ne zaman yetişecek
-          let simLate = stockCalc[pid] || 0;
-          for (const d of simDays) {
-            if (d > today) simLate += Number(days[d]?.planned?.[pid]) || 0;
-            if (shipQtyMap[d]) simLate -= (shipQtyMap[d][pid] || 0);
-            if (d > c.date && simLate >= target) { readyDate = d; break; }
-          }
+          // Plan yok, stok zaten yeterli mi?
+          if ((stockCalc[pid] || 0) >= target) readyDate = today;
         }
 
-        const daysEarly = readyDate && ok
+        const ok = readyDate && readyDate <= c.date;
+        const daysEarly = readyDate && readyDate <= c.date
           ? calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length
-          : readyDate && !ok
-          ? -calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length
-          : null;
-        const diff = finalStock - target;
-        if (diff < worstDiff) { worstDiff = diff; worstPid = pid; }
+          : null; // plan yoksa veya geç kalıyorsa null
         if (!ok) allReady = false;
-        models.push({ pid, target, readyDate, daysEarly, ok, noProductionOk });
+        const diff = -target; // basit gösterim
+        if (diff < worstDiff) { worstDiff = diff; worstPid = pid; }
+        models.push({ pid, target, readyDate, daysEarly, ok });
       });
       return { container: c, allReady, models, worstPid, worstDiff };
     });
