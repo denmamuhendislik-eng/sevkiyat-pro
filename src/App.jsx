@@ -2765,10 +2765,15 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const avgDaily = capDays > 0 ? (capUsed / capDays).toFixed(1) : 0;
     const capUtilPct = capDays > 0 ? Math.round((capUsed / (capDays * hatMax)) * 100) : 0;
 
-    // 3) Sevkiyat hazırlık — kümülatif hedef mantığı
+    // 3) Sevkiyat hazırlık — FIFO kümülatif mantık
+    // İlk üretilen ilk gider: kümülatif stok vs kümülatif hedef
     const activeShipsSorted = allContainers.filter(c => !c.shipped).slice().sort((a,b) => a.date.localeCompare(b.date));
 
-    // Her sevkiyat için hazırlık durumu
+    // Tüm PLN günlerini sırala (bugün dahil, gelecek)
+    const allPlanDays = Object.entries(days)
+      .filter(([d, day]) => ANA_IDS.some(pid => Number(day.planned?.[pid]) > 0))
+      .sort((a,b) => a[0].localeCompare(b[0]));
+
     const shipReadiness = activeShipsSorted.map(c => {
       const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
       let allReady = true;
@@ -2778,26 +2783,40 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         const target = Number(q[pid]) || 0;
         if (!target) return;
 
-        // Plandan bak: sevkiyat tarihine kadar bu modelin en son üretildiği gün
+        // FIFO: bu sevkiyata kadar (dahil) tüm aktif sevkiyatların kümülatif hedefi
+        let cumTarget = 0;
+        for (const sc of activeShipsSorted) {
+          cumTarget += Number(yearsData[selectedYear]?.quantities?.[sc.id]?.[pid]) || 0;
+          if (sc.id === c.id) break;
+        }
+
+        // Gün gün kümülatif stok: başlangıç + PLN ekle (sevkiyat düşülmez)
+        let cumStock = stockCalc[pid] || 0;
         let readyDate = null;
-        const planDays = Object.entries(days)
-          .filter(([d, day]) => d <= c.date && Number(day.planned?.[pid]) > 0)
-          .sort((a,b) => a[0].localeCompare(b[0]));
-        
-        if (planDays.length > 0) {
-          readyDate = planDays[planDays.length - 1][0]; // son üretim günü
+
+        // Bugün zaten yeterliyse (hiç üretim olmadan)
+        if (cumStock >= cumTarget) {
+          readyDate = today;
         } else {
-          // Plan yok, stok zaten yeterli mi?
-          if ((stockCalc[pid] || 0) >= target) readyDate = today;
+          // PLN günlerini tara, kümülatif hedefe ne zaman ulaşılıyor
+          for (const [d, day] of allPlanDays) {
+            const pln = Number(day.planned?.[pid]) || 0;
+            if (pln > 0) {
+              cumStock += pln;
+              if (cumStock >= cumTarget) { readyDate = d; break; }
+            }
+          }
         }
 
         const ok = readyDate && readyDate <= c.date;
-        const daysEarly = readyDate && readyDate <= c.date
+        const daysEarly = ok
           ? calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length
-          : null; // plan yoksa veya geç kalıyorsa null
-        if (!ok) allReady = false;
-        const diff = -target; // basit gösterim
+          : readyDate
+          ? -calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length
+          : null;
+        const diff = cumStock - cumTarget;
         if (diff < worstDiff) { worstDiff = diff; worstPid = pid; }
+        if (!ok) allReady = false;
         models.push({ pid, target, readyDate, daysEarly, ok });
       });
       return { container: c, allReady, models, worstPid, worstDiff };
