@@ -1542,7 +1542,7 @@ export default function App() {
                           const stdP = packingStandards[p.id];
                           const evNum = parseInt(editValue)||0;
                           const notMultiple = stdP?.qtyPerPallet>0 && evNum>0 && evNum%stdP.qtyPerPallet!==0;
-                          const unshippedCount = yd.containers.filter(cc => !isShipped(cc)).length;
+                          const unshippedCount = yd.containers.filter(cc => !cc.shipped).length;
                           const suggest = unshippedCount > 0 && s.toBePlanned > 0 ? Math.ceil(s.toBePlanned / unshippedCount) : 0;
                           return <div>
                           <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${notMultiple?"#BA7517":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:notMultiple?"#FAEEDA":"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
