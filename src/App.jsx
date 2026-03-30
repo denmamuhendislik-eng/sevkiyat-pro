@@ -2777,17 +2777,16 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       dayEntries.forEach(([, day]) => {
         const p = Number(day.planned?.[pid]) || 0;
         const g = Number(day.actual?.[pid]) || 0;
-        if (p > 0) { pln += p; ger += g; daysWithPlan++; if (g >= p) daysOnTarget++; }
+        if (p > 0 || g > 0) { pln += p; ger += g; if(p>0) daysWithPlan++; if (p > 0 && g >= p) daysOnTarget++; }
       });
       compliance[pid] = { pln, ger, pct: pln > 0 ? Math.round((ger / pln) * 100) : null, daysWithPlan, daysOnTarget };
       totalPln += pln; totalGer += ger;
     });
     const overallCompliance = totalPln > 0 ? Math.round((totalGer / totalPln) * 100) : null;
 
-    // 2) Kapasite Kullanım Oranı — günlük ve genel
+    // 2) Kapasite Kullanım Oranı — GER varsa haftasonu dahil
     let capDays = 0, capUsed = 0;
     dayEntries.forEach(([d, day]) => {
-      if (isWeekend(d) || holidays.has(d)) return;
       const dayActual = ANA_IDS.reduce((s, pid) => s + (Number(day.actual?.[pid]) || 0), 0);
       if (dayActual > 0) { capDays++; capUsed += dayActual; }
     });
@@ -2955,7 +2954,18 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       }
     }
 
-    return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend, avgShipMargin, worstShipment, bestShipment, shipMargins, avgRealMargin, worstReal, bestReal, realMargins, slowestModel };
+    // 7) Ort. Günlük Talep = kalan üretim ihtiyacı / kalan iş günü
+    const activeShipsAll = allContainers.filter(c => !c.shipped);
+    let totalDemand = 0;
+    ANA_IDS.forEach(pid => {
+      const shipTotal = activeShipsAll.reduce((s,c) => s+(Number(yearsData[selectedYear]?.quantities?.[c.id]?.[pid])||0), 0);
+      totalDemand += Math.max(0, shipTotal - (stockCalc[pid]||0));
+    });
+    const lastShipDate = activeShipsAll.length > 0 ? activeShipsAll.sort((a,b)=>b.date.localeCompare(a.date))[0].date : today;
+    const remainWorkDays = calDays.filter(d => d >= today && d <= lastShipDate && !isWeekend(d) && !holidays.has(d)).length || 1;
+    const avgDailyDemand = (totalDemand / remainWorkDays).toFixed(1);
+
+    return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend, avgShipMargin, worstShipment, bestShipment, shipMargins, avgRealMargin, worstReal, bestReal, realMargins, slowestModel, avgDailyDemand, totalDemand, remainWorkDays };
   }, [ms, today, allContainers, yearsData, selectedYear, stockCalc, calDays, hatMax, holidays]);
 
   // --- Plan Güncelleme Uyarısı ---
@@ -3525,8 +3535,8 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 sub={kpi.overallCompliance!==null?`${kpiData.compliance[ANA_IDS[0]]?.daysOnTarget||0} gün hedefe ulaştı`:""} color={kpi.overallCompliance>=90?"#16a34a":kpi.overallCompliance>=70?"#f59e0b":"#dc2626"}/>
               <KCard title="Kapasite Kullanımı" value={kpi.capUtilPct+"%"}
                 sub={`Ort. ${kpi.avgDaily} adet/gün (${kpi.capDays} gün)`} color={kpi.capUtilPct>=80?"#16a34a":kpi.capUtilPct>=50?"#f59e0b":"#dc2626"}/>
-              <KCard title="Ort. Günlük Üretim" value={kpi.avgDaily}
-                sub={`Hat kapasitesi: ${hatMax}/gün`} color="var(--color-text-primary)"/>
+              <KCard title="Ort. Günlük Talep" value={kpi.avgDailyDemand+" adet"}
+                sub={`${kpi.totalDemand} adet / ${kpi.remainWorkDays} iş günü`} color={Number(kpi.avgDailyDemand)<=hatMax?"#16a34a":"#dc2626"}/>
               <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
                 <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:4}}>En Son Tamamlanan Model</div>
                 {kpi.slowestModel && kpi.slowestModel.pid ? (()=>{
