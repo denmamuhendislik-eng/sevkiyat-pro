@@ -725,6 +725,15 @@ export default function App() {
     return ap;
   },[products,getPStats,search]);
 
+  // Planlanacak kalan sevkiyat sayısı — dashboard ile birebir aynı hesap
+  const toplamKalanSvk = useMemo(() => {
+    const plannedNotShippedC = yd.containers.filter(c => !isShipped(c)).length;
+    const remainingKG = activeProducts.reduce((s,p) => { const st=getPStats(p.id); return s+Math.max(0,st.toBePlanned)*p.kg; }, 0);
+    const avgKGperC = (minKG+maxKG)/2;
+    const estRemainingC = remainingKG >= minKG ? (avgKGperC > 0 ? Math.ceil(remainingKG/avgKGperC) : 0) : 0;
+    return plannedNotShippedC + estRemainingC;
+  }, [yd, activeProducts, getPStats, minKG, maxKG]);
+
   const getProductGroup = useCallback(pid => {
     const s = getPStats(pid);
     if(s.toBePlanned>0) return {id:0,label:"Planlanacak",color:"#1D9E75",bg:"#f3faf7",bgZ:"#ddf0e5",bgSel:"#b8e0cc"};
@@ -1542,11 +1551,6 @@ export default function App() {
                           const stdP = packingStandards[p.id];
                           const evNum = parseInt(editValue)||0;
                           const notMultiple = stdP?.qtyPerPallet>0 && evNum>0 && evNum%stdP.qtyPerPallet!==0;
-                          const plannedNotShippedC = yd.containers.filter(cc => !isShipped(cc)).length;
-                          const remainingKG = activeProducts.reduce((ss,pp) => { const st=getPStats(pp.id); return ss+Math.max(0,st.toBePlanned)*pp.kg; }, 0);
-                          const avgKGperC = (minKG+maxKG)/2;
-                          const estRemainingC = remainingKG >= minKG ? (avgKGperC > 0 ? Math.ceil(remainingKG/avgKGperC) : 0) : 0;
-                          const toplamKalanSvk = plannedNotShippedC + estRemainingC;
                           const suggest = toplamKalanSvk > 0 && maxAllowed > 0 ? Math.ceil(maxAllowed / toplamKalanSvk) : 0;
                           return <div>
                           <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${notMultiple?"#BA7517":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:notMultiple?"#FAEEDA":"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
