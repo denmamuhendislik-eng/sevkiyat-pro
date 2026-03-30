@@ -2602,8 +2602,9 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         // model o aradaki sevkiyatta da gidiyor olmalı (yoksa erken üretme)
         const shortModels = [];
         ANA_IDS.forEach(pid => {
-          if (sd.targets[pid] <= 0) return; // bu sevkiyatta gitmiyor, atla
-          if (si > 0 && day <= shipDeadlines[si-1].date && shipDeadlines[si-1].targets[pid] <= 0) return; // önceki sevkiyatta gitmiyor, henüz üretme
+          // Bu sevkiyatta gitmiyor VE emniyet stoku da yoksa atla
+          if (sd.targets[pid] <= 0 && !(si === lastShipIdx && getSafetyStock(pid) > 0)) return;
+          if (si > 0 && day <= shipDeadlines[si-1].date && shipDeadlines[si-1].targets[pid] <= 0 && !(si === lastShipIdx && getSafetyStock(pid) > 0)) return; // önceki sevkiyatta gitmiyor, henüz üretme
           let cumTarget = 0;
           for (let sj = 0; sj <= si; sj++) cumTarget += shipDeadlines[sj].targets[pid];
           const safetyVal = si === lastShipIdx ? getSafetyStock(pid) : 0;
@@ -3928,7 +3929,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:"1.25rem"}}>
               {anaProducts.map(p => {
                 const s = autoPlanPreview.summary[p.id];
-                if (!s || !s.totalTarget) return null;
+                if (!s || (!s.totalTarget && !s.safety)) return null;
                 return (
                   <div key={p.id} style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"8px 10px"}}>
                     <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
