@@ -2875,7 +2875,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
     // b) Gerçekleşen (GER) — shipped sevkiyatlar için FIFO kümülatif
     // Sadece gerçek GER verisi girilmişse hesapla
-    const shippedContainers = allContainers.filter(c => c.shipped && !c.autoShipped).slice().sort((a,b) => a.date.localeCompare(b.date));
+    const shippedContainers = allContainers.filter(c => c.shipped && !c.autoShipped && ms.initDate && c.date >= ms.initDate).slice().sort((a,b) => a.date.localeCompare(b.date));
     const allGerDays = Object.entries(days)
       .filter(([, day]) => ANA_IDS.some(pid => Number(day.actual?.[pid]) > 0))
       .sort((a,b) => a[0].localeCompare(b[0]));
@@ -2906,9 +2906,10 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         }
         if (readyDate && readyDate <= c.date) {
           modelMargins[pid] = calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
-        } else {
-          modelMargins[pid] = readyDate ? -(calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length) : -99;
+        } else if (readyDate) {
+          modelMargins[pid] = -(calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length);
         }
+        // readyDate null → bu model için yeterli GER verisi yok, margin hesabına dahil etme
       });
       const margins = Object.values(modelMargins);
       if (!margins.length) return null;
@@ -2922,7 +2923,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       bestReal = realMargins.length > 0 ? realMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
 
       ANA_IDS.forEach(pid => {
-        const vals = realMargins.filter(r => r.modelMargins[pid] !== undefined).map(r => r.modelMargins[pid]);
+        const vals = realMargins.filter(r => r.modelMargins[pid] !== undefined && r.modelMargins[pid] > -50).map(r => r.modelMargins[pid]);
         if (vals.length > 0) modelAvgMargins[pid] = { avg: vals.reduce((s,v)=>s+v,0)/vals.length, count: vals.length };
       });
       slowestModel = Object.entries(modelAvgMargins).length > 0
