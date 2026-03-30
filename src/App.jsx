@@ -2990,22 +2990,35 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     };
   }, [ms, today, kpiData]);
 
-  // --- Haftalık İş Planı Çıktısı ---
+  // --- Haftalık İş Planı Çıktısı (2 hafta) ---
   const printWeeklyPlan = () => {
-    // Bu haftanın Pazartesi-Cuma günlerini bul (local timezone)
+    // Bu haftanın Pazartesi'ni bul (local timezone)
     const d = new Date(today+"T00:00:00");
     const dow = d.getDay();
     const mon = new Date(d); mon.setDate(mon.getDate() - (dow === 0 ? 6 : dow - 1));
-    const weekDays = [];
-    for (let i = 0; i < 5; i++) {
+
+    // 2 hafta: 14 gün topla, haftasonu planı varsa dahil et
+    const allDays14 = [];
+    for (let i = 0; i < 14; i++) {
       const wd = new Date(mon); wd.setDate(wd.getDate() + i);
-      weekDays.push(wd.toISOString().slice(0,10));
+      const ds = wd.getFullYear()+"-"+String(wd.getMonth()+1).padStart(2,"0")+"-"+String(wd.getDate()).padStart(2,"0");
+      const isWe = wd.getDay()===0||wd.getDay()===6;
+      const hasPlan = isWe && ANA_IDS.some(pid => Number(ms.days?.[ds]?.planned?.[pid]) > 0);
+      if (!isWe || hasPlan) allDays14.push(ds);
     }
-    const wStart = weekDays[0], wEnd = weekDays[4];
+    const wStart = allDays14[0], wEnd = allDays14[allDays14.length-1];
+
+    // Hafta 1 ve Hafta 2 ayır
+    const week1Mon = new Date(mon);
+    const week2Mon = new Date(mon); week2Mon.setDate(week2Mon.getDate()+7);
+    const w2Start = week2Mon.getFullYear()+"-"+String(week2Mon.getMonth()+1).padStart(2,"0")+"-"+String(week2Mon.getDate()).padStart(2,"0");
+    const week1Days = allDays14.filter(d => d < w2Start);
+    const week2Days = allDays14.filter(d => d >= w2Start);
 
     let html = `<html><head><title>Haftalık Montaj Planı</title><style>
       body{font-family:Arial,sans-serif;margin:20px;color:#222}
       h1{font-size:18px;margin:0 0 4px} h2{font-size:14px;margin:0 0 16px;color:#666;font-weight:normal}
+      h3{font-size:14px;margin:16px 0 8px}
       table{border-collapse:collapse;width:100%;margin-bottom:20px}
       th,td{border:1px solid #ccc;padding:8px 10px;font-size:13px}
       th{background:#f0f0f0;font-weight:600;text-align:center}
@@ -3013,47 +3026,62 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       .ok{background:#dcfce7;color:#16a34a} .warn{background:#fefce8;color:#f59e0b} .bad{background:#fef2f2;color:#dc2626}
       .ship{background:#dbeafe;color:#1d4ed8;font-weight:600;font-size:11px}
       .holiday{background:#fefce8;color:#a16207}
+      .weekend{background:#fffbeb;color:#92400e;font-size:10px}
       @media print{body{margin:10px} button{display:none}}
     </style></head><body>`;
     html += `<h1>🔧 Haftalık Montaj İş Planı</h1>`;
     html += `<h2>${new Date(wStart+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"long",year:"numeric"})} — ${new Date(wEnd+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"long",year:"numeric"})}</h2>`;
 
-    // Özet tablo
-    html += `<table><thead><tr><th style="text-align:left;min-width:120px">Model</th>`;
-    weekDays.forEach(wd => {
-      const isS = shipDates.has(wd), isH = holidays.has(wd);
-      const lbl = new Date(wd+"T00:00:00").toLocaleDateString("tr-TR",{weekday:"short",day:"2-digit",month:"2-digit"});
-      html += `<th>${isS?'<div class="ship">SEVKİYAT</div>':''}${isH?'<div class="holiday">TATİL</div>':''}${lbl}</th>`;
-    });
-    html += `<th>Hafta Toplam</th></tr></thead><tbody>`;
-
-    anaProducts.forEach(p => {
-      html += `<tr><td class="model" style="color:${p.color}">● ${kisaAd(p.nameTR)}<br><span style="font-weight:normal;font-size:11px;color:#888">max ${getModelMax(p.id)}/gün</span></td>`;
-      let weekTotal = 0;
+    const renderWeekTable = (weekDays, weekLabel) => {
+      if (!weekDays.length) return "";
+      let t = `<h3>${weekLabel}</h3>`;
+      t += `<table><thead><tr><th style="text-align:left;min-width:120px">Model</th>`;
       weekDays.forEach(wd => {
-        const v = ms.days?.[wd]?.planned?.[p.id];
-        const val = Number(v) || 0;
-        weekTotal += val;
-        html += `<td style="text-align:center;font-size:16px;font-weight:${val?'600':'400'};color:${val?'#222':'#ccc'}">${val || '—'}</td>`;
+        const isS = shipDates.has(wd), isH = holidays.has(wd);
+        const dt = new Date(wd+"T00:00:00");
+        const isWe = dt.getDay()===0||dt.getDay()===6;
+        const lbl = dt.toLocaleDateString("tr-TR",{weekday:"short",day:"2-digit",month:"2-digit"});
+        t += `<th${isWe?' style="background:#fffbeb"':''}>${isS?'<div class="ship">SEVKİYAT</div>':''}${isH?'<div class="holiday">TATİL</div>':''}${isWe&&!isS&&!isH?'<div class="weekend">H.SONU</div>':''}${lbl}</th>`;
       });
-      html += `<td style="text-align:center;font-weight:700;font-size:15px">${weekTotal}</td></tr>`;
-    });
+      t += `<th>Toplam</th></tr></thead><tbody>`;
 
-    // Hat kapasitesi satırı
-    html += `<tr style="border-top:2px solid #999"><td style="font-weight:600;color:#666">Hat Kapasitesi<br><span style="font-size:11px">max ${hatMax}/gün</span></td>`;
-    weekDays.forEach(wd => {
-      const total = anaProducts.reduce((s,p) => s+(Number(ms.days?.[wd]?.planned?.[p.id])||0), 0);
-      const over = total > hatMax;
-      html += `<td style="text-align:center;font-weight:600;color:${over?'#dc2626':'#222'}">${total || '—'}${over?' ⚠':''}</td>`;
-    });
-    const weekGrand = anaProducts.reduce((s,p) => { let t=0; weekDays.forEach(wd => t+=(Number(ms.days?.[wd]?.planned?.[p.id])||0)); return s+t; }, 0);
-    html += `<td style="text-align:center;font-weight:700">${weekGrand}</td></tr>`;
-    html += `</tbody></table>`;
+      anaProducts.forEach(p => {
+        t += `<tr><td class="model" style="color:${p.color}">● ${kisaAd(p.nameTR)}<br><span style="font-weight:normal;font-size:11px;color:#888">max ${getModelMax(p.id)}/gün</span></td>`;
+        let weekTotal = 0;
+        weekDays.forEach(wd => {
+          const dt = new Date(wd+"T00:00:00");
+          const isWe = dt.getDay()===0||dt.getDay()===6;
+          const v = ms.days?.[wd]?.planned?.[p.id];
+          const val = Number(v) || 0;
+          weekTotal += val;
+          t += `<td style="text-align:center;font-size:16px;font-weight:${val?'600':'400'};color:${val?'#222':'#ccc'}${isWe?';background:#fffbeb':''}">${val || '—'}</td>`;
+        });
+        t += `<td style="text-align:center;font-weight:700;font-size:15px">${weekTotal}</td></tr>`;
+      });
 
-    // Sevkiyat durumu — KPI shipReadiness verisini kullan
+      // Hat kapasitesi
+      t += `<tr style="border-top:2px solid #999"><td style="font-weight:600;color:#666">Hat Kapasitesi<br><span style="font-size:11px">max ${hatMax}/gün</span></td>`;
+      let weekGrand = 0;
+      weekDays.forEach(wd => {
+        const dt = new Date(wd+"T00:00:00");
+        const isWe = dt.getDay()===0||dt.getDay()===6;
+        const total = anaProducts.reduce((s,p) => s+(Number(ms.days?.[wd]?.planned?.[p.id])||0), 0);
+        const over = total > hatMax;
+        weekGrand += total;
+        t += `<td style="text-align:center;font-weight:600;color:${over?'#dc2626':'#222'}${isWe?';background:#fffbeb':''}">${total || '—'}${over?' ⚠':''}</td>`;
+      });
+      t += `<td style="text-align:center;font-weight:700">${weekGrand}</td></tr>`;
+      t += `</tbody></table>`;
+      return t;
+    };
+
+    html += renderWeekTable(week1Days, "Bu Hafta");
+    html += renderWeekTable(week2Days, "Gelecek Hafta");
+
+    // Sevkiyat durumu
     const kpi = kpiData;
     if (kpi.shipReadiness.length > 0) {
-      html += `<h3 style="font-size:14px;margin:16px 0 8px">Yaklaşan Sevkiyatlar</h3><table><thead><tr><th>Sevkiyat</th><th>Kalan</th>`;
+      html += `<h3>Yaklaşan Sevkiyatlar</h3><table><thead><tr><th>Sevkiyat</th><th>Kalan</th>`;
       ANA_IDS.forEach(pid => { const p=anaProducts.find(x=>x.id===pid); if(p) html+=`<th>${kisaAd(p.nameTR)}</th>`; });
       html += `<th>Durum</th></tr></thead><tbody>`;
       kpi.shipReadiness.forEach(({container:c, allReady, models}) => {
@@ -3221,7 +3249,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
           {isAdmin && <button onClick={generateAutoPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>🤖 Planı Güncelle</button>}
           {isAdmin && <button onClick={clearPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",color:"var(--color-text-danger)"}}>🗑 Planı Temizle</button>}
-          <button onClick={printWeeklyPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📄 Haftalık Plan</button>
+          <button onClick={printWeeklyPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📄 2 Haftalık Plan</button>
           <button onClick={printMonthlyPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📊 Aylık Plan</button>
         </div>
       </div>
