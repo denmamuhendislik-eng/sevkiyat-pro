@@ -2507,6 +2507,11 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const newMs = deepClone(ms);
     if (!newMs.days) newMs.days = {};
 
+    // Geçmiş günlerin PLN'lerine dokunma, sadece bugünden itibaren temizle
+    Object.entries(newMs.days).forEach(([date, day]) => {
+      if (date >= today) day.planned = {};
+    });
+
     // Sevkiyat bazlı hedefler (tarihe göre sıralı)
     const shipDeadlines = activeShips.map(c => ({
       date: c.date, id: c.id,
@@ -2928,6 +2933,38 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend, avgShipMargin, worstShipment, bestShipment, shipMargins, avgRealMargin, worstReal, bestReal, realMargins, slowestModel };
   }, [ms, today, allContainers, yearsData, selectedYear, stockCalc, calDays, hatMax, holidays]);
 
+  // --- Plan Güncelleme Uyarısı ---
+  const planAlert = useMemo(() => {
+    const days = ms.days || {};
+    // Geçmiş günlerde GER < PLN olan modeller ve toplam eksik
+    const shortfall = {};
+    let totalShortfall = 0;
+    Object.entries(days).forEach(([d, day]) => {
+      if (d >= today) return;
+      ANA_IDS.forEach(pid => {
+        const pln = Number(day.planned?.[pid]) || 0;
+        const ger = Number(day.actual?.[pid]) || 0;
+        if (pln > 0 && ger < pln) {
+          if (!shortfall[pid]) shortfall[pid] = { model: pid, diff: 0 };
+          shortfall[pid].diff += (pln - ger);
+          totalShortfall += (pln - ger);
+        }
+      });
+    });
+
+    // Riskli sevkiyatlar: shipStatus PLN'de yetişmeyen
+    const riskyShips = (kpiData.shipReadiness || []).filter(s => !s.allReady);
+
+    if (totalShortfall === 0 && riskyShips.length === 0) return null;
+
+    return {
+      shortfall: Object.values(shortfall).sort((a,b) => b.diff - a.diff),
+      totalShortfall,
+      riskyShips,
+      needsUpdate: totalShortfall > 0
+    };
+  }, [ms, today, kpiData]);
+
   // --- Haftalık İş Planı Çıktısı ---
   const printWeeklyPlan = () => {
     // Bu haftanın Pazartesi-Cuma günlerini bul (local timezone)
@@ -3043,11 +3080,44 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           {saving && <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
           {isAdmin && <button onClick={()=>{setTmpStock({...deepClone(ms.initialStock||{}),_date:ms.initDate||today});setShowStockEdit(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📦 Başlangıç Stoku</button>}
           {isAdmin && <button onClick={()=>{setTmpCap(deepClone(ms.capacity||{hatMax:8,modelMax:{}}));setShowSettings(true);}} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>⚙ Kapasite Ayarları</button>}
-          {isAdmin && <button onClick={generateAutoPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>🤖 Otomatik Planla</button>}
+          {isAdmin && <button onClick={generateAutoPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>🤖 Planı Güncelle</button>}
           {isAdmin && <button onClick={clearPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",color:"var(--color-text-danger)"}}>🗑 Planı Temizle</button>}
           <button onClick={printWeeklyPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📄 Haftalık Plan</button>
         </div>
       </div>
+
+      {/* Plan Güncelleme Uyarısı */}
+      {planAlert && (
+        <div style={{background:"#fef2f2",border:"1px solid #fecaca",borderRadius:8,padding:"10px 14px",marginBottom:"0.75rem",display:"flex",alignItems:"flex-start",gap:10}}>
+          <span style={{fontSize:"18px",lineHeight:1}}>⚠️</span>
+          <div style={{flex:1}}>
+            <div style={{fontSize:"12px",fontWeight:600,color:"#dc2626",marginBottom:3}}>
+              {planAlert.needsUpdate ? "Plan güncellenmeli" : "Sevkiyat riski"}
+            </div>
+            {planAlert.totalShortfall > 0 && (
+              <div style={{fontSize:"11px",color:"#7f1d1d",marginBottom:2}}>
+                Gerçekleşen üretim plandan <b>{planAlert.totalShortfall} adet</b> geride:
+                {" "}{planAlert.shortfall.map(s => {
+                  const p = anaProducts.find(x=>x.id===s.model);
+                  return p ? `${kisaAd(p.nameTR)} (−${s.diff})` : "";
+                }).filter(Boolean).join(", ")}
+              </div>
+            )}
+            {planAlert.riskyShips.length > 0 && (
+              <div style={{fontSize:"11px",color:"#7f1d1d",marginBottom:2}}>
+                {planAlert.riskyShips.length} sevkiyat risk altında: {planAlert.riskyShips.map(s =>
+                  new Date(s.container.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})
+                ).join(", ")}
+              </div>
+            )}
+            {isAdmin && planAlert.needsUpdate && (
+              <button onClick={generateAutoPlan} style={{fontSize:"11px",padding:"4px 10px",cursor:"pointer",background:"#dc2626",color:"white",border:"none",borderRadius:4,fontWeight:500,marginTop:3}}>
+                🤖 Planı Güncelle
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Stok kartları — 5 model + toplam */}
       <div style={{display:"grid",gridTemplateColumns:"repeat(6,minmax(0,1fr))",gap:6,marginBottom:"1rem"}}>
@@ -3604,10 +3674,10 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       {autoPlanPreview && (
         <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.35)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:50,minHeight:400}}>
           <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:480,border:"0.5px solid var(--color-border-tertiary)"}}>
-            <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>🤖 Otomatik Plan Özeti</h3>
+            <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>🤖 Plan Güncelleme Özeti</h3>
             <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>
               {autoPlanPreview.shipCount} sevkiyat için {autoPlanPreview.dayCount} iş günü planlandı{autoPlanPreview.skippedDays>0?` (${autoPlanPreview.skippedDays} gün haftasonu/tatil atlandı)`:""}.
-              Mevcut PLN değerleri üzerine yazılacak, GER'lere dokunulmaz.
+              Bugünden itibaren PLN güncellenir, geçmiş günlere ve GER'lere dokunulmaz.
             </p>
             <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:"1.25rem"}}>
               {anaProducts.map(p => {
