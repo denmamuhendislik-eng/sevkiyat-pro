@@ -725,14 +725,12 @@ export default function App() {
     return ap;
   },[products,getPStats,search]);
 
-  // Planlanacak kalan sevkiyat sayısı — dashboard ile birebir aynı hesap
+  // Planlanacak kalan sevkiyat sayısı — dashboard ile birebir aynı
   const toplamKalanSvk = useMemo(() => {
-    const plannedNotShippedC = yd.containers.filter(c => !isShipped(c)).length;
     const remainingKG = activeProducts.reduce((s,p) => { const st=getPStats(p.id); return s+Math.max(0,st.toBePlanned)*p.kg; }, 0);
     const avgKGperC = (minKG+maxKG)/2;
-    const estRemainingC = remainingKG >= minKG ? (avgKGperC > 0 ? Math.ceil(remainingKG/avgKGperC) : 0) : 0;
-    return plannedNotShippedC + estRemainingC;
-  }, [yd, activeProducts, getPStats, minKG, maxKG]);
+    return remainingKG >= minKG ? (avgKGperC > 0 ? Math.ceil(remainingKG/avgKGperC) : 0) : 0;
+  }, [activeProducts, getPStats, minKG, maxKG]);
 
   const getProductGroup = useCallback(pid => {
     const s = getPStats(pid);
