@@ -1541,10 +1541,10 @@ export default function App() {
                       const linkedParents=linked?getLinkedParents(c.id,p.id):[];
                       const cascadeMin=isLinkedChild(p.id)?getCascadeQty(c.id,p.id,null,0):0;
                       const maxAllowed=s.toBePlanned+q;
-                      const shipped=isShipped(c);
+                      const shipped=c.shipped;
                       const colZebra=!shipped&&ci%2===1;
                       const cellBg=isE?"var(--color-background-info)":shipped?(isSel?"#d5d5d0":isZebra?"#ddddd8":"#e5e5e0"):isSel?g.bgSel:colZebra?(isZebra?g.bgSel:g.bgZ):rowBg;
-                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!shipped&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:shipped||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:cellBg,opacity:shipped?0.65:1}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
+                      return <td key={c.id} onClick={(e)=>{e.stopPropagation();if(!shipped&&isAdmin&&s.toBePlanned+q>0)cellClick(c.id,p.id,q);}} style={{padding:"1px 1px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",cursor:shipped||!isAdmin||(s.toBePlanned<=0&&q===0)?"default":"pointer",minWidth:66,background:cellBg,opacity:shipped?0.65:1}} title={linked?(extra>0?`Cascade: ${q-extra} + Ekstra: ${extra}`:`Bağlı: ${linkedParents.map(pid=>products.find(pp=>pp.id===pid)?.nameTR).join(" + ")}`):(s.toBePlanned<=0&&q===0?"Planlanacak kalan yok":"")}> 
                         {isE?(()=>{
                           const stdP = packingStandards[p.id];
                           const evNum = parseInt(editValue)||0;
