@@ -2852,17 +2852,15 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
     const realMargins = shippedContainers.map(c => {
       const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
-      const modelMargins = [];
+      const modelMargins = {};
       ANA_IDS.forEach(pid => {
         const target = Number(q[pid]) || 0;
         if (!target) return;
-        // Kümülatif hedef: bu shipped sevkiyata kadar
         let cumTarget = 0;
         for (const sc of shippedContainers) {
           cumTarget += Number(yearsData[selectedYear]?.quantities?.[sc.id]?.[pid]) || 0;
           if (sc.id === c.id) break;
         }
-        // Kümülatif GER: başlangıç stok + GER toplamı
         let cumGer = Number(ms.initialStock?.[pid]) || 0;
         let readyDate = cumGer >= cumTarget ? (ms.initDate || today) : null;
         for (const [d, day] of allGerDays) {
@@ -2871,20 +2869,31 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           if (!readyDate && cumGer >= cumTarget) readyDate = d;
         }
         if (readyDate && readyDate <= c.date) {
-          const margin = calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
-          modelMargins.push(margin);
+          modelMargins[pid] = calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
         } else {
-          modelMargins.push(readyDate ? -(calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length) : -99);
+          modelMargins[pid] = readyDate ? -(calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length) : -99;
         }
       });
-      if (!modelMargins.length) return null;
-      const worstMargin = Math.min(...modelMargins);
-      return { date: c.date, margin: worstMargin, id: c.id };
+      const margins = Object.values(modelMargins);
+      if (!margins.length) return null;
+      const worstMargin = Math.min(...margins);
+      const worstPid = Number(Object.entries(modelMargins).reduce((w,[pid,m]) => m < w[1] ? [pid,m] : w, ["",Infinity])[0]);
+      return { date: c.date, margin: worstMargin, id: c.id, modelMargins, worstPid };
     }).filter(Boolean);
 
     const avgRealMargin = realMargins.length > 0 ? (realMargins.reduce((s,m) => s+m.margin, 0) / realMargins.length) : null;
     const worstReal = realMargins.length > 0 ? realMargins.reduce((w,m) => m.margin < w.margin ? m : w) : null;
     const bestReal = realMargins.length > 0 ? realMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
+
+    // Model bazlı ort. gerçekleşen marj (en son tamamlanan = en düşük marjlı model)
+    const modelAvgMargins = {};
+    ANA_IDS.forEach(pid => {
+      const vals = realMargins.filter(r => r.modelMargins[pid] !== undefined).map(r => r.modelMargins[pid]);
+      if (vals.length > 0) modelAvgMargins[pid] = { avg: vals.reduce((s,v)=>s+v,0)/vals.length, count: vals.length };
+    });
+    const slowestModel = Object.entries(modelAvgMargins).length > 0
+      ? Object.entries(modelAvgMargins).reduce((w,[pid,d]) => d.avg < w.avg ? {pid:Number(pid),avg:d.avg,count:d.count} : w, {pid:null,avg:Infinity,count:0})
+      : null;
 
     // 6) Haftalık trend (son 4 hafta)
     const weeklyTrend = [];
@@ -2910,7 +2919,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       }
     }
 
-    return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend, avgShipMargin, worstShipment, bestShipment, shipMargins, avgRealMargin, worstReal, bestReal, realMargins };
+    return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend, avgShipMargin, worstShipment, bestShipment, shipMargins, avgRealMargin, worstReal, bestReal, realMargins, slowestModel };
   }, [ms, today, allContainers, yearsData, selectedYear, stockCalc, calDays, hatMax, holidays]);
 
   // --- Haftalık İş Planı Çıktısı ---
@@ -3215,12 +3224,20 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 sub={`Ort. ${kpi.avgDaily} adet/gün (${kpi.capDays} gün)`} color={kpi.capUtilPct>=80?"#16a34a":kpi.capUtilPct>=50?"#f59e0b":"#dc2626"}/>
               <KCard title="Ort. Günlük Üretim" value={kpi.avgDaily}
                 sub={`Hat kapasitesi: ${hatMax}/gün`} color="var(--color-text-primary)"/>
-              {kpi.behindModels.length>0 ? (
-                <KCard title="En Çok Geciken" value={kisaAd(anaProducts.find(p=>p.id===kpi.behindModels[0].pid)?.nameTR||"")}
-                  sub={`${kpi.behindModels[0].diff} adet (${kpi.behindModels[0].pct}%)`} color="#dc2626"/>
-              ) : (
-                <KCard title="En Çok Geciken" value="—" sub="Tüm modeller planda" color="#16a34a"/>
-              )}
+              <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
+                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:4}}>En Son Tamamlanan Model</div>
+                {kpi.slowestModel && kpi.slowestModel.pid ? (()=>{
+                  const p = anaProducts.find(x=>x.id===kpi.slowestModel.pid);
+                  const avgM = kpi.slowestModel.avg;
+                  return (<>
+                    <div style={{display:"flex",alignItems:"center",gap:5,marginBottom:2}}>
+                      {p && <div style={{width:8,height:8,borderRadius:"50%",background:p.color}}/>}
+                      <span style={{fontSize:"18px",fontWeight:600,color:avgM>=5?"#16a34a":avgM>=2?"#f59e0b":"#dc2626"}}>{p?kisaAd(p.nameTR):"—"}</span>
+                    </div>
+                    <div style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>Ort. {Math.round(avgM*10)/10} gün önce ({kpi.slowestModel.count} sevkiyat)</div>
+                  </>);
+                })() : <div style={{fontSize:"11px",color:"var(--color-text-tertiary)"}}>Henüz sevkiyat yok</div>}
+              </div>
               <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
                 <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:4}}>Sevkiyat Yetişme Marjı</div>
                 {kpi.avgRealMargin!==null ? (
