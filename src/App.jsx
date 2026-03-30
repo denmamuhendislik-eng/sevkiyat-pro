@@ -1542,15 +1542,19 @@ export default function App() {
                           const stdP = packingStandards[p.id];
                           const evNum = parseInt(editValue)||0;
                           const notMultiple = stdP?.qtyPerPallet>0 && evNum>0 && evNum%stdP.qtyPerPallet!==0;
-                          const unshippedCount = yd.containers.filter(cc => !cc.shipped).length;
-                          const suggest = unshippedCount > 0 && s.toBePlanned > 0 ? Math.ceil(s.toBePlanned / unshippedCount) : 0;
+                          const plannedNotShippedC = yd.containers.filter(cc => !isShipped(cc)).length;
+                          const remainingKG = activeProducts.reduce((ss,pp) => { const st=getPStats(pp.id); return ss+Math.max(0,st.toBePlanned)*pp.kg; }, 0);
+                          const avgKGperC = (minKG+maxKG)/2;
+                          const estRemainingC = remainingKG >= minKG ? (avgKGperC > 0 ? Math.ceil(remainingKG/avgKGperC) : 0) : 0;
+                          const toplamKalanSvk = plannedNotShippedC + estRemainingC;
+                          const suggest = toplamKalanSvk > 0 && maxAllowed > 0 ? Math.ceil(maxAllowed / toplamKalanSvk) : 0;
                           return <div>
                           <input ref={inputRef} type="number" min={cascadeMin} max={maxAllowed} value={editValue} onChange={e=>setEditValue(e.target.value)} onBlur={cellSave} onKeyDown={cellKey} style={{width:48,padding:"1px 3px",border:`1px solid ${notMultiple?"#BA7517":"#534AB7"}`,borderRadius:3,textAlign:"center",fontSize:11,background:notMultiple?"#FAEEDA":"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                           <div style={{fontSize:7,marginTop:1,display:"flex",justifyContent:"center",gap:4}}>
                             {cascadeMin>0&&<span style={{color:"#534AB7"}}>min:{cascadeMin}</span>}
                             <span style={{color:"#BA7517"}}>max:{maxAllowed}</span>
                           </div>
-                          {suggest>0&&<div style={{fontSize:8,color:"#0F6E56",marginTop:1,fontWeight:600}} title={`P.Kalan ${s.toBePlanned} adet / ${unshippedCount} sevkiyat`}>ön: {suggest}</div>}
+                          {suggest>0&&<div style={{fontSize:8,color:"#0F6E56",marginTop:1,fontWeight:600}} title={`${maxAllowed} adet / ${toplamKalanSvk} sevkiyat`}>ön:{suggest}</div>}
                           {notMultiple&&<div style={{fontSize:7,color:"#BA7517",marginTop:1,lineHeight:1.2}}>⚠ Palet katı değil ({stdP.qtyPerPallet}'er)</div>}
                         </div>;})()
                         :linked?<span style={{fontSize:10,fontWeight:500,color:"#534AB7"}}><span style={{fontSize:8}}>&#9741;</span> {q}{extra>0&&<span style={{fontSize:8,color:"#BA7517"}}> +{extra}</span>}</span>
