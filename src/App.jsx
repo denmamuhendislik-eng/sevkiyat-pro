@@ -2769,7 +2769,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const days = ms.days || {};
     const dayEntries = Object.entries(days).filter(([d]) => d <= today).sort((a,b) => a[0].localeCompare(b[0]));
 
-    // 1) Plan Uyum Oranı — model bazlı ve genel
+    // 1) Plan Uyum Oranı — sadece PLN olan günlerde GER/PLN
     const compliance = {};
     let totalPln = 0, totalGer = 0;
     ANA_IDS.forEach(pid => {
@@ -2777,7 +2777,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       dayEntries.forEach(([, day]) => {
         const p = Number(day.planned?.[pid]) || 0;
         const g = Number(day.actual?.[pid]) || 0;
-        if (p > 0 || g > 0) { pln += p; ger += g; if(p>0) daysWithPlan++; if (p > 0 && g >= p) daysOnTarget++; }
+        if (p > 0) { pln += p; ger += g; daysWithPlan++; if (g >= p) daysOnTarget++; }
       });
       compliance[pid] = { pln, ger, pct: pln > 0 ? Math.round((ger / pln) * 100) : null, daysWithPlan, daysOnTarget };
       totalPln += pln; totalGer += ger;
