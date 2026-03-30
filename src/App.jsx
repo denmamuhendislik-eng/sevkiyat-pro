@@ -729,7 +729,7 @@ export default function App() {
   const toplamKalanSvk = useMemo(() => {
     const remainingKG = activeProducts.reduce((s,p) => { const st=getPStats(p.id); return s+Math.max(0,st.toBePlanned)*p.kg; }, 0);
     const avgKGperC = (minKG+maxKG)/2;
-    return remainingKG >= minKG ? (avgKGperC > 0 ? Math.ceil(remainingKG/avgKGperC) : 0) : 0;
+    return remainingKG >= minKG ? (avgKGperC > 0 ? Math.floor(remainingKG/avgKGperC) : 0) : 0;
   }, [activeProducts, getPStats, minKG, maxKG]);
 
   const getProductGroup = useCallback(pid => {
@@ -1807,7 +1807,7 @@ export default function App() {
             // Estimate remaining containers by avg KG per container
             const avgKGperC=(minKG+maxKG)/2;
             const remainingKG=activeProducts.reduce((s,p)=>{const st=getPStats(p.id);return s+Math.max(0,st.toBePlanned)*p.kg;},0);
-            const estRemainingC=remainingKG>=minKG?(avgKGperC>0?Math.ceil(remainingKG/avgKGperC):0):0;
+            const estRemainingC=remainingKG>=minKG?(avgKGperC>0?Math.floor(remainingKG/avgKGperC):0):0;
 
             // Remaining months in year
             // Months left: from last planned container to end of year
