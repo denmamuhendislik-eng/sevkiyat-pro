@@ -182,6 +182,11 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  // Operatör giriş yaptığında montaj sayfasına yönlendir
+  useEffect(() => {
+    if (userRole === "operator") setPage("montaj");
+  }, [userRole]);
+
   // Listen to Firestore data changes
   useEffect(() => {
     if (!authUser) return;
@@ -2334,7 +2339,7 @@ export default function App() {
             <div style={{fontSize:12,fontWeight:600,color:"var(--color-text-secondary)",marginBottom:8}}>Mevcut Kullanıcılar</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {allUsers.map(u=>{
-                const roleColors = {admin:{bg:"rgba(83,74,183,0.1)",c:"#534AB7",l:"Admin"},packer:{bg:"rgba(186,117,23,0.1)",c:"#BA7517",l:"Paketçi"},uretim:{bg:"rgba(29,158,117,0.1)",c:"#1D9E75",l:"Üretim"},viewer:{bg:"rgba(136,135,128,0.1)",c:"#888780",l:"Görüntüleyici"}};
+                const roleColors = {admin:{bg:"rgba(83,74,183,0.1)",c:"#534AB7",l:"Admin"},packer:{bg:"rgba(186,117,23,0.1)",c:"#BA7517",l:"Paketçi"},uretim:{bg:"rgba(29,158,117,0.1)",c:"#1D9E75",l:"Üretim"},operator:{bg:"rgba(56,138,221,0.1)",c:"#388ADD",l:"Operatör"},viewer:{bg:"rgba(136,135,128,0.1)",c:"#888780",l:"Görüntüleyici"}};
                 const rc = roleColors[u.role]||roleColors.viewer;
                 const isSelf = authUser && u.uid === authUser.uid;
                 return <div key={u.uid} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-tertiary)",background:isSelf?"rgba(83,74,183,0.03)":"transparent"}}>
@@ -2343,7 +2348,7 @@ export default function App() {
                     <div style={{fontSize:10,color:"var(--color-text-tertiary)"}}>{u.email}</div>
                   </div>
                   <div style={{display:"flex",gap:4}}>
-                    {["admin","packer","uretim","viewer"].map(r=>{
+                    {["admin","packer","uretim","operator","viewer"].map(r=>{
                       const active = u.role === r;
                       const rc2 = roleColors[r];
                       return <button key={r} onClick={()=>{if(!isSelf&&!active)updateUserRole(u.uid,r);}} disabled={isSelf} style={{padding:"3px 8px",borderRadius:4,border:`1.5px solid ${active?rc2.c:"rgba(0,0,0,0.08)"}`,background:active?rc2.bg:"transparent",color:active?rc2.c:"var(--color-text-tertiary)",fontSize:9,fontWeight:active?600:400,cursor:isSelf?"not-allowed":"pointer",opacity:isSelf&&!active?0.3:1}}>{rc2.l}</button>;
@@ -2379,6 +2384,7 @@ export default function App() {
                     <button onClick={()=>setNewUserRole("admin")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="admin"?"#534AB7":"rgba(0,0,0,0.12)"}`,background:newUserRole==="admin"?"rgba(83,74,183,0.1)":"transparent",color:newUserRole==="admin"?"#534AB7":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Admin</button>
                     <button onClick={()=>setNewUserRole("packer")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="packer"?"#BA7517":"rgba(0,0,0,0.12)"}`,background:newUserRole==="packer"?"rgba(186,117,23,0.1)":"transparent",color:newUserRole==="packer"?"#BA7517":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Paketçi</button>
                     <button onClick={()=>setNewUserRole("uretim")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="uretim"?"#1D9E75":"rgba(0,0,0,0.12)"}`,background:newUserRole==="uretim"?"rgba(29,158,117,0.1)":"transparent",color:newUserRole==="uretim"?"#1D9E75":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Üretim</button>
+                    <button onClick={()=>setNewUserRole("operator")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="operator"?"#388ADD":"rgba(0,0,0,0.12)"}`,background:newUserRole==="operator"?"rgba(56,138,221,0.1)":"transparent",color:newUserRole==="operator"?"#388ADD":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Operatör</button>
                     <button onClick={()=>setNewUserRole("viewer")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="viewer"?"#888780":"rgba(0,0,0,0.12)"}`,background:newUserRole==="viewer"?"rgba(136,135,128,0.1)":"transparent",color:newUserRole==="viewer"?"#888780":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Görüntüleyici</button>
                   </div>
                 </div>
@@ -2416,10 +2422,11 @@ export default function App() {
 // ============================================================
 function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const DC = "montajData"; const DD = "state";
-  const isAdmin   = userRole === "admin";
-  const isUretim  = userRole === "uretim";
-  const canPlan   = isAdmin;
-  const canActual = isAdmin || isUretim;
+  const isAdmin    = userRole === "admin";
+  const isUretim   = userRole === "uretim";
+  const isOperator = userRole === "operator";
+  const canPlan    = isAdmin;
+  const canActual  = isAdmin || isUretim || isOperator;
   const ANA_IDS   = [1,2,3,4,5];
 
   // today en başta tanımlanıyor — tüm useMemo'lar kullanabilsin
@@ -3116,6 +3123,65 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
               </button>
             )}
           </div>
+        </div>
+      )}
+
+      {/* Mobil Üretim Girişi — Operatör için her zaman, diğerleri için canActual */}
+      {canActual && (
+        <div style={{background:"var(--color-background-primary)",borderRadius:12,border:"1.5px solid var(--color-border-secondary)",padding:"14px 16px",marginBottom:"1rem"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:12}}>
+            <div>
+              <div style={{fontSize:"14px",fontWeight:600,color:"var(--color-text-primary)"}}>📝 Bugünkü Üretim</div>
+              <div style={{fontSize:"11px",color:"var(--color-text-tertiary)"}}>{new Date(today+"T00:00:00").toLocaleDateString("tr-TR",{weekday:"long",day:"2-digit",month:"long",year:"numeric"})}</div>
+            </div>
+            {saving && <span style={{fontSize:"11px",color:"var(--color-text-secondary)"}}>Kaydediliyor…</span>}
+          </div>
+          <div style={{display:"grid",gridTemplateColumns:isOperator?"repeat(1,1fr)":"repeat(5,1fr)",gap:isOperator?10:8}}>
+            {anaProducts.map(p => {
+              const pid = p.id;
+              const todayPln = Number(ms.days?.[today]?.planned?.[pid]) || 0;
+              const todayGer = Number(ms.days?.[today]?.actual?.[pid]) || 0;
+              const mMax = getModelMax(pid);
+              const behind = todayPln > 0 && todayGer < todayPln;
+              const done = todayPln > 0 && todayGer >= todayPln;
+              return (
+                <div key={pid} style={{background:"var(--color-background-secondary)",borderRadius:10,padding:isOperator?"14px 16px":"10px 10px",border:`1.5px solid ${done?"#16a34a33":behind?"#dc262633":"var(--color-border-tertiary)"}`,display:"flex",alignItems:isOperator?"center":"flex-start",gap:isOperator?14:0,flexDirection:isOperator?"row":"column"}}>
+                  {/* Model bilgi */}
+                  <div style={{flex:isOperator?1:undefined,marginBottom:isOperator?0:8}}>
+                    <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                      <div style={{width:isOperator?12:8,height:isOperator?12:8,borderRadius:"50%",background:p.color}}/>
+                      <span style={{fontSize:isOperator?"16px":"12px",fontWeight:600,color:"var(--color-text-primary)"}}>{kisaAd(p.nameTR)}</span>
+                    </div>
+                    {todayPln > 0 && (
+                      <div style={{fontSize:isOperator?"12px":"10px",color:done?"#16a34a":behind?"#dc2626":"var(--color-text-tertiary)",paddingLeft:isOperator?18:14,fontWeight:500}}>
+                        Plan: {todayPln} adet {done?"✓":behind?`(${todayPln-todayGer} eksik)`:""}
+                      </div>
+                    )}
+                    {!todayPln && <div style={{fontSize:isOperator?"12px":"10px",color:"var(--color-text-tertiary)",paddingLeft:isOperator?18:14}}>Bugün plan yok</div>}
+                  </div>
+                  {/* Sayaç */}
+                  <div style={{display:"flex",alignItems:"center",gap:isOperator?12:6,justifyContent:isOperator?"flex-end":"center",width:isOperator?undefined:"100%"}}>
+                    <button onClick={()=>{if(todayGer>0)updateCell(today,pid,"actual",todayGer-1);}}
+                      style={{width:isOperator?48:32,height:isOperator?48:32,borderRadius:"50%",border:"1.5px solid var(--color-border-secondary)",background:"var(--color-background-primary)",fontSize:isOperator?"22px":"16px",fontWeight:600,cursor:"pointer",color:"var(--color-text-secondary)",display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
+                    <span style={{fontSize:isOperator?"28px":"18px",fontWeight:700,color:done?"#16a34a":behind?"#dc2626":"var(--color-text-primary)",minWidth:isOperator?50:30,textAlign:"center"}}>{todayGer}</span>
+                    <button onClick={()=>updateCell(today,pid,"actual",todayGer+1)}
+                      style={{width:isOperator?48:32,height:isOperator?48:32,borderRadius:"50%",border:"1.5px solid var(--color-border-info)",background:"var(--color-background-info)",fontSize:isOperator?"22px":"16px",fontWeight:600,cursor:"pointer",color:"var(--color-text-info)",display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+          {/* Bugünkü toplam */}
+          {(()=>{
+            const totalPln = anaProducts.reduce((s,p) => s+(Number(ms.days?.[today]?.planned?.[p.id])||0), 0);
+            const totalGer = anaProducts.reduce((s,p) => s+(Number(ms.days?.[today]?.actual?.[p.id])||0), 0);
+            return totalPln > 0 || totalGer > 0 ? (
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginTop:10,paddingTop:8,borderTop:"1px solid var(--color-border-tertiary)"}}>
+                <span style={{fontSize:"12px",fontWeight:500,color:"var(--color-text-secondary)"}}>Bugün toplam</span>
+                <span style={{fontSize:"14px",fontWeight:700,color:totalGer>=totalPln?"#16a34a":"var(--color-text-primary)"}}>{totalGer} / {totalPln} adet</span>
+              </div>
+            ) : null;
+          })()}
         </div>
       )}
 
