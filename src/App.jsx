@@ -2845,12 +2845,19 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const bestShipment = shipMargins.length > 0 ? shipMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
 
     // b) Gerçekleşen (GER) — shipped sevkiyatlar için FIFO kümülatif
+    // Sadece gerçek GER verisi girilmişse hesapla
     const shippedContainers = allContainers.filter(c => c.shipped && !c.autoShipped).slice().sort((a,b) => a.date.localeCompare(b.date));
     const allGerDays = Object.entries(days)
       .filter(([, day]) => ANA_IDS.some(pid => Number(day.actual?.[pid]) > 0))
       .sort((a,b) => a[0].localeCompare(b[0]));
 
-    const realMargins = shippedContainers.map(c => {
+    let realMargins = [];
+    let avgRealMargin = null, worstReal = null, bestReal = null;
+    let modelAvgMargins = {};
+    let slowestModel = null;
+
+    if (allGerDays.length > 0 && shippedContainers.length > 0) {
+      realMargins = shippedContainers.map(c => {
       const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
       const modelMargins = {};
       ANA_IDS.forEach(pid => {
@@ -2881,19 +2888,18 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       return { date: c.date, margin: worstMargin, id: c.id, modelMargins, worstPid };
     }).filter(Boolean);
 
-    const avgRealMargin = realMargins.length > 0 ? (realMargins.reduce((s,m) => s+m.margin, 0) / realMargins.length) : null;
-    const worstReal = realMargins.length > 0 ? realMargins.reduce((w,m) => m.margin < w.margin ? m : w) : null;
-    const bestReal = realMargins.length > 0 ? realMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
+      avgRealMargin = realMargins.length > 0 ? (realMargins.reduce((s,m) => s+m.margin, 0) / realMargins.length) : null;
+      worstReal = realMargins.length > 0 ? realMargins.reduce((w,m) => m.margin < w.margin ? m : w) : null;
+      bestReal = realMargins.length > 0 ? realMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
 
-    // Model bazlı ort. gerçekleşen marj (en son tamamlanan = en düşük marjlı model)
-    const modelAvgMargins = {};
-    ANA_IDS.forEach(pid => {
-      const vals = realMargins.filter(r => r.modelMargins[pid] !== undefined).map(r => r.modelMargins[pid]);
-      if (vals.length > 0) modelAvgMargins[pid] = { avg: vals.reduce((s,v)=>s+v,0)/vals.length, count: vals.length };
-    });
-    const slowestModel = Object.entries(modelAvgMargins).length > 0
-      ? Object.entries(modelAvgMargins).reduce((w,[pid,d]) => d.avg < w.avg ? {pid:Number(pid),avg:d.avg,count:d.count} : w, {pid:null,avg:Infinity,count:0})
-      : null;
+      ANA_IDS.forEach(pid => {
+        const vals = realMargins.filter(r => r.modelMargins[pid] !== undefined).map(r => r.modelMargins[pid]);
+        if (vals.length > 0) modelAvgMargins[pid] = { avg: vals.reduce((s,v)=>s+v,0)/vals.length, count: vals.length };
+      });
+      slowestModel = Object.entries(modelAvgMargins).length > 0
+        ? Object.entries(modelAvgMargins).reduce((w,[pid,d]) => d.avg < w.avg ? {pid:Number(pid),avg:d.avg,count:d.count} : w, {pid:null,avg:Infinity,count:0})
+        : null;
+    } // end if (allGerDays.length > 0 && shippedContainers.length > 0)
 
     // 6) Haftalık trend (son 4 hafta)
     const weeklyTrend = [];
