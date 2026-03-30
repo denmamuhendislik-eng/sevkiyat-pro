@@ -2794,9 +2794,9 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         let cumStock = stockCalc[pid] || 0;
         let readyDate = null;
 
-        // Bugün zaten yeterliyse (hiç üretim olmadan)
+        // Bugün zaten yeterliyse (hiç üretim olmadan) — stok girişi tarihinden beri hazır
         if (cumStock >= cumTarget) {
-          readyDate = today;
+          readyDate = ms.initDate || today;
         } else {
           // PLN günlerini tara, kümülatif hedefe ne zaman ulaşılıyor
           for (const [d, day] of allPlanDays) {
