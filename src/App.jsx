@@ -3079,6 +3079,120 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     w.document.close();
   };
 
+  // --- Aylık Plan Çıktısı ---
+  const printMonthlyPlan = () => {
+    const days = ms.days || {};
+    const allPlanEntries = Object.entries(days).filter(([d, day]) => ANA_IDS.some(pid => Number(day.planned?.[pid]) > 0)).sort((a,b) => a[0].localeCompare(b[0]));
+    if (!allPlanEntries.length) { alert("Henüz plan verisi yok"); return; }
+
+    // Ay bazlı gruplama
+    const months = {};
+    allPlanEntries.forEach(([d, day]) => {
+      const ym = d.slice(0,7); // "2026-04"
+      if (!months[ym]) months[ym] = {};
+      ANA_IDS.forEach(pid => {
+        const v = Number(day.planned?.[pid]) || 0;
+        if (v > 0) months[ym][pid] = (months[ym][pid]||0) + v;
+      });
+    });
+
+    // Sevkiyat bazlı aylık hedefler
+    const shipMonths = {};
+    allContainers.filter(c => !c.shipped).forEach(c => {
+      const ym = c.date.slice(0,7);
+      if (!shipMonths[ym]) shipMonths[ym] = { count:0, models:{} };
+      shipMonths[ym].count++;
+      const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+      ANA_IDS.forEach(pid => {
+        const v = Number(q[pid]) || 0;
+        if (v > 0) shipMonths[ym].models[pid] = (shipMonths[ym].models[pid]||0) + v;
+      });
+    });
+
+    const sortedMonths = Object.keys({...months,...shipMonths}).sort();
+    const ayAdi = ym => new Date(ym+"-01T00:00:00").toLocaleDateString("tr-TR",{month:"long",year:"numeric"});
+
+    let html = `<html><head><title>Aylık Montaj Planı</title><style>
+      body{font-family:Arial,sans-serif;margin:20px;color:#222}
+      h1{font-size:18px;margin:0 0 4px} h2{font-size:14px;margin:0 0 16px;color:#666;font-weight:normal}
+      table{border-collapse:collapse;width:100%;margin-bottom:20px}
+      th,td{border:1px solid #ccc;padding:8px 12px;font-size:13px}
+      th{background:#f0f0f0;font-weight:600;text-align:center}
+      .model{font-weight:600} .ship{color:#1d4ed8;font-size:11px}
+      .total-row td{font-weight:700;border-top:2px solid #666;background:#f8f8f8}
+      @media print{body{margin:10px} button{display:none}}
+    </style></head><body>`;
+    html += `<h1>🔧 Aylık Montaj Üretim Planı</h1>`;
+    html += `<h2>Planlanan üretim miktarları — ${ayAdi(sortedMonths[0])} – ${ayAdi(sortedMonths[sortedMonths.length-1])}</h2>`;
+
+    // Ana tablo: aylar x modeller
+    html += `<table><thead><tr><th style="text-align:left;min-width:140px">Ay</th>`;
+    anaProducts.forEach(p => html += `<th style="color:${p.color}">● ${kisaAd(p.nameTR)}</th>`);
+    html += `<th>Toplam Üretim</th><th>Sevkiyat Adedi</th></tr></thead><tbody>`;
+
+    const grandTotals = {};
+    ANA_IDS.forEach(pid => grandTotals[pid] = 0);
+    let grandTotal = 0, grandShipCount = 0;
+
+    sortedMonths.forEach(ym => {
+      const m = months[ym] || {};
+      const sm = shipMonths[ym] || {count:0, models:{}};
+      let rowTotal = 0;
+      html += `<tr><td style="font-weight:600">${ayAdi(ym)}</td>`;
+      anaProducts.forEach(p => {
+        const planned = m[p.id] || 0;
+        const shipTarget = sm.models?.[p.id] || 0;
+        grandTotals[p.id] += planned;
+        rowTotal += planned;
+        html += `<td style="text-align:center">`;
+        html += planned ? `<div style="font-size:16px;font-weight:600">${planned}</div>` : `<div style="color:#ccc">—</div>`;
+        if (shipTarget > 0) html += `<div class="ship">sevk: ${shipTarget}</div>`;
+        html += `</td>`;
+      });
+      grandTotal += rowTotal;
+      grandShipCount += sm.count;
+      html += `<td style="text-align:center;font-weight:600;font-size:15px">${rowTotal||'—'}</td>`;
+      html += `<td style="text-align:center">${sm.count>0?sm.count+' konteyner':'—'}</td>`;
+      html += `</tr>`;
+    });
+
+    // Toplam satırı
+    html += `<tr class="total-row"><td>TOPLAM</td>`;
+    anaProducts.forEach(p => html += `<td style="text-align:center;font-size:15px">${grandTotals[p.id]||'—'}</td>`);
+    html += `<td style="text-align:center;font-size:15px">${grandTotal}</td>`;
+    html += `<td style="text-align:center">${grandShipCount} konteyner</td></tr>`;
+    html += `</tbody></table>`;
+
+    // Mevcut stok durumu
+    html += `<h3 style="font-size:14px;margin:16px 0 8px">Mevcut Stok Durumu</h3>`;
+    html += `<table><thead><tr><th style="text-align:left">Model</th><th>Mevcut Stok</th><th>Toplam Hedef</th><th>Üretilmesi Gereken</th><th>Planlanan Üretim</th><th>Fark</th></tr></thead><tbody>`;
+    let totStock=0,totTarget=0,totNeeded=0,totPlanned=0;
+    anaProducts.forEach(p => {
+      const stock = stockCalc[p.id] || 0;
+      const target = Object.values(shipMonths).reduce((s,sm) => s+(sm.models?.[p.id]||0), 0);
+      const needed = Math.max(0, target - stock);
+      const planned = grandTotals[p.id] || 0;
+      const diff = planned - needed;
+      totStock+=stock; totTarget+=target; totNeeded+=needed; totPlanned+=planned;
+      html += `<tr><td style="font-weight:600;color:${p.color}">● ${kisaAd(p.nameTR)}</td>`;
+      html += `<td style="text-align:center">${stock}</td>`;
+      html += `<td style="text-align:center">${target}</td>`;
+      html += `<td style="text-align:center;font-weight:500">${needed}</td>`;
+      html += `<td style="text-align:center;font-weight:600;color:#534AB7">${planned}</td>`;
+      html += `<td style="text-align:center;font-weight:600;color:${diff>=0?'#16a34a':'#dc2626'}">${diff>=0?'+':''}${diff}</td></tr>`;
+    });
+    html += `<tr class="total-row"><td>TOPLAM</td><td style="text-align:center">${totStock}</td><td style="text-align:center">${totTarget}</td><td style="text-align:center">${totNeeded}</td><td style="text-align:center">${totPlanned}</td><td style="text-align:center;color:${totPlanned-totNeeded>=0?'#16a34a':'#dc2626'}">${totPlanned-totNeeded>=0?'+':''}${totPlanned-totNeeded}</td></tr>`;
+    html += `</tbody></table>`;
+
+    html += `<div style="margin-top:20px;color:#999;font-size:11px">Oluşturulma: ${new Date().toLocaleString("tr-TR")} — Sevkiyat Pro</div>`;
+    html += `<button onclick="window.print()" style="margin-top:12px;padding:8px 20px;font-size:14px;cursor:pointer">🖨 Yazdır</button>`;
+    html += `</body></html>`;
+
+    const w = window.open('','_blank','width=900,height=700');
+    w.document.write(html);
+    w.document.close();
+  };
+
   const clearPlan = () => {
     if (!confirm("Bugünden itibaren tüm PLN değerleri silinecek. GER'lere dokunulmaz. Devam?")) return;
     const newMs = deepClone(ms);
@@ -3107,6 +3221,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           {isAdmin && <button onClick={generateAutoPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>🤖 Planı Güncelle</button>}
           {isAdmin && <button onClick={clearPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer",color:"var(--color-text-danger)"}}>🗑 Planı Temizle</button>}
           <button onClick={printWeeklyPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📄 Haftalık Plan</button>
+          <button onClick={printMonthlyPlan} style={{fontSize:"12px",padding:"5px 12px",cursor:"pointer"}}>📊 Aylık Plan</button>
         </div>
       </div>
 
