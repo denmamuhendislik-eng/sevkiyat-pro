@@ -145,6 +145,7 @@ export default function App() {
   const [importData, setImportData] = useState(null);
   const [importYear, setImportYear] = useState(new Date().getFullYear());
   const [importNewProducts, setImportNewProducts] = useState([]);
+  const [vioDragOver, setVioDragOver] = useState(false);
   // Packing states
   const [packingCid, setPackingCid] = useState(null); // which container is being packed
   const [pallets, setPallets] = useState([]); // array of pallet objects
@@ -493,8 +494,7 @@ export default function App() {
     setEditOrderPid(null);
   };
 
-  const handleVioImport = (e) => {
-    const file = e.target.files[0];
+  const processVioFile = (file) => {
     if(!file) return;
     const reader = new FileReader();
     reader.onload = (evt) => {
@@ -532,6 +532,11 @@ export default function App() {
       setImportNewProducts(unmatched.map(u=>({...u})));
     };
     reader.readAsArrayBuffer(file);
+  };
+
+  const handleVioImport = (e) => {
+    const file = e.target.files[0];
+    processVioFile(file);
     e.target.value="";
   };
 
@@ -1684,10 +1689,22 @@ export default function App() {
                   ))}
                 </div>
               </div>
-              <div>
-                <label style={{fontSize:11,color:"var(--color-text-secondary)",display:"block",marginBottom:4}}>VIO Excel dosyası</label>
-                <input type="file" accept=".xlsx,.xls" onChange={handleVioImport} style={{fontSize:12}}/>
+            </div>
+
+            {/* Drag & Drop + File Input */}
+            <div
+              onDragOver={e=>{e.preventDefault();setVioDragOver(true);}}
+              onDragLeave={()=>setVioDragOver(false)}
+              onDrop={e=>{e.preventDefault();setVioDragOver(false);const f=e.dataTransfer.files[0];if(f&&(f.name.endsWith('.xlsx')||f.name.endsWith('.xls')))processVioFile(f);else alert("Lütfen .xlsx veya .xls dosyası bırakın");}}
+              style={{border:`2px dashed ${vioDragOver?"#534AB7":"var(--color-border-tertiary)"}`,borderRadius:12,padding:"24px 20px",marginBottom:20,textAlign:"center",background:vioDragOver?"rgba(83,74,183,0.05)":"transparent",transition:"all 0.2s",cursor:"pointer"}}
+              onClick={()=>document.getElementById("_vioFileInput")?.click()}
+            >
+              <div style={{fontSize:"28px",marginBottom:6}}>{vioDragOver?"📂":"📁"}</div>
+              <div style={{fontSize:13,fontWeight:500,color:vioDragOver?"#534AB7":"var(--color-text-primary)",marginBottom:4}}>
+                {vioDragOver?"Dosyayı bırak":"VIO Excel dosyasını sürükle bırak"}
               </div>
+              <div style={{fontSize:11,color:"var(--color-text-tertiary)"}}>veya tıklayarak seç (.xlsx, .xls)</div>
+              <input id="_vioFileInput" type="file" accept=".xlsx,.xls" onChange={handleVioImport} style={{display:"none"}}/>
             </div>
 
             {/* Import Preview */}
