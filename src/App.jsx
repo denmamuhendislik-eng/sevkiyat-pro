@@ -2845,7 +2845,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const bestShipment = shipMargins.length > 0 ? shipMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
 
     // b) Gerçekleşen (GER) — shipped sevkiyatlar için FIFO kümülatif
-    const shippedContainers = allContainers.filter(c => c.shipped).slice().sort((a,b) => a.date.localeCompare(b.date));
+    const shippedContainers = allContainers.filter(c => c.shipped && !c.autoShipped).slice().sort((a,b) => a.date.localeCompare(b.date));
     const allGerDays = Object.entries(days)
       .filter(([, day]) => ANA_IDS.some(pid => Number(day.actual?.[pid]) > 0))
       .sort((a,b) => a[0].localeCompare(b[0]));
