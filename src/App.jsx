@@ -2832,7 +2832,61 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     });
     behindModels.sort((a,b) => a.diff - b.diff);
 
-    // 5) Haftalık trend (son 4 hafta)
+    // 5) Sevkiyat yetişme marjı
+    // a) Tahmini (PLN) — aktif sevkiyatlar için (mevcut)
+    const shipMargins = shipReadiness.map(({container:c, models}) => {
+      const readyModels = models.filter(m => m.daysEarly !== null);
+      if (!readyModels.length) return null;
+      const worstEarly = Math.min(...readyModels.map(m => m.daysEarly));
+      return { date: c.date, margin: worstEarly, allOk: readyModels.every(m => m.ok), type: "pln" };
+    }).filter(Boolean);
+    const avgShipMargin = shipMargins.length > 0 ? (shipMargins.reduce((s,m) => s+m.margin, 0) / shipMargins.length) : null;
+    const worstShipment = shipMargins.length > 0 ? shipMargins.reduce((w,m) => m.margin < w.margin ? m : w) : null;
+    const bestShipment = shipMargins.length > 0 ? shipMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
+
+    // b) Gerçekleşen (GER) — shipped sevkiyatlar için FIFO kümülatif
+    const shippedContainers = allContainers.filter(c => c.shipped).slice().sort((a,b) => a.date.localeCompare(b.date));
+    const allGerDays = Object.entries(days)
+      .filter(([, day]) => ANA_IDS.some(pid => Number(day.actual?.[pid]) > 0))
+      .sort((a,b) => a[0].localeCompare(b[0]));
+
+    const realMargins = shippedContainers.map(c => {
+      const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
+      const modelMargins = [];
+      ANA_IDS.forEach(pid => {
+        const target = Number(q[pid]) || 0;
+        if (!target) return;
+        // Kümülatif hedef: bu shipped sevkiyata kadar
+        let cumTarget = 0;
+        for (const sc of shippedContainers) {
+          cumTarget += Number(yearsData[selectedYear]?.quantities?.[sc.id]?.[pid]) || 0;
+          if (sc.id === c.id) break;
+        }
+        // Kümülatif GER: başlangıç stok + GER toplamı
+        let cumGer = Number(ms.initialStock?.[pid]) || 0;
+        let readyDate = cumGer >= cumTarget ? (ms.initDate || today) : null;
+        for (const [d, day] of allGerDays) {
+          if (d > c.date) break;
+          cumGer += Number(day.actual?.[pid]) || 0;
+          if (!readyDate && cumGer >= cumTarget) readyDate = d;
+        }
+        if (readyDate && readyDate <= c.date) {
+          const margin = calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
+          modelMargins.push(margin);
+        } else {
+          modelMargins.push(readyDate ? -(calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length) : -99);
+        }
+      });
+      if (!modelMargins.length) return null;
+      const worstMargin = Math.min(...modelMargins);
+      return { date: c.date, margin: worstMargin, id: c.id };
+    }).filter(Boolean);
+
+    const avgRealMargin = realMargins.length > 0 ? (realMargins.reduce((s,m) => s+m.margin, 0) / realMargins.length) : null;
+    const worstReal = realMargins.length > 0 ? realMargins.reduce((w,m) => m.margin < w.margin ? m : w) : null;
+    const bestReal = realMargins.length > 0 ? realMargins.reduce((b,m) => m.margin > b.margin ? m : b) : null;
+
+    // 6) Haftalık trend (son 4 hafta)
     const weeklyTrend = [];
     if (dayEntries.length > 0) {
       const firstDay = dayEntries[0][0];
@@ -2856,7 +2910,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       }
     }
 
-    return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend };
+    return { compliance, overallCompliance, capUtilPct, avgDaily, capDays, shipReadiness, behindModels, weeklyTrend, avgShipMargin, worstShipment, bestShipment, shipMargins, avgRealMargin, worstReal, bestReal, realMargins };
   }, [ms, today, allContainers, yearsData, selectedYear, stockCalc, calDays, hatMax, holidays]);
 
   // --- Haftalık İş Planı Çıktısı ---
@@ -3154,7 +3208,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             </div>
 
             {/* Üst satır: Ana metrikler */}
-            <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:6,marginBottom:8}}>
+            <div style={{display:"grid",gridTemplateColumns:"repeat(5,1fr)",gap:6,marginBottom:8}}>
               <KCard title="Plan Uyum Oranı" value={kpi.overallCompliance!==null?kpi.overallCompliance+"%":"—"}
                 sub={kpi.overallCompliance!==null?`${kpiData.compliance[ANA_IDS[0]]?.daysOnTarget||0} gün hedefe ulaştı`:""} color={kpi.overallCompliance>=90?"#16a34a":kpi.overallCompliance>=70?"#f59e0b":"#dc2626"}/>
               <KCard title="Kapasite Kullanımı" value={kpi.capUtilPct+"%"}
@@ -3167,6 +3221,29 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
               ) : (
                 <KCard title="En Çok Geciken" value="—" sub="Tüm modeller planda" color="#16a34a"/>
               )}
+              <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
+                <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:4}}>Sevkiyat Yetişme Marjı</div>
+                {kpi.avgRealMargin!==null ? (
+                  <div style={{marginBottom:6}}>
+                    <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+                      <span style={{fontSize:"20px",fontWeight:600,color:kpi.avgRealMargin>=5?"#16a34a":kpi.avgRealMargin>=2?"#f59e0b":"#dc2626"}}>{Math.round(kpi.avgRealMargin)} gün</span>
+                      <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>GER</span>
+                    </div>
+                    <div style={{fontSize:"9px",color:"var(--color-text-tertiary)"}}>
+                      {kpi.realMargins.length} sevkiyat{kpi.worstReal?` · En dar: ${new Date(kpi.worstReal.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})} (${kpi.worstReal.margin}g)`:""}
+                    </div>
+                  </div>
+                ) : <div style={{fontSize:"11px",color:"var(--color-text-tertiary)",marginBottom:6}}>GER: henüz sevkiyat yok</div>}
+                <div style={{borderTop:"1px solid var(--color-border-tertiary)",paddingTop:4}}>
+                  <div style={{display:"flex",alignItems:"baseline",gap:4}}>
+                    <span style={{fontSize:"14px",fontWeight:500,color:kpi.avgShipMargin!==null?(kpi.avgShipMargin>=5?"#16a34a":kpi.avgShipMargin>=2?"#f59e0b":"#dc2626"):"var(--color-text-tertiary)"}}>{kpi.avgShipMargin!==null?Math.round(kpi.avgShipMargin)+" gün":"—"}</span>
+                    <span style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>PLN tahmini</span>
+                  </div>
+                  {kpi.worstShipment && <div style={{fontSize:"9px",color:"var(--color-text-tertiary)"}}>
+                    En dar: {new Date(kpi.worstShipment.date+"T00:00:00").toLocaleDateString("tr-TR",{day:"2-digit",month:"short"})} ({kpi.worstShipment.margin}g)
+                  </div>}
+                </div>
+              </div>
             </div>
 
             {/* Model bazlı plan uyum */}
