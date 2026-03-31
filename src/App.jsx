@@ -5126,6 +5126,131 @@ function MRPPlanlama({ db, userRole }) {
     return map;
   }, [akibet]);
 
+  // ==================== SATINALMA AÇIK SİPARİŞ PARSER ====================
+  const PURCH_DOC = "mrpPurchase";
+  const [purchase, setPurchase] = useState(null);
+  const [purchImporting, setPurchImporting] = useState(false);
+  const [purchImportResult, setPurchImportResult] = useState(null);
+
+  // Firestore listener for purchase (add to existing effect via separate effect)
+  useEffect(() => {
+    if (!db) return;
+    const ref = doc(db, APP_COL, PURCH_DOC);
+    const unsub = onSnapshot(ref, snap => { if (snap.exists()) setPurchase(snap.data()); }, () => {});
+    return () => unsub();
+  }, [db]);
+  const savePurchase = async (data) => { if (!db || !canEdit) return; await setDoc(doc(db, APP_COL, PURCH_DOC), data); };
+
+  const parsePurchaseExcel = (workbook) => {
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    const pNum = (v) => { if (v === "" || v === undefined || v === null) return 0; const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
+
+    let currentOrder = "", currentSupplier = "", currentDate = "";
+    const items = [];
+
+    for (let i = 0; i < rows.length; i++) {
+      const c0 = String(rows[i][0] || "").trim();
+
+      // Order header: "No  XXX  Tarih  DD.MM.YYYY"
+      const orderMatch = c0.match(/^No\s+(\S+)\s+Tarih\s+(.+)/);
+      if (orderMatch) {
+        currentOrder = orderMatch[1].trim();
+        currentDate = orderMatch[2].trim();
+        continue;
+      }
+      // Supplier: "Müşteri  CODE  NAME"
+      const supMatch = c0.match(/^Müşteri\s+\S+\s+(.*)/);
+      if (supMatch) {
+        currentSupplier = supMatch[1].trim().replace(/\s{2,}/g, " ");
+        continue;
+      }
+      // Skip non-data rows
+      if (c0 === "Stok Kodu" || c0 === "Nakliye" || !c0 || c0.startsWith("DENMA") || c0.startsWith("Bekleme") || c0.startsWith("Stok/") || c0.startsWith("Onay") || c0.startsWith("Rapor") || /^\s/.test(c0)) continue;
+
+      // Data row
+      const r = rows[i];
+      const code = c0;
+      const name = String(r[1] || "").trim();
+      const teslim = String(r[2] || "").trim().substring(0, 10);
+      const unit = String(r[3] || "").trim() || "AD";
+      const original = pNum(r[4]);
+      const shipped = pNum(r[5]);
+      const remaining = pNum(r[6]);
+
+      if ((original > 0 || remaining > 0) && code.match(/^[\d\w]/)) {
+        items.push({ code, name, unit, order: currentOrder, supplier: currentSupplier, date: currentDate, teslim, original, shipped, remaining });
+      }
+    }
+
+    // Aggregate per stock code
+    const partsMap = {};
+    items.forEach(it => {
+      if (!partsMap[it.code]) {
+        partsMap[it.code] = { code: it.code, name: it.name, unit: it.unit, totalRemaining: 0, totalOriginal: 0, suppliers: [], orders: [] };
+      }
+      const p = partsMap[it.code];
+      p.totalRemaining += it.remaining;
+      p.totalOriginal += it.original;
+      if (!p.suppliers.includes(it.supplier)) p.suppliers.push(it.supplier);
+      p.orders.push({ order: it.order, supplier: it.supplier, teslim: it.teslim, original: it.original, remaining: it.remaining });
+    });
+
+    const parts = Object.values(partsMap);
+    const supplierSet = new Set(items.map(i => i.supplier));
+
+    return {
+      parts, totalParts: parts.length, totalItems: items.length,
+      totalRemaining: parts.reduce((s, p) => s + p.totalRemaining, 0),
+      supplierCount: supplierSet.size,
+      importedAt: new Date().toISOString()
+    };
+  };
+
+  const handlePurchaseImport = (file) => {
+    setPurchImporting(true);
+    setPurchImportResult(null);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      let result = null;
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        result = parsePurchaseExcel(wb);
+        if (!result || result.totalParts === 0) {
+          setPurchImportResult({ error: "Sipariş verisi bulunamadı. VIO Sipariş Kontrol Listesi formatını kontrol edin." });
+          setPurchImporting(false);
+          return;
+        }
+      } catch (err) {
+        setPurchImportResult({ error: "Excel parse hatası: " + err.message });
+        setPurchImporting(false);
+        return;
+      }
+      try {
+        await savePurchase(result);
+        setPurchImportResult({ success: true, totalParts: result.totalParts, totalItems: result.totalItems, supplierCount: result.supplierCount });
+      } catch (err) {
+        setPurchImportResult({ error: "Firestore kayıt hatası: " + err.message });
+      }
+      setPurchImporting(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const onPurchDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handlePurchaseImport(f); };
+  const onPurchFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handlePurchaseImport(f); };
+
+  // Build purchase lookup: stockCode → { totalRemaining, suppliers }
+  const purchaseLookup = useMemo(() => {
+    if (!purchase || !purchase.parts) return {};
+    const map = {};
+    purchase.parts.forEach(p => {
+      map[p.code] = { totalRemaining: p.totalRemaining, suppliers: p.suppliers, orders: p.orders };
+    });
+    return map;
+  }, [purchase]);
+
   // ==================== TREE VIEW HELPERS ====================
   const getModelData = () => selectedModel && bomModels[selectedModel] ? bomModels[selectedModel] : null;
 
@@ -5656,6 +5781,36 @@ function MRPPlanlama({ db, userRole }) {
             </div>
           )}
 
+          {/* Purchase import */}
+          {canEdit && (
+            <div
+              onDrop={onPurchDrop} onDragOver={e => e.preventDefault()}
+              style={{ border: "2px dashed var(--color-border-secondary)", borderRadius: 12, padding: "14px 20px", textAlign: "center", marginBottom: 16, background: "var(--color-background-secondary)", cursor: "pointer", display: "flex", alignItems: "center", gap: 16, justifyContent: "center" }}
+              onClick={() => document.getElementById("purch-file-input").click()}
+            >
+              <div style={{ fontSize: 20 }}>🛒</div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>VIO Satınalma Bekleyen Sipariş sürükle & bırak</div>
+                <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Açık siparişleri düşerek gerçek satınalma açığını hesaplar</div>
+              </div>
+              {purchase && (
+                <div style={{ fontSize: 10, color: "var(--color-text-success)", textAlign: "left", borderLeft: "1px solid var(--color-border-tertiary)", paddingLeft: 12 }}>
+                  ✓ {purchase.totalParts} parça · {purchase.supplierCount} tedarikçi<br/>{new Date(purchase.importedAt).toLocaleString("tr-TR")}
+                </div>
+              )}
+              <input id="purch-file-input" type="file" accept=".xlsx,.xls" onChange={onPurchFileSelect} style={{ display: "none" }} />
+            </div>
+          )}
+          {purchImporting && <div style={{ padding: 10, background: "var(--color-background-info)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>Sipariş import ediliyor...</div>}
+          {purchImportResult && purchImportResult.error && (
+            <div style={{ padding: 10, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)" }}>{purchImportResult.error}</div>
+          )}
+          {purchImportResult && purchImportResult.success && (
+            <div style={{ padding: 10, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
+              ✓ Sipariş: {purchImportResult.totalParts} parça · {purchImportResult.totalItems} kalem · {purchImportResult.supplierCount} tedarikçi
+            </div>
+          )}
+
           {requirements && requirements.levels && (() => {
             const levKeys = Object.keys(requirements.levels).sort();
 
@@ -5690,23 +5845,31 @@ function MRPPlanlama({ db, userRole }) {
             }));
             const levelLabels = { L0: "Ana Ürünler", L1: "Seviye 1 — Montaj", L2: "Seviye 2 — İşlenmiş", L3: "Seviye 3 — Hammadde" };
 
-            // Purchase aggregation: group BUY/RAW by stockCode, sum requirements
+            // Purchase aggregation: group BUY/RAW by stockCode, include open PO data
+            const hasPurchase = Object.keys(purchaseLookup).length > 0;
             const purchaseMap = {};
             allItems.forEach(it => {
               if ((it._supplyType === "BUY" || it._supplyType === "RAW") && it.requirement > 0) {
                 if (!purchaseMap[it.code]) {
-                  purchaseMap[it.code] = { code: it.code, name: it.name, unit: it.unit, supplyType: it._supplyType, requirement: 0, stock: 0, wip: 0, netReq: 0, sources: 0 };
+                  purchaseMap[it.code] = { code: it.code, name: it.name, unit: it.unit, supplyType: it._supplyType, requirement: 0, stock: 0, wip: 0, openPO: 0, suppliers: [], netReq: 0, gap: 0, sources: 0 };
                 }
                 const pm = purchaseMap[it.code];
                 pm.requirement += it.requirement || 0;
-                pm.stock = Math.max(pm.stock, it.stock || 0); // max (same part, same stock)
+                pm.stock = Math.max(pm.stock, it.stock || 0);
                 pm.wip += it._wip || 0;
                 pm.sources++;
               }
             });
-            // Recalculate net for aggregated
+            // Enrich with open PO data
             Object.values(purchaseMap).forEach(pm => {
+              const po = purchaseLookup[pm.code];
+              if (po) {
+                pm.openPO = po.totalRemaining;
+                pm.suppliers = po.suppliers || [];
+              }
               pm.netReq = Math.max(0, pm.requirement - pm.wip);
+              // gap = net requirement - open PO (negative = excess PO, positive = need new order)
+              pm.gap = pm.netReq - pm.openPO;
             });
             const purchaseList = Object.values(purchaseMap).sort((a, b) => b.netReq - a.netReq || a.code.localeCompare(b.code));
             const purchaseBuy = purchaseList.filter(p => p.supplyType === "BUY");
@@ -5740,7 +5903,7 @@ function MRPPlanlama({ db, userRole }) {
                   <span style={{ color: "var(--color-text-danger)" }}>{requirements.totalNeeded} gereksinimli</span>
                   {hasAkibet && <span style={{ color: "#F59E0B" }}>🔄 {allItems.filter(i => i._wip > 0).length} üretimde/fasonda</span>}
                   {hasAkibet && <span style={{ color: "#EF4444", fontWeight: 500 }}>🔴 {allItems.filter(i => i._netReq > 0).length} net açık</span>}
-                  <span style={{ color: "#633806" }}>🛒 {purchaseList.filter(p => p.netReq > 0).length} satınalma açığı</span>
+                  <span style={{ color: "#633806" }}>🛒 {purchaseList.filter(p => p.gap > 0).length} sipariş açığı{hasPurchase ? "" : " (sipariş verisi yok)"}</span>
                   {requirements.bomMatched > 0 && <span>BOM: {requirements.bomMatched}/{requirements.bomMatched + (requirements.bomUnmatched||0)}</span>}
                 </div>
 
@@ -5769,7 +5932,7 @@ function MRPPlanlama({ db, userRole }) {
 
                 <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 6 }}>
                   {isPurchaseView
-                    ? `Satınalma: ${purchaseRaw.length} hammadde (RAW) · ${purchaseBuy.length} standart parça (BUY) · Toplam ${purchaseList.length} kalem`
+                    ? `Satınalma: ${purchaseRaw.length} hammadde (RAW) · ${purchaseBuy.length} standart parça (BUY)${hasPurchase ? ` · ${purchaseList.filter(p=>p.gap>0).length} yeni sipariş gerekli · ${purchaseList.filter(p=>p.openPO>0 && p.gap<=0).length} takipte` : ""}`
                     : `${filtered.length} kalem · ${totalReq} gereksinimli${hasAkibet ? ` · ${totalNet} net açık` : ""}`
                   }
                 </div>
@@ -5783,6 +5946,7 @@ function MRPPlanlama({ db, userRole }) {
                         <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
                           <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "#FAEEDA", color: "#633806" }}>RAW</span>
                           Hammadde Toplu İhtiyaç ({purchaseRaw.length} kalem)
+                          {hasPurchase && <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>· {purchaseRaw.filter(p => p.gap > 0).length} sipariş açığı</span>}
                         </div>
                         <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -5791,24 +5955,33 @@ function MRPPlanlama({ db, userRole }) {
                                 <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#633806" }}>Stok Kodu</th>
                                 <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#633806" }}>Hammadde Adı</th>
                                 <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#633806" }}>Br</th>
-                                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Toplam İhtiyaç</th>
-                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Yoldaki</th>}
-                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Sipariş Açığı</th>}
+                                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>İhtiyaç</th>
+                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Üretimde</th>}
+                                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Net İhtiyaç</th>
+                                {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Açık Sipariş</th>}
+                                {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Sipariş Açığı</th>}
+                                {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#633806" }}>Tedarikçi</th>}
                                 <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#633806" }}>Kaynak</th>
                               </tr>
                             </thead>
                             <tbody>
-                              {purchaseRaw.map((p, i) => (
-                                <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: p.netReq > 0 ? "#FEF2F2" : "transparent" }}>
-                                  <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{p.code}</td>
-                                  <td style={{ padding: "5px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
-                                  <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
-                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement % 1 === 0 ? p.requirement : p.requirement.toFixed(2)}</td>
-                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
-                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: p.netReq > 0 ? 700 : 400, color: p.netReq > 0 ? "#DC2626" : "var(--color-text-success)", fontSize: p.netReq > 0 ? 11 : 10 }}>{p.netReq > 0 ? (p.netReq % 1 === 0 ? p.netReq : p.netReq.toFixed(2)) : "✓"}</td>}
-                                  <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.sources > 1 ? `${p.sources} parça` : "1"}</td>
-                                </tr>
-                              ))}
+                              {purchaseRaw.map((p, i) => {
+                                const rowBg = hasPurchase ? (p.gap > 0 ? "#FEF2F2" : p.openPO > 0 ? "#FFFBEB" : p.netReq > 0 ? "#FEF2F2" : "transparent") : (p.netReq > 0 ? "#FEF2F2" : "transparent");
+                                return (
+                                  <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
+                                    <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{p.code}</td>
+                                    <td style={{ padding: "5px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement % 1 === 0 ? p.requirement : p.requirement.toFixed(2)}</td>
+                                    {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
+                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500, color: p.netReq > 0 ? "#92400E" : "var(--color-text-success)" }}>{p.netReq > 0 ? (p.netReq % 1 === 0 ? p.netReq : p.netReq.toFixed(2)) : "✓"}</td>
+                                    {hasPurchase && <td style={{ padding: "5px 8px", textAlign: "right", color: p.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.openPO > 0 ? p.openPO : "—"}</td>}
+                                    {hasPurchase && <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: p.gap > 0 ? 700 : 400, fontSize: p.gap > 0 ? 11 : 10, color: p.gap > 0 ? "#DC2626" : p.gap < 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{p.gap > 0 ? (p.gap % 1 === 0 ? p.gap : p.gap.toFixed(2)) : p.gap === 0 && p.netReq > 0 ? "✓ Tam" : p.gap < 0 ? "✓ Fazla" : "—"}</td>}
+                                    {hasPurchase && <td style={{ padding: "5px 8px", fontSize: 9, color: "var(--color-text-tertiary)", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.suppliers.length > 0 ? p.suppliers[0] : "—"}</td>}
+                                    <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.sources > 1 ? `${p.sources}` : "1"}</td>
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
@@ -5821,6 +5994,7 @@ function MRPPlanlama({ db, userRole }) {
                         <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
                           <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "#EAF3DE", color: "#27500A" }}>BUY</span>
                           Standart Parça İhtiyaç ({purchaseBuy.length} kalem)
+                          {hasPurchase && <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontWeight: 400 }}>· {purchaseBuy.filter(p => p.gap > 0).length} sipariş açığı</span>}
                         </div>
                         <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
@@ -5830,21 +6004,30 @@ function MRPPlanlama({ db, userRole }) {
                                 <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Parça Adı</th>
                                 <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Br</th>
                                 <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>İhtiyaç</th>
-                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Yoldaki</th>}
-                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Sipariş Açığı</th>}
+                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Üretimde</th>}
+                                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Net İhtiyaç</th>
+                                {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Açık Sipariş</th>}
+                                {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Sipariş Açığı</th>}
+                                {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Tedarikçi</th>}
                               </tr>
                             </thead>
                             <tbody>
-                              {purchaseBuy.map((p, i) => (
-                                <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: p.netReq > 0 ? "#FEF2F2" : "transparent" }}>
-                                  <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{p.code}</td>
-                                  <td style={{ padding: "5px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
-                                  <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
-                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement}</td>
-                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
-                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: p.netReq > 0 ? 700 : 400, color: p.netReq > 0 ? "#DC2626" : "var(--color-text-success)", fontSize: p.netReq > 0 ? 11 : 10 }}>{p.netReq > 0 ? p.netReq : "✓"}</td>}
-                                </tr>
-                              ))}
+                              {purchaseBuy.map((p, i) => {
+                                const rowBg = hasPurchase ? (p.gap > 0 ? "#FEF2F2" : p.openPO > 0 ? "#FFFBEB" : p.netReq > 0 ? "#FEF2F2" : "transparent") : (p.netReq > 0 ? "#FEF2F2" : "transparent");
+                                return (
+                                  <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
+                                    <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{p.code}</td>
+                                    <td style={{ padding: "5px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
+                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement}</td>
+                                    {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
+                                    <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500, color: p.netReq > 0 ? "#92400E" : "var(--color-text-success)" }}>{p.netReq > 0 ? p.netReq : "✓"}</td>
+                                    {hasPurchase && <td style={{ padding: "5px 8px", textAlign: "right", color: p.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.openPO > 0 ? p.openPO : "—"}</td>}
+                                    {hasPurchase && <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: p.gap > 0 ? 700 : 400, fontSize: p.gap > 0 ? 11 : 10, color: p.gap > 0 ? "#DC2626" : p.gap < 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{p.gap > 0 ? p.gap : p.gap === 0 && p.netReq > 0 ? "✓ Tam" : p.gap < 0 ? "✓ Fazla" : "—"}</td>}
+                                    {hasPurchase && <td style={{ padding: "5px 8px", fontSize: 9, color: "var(--color-text-tertiary)", maxWidth: 130, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.suppliers.length > 0 ? p.suppliers[0] : "—"}</td>}
+                                  </tr>
+                                );
+                              })}
                             </tbody>
                           </table>
                         </div>
