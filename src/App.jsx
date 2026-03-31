@@ -5658,25 +5658,75 @@ function MRPPlanlama({ db, userRole }) {
 
           {requirements && requirements.levels && (() => {
             const levKeys = Object.keys(requirements.levels).sort();
+
+            // Build BOM supply type lookup
+            const bomSupplyLookup = {};
+            const mKeys = Object.keys(bomModels).filter(k => k !== "undefined");
+            mKeys.forEach(mk => {
+              (bomModels[mk]?.parts || []).forEach(p => {
+                bomSupplyLookup[p.stockCode] = p.supplyType;
+              });
+            });
+
+            // Determine supply type: BOM override > BOM auto > stockCode prefix
+            const getSupplyType = (code) => {
+              if (bomSupplyLookup[code]) return bomSupplyLookup[code];
+              const pfx = code.split("-")[0];
+              if (pfx === "150") return "RAW";
+              if (pfx === "157") return "BUY";
+              if (pfx === "152") return "PRODUCT";
+              if (pfx === "151") return "MAKE";
+              return "MAKE";
+            };
+
             const allItems = levKeys.flatMap(k => (requirements.levels[k]?.items || []).map(it => {
-              // Enrich with akibet data
               const ak = akibetLookup[it.code];
               const intRem = ak ? ak.internalRemaining : 0;
               const fasRem = ak ? ak.fasonRemaining : 0;
-              const wip = intRem + fasRem; // work in progress total
+              const wip = intRem + fasRem;
               const netReq = Math.max(0, (it.requirement || 0) - wip);
-              return { ...it, _level: k, _intRem: intRem, _fasRem: fasRem, _wip: wip, _netReq: netReq, _akOrders: ak?.orderCount || 0 };
+              const sType = getSupplyType(it.code);
+              return { ...it, _level: k, _intRem: intRem, _fasRem: fasRem, _wip: wip, _netReq: netReq, _akOrders: ak?.orderCount || 0, _supplyType: sType };
             }));
             const levelLabels = { L0: "Ana Ürünler", L1: "Seviye 1 — Montaj", L2: "Seviye 2 — İşlenmiş", L3: "Seviye 3 — Hammadde" };
+
+            // Purchase aggregation: group BUY/RAW by stockCode, sum requirements
+            const purchaseMap = {};
+            allItems.forEach(it => {
+              if ((it._supplyType === "BUY" || it._supplyType === "RAW") && it.requirement > 0) {
+                if (!purchaseMap[it.code]) {
+                  purchaseMap[it.code] = { code: it.code, name: it.name, unit: it.unit, supplyType: it._supplyType, requirement: 0, stock: 0, wip: 0, netReq: 0, sources: 0 };
+                }
+                const pm = purchaseMap[it.code];
+                pm.requirement += it.requirement || 0;
+                pm.stock = Math.max(pm.stock, it.stock || 0); // max (same part, same stock)
+                pm.wip += it._wip || 0;
+                pm.sources++;
+              }
+            });
+            // Recalculate net for aggregated
+            Object.values(purchaseMap).forEach(pm => {
+              pm.netReq = Math.max(0, pm.requirement - pm.wip);
+            });
+            const purchaseList = Object.values(purchaseMap).sort((a, b) => b.netReq - a.netReq || a.code.localeCompare(b.code));
+            const purchaseBuy = purchaseList.filter(p => p.supplyType === "BUY");
+            const purchaseRaw = purchaseList.filter(p => p.supplyType === "RAW");
+            const isPurchaseView = reqFilter === "purchase";
 
             let filtered = reqLevel === "all" ? allItems : allItems.filter(i => i._level === reqLevel);
             if (reqFilter === "needed") filtered = filtered.filter(i => i.requirement > 0);
             else if (reqFilter === "stocked") filtered = filtered.filter(i => i.stock > 0);
             else if (reqFilter === "net") filtered = filtered.filter(i => i._netReq > 0);
             else if (reqFilter === "wip") filtered = filtered.filter(i => i._wip > 0);
+            else if (reqFilter === "purchase") filtered = filtered.filter(i => (i._supplyType === "BUY" || i._supplyType === "RAW") && i.requirement > 0);
             if (reqSearch.trim()) {
               const q = reqSearch.toLowerCase();
               filtered = filtered.filter(i => i.code.toLowerCase().includes(q) || i.name.toLowerCase().includes(q));
+              // Also filter purchase lists
+              if (isPurchaseView) {
+                purchaseBuy.splice(0, purchaseBuy.length, ...Object.values(purchaseMap).filter(p => p.supplyType === "BUY" && (p.code.toLowerCase().includes(q) || p.name.toLowerCase().includes(q))));
+                purchaseRaw.splice(0, purchaseRaw.length, ...Object.values(purchaseMap).filter(p => p.supplyType === "RAW" && (p.code.toLowerCase().includes(q) || p.name.toLowerCase().includes(q))));
+              }
             }
             const totalReq = filtered.filter(i => i.requirement > 0).length;
             const totalNet = filtered.filter(i => i._netReq > 0).length;
@@ -5690,6 +5740,7 @@ function MRPPlanlama({ db, userRole }) {
                   <span style={{ color: "var(--color-text-danger)" }}>{requirements.totalNeeded} gereksinimli</span>
                   {hasAkibet && <span style={{ color: "#F59E0B" }}>🔄 {allItems.filter(i => i._wip > 0).length} üretimde/fasonda</span>}
                   {hasAkibet && <span style={{ color: "#EF4444", fontWeight: 500 }}>🔴 {allItems.filter(i => i._netReq > 0).length} net açık</span>}
+                  <span style={{ color: "#633806" }}>🛒 {purchaseList.filter(p => p.netReq > 0).length} satınalma açığı</span>
                   {requirements.bomMatched > 0 && <span>BOM: {requirements.bomMatched}/{requirements.bomMatched + (requirements.bomUnmatched||0)}</span>}
                 </div>
 
@@ -5708,6 +5759,7 @@ function MRPPlanlama({ db, userRole }) {
                     <option value="needed">Gereksinimli</option>
                     {hasAkibet && <option value="net">Net Açık (üretim düşülmüş)</option>}
                     {hasAkibet && <option value="wip">Üretimde/Fasonda</option>}
+                    <option value="purchase">🛒 Satınalma (BUY/RAW)</option>
                     <option value="stocked">Stokta var</option>
                   </select>
                 </div>
@@ -5716,8 +5768,90 @@ function MRPPlanlama({ db, userRole }) {
                   style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-secondary)", fontSize: 12, outline: "none", marginBottom: 8 }} />
 
                 <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 6 }}>
-                  {filtered.length} kalem · {totalReq} gereksinimli{hasAkibet && ` · ${totalNet} net açık`}
+                  {isPurchaseView
+                    ? `Satınalma: ${purchaseRaw.length} hammadde (RAW) · ${purchaseBuy.length} standart parça (BUY) · Toplam ${purchaseList.length} kalem`
+                    : `${filtered.length} kalem · ${totalReq} gereksinimli${hasAkibet ? ` · ${totalNet} net açık` : ""}`
+                  }
                 </div>
+
+                {/* ---- AGGREGATED PURCHASE VIEW ---- */}
+                {isPurchaseView && (purchaseRaw.length > 0 || purchaseBuy.length > 0) && (
+                  <div style={{ marginBottom: 12 }}>
+                    {/* RAW section */}
+                    {purchaseRaw.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "#FAEEDA", color: "#633806" }}>RAW</span>
+                          Hammadde Toplu İhtiyaç ({purchaseRaw.length} kalem)
+                        </div>
+                        <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                            <thead>
+                              <tr style={{ background: "#FAEEDA44" }}>
+                                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#633806" }}>Stok Kodu</th>
+                                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#633806" }}>Hammadde Adı</th>
+                                <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#633806" }}>Br</th>
+                                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Toplam İhtiyaç</th>
+                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Yoldaki</th>}
+                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Sipariş Açığı</th>}
+                                <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#633806" }}>Kaynak</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {purchaseRaw.map((p, i) => (
+                                <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: p.netReq > 0 ? "#FEF2F2" : "transparent" }}>
+                                  <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{p.code}</td>
+                                  <td style={{ padding: "5px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement % 1 === 0 ? p.requirement : p.requirement.toFixed(2)}</td>
+                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
+                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: p.netReq > 0 ? 700 : 400, color: p.netReq > 0 ? "#DC2626" : "var(--color-text-success)", fontSize: p.netReq > 0 ? 11 : 10 }}>{p.netReq > 0 ? (p.netReq % 1 === 0 ? p.netReq : p.netReq.toFixed(2)) : "✓"}</td>}
+                                  <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.sources > 1 ? `${p.sources} parça` : "1"}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* BUY section */}
+                    {purchaseBuy.length > 0 && (
+                      <div style={{ marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "#EAF3DE", color: "#27500A" }}>BUY</span>
+                          Standart Parça İhtiyaç ({purchaseBuy.length} kalem)
+                        </div>
+                        <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                            <thead>
+                              <tr style={{ background: "#EAF3DE44" }}>
+                                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Stok Kodu</th>
+                                <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Parça Adı</th>
+                                <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Br</th>
+                                <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>İhtiyaç</th>
+                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Yoldaki</th>}
+                                {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Sipariş Açığı</th>}
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {purchaseBuy.map((p, i) => (
+                                <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: p.netReq > 0 ? "#FEF2F2" : "transparent" }}>
+                                  <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{p.code}</td>
+                                  <td style={{ padding: "5px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
+                                  <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement}</td>
+                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
+                                  {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: p.netReq > 0 ? 700 : 400, color: p.netReq > 0 ? "#DC2626" : "var(--color-text-success)", fontSize: p.netReq > 0 ? 11 : 10 }}>{p.netReq > 0 ? p.netReq : "✓"}</td>}
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", maxHeight: "60vh", overflowY: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
