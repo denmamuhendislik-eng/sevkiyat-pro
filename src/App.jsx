@@ -1298,7 +1298,7 @@ export default function App() {
       table{border-collapse:collapse;width:100%;margin-bottom:14px}
       th,td{border:1px solid #aaa;padding:6px 8px;font-size:11px}
       th{background:#e8e8e8;font-weight:700;text-align:center}
-      .check{width:20px;height:20px;border:2px solid #333;display:inline-block;border-radius:3px}
+      .check{width:16px;height:16px;border:1.5px solid #333;display:inline-block;border-radius:2px}
       .totrow td{font-weight:700;border-top:2.5px solid #333;background:#f5f5f5}
       .sign{display:flex;gap:40px;margin-top:30px}
       .sign>div{flex:1;border-top:1px solid #333;padding-top:6px;text-align:center;font-size:11px}
@@ -1341,8 +1341,12 @@ export default function App() {
     </tr></tbody></table>`;
 
     // Bölüm 2: Palet Yükleme Checklist
-    html += `<h2>2. PALET YÜKLEME KONTROL</h2>`;
-    html += `<table><thead><tr>
+    html += `<div style="page-break-before:always"></div>`;
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div style="font-size:13px;font-weight:700">📋 YÜKLEME KONTROL FORMU</div>
+      <div style="font-size:11px;color:#555">${dateStr} — ${c.id}</div></div>`;
+    html += `<h2 style="margin-top:4px">2. PALET YÜKLEME KONTROL</h2>`;
+    html += `<table style="font-size:10px"><thead><tr>
       <th style="width:30px">✓</th>
       <th>Palet No</th>
       <th>İçerik</th>
@@ -1365,14 +1369,14 @@ export default function App() {
       const ambalajName = AMBALAJ_TYPES[pl.ambalajType||0]?.label || "—";
       totNet += plNet; totDara += plDara; totBrut += plBrut;
       html += `<tr>
-        <td style="text-align:center"><div class="check"></div></td>
-        <td style="text-align:center;font-weight:700">${pl.id}</td>
-        <td style="font-size:10px">${content}</td>
-        <td style="text-align:center">${plQty}</td>
-        <td style="text-align:right">${fk(plNet)}</td>
-        <td style="text-align:right">${fk(plDara)}</td>
-        <td style="text-align:right;font-weight:600">${fk(plBrut)}</td>
-        <td style="text-align:center;font-size:10px">${ambalajName}</td>
+        <td style="text-align:center;padding:3px 4px"><div class="check"></div></td>
+        <td style="text-align:center;font-weight:700;padding:3px 4px">${pl.id}</td>
+        <td style="font-size:9px;padding:3px 4px">${content}</td>
+        <td style="text-align:center;padding:3px 4px">${plQty}</td>
+        <td style="text-align:right;padding:3px 4px">${fk(plNet)}</td>
+        <td style="text-align:right;padding:3px 4px">${fk(plDara)}</td>
+        <td style="text-align:right;font-weight:600;padding:3px 4px">${fk(plBrut)}</td>
+        <td style="text-align:center;font-size:9px;padding:3px 4px">${ambalajName}</td>
       </tr>`;
     });
     html += `<tr class="totrow">
@@ -1394,11 +1398,11 @@ export default function App() {
     }
 
     // Bölüm 3: Notlar
-    html += `<h2>3. NOTLAR</h2>`;
-    html += `<div style="border:1px solid #aaa;border-radius:4px;min-height:60px;padding:8px"></div>`;
+    html += `<h2 style="margin-top:10px">3. NOTLAR</h2>`;
+    html += `<div style="border:1px solid #aaa;border-radius:4px;min-height:40px;padding:6px"></div>`;
 
     // İmza alanları
-    html += `<div class="sign">
+    html += `<div class="sign" style="margin-top:20px">
       <div><b>Hazırlayan</b><br>İsim / İmza / Tarih</div>
       <div><b>Yükleme Operatörü</b><br>İsim / İmza / Tarih</div>
       <div><b>Kontrol Eden</b><br>İsim / İmza / Tarih</div>
