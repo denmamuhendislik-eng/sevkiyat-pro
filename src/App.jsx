@@ -5588,7 +5588,25 @@ function MRPPlanlama({ db, userRole }) {
                         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.stockName}</span>
                         <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>L{p.level}</span>
                         <span style={{ fontSize: 11, color: "var(--color-text-secondary)", minWidth: 40, textAlign: "right" }}>{p.qty} {p.unit}</span>
-                        <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c }}>{p.supplyType}</span>
+                        {canEdit ? (
+                          <select
+                            value={p.supplyType}
+                            onChange={(e) => updateSupplyType(selectedModel, p.idx, e.target.value)}
+                            style={{
+                              padding: "1px 2px 1px 4px", borderRadius: 4, fontSize: 9, fontWeight: 500,
+                              background: sc.bg, color: sc.c,
+                              border: p._autoSupplyType ? "1.5px solid " + sc.c : "1px solid transparent",
+                              cursor: "pointer", outline: "none", appearance: "auto"
+                            }}
+                            title={p._autoSupplyType ? `Otomatik: ${p._autoSupplyType} → Manuel: ${p.supplyType}` : p.supplyType}
+                          >
+                            {["MAKE","MAKE+FASON","FASON","BUY","RAW","PRODUCT"].map(t => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c }}>{p.supplyType}</span>
+                        )}
                         {p.operations.length > 0 && <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.operations.map(o => o.opCode).join(",")}</span>}
                       </div>
                     );
