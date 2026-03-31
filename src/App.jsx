@@ -4224,14 +4224,15 @@ function MRPPlanlama({ db, userRole }) {
       const txt = String(rows[i][0] || "");
       const m = txt.match(/Ürün Ağacı:\s*(\S+)\s*-\s*(.+)/);
       if (m) { modelCode = m[1].trim(); modelName = m[2].trim(); break; }
-      const m2 = txt.match(/Ürün\s+\(([^)]+)\)\s+(.+)/);
+      const m2 = txt.match(/\((\d{3}-\d{4})\)\s+(.+)/);
       if (m2) { modelCode = m2[1].trim(); modelName = m2[2].trim(); break; }
     }
 
     const parts = [];
-    const operations = {};    // partIdx -> [ops]
-    const detectedWCs = {};   // wcCode -> {name, opCodes}
-    const detectedFason = {}; // opCode -> {name, count}
+    let pendingOps = [];       // ops waiting to be assigned to NEXT part
+    const detectedWCs = {};    // wcCode -> {name, opCodes}
+    const detectedFason = {};  // opCode -> {name, count}
+    let totalOps = 0;
 
     for (let i = headerIdx + 1; i < rows.length; i++) {
       let col0 = String(rows[i][0] || "").trim();
@@ -4239,21 +4240,25 @@ function MRPPlanlama({ db, userRole }) {
       const col2 = rows[i][2];
       const col3 = String(rows[i][3] || "").trim();
 
-      if (!col0 && !col1) continue; // empty row
-
-      // Detect level from leading dots
-      let level = 0;
-      const dotMatch = col0.match(/^(\.\s+)+/);
-      if (dotMatch) {
-        level = (dotMatch[0].match(/\./g) || []).length;
-        col0 = col0.replace(/^(\.\s+)+/, "").trim();
-        col1 = col1.replace(/^(\.\s+)+/, "").trim();
+      // Empty row — if pending ops exist, assign to last part
+      if (!col0 && !col1) {
+        if (pendingOps.length > 0 && parts.length > 0) {
+          parts[parts.length - 1].operations.push(...pendingOps);
+          pendingOps = [];
+        }
+        continue;
       }
-      // Also check pipe characters for deeper nesting
-      const pipeMatch = col0.match(/^\|\s+/);
-      if (pipeMatch) {
-        col0 = col0.replace(/^\|\s+/, "").trim();
-        col1 = col1.replace(/^\|\s+/, "").trim();
+
+      // Detect level: count leading dots and pipes
+      let level = 0;
+      const prefixMatch = col0.match(/^([\.\|\s]+)/);
+      if (prefixMatch) {
+        level = (prefixMatch[1].match(/\./g) || []).length;
+        col0 = col0.substring(prefixMatch[1].length).trim();
+      }
+      const prefixMatch1 = col1.match(/^([\.\|\s]+)/);
+      if (prefixMatch1) {
+        col1 = col1.substring(prefixMatch1[1].length).trim();
       }
 
       // Check if operation row
@@ -4261,28 +4266,21 @@ function MRPPlanlama({ db, userRole }) {
       if (opMatch) {
         const opCode = opMatch[1];
         const opName = opMatch[2].trim();
-        // Extract work center from col1
         let wcCode = "", wcName = "";
         const wcMatch = col1.match(/İş\.Mrk:\s*\((\d+)\)\s*(.*)/);
         if (wcMatch) { wcCode = wcMatch[1]; wcName = wcMatch[2].trim(); }
 
-        // Store operation for next part
-        const lastPartIdx = parts.length - 1;
-        if (lastPartIdx >= 0) {
-          if (!operations[lastPartIdx]) operations[lastPartIdx] = [];
-          operations[lastPartIdx].push({ opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null });
-        }
+        pendingOps.push({ opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null });
+        totalOps++;
 
-        // Detect work centers
-        if (wcCode) {
-          const isFason = parseInt(opCode) >= 600;
-          if (isFason) {
-            if (!detectedFason[opCode]) detectedFason[opCode] = { name: opName, count: 0 };
-            detectedFason[opCode].count++;
-          } else {
-            if (!detectedWCs[wcCode]) detectedWCs[wcCode] = { name: wcName, opCodes: new Set() };
-            detectedWCs[wcCode].opCodes.add(opCode);
-          }
+        // Detect work centers and fason
+        const isFason = parseInt(opCode) >= 600;
+        if (isFason) {
+          if (!detectedFason[opCode]) detectedFason[opCode] = { name: opName, count: 0 };
+          detectedFason[opCode].count++;
+        } else if (wcCode) {
+          if (!detectedWCs[wcCode]) detectedWCs[wcCode] = { name: wcName, opCodes: new Set() };
+          detectedWCs[wcCode].opCodes.add(opCode);
         }
         continue;
       }
@@ -4300,26 +4298,29 @@ function MRPPlanlama({ db, userRole }) {
         if (!isNaN(parsed)) qty = parsed;
       }
 
-      // Detect supply type from stock code prefix
       const prefix = stockCode.split("-")[0];
       let supplyType = "MAKE";
       if (prefix === "150") supplyType = "RAW";
       else if (prefix === "157") supplyType = "BUY";
       else if (prefix === "152") supplyType = "PRODUCT";
 
+      // Assign pending ops to THIS part (ops come before the part in Excel)
+      const partOps = [...pendingOps];
+      pendingOps = [];
+
       parts.push({
-        stockCode,
-        stockName,
-        level,
-        qty,
-        unit: col3 || "AD",
-        supplyType,
-        parentIdx: null
+        stockCode, stockName, level, qty,
+        unit: col3 || "AD", supplyType, parentIdx: null,
+        operations: partOps
       });
+    }
+    // Flush any remaining pending ops
+    if (pendingOps.length > 0 && parts.length > 0) {
+      parts[parts.length - 1].operations.push(...pendingOps);
     }
 
     // Assign parentIdx based on levels
-    const stack = []; // [{idx, level}]
+    const stack = [];
     for (let i = 0; i < parts.length; i++) {
       const p = parts[i];
       while (stack.length > 0 && stack[stack.length - 1].level >= p.level) stack.pop();
@@ -4327,18 +4328,14 @@ function MRPPlanlama({ db, userRole }) {
       stack.push({ idx: i, level: p.level });
     }
 
-    // Attach operations to parts
+    // Update supply type based on operations
     for (let i = 0; i < parts.length; i++) {
-      parts[i].operations = operations[i] || [];
-      // Update supply type if has fason operations
-      if (parts[i].supplyType === "MAKE" && parts[i].operations.some(op => parseInt(op.opCode) >= 600)) {
-        parts[i].supplyType = "MAKE+FASON";
-      }
-      // Pure fason: only fason ops, no in-house ops
-      if (parts[i].operations.length > 0 && parts[i].operations.every(op => parseInt(op.opCode) >= 600)) {
-        if (parts[i].supplyType !== "RAW" && parts[i].supplyType !== "BUY") {
-          parts[i].supplyType = "FASON";
-        }
+      const p = parts[i];
+      if (p.operations.length > 0 && p.supplyType === "MAKE") {
+        const hasFason = p.operations.some(op => parseInt(op.opCode) >= 600);
+        const allFason = p.operations.every(op => parseInt(op.opCode) >= 600);
+        if (allFason) p.supplyType = "FASON";
+        else if (hasFason) p.supplyType = "MAKE+FASON";
       }
     }
 
@@ -4357,7 +4354,7 @@ function MRPPlanlama({ db, userRole }) {
       parts,
       partCount: parts.length,
       levelCounts: { L0: parts.filter(p => p.level === 0).length, L1: parts.filter(p => p.level === 1).length, L2: parts.filter(p => p.level === 2).length },
-      opCount: Object.values(operations).flat().length,
+      opCount: totalOps,
       detectedWCs: wcResult,
       detectedFason: faResult,
       importedAt: new Date().toISOString()
