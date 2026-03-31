@@ -4162,12 +4162,14 @@ function MRPPlanlama({ db, userRole }) {
   const APP_COL = "appData";
   const BOM_DOC = "bomModels";
   const WC_DOC = "workCenters";
+  const REQ_DOC = "mrpRequirements";
   const isAdmin = userRole === "admin";
   const canEdit = isAdmin;
 
   // State
   const [bomModels, setBomModels] = useState({});
   const [workCenters, setWorkCenters] = useState(null);
+  const [requirements, setRequirements] = useState(null);
   const [activeTab, setActiveTab] = useState("bom");
   const [selectedModel, setSelectedModel] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState({});
@@ -4192,6 +4194,11 @@ function MRPPlanlama({ db, userRole }) {
       if (snap.exists()) setWorkCenters(snap.data());
       else setWorkCenters({ centers: {}, fason: {}, shiftHours: 9, efficiency: 0.85 });
     }, () => {}));
+    // MRP Requirements
+    const reqRef = doc(db, APP_COL, REQ_DOC);
+    unsubs.push(onSnapshot(reqRef, snap => {
+      if (snap.exists()) setRequirements(snap.data());
+    }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
 
@@ -4203,6 +4210,10 @@ function MRPPlanlama({ db, userRole }) {
   const saveWC = async (data) => {
     if (!db || !canEdit) return;
     await setDoc(doc(db, APP_COL, WC_DOC), data);
+  };
+  const saveReq = async (data) => {
+    if (!db || !canEdit) return;
+    await setDoc(doc(db, APP_COL, REQ_DOC), data);
   };
 
   // ==================== BOM EXCEL PARSER ====================
@@ -4443,6 +4454,171 @@ function MRPPlanlama({ db, userRole }) {
   const onDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleBomImport(f); };
   const onFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleBomImport(f); };
 
+  // ==================== VIO REQ EXCEL PARSER ====================
+  const [reqImporting, setReqImporting] = useState(false);
+  const [reqImportResult, setReqImportResult] = useState(null);
+  const [reqLevel, setReqLevel] = useState("all");
+  const [reqSearch, setReqSearch] = useState("");
+  const [reqFilter, setReqFilter] = useState("all"); // all, needed, stocked
+
+  const parseReqExcel = (workbook) => {
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    // Find period info
+    let period = "";
+    for (let i = 0; i < Math.min(6, rows.length); i++) {
+      const c0 = String(rows[i][0] || "");
+      if (c0.includes("Dönem")) {
+        period = String(rows[i][1] || "").trim();
+        break;
+      }
+    }
+
+    const parseNum = (v) => {
+      if (v === "" || v === undefined || v === null || v === "None") return 0;
+      const s = String(v).replace(",", ".").replace(/\s/g, "");
+      const n = parseFloat(s);
+      return isNaN(n) ? 0 : n;
+    };
+
+    // Detect sections by scanning for "İstenenler" and "Ara Seviye N"
+    const sectionStarts = [];
+    for (let i = 0; i < rows.length; i++) {
+      const c0 = String(rows[i][0] || "").trim();
+      if (c0 === "İstenenler" || c0.includes("İstenenler")) {
+        sectionStarts.push({ level: "L0", label: "Ana Ürünler", startRow: i });
+      } else if (c0.includes("Ara Seviye")) {
+        const num = c0.replace(/\D/g, "");
+        sectionStarts.push({ level: "L" + num, label: "Ara Seviye " + num, startRow: i });
+      }
+    }
+
+    const levels = {};
+    for (let si = 0; si < sectionStarts.length; si++) {
+      const sec = sectionStarts[si];
+      const endRow = si + 1 < sectionStarts.length ? sectionStarts[si + 1].startRow : rows.length;
+
+      // Find header row(s) in this section
+      const headers = [];
+      for (let i = sec.startRow; i < Math.min(sec.startRow + 3, endRow); i++) {
+        if (String(rows[i][0] || "").trim().includes("Stok Kod")) {
+          headers.push(i);
+        }
+      }
+      // Also find additional sub-headers within the section (L3 has multiple)
+      for (let i = sec.startRow + 3; i < endRow; i++) {
+        if (String(rows[i][0] || "").trim() === "Stok Kod" || String(rows[i][0] || "").trim().includes("Stok Kod")) {
+          headers.push(i);
+        }
+      }
+
+      const items = [];
+      for (let hi = 0; hi < headers.length; hi++) {
+        const headerRow = headers[hi];
+        const headerCells = rows[headerRow].map(c => String(c || "").trim());
+        // Detect column indices
+        const colMap = {};
+        headerCells.forEach((h, ci) => {
+          if (h.includes("Stok Kod")) colMap.code = ci;
+          else if (h.includes("Stok Ad")) colMap.name = ci;
+          else if (h === "Br") colMap.unit = ci;
+          else if (h === "İstenen") colMap.demanded = ci;
+          else if (h.includes("Son Stok")) colMap.stock = ci;
+          else if (h.includes("Yoldaki")) colMap.onWay = ci;
+          else if (h.includes("Harcanacak")) colMap.consumed = ci;
+          else if (h.includes("Kritik")) colMap.critical = ci;
+          else if (h.includes("Gereksinim")) colMap.requirement = ci;
+          else if (h.includes("Tedarik")) colMap.procurement = ci;
+        });
+
+        const subEnd = hi + 1 < headers.length ? headers[hi + 1] : endRow;
+        for (let i = headerRow + 1; i < subEnd; i++) {
+          const r = rows[i];
+          const code = String(r[colMap.code] || "").trim();
+          if (!code || code.includes("Stok Kod") || code.includes("Seviye") || code.includes("Ara")) continue;
+          // Must look like a stock code
+          if (!/^\d{3}-/.test(code)) continue;
+
+          const item = {
+            code,
+            name: String(r[colMap.name] || "").trim(),
+            unit: String(r[colMap.unit] || "").trim() || "AD",
+            demanded: parseNum(r[colMap.demanded]),
+            stock: parseNum(r[colMap.stock]),
+            onWay: parseNum(r[colMap.onWay]),
+            consumed: colMap.consumed !== undefined ? parseNum(r[colMap.consumed]) : 0,
+            critical: parseNum(r[colMap.critical]),
+            requirement: parseNum(r[colMap.requirement]),
+            procurement: colMap.procurement !== undefined ? String(r[colMap.procurement] || "").trim() : ""
+          };
+          // Calculate net if requirement column is 0 but demanded > 0
+          if (item.requirement === 0 && item.demanded > 0) {
+            item.requirement = Math.max(0, item.demanded - item.stock - item.onWay);
+          }
+          items.push(item);
+        }
+      }
+      levels[sec.level] = { label: sec.label, items };
+    }
+
+    // Cross-reference with BOM
+    const allBomCodes = new Set();
+    const modelKeys = Object.keys(bomModels).filter(k => k !== "undefined");
+    modelKeys.forEach(k => {
+      (bomModels[k]?.parts || []).forEach(p => allBomCodes.add(p.stockCode));
+    });
+    let matched = 0, unmatched = 0;
+    for (const lv of Object.values(levels)) {
+      lv.items.forEach(item => {
+        item.inBom = allBomCodes.has(item.code);
+        if (item.inBom) matched++; else unmatched++;
+      });
+    }
+
+    const totalItems = Object.values(levels).reduce((s, l) => s + l.items.length, 0);
+    const totalNeeded = Object.values(levels).reduce((s, l) => s + l.items.filter(i => i.requirement > 0).length, 0);
+
+    return { period, levels, totalItems, totalNeeded, bomMatched: matched, bomUnmatched: unmatched, importedAt: new Date().toISOString() };
+  };
+
+  const handleReqImport = (file) => {
+    setReqImporting(true);
+    setReqImportResult(null);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      let result = null;
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        result = parseReqExcel(wb);
+        if (!result || result.totalItems === 0) {
+          setReqImportResult({ error: "İhtiyaç verisi bulunamadı. VIO Malzeme Tedarik Planı formatını kontrol edin." });
+          setReqImporting(false);
+          return;
+        }
+      } catch (err) {
+        setReqImportResult({ error: "Excel parse hatası: " + err.message });
+        setReqImporting(false);
+        return;
+      }
+      try {
+        await saveReq(result);
+        setReqImportResult({
+          success: true, period: result.period,
+          totalItems: result.totalItems, totalNeeded: result.totalNeeded,
+          bomMatched: result.bomMatched, bomUnmatched: result.bomUnmatched
+        });
+      } catch (err) {
+        setReqImportResult({ error: "Firestore kayıt hatası: " + err.message });
+      }
+      setReqImporting(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const onReqDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleReqImport(f); };
+  const onReqFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleReqImport(f); };
+
   // ==================== TREE VIEW HELPERS ====================
   const getModelData = () => selectedModel && bomModels[selectedModel] ? bomModels[selectedModel] : null;
 
@@ -4594,12 +4770,13 @@ function MRPPlanlama({ db, userRole }) {
         <KPI label="BOM modelleri" value={modelKeys.length} sub={`${totalParts} toplam parça`} accent="#534AB7" />
         <KPI label="Operasyonlar" value={totalOps} sub={`${wcCount} iş merkezi`} accent="#185FA5" />
         <KPI label="Fason operasyonlar" value={faCount} sub="Dış tedarik tipi" accent="#D85A30" />
-        <KPI label="Kapasite" value={workCenters ? `${workCenters.shiftHours || 9}s/gün` : "—"} sub={workCenters ? `%${Math.round((workCenters.efficiency || 0.85) * 100)} verimlilik` : ""} accent="#1D9E75" />
+        <KPI label="İhtiyaç" value={requirements ? requirements.totalNeeded || 0 : "—"} sub={requirements ? `${requirements.totalItems || 0} kalem · ${requirements.period || ""}` : "Henüz import edilmedi"} accent="#1D9E75" />
       </div>
 
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
         <button onClick={() => setActiveTab("bom")} style={tabStyle("bom")}>Ürün Ağacı (BOM)</button>
+        <button onClick={() => setActiveTab("req")} style={tabStyle("req")}>İhtiyaç Listesi</button>
         <button onClick={() => setActiveTab("wc")} style={tabStyle("wc")}>İş Merkezleri</button>
         <button onClick={() => setActiveTab("fason")} style={tabStyle("fason")}>Fason Operasyonlar</button>
       </div>
@@ -4835,6 +5012,134 @@ function MRPPlanlama({ db, userRole }) {
             <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-tertiary)" }}>
               <div style={{ fontSize: 14, marginBottom: 4 }}>Fason operasyon tanımlı değil</div>
               <div style={{ fontSize: 12 }}>BOM import edildiğinde fason operasyonlar otomatik algılanır</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========== REQUIREMENTS TAB ========== */}
+      {activeTab === "req" && (
+        <div>
+          {canEdit && (
+            <div
+              onDrop={onReqDrop} onDragOver={e => e.preventDefault()}
+              style={{ border: "2px dashed var(--color-border-secondary)", borderRadius: 12, padding: "24px 20px", textAlign: "center", marginBottom: 16, background: "var(--color-background-secondary)", cursor: "pointer" }}
+              onClick={() => document.getElementById("req-file-input").click()}
+            >
+              <div style={{ fontSize: 24, marginBottom: 6 }}>📋</div>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>VIO İhtiyaç Listesi sürükle & bırak</div>
+              <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>VIO Malzeme Tedarik Planı formatı (.xlsx)</div>
+              <input id="req-file-input" type="file" accept=".xlsx,.xls" onChange={onReqFileSelect} style={{ display: "none" }} />
+            </div>
+          )}
+
+          {reqImporting && <div style={{ padding: 12, background: "var(--color-background-info)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>Import ediliyor...</div>}
+          {reqImportResult && reqImportResult.error && (
+            <div style={{ padding: 12, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)", whiteSpace: "pre-wrap" }}>{reqImportResult.error}</div>
+          )}
+          {reqImportResult && reqImportResult.success && (
+            <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
+              ✓ Dönem: {reqImportResult.period} · {reqImportResult.totalItems} kalem · {reqImportResult.totalNeeded} gereksinimli · BOM eşleşme: {reqImportResult.bomMatched}/{reqImportResult.bomMatched + reqImportResult.bomUnmatched}
+            </div>
+          )}
+
+          {requirements && requirements.levels && (() => {
+            const levKeys = Object.keys(requirements.levels).sort();
+            const allItems = levKeys.flatMap(k => (requirements.levels[k]?.items || []).map(it => ({ ...it, _level: k })));
+            const levelLabels = { L0: "Ana Ürünler", L1: "Seviye 1 — Montaj", L2: "Seviye 2 — İşlenmiş", L3: "Seviye 3 — Hammadde" };
+
+            let filtered = reqLevel === "all" ? allItems : allItems.filter(i => i._level === reqLevel);
+            if (reqFilter === "needed") filtered = filtered.filter(i => i.requirement > 0);
+            else if (reqFilter === "stocked") filtered = filtered.filter(i => i.stock > 0);
+            if (reqSearch.trim()) {
+              const q = reqSearch.toLowerCase();
+              filtered = filtered.filter(i => i.code.toLowerCase().includes(q) || i.name.toLowerCase().includes(q));
+            }
+            const totalReq = filtered.filter(i => i.requirement > 0).length;
+
+            return (
+              <div>
+                <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 8, padding: "6px 10px", background: "var(--color-background-secondary)", borderRadius: 6, display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+                  <span>Dönem: <b>{requirements.period}</b></span>
+                  <span>{requirements.totalItems} kalem</span>
+                  <span style={{ color: "var(--color-text-danger)" }}>{requirements.totalNeeded} gereksinimli</span>
+                  {requirements.bomMatched > 0 && <span>BOM eşleşme: {requirements.bomMatched}/{requirements.bomMatched + (requirements.bomUnmatched||0)}</span>}
+                </div>
+
+                <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
+                  {[{ k: "all", l: `Tümü (${allItems.length})` }, ...levKeys.map(k => ({ k, l: `${levelLabels[k] || k} (${(requirements.levels[k]?.items || []).length})` }))].map(t => (
+                    <button key={t.k} onClick={() => setReqLevel(t.k)} style={{
+                      padding: "4px 10px", borderRadius: 5, fontSize: 11, border: "none", cursor: "pointer",
+                      background: reqLevel === t.k ? "var(--color-background-info)" : "transparent",
+                      color: reqLevel === t.k ? "var(--color-text-info)" : "var(--color-text-secondary)",
+                      fontWeight: reqLevel === t.k ? 500 : 400
+                    }}>{t.l}</button>
+                  ))}
+                  <div style={{ flex: 1 }} />
+                  <select value={reqFilter} onChange={e => setReqFilter(e.target.value)} style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11, background: "var(--color-background-secondary)" }}>
+                    <option value="all">Tümü</option>
+                    <option value="needed">Gereksinimli</option>
+                    <option value="stocked">Stokta var</option>
+                  </select>
+                </div>
+
+                <input value={reqSearch} onChange={e => setReqSearch(e.target.value)} placeholder="Stok kodu veya isim ara..."
+                  style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-secondary)", fontSize: 12, outline: "none", marginBottom: 8 }} />
+
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 6 }}>
+                  {filtered.length} kalem · {totalReq} gereksinimli
+                </div>
+
+                <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", maxHeight: "60vh", overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Stok Kodu</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Stok Adı</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Br</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>İstenen</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Stok</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Yoldaki</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Gereksinim</th>
+                        <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Svye</th>
+                        <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>BOM</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.map((item, idx) => {
+                        const hasReq = item.requirement > 0;
+                        const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517" };
+                        return (
+                          <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: hasReq ? "var(--color-background-danger)" : "transparent" }}>
+                            <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{item.code}</td>
+                            <td style={{ padding: "5px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 10 }}>{item.unit}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "right" }}>{item.demanded || "—"}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "right", color: item.stock > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{item.stock || "—"}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--color-text-tertiary)" }}>{item.onWay || "—"}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasReq ? 600 : 400, color: hasReq ? "var(--color-text-danger)" : "var(--color-text-tertiary)" }}>{item.requirement || "—"}</td>
+                            <td style={{ padding: "5px 4px", textAlign: "center" }}>
+                              <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: (lvC[item._level]||"#888") + "18", color: lvC[item._level]||"#888" }}>{item._level}</span>
+                            </td>
+                            <td style={{ padding: "5px 4px", textAlign: "center", fontSize: 10 }}>
+                              {item.inBom ? <span style={{ color: "var(--color-text-success)" }}>✓</span> : <span style={{ color: "var(--color-text-tertiary)" }}>—</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {filtered.length === 0 && <div style={{ padding: 20, textAlign: "center", fontSize: 12, color: "var(--color-text-tertiary)" }}>Sonuç bulunamadı</div>}
+                </div>
+              </div>
+            );
+          })()}
+
+          {!requirements && (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-tertiary)" }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>📋</div>
+              <div style={{ fontSize: 14 }}>Henüz ihtiyaç listesi yok</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>VIO'dan Malzeme Tedarik Planı Excel'ini sürükleyip bırakın</div>
             </div>
           )}
         </div>
