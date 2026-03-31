@@ -224,32 +224,6 @@ export default function App() {
     saveToFirestore({ yearsData, products, combRules, minKG, maxKG, packingStandards });
   }, [yearsData, products, combRules, minKG, maxKG, packingStandards, canPack, dataLoaded, saveToFirestore]);
 
-  // *** BİR SEFERLİK İSİM GÜNCELLEME — deploy sonrası kaldırılacak ***
-  useEffect(() => {
-    if (!isAdmin || !dataLoaded || products.length === 0) return;
-    const timer = setTimeout(() => {
-      const rawProducts = PARSED.products;
-      let updated = false;
-      const newProducts = products.map(p => {
-        const rawP = rawProducts.find(r => r.id === p.id);
-        if (rawP && rawP.nameTR !== p.nameTR) {
-          console.log(`İsim güncellendi: pid:${p.id} "${p.nameTR}" → "${rawP.nameTR}"`);
-          updated = true;
-          return { ...p, nameTR: rawP.nameTR };
-        }
-        return p;
-      });
-      if (updated) {
-        setProducts(newProducts);
-        console.log("✅ Ürün isimleri Ofmer listesinden güncellendi!");
-      } else {
-        console.log("ℹ️ Tüm isimler zaten güncel.");
-      }
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, [isAdmin, dataLoaded]);
-  // *** MIGRATION SONU — çalıştıktan sonra bu bloğu sil ***
-
   // Initial data upload (first time only)
   const uploadInitialData = async () => {
     const snap = await getDoc(doc(db, "appData", "state"));
