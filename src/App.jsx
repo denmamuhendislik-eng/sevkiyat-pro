@@ -4179,6 +4179,14 @@ function MRPPlanlama({ db, userRole }) {
   const [wcEdit, setWcEdit] = useState(null);
   const [faEdit, setFaEdit] = useState(null);
 
+  // Adım 4 — Kapasite & Çizelge State
+  const SCHED_DOC = "mrpSchedule";
+  const [schedule, setSchedule] = useState(null);
+  const [calculating, setCalculating] = useState(false);
+  const [ganttZoom, setGanttZoom] = useState(1); // days per cell
+  const [selectedJob, setSelectedJob] = useState(null);
+  const [editingOpPart, setEditingOpPart] = useState(null); // {modelKey, partIdx} for inline op time edit
+
   // Firestore listeners
   useEffect(() => {
     if (!db) return;
@@ -4199,6 +4207,11 @@ function MRPPlanlama({ db, userRole }) {
     unsubs.push(onSnapshot(reqRef, snap => {
       if (snap.exists()) setRequirements(snap.data());
     }, () => {}));
+    // MRP Schedule
+    const schedRef = doc(db, APP_COL, SCHED_DOC);
+    unsubs.push(onSnapshot(schedRef, snap => {
+      if (snap.exists()) setSchedule(snap.data());
+    }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
 
@@ -4215,8 +4228,255 @@ function MRPPlanlama({ db, userRole }) {
     if (!db || !canEdit) return;
     await setDoc(doc(db, APP_COL, REQ_DOC), data);
   };
+  const saveSchedule = async (data) => {
+    if (!db || !canEdit) return;
+    await setDoc(doc(db, APP_COL, SCHED_DOC), data);
+  };
 
-  // ==================== BOM EXCEL PARSER ====================
+  // ==================== OPERATION TIME EDITING ====================
+  const updateOpTime = async (modelKey, partIdx, opIdx, field, value) => {
+    if (!canEdit || !bomModels[modelKey]) return;
+    const model = { ...bomModels[modelKey] };
+    const parts = [...model.parts];
+    const part = { ...parts[partIdx] };
+    const ops = [...part.operations];
+    ops[opIdx] = { ...ops[opIdx], [field]: value === "" ? null : parseFloat(value) || null };
+    part.operations = ops;
+    parts[partIdx] = part;
+    model.parts = parts;
+    await saveBom({ ...bomModels, [modelKey]: model });
+  };
+
+  // ==================== SCHEDULE CALCULATION ENGINE ====================
+  const dateStr = (d) => d.toISOString().split("T")[0];
+  const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+  const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+  const nextWorkday = (d) => { let r = new Date(d); while (isWeekend(r)) r = addDays(r, 1); return r; };
+
+  const calculateSchedule = async () => {
+    if (!requirements || !workCenters || !bomModels || calculating) return;
+    setCalculating(true);
+    try {
+      const today = nextWorkday(new Date());
+      const shiftMin = (workCenters.shiftHours || 9) * 60 * (workCenters.efficiency || 0.85);
+
+      // 1) Collect all BOM parts with operations (across all models)
+      const bomLookup = {}; // stockCode → {part, modelKey}
+      const mKeys = Object.keys(bomModels).filter(k => k !== "undefined");
+      mKeys.forEach(mk => {
+        (bomModels[mk]?.parts || []).forEach((p, pi) => {
+          if (!bomLookup[p.stockCode] || p.operations.length > (bomLookup[p.stockCode].part.operations?.length || 0)) {
+            bomLookup[p.stockCode] = { part: p, modelKey: mk, partIdx: pi };
+          }
+        });
+      });
+
+      // 2) Collect requirements with qty > 0
+      const reqItems = {};
+      const levKeys = Object.keys(requirements.levels || {});
+      levKeys.forEach(lk => {
+        (requirements.levels[lk]?.items || []).forEach(item => {
+          if (item.requirement > 0) {
+            if (reqItems[item.code]) {
+              reqItems[item.code].qty += item.requirement;
+            } else {
+              reqItems[item.code] = { code: item.code, name: item.name, qty: item.requirement, level: lk };
+            }
+          }
+        });
+      });
+
+      // 3) Create jobs: match requirements → BOM operations
+      const jobs = [];
+      const fasonOrders = [];
+      let jobId = 0;
+
+      for (const [code, req] of Object.entries(reqItems)) {
+        const bom = bomLookup[code];
+        if (!bom || bom.part.operations.length === 0) continue;
+
+        const internalOps = [];
+        const fasonOps = [];
+        bom.part.operations.forEach(op => {
+          const isFason = parseInt(op.opCode) >= 600;
+          if (isFason) fasonOps.push(op);
+          else internalOps.push(op);
+        });
+
+        // Internal operations → job
+        if (internalOps.length > 0) {
+          const operations = internalOps.map(op => {
+            const setup = op.setupTime ?? 30; // default 30 dk
+            const cycle = op.cycleTime ?? 5;  // default 5 dk/adet
+            const totalMin = setup + (cycle * req.qty);
+            return {
+              opCode: op.opCode, opName: op.opName,
+              wcCode: op.wcCode, wcName: op.wcName,
+              setupTime: op.setupTime, cycleTime: op.cycleTime,
+              totalMin, machineId: null, startDate: null, endDate: null, status: "planned"
+            };
+          });
+          jobs.push({
+            id: "J" + String(++jobId).padStart(4, "0"),
+            partCode: code, partName: req.name, qty: req.qty,
+            level: req.level, supplyType: bom.part.supplyType,
+            operations, totalMin: operations.reduce((s, o) => s + o.totalMin, 0)
+          });
+        }
+
+        // Fason operations → fason orders
+        fasonOps.forEach(op => {
+          const fa = (workCenters.fason || {})[op.opCode];
+          const leadDays = fa?.leadTimeDays || 14;
+          fasonOrders.push({
+            id: "F" + String(fasonOrders.length + 1).padStart(4, "0"),
+            partCode: code, partName: req.name, qty: req.qty,
+            opCode: op.opCode, opName: op.opName,
+            supplier: fa?.supplier || "",
+            leadTimeDays: leadDays,
+            sendDate: null, returnDate: null, status: "planned"
+          });
+        });
+      }
+
+      // 4) Sort jobs: L0 first, then by totalMin desc (heavy jobs first)
+      const levelOrder = { L0: 0, L1: 1, L2: 2, L3: 3 };
+      jobs.sort((a, b) => (levelOrder[a.level] || 9) - (levelOrder[b.level] || 9) || b.totalMin - a.totalMin);
+
+      // 5) Forward scheduling — assign operations to machines
+      // Machine availability tracker: { machineId: nextFreeDate }
+      const machineAvail = {};
+      const centers = workCenters.centers || {};
+      for (const [wcCode, wc] of Object.entries(centers)) {
+        (wc.machines || []).forEach(m => {
+          machineAvail[m.id] = new Date(today);
+        });
+      }
+
+      // Helper: find least-loaded machine for a work center
+      const findMachine = (wcCode) => {
+        const wc = centers[wcCode];
+        if (!wc || !wc.machines || wc.machines.length === 0) return null;
+        let best = null, bestDate = null;
+        wc.machines.forEach(m => {
+          const avail = machineAvail[m.id] || new Date(today);
+          if (!bestDate || avail < bestDate) { best = m.id; bestDate = avail; }
+        });
+        return best;
+      };
+
+      // Schedule each job's operations sequentially
+      for (const job of jobs) {
+        let jobCursor = new Date(today);
+        for (const op of job.operations) {
+          const machineId = findMachine(op.wcCode);
+          if (!machineId) {
+            // No machine — assign virtual, mark unassigned
+            op.machineId = op.wcCode + "_NONE";
+            op.startDate = dateStr(jobCursor);
+            const daysNeeded = Math.ceil(op.totalMin / shiftMin);
+            let d = new Date(jobCursor);
+            for (let i = 0; i < daysNeeded; i++) { d = nextWorkday(d); d = addDays(d, 1); }
+            d = nextWorkday(d);
+            op.endDate = dateStr(d);
+            jobCursor = d;
+            continue;
+          }
+          // Start from max(machine available, job cursor)
+          let start = new Date(Math.max(machineAvail[machineId]?.getTime() || today.getTime(), jobCursor.getTime()));
+          start = nextWorkday(start);
+          op.machineId = machineId;
+          op.startDate = dateStr(start);
+
+          // Calculate end date based on totalMin / daily capacity
+          let remaining = op.totalMin;
+          let d = new Date(start);
+          while (remaining > 0) {
+            if (!isWeekend(d)) {
+              remaining -= shiftMin;
+            }
+            if (remaining > 0) {
+              d = addDays(d, 1);
+            }
+          }
+          d = nextWorkday(d);
+          op.endDate = dateStr(d);
+          // Update machine availability to day after end
+          machineAvail[machineId] = addDays(d, 1);
+          jobCursor = addDays(d, 1);
+        }
+      }
+
+      // 6) Schedule fason orders
+      let fasonCursor = new Date(today);
+      fasonOrders.forEach(fo => {
+        fo.sendDate = dateStr(fasonCursor);
+        let ret = new Date(fasonCursor);
+        let bizDays = 0;
+        while (bizDays < fo.leadTimeDays) {
+          ret = addDays(ret, 1);
+          if (!isWeekend(ret)) bizDays++;
+        }
+        fo.returnDate = dateStr(ret);
+      });
+
+      // 7) Calculate utilization stats per work center
+      const wcStats = {};
+      // Find schedule range
+      let minDate = null, maxDate = null;
+      jobs.forEach(j => j.operations.forEach(op => {
+        if (op.startDate) {
+          const s = new Date(op.startDate);
+          const e = new Date(op.endDate);
+          if (!minDate || s < minDate) minDate = s;
+          if (!maxDate || e > maxDate) maxDate = e;
+        }
+      }));
+
+      if (minDate && maxDate) {
+        // Count working days in range
+        let totalWorkDays = 0;
+        let d = new Date(minDate);
+        while (d <= maxDate) { if (!isWeekend(d)) totalWorkDays++; d = addDays(d, 1); }
+
+        for (const [wcCode, wc] of Object.entries(centers)) {
+          const machineCount = (wc.machines || []).length;
+          const totalCapMin = totalWorkDays * machineCount * shiftMin;
+          let loadMin = 0;
+          jobs.forEach(j => j.operations.forEach(op => {
+            if (op.wcCode === wcCode) loadMin += op.totalMin;
+          }));
+          wcStats[wcCode] = {
+            name: wc.name, machineCount,
+            totalCapMin: Math.round(totalCapMin),
+            loadMin: Math.round(loadMin),
+            utilization: totalCapMin > 0 ? Math.round((loadMin / totalCapMin) * 100) : 0
+          };
+        }
+      }
+
+      // Find bottleneck
+      let bottleneck = null, maxUtil = 0;
+      for (const [code, st] of Object.entries(wcStats)) {
+        if (st.utilization > maxUtil) { maxUtil = st.utilization; bottleneck = code; }
+      }
+
+      const schedData = {
+        jobs, fasonOrders, wcStats, bottleneck,
+        totalJobs: jobs.length,
+        totalFason: fasonOrders.length,
+        minDate: minDate ? dateStr(minDate) : null,
+        maxDate: maxDate ? dateStr(maxDate) : null,
+        lastCalculated: new Date().toISOString()
+      };
+
+      await saveSchedule(schedData);
+      setCalculating(false);
+    } catch (err) {
+      console.error("Schedule calc error:", err);
+      setCalculating(false);
+    }
+  };
   const parseBomExcel = (workbook) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
@@ -4666,6 +4926,7 @@ function MRPPlanlama({ db, userRole }) {
       const isExpanded = expandedNodes[p.idx];
       const sc = supplyColors[p.supplyType] || supplyColors["MAKE"];
       const lc = levelColors[Math.min(p.level, 3)];
+      const isEditingOps = editingOpPart && editingOpPart.modelKey === selectedModel && editingOpPart.partIdx === p.idx;
 
       return (
         <Fragment key={p.idx}>
@@ -4689,9 +4950,57 @@ function MRPPlanlama({ db, userRole }) {
             <span style={{ fontSize: 11, color: "var(--color-text-secondary)", minWidth: 40, textAlign: "right", flexShrink: 0 }}>{p.qty} {p.unit}</span>
             <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c, flexShrink: 0 }}>{p.supplyType}</span>
             {p.operations.length > 0 && (
-              <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", flexShrink: 0 }}>{p.operations.length} op</span>
+              <span
+                onClick={(e) => { e.stopPropagation(); setEditingOpPart(isEditingOps ? null : { modelKey: selectedModel, partIdx: p.idx }); }}
+                style={{
+                  fontSize: 9, flexShrink: 0, cursor: "pointer",
+                  padding: "1px 6px", borderRadius: 4,
+                  background: isEditingOps ? "var(--color-background-info)" : "transparent",
+                  color: isEditingOps ? "var(--color-text-info)" : "var(--color-text-tertiary)",
+                  transition: "all 0.15s"
+                }}
+              >⏱ {p.operations.length} op</span>
             )}
           </div>
+          {/* Inline operation time editor */}
+          {isEditingOps && p.operations.length > 0 && (
+            <div style={{ padding: "6px 12px 8px " + (44 + depth * 24) + "px", background: "var(--color-background-info)", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+              <div style={{ fontSize: 10, fontWeight: 500, color: "var(--color-text-info)", marginBottom: 4 }}>Operasyon Süreleri — {p.stockCode}</div>
+              {p.operations.map((op, oi) => {
+                const isFason = parseInt(op.opCode) >= 600;
+                return (
+                  <div key={oi} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", fontSize: 11 }}>
+                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 32 }}>{op.opCode}</span>
+                    <span style={{ flex: 1, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{op.opName}</span>
+                    {!isFason ? (
+                      <>
+                        <label style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Ayar:</label>
+                        <input type="number" min="0" step="1" value={op.setupTime ?? ""} placeholder="dk"
+                          onChange={e => updateOpTime(selectedModel, p.idx, oi, "setupTime", e.target.value)}
+                          style={{ width: 48, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center" }}
+                          disabled={!canEdit}
+                        />
+                        <label style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Çevrim:</label>
+                        <input type="number" min="0" step="0.1" value={op.cycleTime ?? ""} placeholder="dk/ad"
+                          onChange={e => updateOpTime(selectedModel, p.idx, oi, "cycleTime", e.target.value)}
+                          style={{ width: 48, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center" }}
+                          disabled={!canEdit}
+                        />
+                        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 56 }}>
+                          İM: {op.wcCode || "?"}
+                        </span>
+                      </>
+                    ) : (
+                      <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#FBEAF0", color: "#72243E" }}>FASON</span>
+                    )}
+                  </div>
+                );
+              })}
+              <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 4, borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 3 }}>
+                Boş alanlar varsayılan kullanır (Ayar: 30dk, Çevrim: 5dk/ad)
+              </div>
+            </div>
+          )}
           {isExpanded && hasKids && renderTreeNode(parts, p.idx, depth + 1)}
         </Fragment>
       );
@@ -4771,6 +5080,7 @@ function MRPPlanlama({ db, userRole }) {
         <KPI label="Operasyonlar" value={totalOps} sub={`${wcCount} iş merkezi`} accent="#185FA5" />
         <KPI label="Fason operasyonlar" value={faCount} sub="Dış tedarik tipi" accent="#D85A30" />
         <KPI label="İhtiyaç" value={requirements ? requirements.totalNeeded || 0 : "—"} sub={requirements ? `${requirements.totalItems || 0} kalem · ${requirements.period || ""}` : "Henüz import edilmedi"} accent="#1D9E75" />
+        <KPI label="Çizelge" value={schedule ? (schedule.totalJobs || 0) + " iş" : "—"} sub={schedule ? `${schedule.lastCalculated ? new Date(schedule.lastCalculated).toLocaleDateString("tr-TR") : ""} · ${schedule.bottleneck ? "Darboğaz: " + (schedule.wcStats?.[schedule.bottleneck]?.name || schedule.bottleneck) : ""}` : "Hesaplanmadı"} accent="#3B82F6" />
       </div>
 
       {/* Tab bar */}
@@ -4779,6 +5089,7 @@ function MRPPlanlama({ db, userRole }) {
         <button onClick={() => setActiveTab("req")} style={tabStyle("req")}>İhtiyaç Listesi</button>
         <button onClick={() => setActiveTab("wc")} style={tabStyle("wc")}>İş Merkezleri</button>
         <button onClick={() => setActiveTab("fason")} style={tabStyle("fason")}>Fason Operasyonlar</button>
+        <button onClick={() => setActiveTab("schedule")} style={tabStyle("schedule")}>Kapasite & Çizelge</button>
       </div>
 
       {/* ========== BOM TAB ========== */}
@@ -5144,6 +5455,439 @@ function MRPPlanlama({ db, userRole }) {
           )}
         </div>
       )}
+
+      {/* ========== SCHEDULE / CAPACITY TAB ========== */}
+      {activeTab === "schedule" && (() => {
+        const hasData = requirements && workCenters && Object.keys(bomModels).filter(k => k !== "undefined").length > 0;
+        const s = schedule;
+        const jobs = s?.jobs || [];
+        const fasonOrd = s?.fasonOrders || [];
+        const wcSt = s?.wcStats || {};
+
+        // Gantt chart helpers
+        const ganttColors = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899","#06B6D4","#84CC16","#F97316","#6366F1"];
+        let ganttDays = [];
+        let machineRows = [];
+        if (s && s.minDate && s.maxDate) {
+          let d = new Date(s.minDate);
+          const end = new Date(s.maxDate);
+          while (d <= addDays(end, 2)) {
+            ganttDays.push(new Date(d));
+            d = addDays(d, 1);
+          }
+          // Build machine row list grouped by WC
+          const centers = workCenters?.centers || {};
+          const wcOrder = Object.keys(centers).sort();
+          wcOrder.forEach(wcCode => {
+            const wc = centers[wcCode];
+            (wc.machines || []).forEach(m => {
+              machineRows.push({ id: m.id, name: m.name, wcCode, wcName: wc.name });
+            });
+          });
+          // Add virtual "NONE" rows for unassigned ops
+          const noneWCs = new Set();
+          jobs.forEach(j => j.operations.forEach(op => {
+            if (op.machineId && op.machineId.endsWith("_NONE")) noneWCs.add(op.wcCode);
+          }));
+          noneWCs.forEach(wc => {
+            machineRows.push({ id: wc + "_NONE", name: (centers[wc]?.name || wc) + " (tezgah yok)", wcCode: wc, wcName: centers[wc]?.name || wc, isVirtual: true });
+          });
+        }
+
+        const cellW = Math.max(28, 36 / ganttZoom);
+        const rowH = 28;
+
+        // Map jobs to color
+        const jobColorMap = {};
+        jobs.forEach((j, i) => { jobColorMap[j.id] = ganttColors[i % ganttColors.length]; });
+
+        // Get operations for a machine row
+        const getOpsForMachine = (machineId) => {
+          const ops = [];
+          jobs.forEach(j => {
+            j.operations.forEach(op => {
+              if (op.machineId === machineId && op.startDate && op.endDate) {
+                ops.push({ ...op, jobId: j.id, partCode: j.partCode, partName: j.partName, qty: j.qty });
+              }
+            });
+          });
+          return ops;
+        };
+
+        // Day index helper
+        const dayIdx = (dateStr) => {
+          if (!dateStr || ganttDays.length === 0) return -1;
+          const t = new Date(dateStr).getTime();
+          const base = ganttDays[0].getTime();
+          return Math.round((t - base) / 86400000);
+        };
+
+        // Op stats
+        const opsWithTime = [];
+        jobs.forEach(j => j.operations.forEach(op => {
+          if (op.setupTime != null || op.cycleTime != null) opsWithTime.push(op);
+        }));
+        const opsTotal = jobs.reduce((s, j) => s + j.operations.length, 0);
+        const opsMES = opsWithTime.length;
+
+        return (
+          <div>
+            {/* Controls row */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
+              {canEdit && (
+                <button
+                  onClick={calculateSchedule}
+                  disabled={calculating || !hasData}
+                  style={{
+                    padding: "8px 20px", borderRadius: 8, border: "none", cursor: hasData && !calculating ? "pointer" : "not-allowed",
+                    background: hasData ? "var(--color-background-info)" : "var(--color-background-secondary)",
+                    color: hasData ? "var(--color-text-info)" : "var(--color-text-tertiary)",
+                    fontSize: 13, fontWeight: 500, transition: "all 0.15s",
+                    opacity: calculating ? 0.6 : 1
+                  }}
+                >
+                  {calculating ? "Hesaplanıyor..." : "▶ Çizelge Hesapla"}
+                </button>
+              )}
+              {!hasData && (
+                <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                  Hesaplama için BOM, ihtiyaç listesi ve iş merkezleri gerekli
+                </span>
+              )}
+              {s && s.lastCalculated && (
+                <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginLeft: "auto" }}>
+                  Son hesaplama: {new Date(s.lastCalculated).toLocaleString("tr-TR")}
+                </span>
+              )}
+            </div>
+
+            {/* KPI summary row */}
+            {s && (
+              <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
+                <KPI label="İş Emri" value={s.totalJobs || 0} sub={`${opsTotal} operasyon`} accent="#3B82F6" />
+                <KPI label="MES Süreli Op" value={opsMES} sub={`${opsTotal > 0 ? Math.round(opsMES/opsTotal*100) : 0}% tanımlı`} accent="#10B981" />
+                <KPI label="Fason Sipariş" value={s.totalFason || 0} sub="Dış operasyon" accent="#F59E0B" />
+                <KPI label="Darboğaz" value={s.bottleneck ? (wcSt[s.bottleneck]?.name || s.bottleneck) : "—"} sub={s.bottleneck ? `%${wcSt[s.bottleneck]?.utilization || 0} doluluk` : ""} accent="#EF4444" />
+                <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
+              </div>
+            )}
+
+            {/* ---- DOLULUK DASHBOARD ---- */}
+            {s && Object.keys(wcSt).length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Tezgah Doluluk Oranı</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+                  {Object.entries(wcSt).sort((a, b) => b[1].utilization - a[1].utilization).map(([code, st]) => {
+                    const isBottleneck = code === s.bottleneck;
+                    const barColor = st.utilization > 90 ? "#EF4444" : st.utilization > 70 ? "#F59E0B" : "#10B981";
+                    return (
+                      <div key={code} style={{
+                        padding: "10px 14px", borderRadius: 8,
+                        border: isBottleneck ? "1.5px solid #EF4444" : "0.5px solid var(--color-border-tertiary)",
+                        background: isBottleneck ? "#FEF2F2" : "var(--color-background-primary)"
+                      }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                          <span style={{ fontSize: 12, fontWeight: 500 }}>
+                            {st.name || code}
+                            {isBottleneck && <span style={{ fontSize: 9, color: "#EF4444", marginLeft: 6 }}>⚠ DARBOĞAZ</span>}
+                          </span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: barColor }}>%{st.utilization}</span>
+                        </div>
+                        <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: Math.min(100, st.utilization) + "%", borderRadius: 3, background: barColor, transition: "width 0.4s ease" }} />
+                        </div>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                          <span>{st.machineCount} tezgah</span>
+                          <span>{Math.round(st.loadMin / 60)}s yük / {Math.round(st.totalCapMin / 60)}s kapasite</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+            {/* ---- GANTT CHART ---- */}
+            {s && ganttDays.length > 0 && machineRows.length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>Üretim Çizelgesi (Gantt)</span>
+                  <div style={{ display: "flex", gap: 4, marginLeft: "auto" }}>
+                    <button onClick={() => setGanttZoom(z => Math.max(0.5, z - 0.25))} style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "transparent", fontSize: 11, cursor: "pointer" }}>−</button>
+                    <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", padding: "3px 6px" }}>×{ganttZoom}</span>
+                    <button onClick={() => setGanttZoom(z => Math.min(3, z + 0.25))} style={{ padding: "2px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "transparent", fontSize: 11, cursor: "pointer" }}>+</button>
+                  </div>
+                </div>
+
+                {/* Selected job detail */}
+                {selectedJob && (() => {
+                  const j = jobs.find(jj => jj.id === selectedJob);
+                  if (!j) return null;
+                  return (
+                    <div style={{ padding: "8px 12px", marginBottom: 8, borderRadius: 8, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", fontSize: 11, display: "flex", gap: 14, alignItems: "center", flexWrap: "wrap" }}>
+                      <span style={{ width: 10, height: 10, borderRadius: 2, background: jobColorMap[j.id], flexShrink: 0 }} />
+                      <span style={{ fontWeight: 500 }}>{j.id}</span>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{j.partCode}</span>
+                      <span>{j.partName}</span>
+                      <span style={{ color: "var(--color-text-tertiary)" }}>Adet: {j.qty}</span>
+                      <span style={{ color: "var(--color-text-tertiary)" }}>{j.operations.length} op · {Math.round(j.totalMin)} dk toplam</span>
+                      <span onClick={() => setSelectedJob(null)} style={{ cursor: "pointer", color: "var(--color-text-tertiary)", marginLeft: "auto" }}>✕</span>
+                    </div>
+                  );
+                })()}
+
+                <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+                  <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: Math.min(500, machineRows.length * rowH + 50) }}>
+                    <div style={{ display: "flex", minWidth: 140 + ganttDays.length * cellW }}>
+                      {/* Y-axis: machine labels */}
+                      <div style={{ width: 140, flexShrink: 0, borderRight: "0.5px solid var(--color-border-tertiary)", position: "sticky", left: 0, zIndex: 3, background: "var(--color-background-primary)" }}>
+                        {/* Header corner */}
+                        <div style={{ height: 32, padding: "4px 8px", borderBottom: "0.5px solid var(--color-border-tertiary)", background: "var(--color-background-secondary)", display: "flex", alignItems: "center", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)" }}>
+                          Tezgah
+                        </div>
+                        {machineRows.map((mr, mi) => (
+                          <div key={mi} style={{
+                            height: rowH, padding: "0 8px", borderBottom: "0.5px solid var(--color-border-tertiary)",
+                            display: "flex", alignItems: "center", fontSize: 10,
+                            background: mr.isVirtual ? "#FEF2F2" : "var(--color-background-primary)",
+                            color: mr.isVirtual ? "#EF4444" : "var(--color-text-secondary)"
+                          }}>
+                            <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{mr.id}</span>
+                              <span style={{ marginLeft: 4, fontSize: 9, color: "var(--color-text-tertiary)" }}>{mr.wcName}</span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* Chart area */}
+                      <div style={{ flex: 1 }}>
+                        {/* Date header */}
+                        <div style={{ display: "flex", height: 32, borderBottom: "0.5px solid var(--color-border-tertiary)", background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 2 }}>
+                          {ganttDays.map((gd, gi) => {
+                            const isWe = isWeekend(gd);
+                            const isToday = dateStr(gd) === dateStr(new Date());
+                            const dayNames = ["Pz","Pt","Sa","Ça","Pe","Cu","Ct"];
+                            return (
+                              <div key={gi} style={{
+                                width: cellW, minWidth: cellW, flexShrink: 0,
+                                borderRight: "0.5px solid var(--color-border-tertiary)",
+                                display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                                background: isToday ? "var(--color-background-info)" : isWe ? "var(--color-background-secondary)" : "transparent",
+                                fontSize: 9, lineHeight: 1.2
+                              }}>
+                                <span style={{ color: isToday ? "var(--color-text-info)" : "var(--color-text-tertiary)", fontWeight: isToday ? 600 : 400 }}>
+                                  {gd.getDate()}/{gd.getMonth() + 1}
+                                </span>
+                                <span style={{ fontSize: 8, color: isWe ? "var(--color-text-danger)" : "var(--color-text-tertiary)" }}>
+                                  {dayNames[gd.getDay()]}
+                                </span>
+                              </div>
+                            );
+                          })}
+                        </div>
+
+                        {/* Machine rows with bars */}
+                        {machineRows.map((mr, mi) => {
+                          const machOps = getOpsForMachine(mr.id);
+                          return (
+                            <div key={mi} style={{ display: "flex", height: rowH, borderBottom: "0.5px solid var(--color-border-tertiary)", position: "relative" }}>
+                              {/* Background grid */}
+                              {ganttDays.map((gd, gi) => {
+                                const isWe = isWeekend(gd);
+                                const isToday = dateStr(gd) === dateStr(new Date());
+                                return (
+                                  <div key={gi} style={{
+                                    width: cellW, minWidth: cellW, flexShrink: 0,
+                                    borderRight: "0.5px solid var(--color-border-tertiary)",
+                                    background: isToday ? "rgba(59,130,246,0.06)" : isWe ? "var(--color-background-secondary)" : "transparent"
+                                  }} />
+                                );
+                              })}
+                              {/* Operation bars */}
+                              {machOps.map((op, oi) => {
+                                const si = dayIdx(op.startDate);
+                                const ei = dayIdx(op.endDate);
+                                if (si < 0 || ei < 0) return null;
+                                const left = si * cellW + 1;
+                                const width = Math.max(cellW - 2, (ei - si + 1) * cellW - 2);
+                                const color = jobColorMap[op.jobId] || "#888";
+                                const isSelected = selectedJob === op.jobId;
+                                return (
+                                  <div
+                                    key={oi}
+                                    onClick={() => setSelectedJob(isSelected ? null : op.jobId)}
+                                    title={`${op.jobId} · ${op.partCode} · Op${op.opCode} · ${Math.round(op.totalMin)}dk`}
+                                    style={{
+                                      position: "absolute", top: 3, left, width,
+                                      height: rowH - 6, borderRadius: 4,
+                                      background: color, opacity: isSelected ? 1 : 0.8,
+                                      cursor: "pointer", overflow: "hidden",
+                                      display: "flex", alignItems: "center", padding: "0 4px",
+                                      boxShadow: isSelected ? "0 0 0 2px " + color + ", 0 2px 6px rgba(0,0,0,0.15)" : "none",
+                                      transition: "opacity 0.15s, box-shadow 0.15s"
+                                    }}
+                                  >
+                                    <span style={{ fontSize: 8, color: "#fff", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                      {op.partCode}
+                                    </span>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Job legend */}
+                {jobs.length > 0 && (
+                  <div style={{ display: "flex", gap: 6, marginTop: 8, flexWrap: "wrap" }}>
+                    {jobs.slice(0, 20).map(j => (
+                      <span
+                        key={j.id}
+                        onClick={() => setSelectedJob(selectedJob === j.id ? null : j.id)}
+                        style={{
+                          display: "flex", alignItems: "center", gap: 4,
+                          padding: "2px 6px", borderRadius: 4, fontSize: 9, cursor: "pointer",
+                          background: selectedJob === j.id ? (jobColorMap[j.id] || "#888") + "22" : "transparent",
+                          border: "0.5px solid " + (selectedJob === j.id ? jobColorMap[j.id] || "#888" : "var(--color-border-tertiary)")
+                        }}
+                      >
+                        <span style={{ width: 6, height: 6, borderRadius: 1, background: jobColorMap[j.id] }} />
+                        {j.partCode}
+                      </span>
+                    ))}
+                    {jobs.length > 20 && <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", padding: "2px 4px" }}>+{jobs.length - 20} daha</span>}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ---- FASON SİPARİŞ TABLOSU ---- */}
+            {s && fasonOrd.length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Fason Siparişler</div>
+                <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-background-secondary)" }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>ID</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Parça</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Operasyon</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Adet</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Tedarikçi</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Gönderim</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Dönüş</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Süre</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {fasonOrd.map((fo, fi) => (
+                        <tr key={fi} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                          <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{fo.id}</td>
+                          <td style={{ padding: "5px 8px" }}>
+                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", marginRight: 4 }}>{fo.partCode}</span>
+                            <span style={{ fontSize: 10 }}>{fo.partName}</span>
+                          </td>
+                          <td style={{ padding: "5px 8px" }}>
+                            <span style={{ fontSize: 10, padding: "1px 5px", borderRadius: 3, background: "#FBEAF0", color: "#72243E" }}>{fo.opCode}</span>
+                            <span style={{ marginLeft: 4, fontSize: 10 }}>{fo.opName}</span>
+                          </td>
+                          <td style={{ padding: "5px 8px", textAlign: "right" }}>{fo.qty}</td>
+                          <td style={{ padding: "5px 8px", fontSize: 10, color: fo.supplier ? "inherit" : "var(--color-text-tertiary)" }}>{fo.supplier || "Tanımsız"}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10 }}>{fo.sendDate || "—"}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10 }}>{fo.returnDate || "—"}</td>
+                          <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{fo.leadTimeDays} gün</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* ---- İŞ EMİRLERİ DETAY TABLOSU ---- */}
+            {s && jobs.length > 0 && (
+              <div style={{ marginBottom: 20 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>İş Emirleri ({jobs.length})</div>
+                <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", maxHeight: "50vh", overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>İş Emri</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Parça</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Adet</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Seviye</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Operasyonlar</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Toplam (dk)</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Başlangıç</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Bitiş</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {jobs.map((j, ji) => {
+                        const startD = j.operations[0]?.startDate;
+                        const endD = j.operations[j.operations.length - 1]?.endDate;
+                        const color = jobColorMap[j.id];
+                        const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517" };
+                        return (
+                          <tr key={ji} style={{
+                            borderTop: "0.5px solid var(--color-border-tertiary)",
+                            background: selectedJob === j.id ? color + "10" : "transparent",
+                            cursor: "pointer"
+                          }} onClick={() => setSelectedJob(selectedJob === j.id ? null : j.id)}>
+                            <td style={{ padding: "5px 8px" }}>
+                              <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                                <span style={{ width: 8, height: 8, borderRadius: 2, background: color }} />
+                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>{j.id}</span>
+                              </span>
+                            </td>
+                            <td style={{ padding: "5px 8px" }}>
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{j.partCode}</span>
+                              <span style={{ marginLeft: 4, fontSize: 10, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", display: "inline-block", verticalAlign: "middle" }}>{j.partName}</span>
+                            </td>
+                            <td style={{ padding: "5px 8px", textAlign: "right" }}>{j.qty}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                              <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: (lvC[j.level] || "#888") + "18", color: lvC[j.level] || "#888" }}>{j.level}</span>
+                            </td>
+                            <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                              {j.operations.map((op, oi) => (
+                                <span key={oi} style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", marginRight: 2 }}>
+                                  {op.opCode}
+                                </span>
+                              ))}
+                            </td>
+                            <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10 }}>{Math.round(j.totalMin)}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10 }}>{startD || "—"}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 10 }}>{endD || "—"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* Empty state */}
+            {!s && (
+              <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-tertiary)" }}>
+                <div style={{ fontSize: 36, marginBottom: 10 }}>📊</div>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>Üretim çizelgesi henüz hesaplanmadı</div>
+                <div style={{ fontSize: 12, marginTop: 6, maxWidth: 400, margin: "6px auto 0" }}>
+                  BOM'dan ürün ağacını import edin, ihtiyaç listesini yükleyin, iş merkezlerine tezgah ekleyin, ardından "Çizelge Hesapla" butonuna tıklayın.
+                </div>
+                <div style={{ fontSize: 11, marginTop: 12, color: "var(--color-text-info)" }}>
+                  İpucu: BOM tab'ında parçaların ⏱ ikonuna tıklayarak operasyon sürelerini girebilirsiniz
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
     </div>
   );
 }
