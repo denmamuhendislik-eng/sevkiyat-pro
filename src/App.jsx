@@ -4500,10 +4500,10 @@ function MRPPlanlama({ db, userRole }) {
     }
 
     const parts = [];
-    let pendingOps = [];       // ops waiting to be assigned to NEXT part
     const detectedWCs = {};    // wcCode -> {name, opCodes}
     const detectedFason = {};  // opCode -> {name, count}
     let totalOps = 0;
+    const partStack = {};      // level -> index of most recent part at that level
 
     for (let i = headerIdx + 1; i < rows.length; i++) {
       let col0 = String(rows[i][0] || "").trim();
@@ -4511,21 +4511,18 @@ function MRPPlanlama({ db, userRole }) {
       const col2 = rows[i][2];
       const col3 = String(rows[i][3] || "").trim();
 
-      // Empty row — if pending ops exist, assign to last part
+      // Empty row — skip
       if (!col0 && !col1) {
-        if (pendingOps.length > 0 && parts.length > 0) {
-          parts[parts.length - 1].operations.push(...pendingOps);
-          pendingOps = [];
-        }
         continue;
       }
 
-      // Detect level: count leading dots and pipes
+      // Detect level: count leading dots AND pipes (pipe = deeper nesting in VIO)
       let level = 0;
       const prefixMatch = col0.match(/^([\.\|\s]+)/);
       if (prefixMatch) {
-        level = (prefixMatch[1].match(/\./g) || []).length;
-        col0 = col0.substring(prefixMatch[1].length).trim();
+        const pfx = prefixMatch[1];
+        level = (pfx.match(/\./g) || []).length + (pfx.match(/\|/g) || []).length;
+        col0 = col0.substring(pfx.length).trim();
       }
       const prefixMatch1 = col1.match(/^([\.\|\s]+)/);
       if (prefixMatch1) {
@@ -4533,6 +4530,7 @@ function MRPPlanlama({ db, userRole }) {
       }
 
       // Check if operation row
+      // Rule: operation at level N → belongs to most recent part at level N-1
       const opMatch = col0.match(/^Oper:\s*\((\d+)\)\s*(.*)/);
       if (opMatch) {
         const opCode = opMatch[1];
@@ -4541,8 +4539,15 @@ function MRPPlanlama({ db, userRole }) {
         const wcMatch = col1.match(/İş\.Mrk:\s*\((\d+)\)\s*(.*)/);
         if (wcMatch) { wcCode = wcMatch[1]; wcName = wcMatch[2].trim(); }
 
-        pendingOps.push({ opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null });
+        const opObj = { opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null };
         totalOps++;
+
+        // Assign to parent part: most recent part at level N-1
+        const ownerLevel = level - 1;
+        const ownerIdx = partStack[ownerLevel];
+        if (ownerIdx !== undefined && parts[ownerIdx]) {
+          parts[ownerIdx].operations.push(opObj);
+        }
 
         // Detect work centers and fason
         const isFason = parseInt(opCode) >= 600;
@@ -4575,19 +4580,19 @@ function MRPPlanlama({ db, userRole }) {
       else if (prefix === "157") supplyType = "BUY";
       else if (prefix === "152") supplyType = "PRODUCT";
 
-      // Assign pending ops to THIS part (ops come before the part in Excel)
-      const partOps = [...pendingOps];
-      pendingOps = [];
-
+      const partIdx = parts.length;
       parts.push({
         stockCode, stockName, level, qty,
         unit: col3 || "AD", supplyType, parentIdx: null,
-        operations: partOps
+        operations: []
       });
-    }
-    // Flush any remaining pending ops
-    if (pendingOps.length > 0 && parts.length > 0) {
-      parts[parts.length - 1].operations.push(...pendingOps);
+
+      // Update partStack: this part is the most recent at its level
+      partStack[level] = partIdx;
+      // Clear deeper levels (they're no longer current parents)
+      for (const k of Object.keys(partStack)) {
+        if (parseInt(k) > level) delete partStack[k];
+      }
     }
 
     // Assign parentIdx based on levels
@@ -4624,7 +4629,7 @@ function MRPPlanlama({ db, userRole }) {
       modelCode, modelName,
       parts,
       partCount: parts.length,
-      levelCounts: { L0: parts.filter(p => p.level === 0).length, L1: parts.filter(p => p.level === 1).length, L2: parts.filter(p => p.level === 2).length },
+      levelCounts: { L0: parts.filter(p => p.level === 0).length, L1: parts.filter(p => p.level === 1).length, L2: parts.filter(p => p.level === 2).length, L3: parts.filter(p => p.level >= 3).length },
       opCount: totalOps,
       detectedWCs: wcResult,
       detectedFason: faResult,
@@ -5121,7 +5126,7 @@ function MRPPlanlama({ db, userRole }) {
           )}
           {importResult && importResult.success && (
             <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
-              ✓ {importResult.modelCode} — {importResult.modelName} · {importResult.partCount} parça ({importResult.levelCounts.L0}/{importResult.levelCounts.L1}/{importResult.levelCounts.L2}) · {importResult.opCount} operasyon · {importResult.wcCount} iş merkezi · {importResult.faCount} fason tipi
+              ✓ {importResult.modelCode} — {importResult.modelName} · {importResult.partCount} parça ({importResult.levelCounts.L0}/{importResult.levelCounts.L1}/{importResult.levelCounts.L2}/{importResult.levelCounts.L3 || 0}) · {importResult.opCount} operasyon · {importResult.wcCount} iş merkezi · {importResult.faCount} fason tipi
             </div>
           )}
 
@@ -5169,13 +5174,13 @@ function MRPPlanlama({ db, userRole }) {
                   <span key={k} style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, background: v.bg, color: v.c }}>{k}</span>
                 ))}
                 <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginLeft: 8 }}>
-                  Seviye: <span style={{ color: levelColors[0] }}>● L0</span> <span style={{ color: levelColors[1] }}>● L1</span> <span style={{ color: levelColors[2] }}>● L2</span>
+                  Seviye: <span style={{ color: levelColors[0] }}>● L0</span> <span style={{ color: levelColors[1] }}>● L1</span> <span style={{ color: levelColors[2] }}>● L2</span> <span style={{ color: levelColors[3] }}>● L3</span>
                 </span>
               </div>
 
               {/* Stats bar */}
               <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 6, padding: "4px 8px", background: "var(--color-background-secondary)", borderRadius: 6 }}>
-                {md.modelCode} — {md.partCount} parça · L0: {md.levelCounts?.L0 || 0} · L1: {md.levelCounts?.L1 || 0} · L2: {md.levelCounts?.L2 || 0} · {md.opCount} operasyon
+                {md.modelCode} — {md.partCount} parça · L0: {md.levelCounts?.L0 || 0} · L1: {md.levelCounts?.L1 || 0} · L2: {md.levelCounts?.L2 || 0} · L3: {md.levelCounts?.L3 || 0} · {md.opCount} operasyon
               </div>
 
               {/* Tree or flat search results */}
