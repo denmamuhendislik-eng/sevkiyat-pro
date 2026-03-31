@@ -1268,6 +1268,151 @@ export default function App() {
     setPdfHtml(`<div data-label="true">${pages.join("")}</div>`);
   };
 
+  // --- Yükleme Kontrol Formu ---
+  const generateLoadingForm = () => {
+    if(!packingCid||pallets.length===0) return;
+    const c = yd.containers.find(ct=>ct.id===packingCid);
+    if(!c) return;
+    const dateStr = c.date.split("-").reverse().join(".");
+    const fk = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
+
+    // Ürün bazlı özet
+    const productSummary = {};
+    pallets.forEach(pl => {
+      pl.items.forEach(it => {
+        if (!productSummary[it.pid]) {
+          const p = products.find(pr=>pr.id===it.pid);
+          productSummary[it.pid] = { name: p?.nameTR||"?", kg: p?.kg||0, qty: 0, palletKG: 0, pallets: [] };
+        }
+        productSummary[it.pid].qty += it.qty;
+        productSummary[it.pid].palletKG += it.qty * (productSummary[it.pid].kg);
+        if (!productSummary[it.pid].pallets.includes(pl.id)) {
+          productSummary[it.pid].pallets.push(pl.id);
+        }
+      });
+    });
+
+    let html = `<html><head><title>Yükleme Kontrol Formu</title><style>
+      body{font-family:Arial,sans-serif;margin:20px;color:#222;font-size:12px}
+      h1{font-size:16px;margin:0 0 2px} h2{font-size:13px;margin:16px 0 8px;border-bottom:2px solid #333;padding-bottom:4px}
+      table{border-collapse:collapse;width:100%;margin-bottom:14px}
+      th,td{border:1px solid #aaa;padding:6px 8px;font-size:11px}
+      th{background:#e8e8e8;font-weight:700;text-align:center}
+      .check{width:20px;height:20px;border:2px solid #333;display:inline-block;border-radius:3px}
+      .totrow td{font-weight:700;border-top:2.5px solid #333;background:#f5f5f5}
+      .sign{display:flex;gap:40px;margin-top:30px}
+      .sign>div{flex:1;border-top:1px solid #333;padding-top:6px;text-align:center;font-size:11px}
+      @media print{body{margin:8px} button{display:none!important}}
+    </style></head><body>`;
+
+    html += `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+      <div><h1>📋 YÜKLEME KONTROL FORMU</h1>
+      <div style="font-size:11px;color:#555">DENMA DIŞ TİCARET LTD.ŞTİ → OFMER SRL.</div></div>
+      <div style="text-align:right"><div style="font-size:13px;font-weight:700">${dateStr}</div>
+      <div style="font-size:10px;color:#555">Konteyner: ${c.id}</div></div></div>`;
+
+    // Bölüm 1: Ürün Özeti
+    html += `<h2>1. ÜRÜN ÖZETİ</h2>`;
+    html += `<table><thead><tr>
+      <th style="text-align:left">Ürün</th>
+      <th>Toplam Adet</th>
+      <th>Toplam KG</th>
+      <th>Palet Sayısı</th>
+      <th>Palet Numaraları</th>
+    </tr></thead><tbody>`;
+    let grandQty = 0, grandKG = 0, grandPallets = 0;
+    Object.values(productSummary).sort((a,b)=>b.palletKG-a.palletKG).forEach(ps => {
+      grandQty += ps.qty;
+      grandKG += ps.palletKG;
+      html += `<tr>
+        <td style="font-weight:600">${ps.name}</td>
+        <td style="text-align:center">${ps.qty}</td>
+        <td style="text-align:center">${fk(ps.palletKG)}</td>
+        <td style="text-align:center">${ps.pallets.length}</td>
+        <td style="font-size:10px">${ps.pallets.join(", ")}</td>
+      </tr>`;
+    });
+    html += `<tr class="totrow">
+      <td>TOPLAM</td>
+      <td style="text-align:center">${grandQty}</td>
+      <td style="text-align:center">${fk(grandKG)}</td>
+      <td style="text-align:center">${pallets.length}</td>
+      <td></td>
+    </tr></tbody></table>`;
+
+    // Bölüm 2: Palet Yükleme Checklist
+    html += `<h2>2. PALET YÜKLEME KONTROL</h2>`;
+    html += `<table><thead><tr>
+      <th style="width:30px">✓</th>
+      <th>Palet No</th>
+      <th>İçerik</th>
+      <th>Adet</th>
+      <th>Net KG</th>
+      <th>Dara KG</th>
+      <th>Brüt KG</th>
+      <th>Ambalaj</th>
+    </tr></thead><tbody>`;
+    let totNet = 0, totDara = 0, totBrut = 0;
+    pallets.forEach(pl => {
+      const plNet = getPalletNet(pl);
+      const plBrut = getPalletBrut(pl);
+      const plDara = pl.dara || 0;
+      const plQty = pl.items.reduce((s,it)=>s+it.qty,0);
+      const content = pl.items.map(it => {
+        const p = products.find(pr=>pr.id===it.pid);
+        return `${p?.nameTR||"?"} (${it.qty})`;
+      }).join(", ");
+      const ambalajName = AMBALAJ_TYPES[pl.ambalajType||0]?.label || "—";
+      totNet += plNet; totDara += plDara; totBrut += plBrut;
+      html += `<tr>
+        <td style="text-align:center"><div class="check"></div></td>
+        <td style="text-align:center;font-weight:700">${pl.id}</td>
+        <td style="font-size:10px">${content}</td>
+        <td style="text-align:center">${plQty}</td>
+        <td style="text-align:right">${fk(plNet)}</td>
+        <td style="text-align:right">${fk(plDara)}</td>
+        <td style="text-align:right;font-weight:600">${fk(plBrut)}</td>
+        <td style="text-align:center;font-size:10px">${ambalajName}</td>
+      </tr>`;
+    });
+    html += `<tr class="totrow">
+      <td></td><td>TOPLAM</td><td></td>
+      <td style="text-align:center">${grandQty}</td>
+      <td style="text-align:right">${fk(totNet)}</td>
+      <td style="text-align:right">${fk(totDara)}</td>
+      <td style="text-align:right">${fk(totBrut)}</td>
+      <td></td>
+    </tr></tbody></table>`;
+
+    // Kantar bilgisi
+    if (kantarBrut && kantarApplied) {
+      html += `<div style="background:#f0f0f0;padding:8px 12px;border-radius:6px;margin-bottom:14px;font-size:11px">
+        <b>Kantar Brüt:</b> ${fk(kantarBrut)} KG &nbsp; | &nbsp;
+        <b>Hesaplanan Brüt:</b> ${fk(totBrut)} KG &nbsp; | &nbsp;
+        <b>Fark:</b> ${fk(Math.abs(kantarBrut - totBrut))} KG
+      </div>`;
+    }
+
+    // Bölüm 3: Notlar
+    html += `<h2>3. NOTLAR</h2>`;
+    html += `<div style="border:1px solid #aaa;border-radius:4px;min-height:60px;padding:8px"></div>`;
+
+    // İmza alanları
+    html += `<div class="sign">
+      <div><b>Hazırlayan</b><br>İsim / İmza / Tarih</div>
+      <div><b>Yükleme Operatörü</b><br>İsim / İmza / Tarih</div>
+      <div><b>Kontrol Eden</b><br>İsim / İmza / Tarih</div>
+    </div>`;
+
+    html += `<div style="margin-top:20px;color:#999;font-size:9px">Oluşturulma: ${new Date().toLocaleString("tr-TR")} — Sevkiyat Pro</div>`;
+    html += `<button onclick="window.print()" style="margin-top:10px;padding:8px 20px;font-size:13px;cursor:pointer">🖨 Yazdır</button>`;
+    html += `</body></html>`;
+
+    const w = window.open('','_blank','width=800,height=700');
+    w.document.write(html);
+    w.document.close();
+  };
+
   const exportPackingExcel = (exLang) => {
     if(!packingCid||pallets.length===0) return;
     const c = yd.containers.find(ct=>ct.id===packingCid);
@@ -2225,6 +2370,7 @@ export default function App() {
                 <button onClick={()=>exportPackingExcel("TR")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#BA7517",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📊 Excel (TR)</button>
                 <button onClick={()=>exportPackingExcel("EN")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#BA7517",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📊 Excel (EN)</button>
                 <button onClick={()=>generatePalletLabelPDF()} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#0F6E56",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>🏷 Palet Etiketi</button>
+                <button onClick={generateLoadingForm} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#D85A30",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📋 Yükleme Formu</button>
               </div>}
             </div>;
           })()}
