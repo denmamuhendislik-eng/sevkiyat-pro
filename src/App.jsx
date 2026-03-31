@@ -4181,11 +4181,15 @@ function MRPPlanlama({ db, userRole }) {
 
   // Adım 4 — Kapasite & Çizelge State
   const SCHED_DOC = "mrpSchedule";
+  const AKIBET_DOC = "mrpAkibet";
   const [schedule, setSchedule] = useState(null);
+  const [akibet, setAkibet] = useState(null);
+  const [akibetImporting, setAkibetImporting] = useState(false);
+  const [akibetImportResult, setAkibetImportResult] = useState(null);
   const [calculating, setCalculating] = useState(false);
-  const [ganttZoom, setGanttZoom] = useState(1); // days per cell
+  const [ganttZoom, setGanttZoom] = useState(1);
   const [selectedJob, setSelectedJob] = useState(null);
-  const [editingOpPart, setEditingOpPart] = useState(null); // {modelKey, partIdx} for inline op time edit
+  const [editingOpPart, setEditingOpPart] = useState(null);
 
   // Firestore listeners
   useEffect(() => {
@@ -4212,6 +4216,11 @@ function MRPPlanlama({ db, userRole }) {
     unsubs.push(onSnapshot(schedRef, snap => {
       if (snap.exists()) setSchedule(snap.data());
     }, () => {}));
+    // Akibet (İş Emri Durumu)
+    const akibetRef = doc(db, APP_COL, AKIBET_DOC);
+    unsubs.push(onSnapshot(akibetRef, snap => {
+      if (snap.exists()) setAkibet(snap.data());
+    }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
 
@@ -4231,6 +4240,10 @@ function MRPPlanlama({ db, userRole }) {
   const saveSchedule = async (data) => {
     if (!db || !canEdit) return;
     await setDoc(doc(db, APP_COL, SCHED_DOC), data);
+  };
+  const saveAkibet = async (data) => {
+    if (!db || !canEdit) return;
+    await setDoc(doc(db, APP_COL, AKIBET_DOC), data);
   };
 
   // ==================== OPERATION TIME EDITING ====================
@@ -4288,16 +4301,21 @@ function MRPPlanlama({ db, userRole }) {
         });
       });
 
-      // 2) Collect requirements with qty > 0
+      // 2) Collect requirements with qty > 0 (subtract WIP from akibet if available)
       const reqItems = {};
       const levKeys = Object.keys(requirements.levels || {});
       levKeys.forEach(lk => {
         (requirements.levels[lk]?.items || []).forEach(item => {
           if (item.requirement > 0) {
-            if (reqItems[item.code]) {
-              reqItems[item.code].qty += item.requirement;
-            } else {
-              reqItems[item.code] = { code: item.code, name: item.name, qty: item.requirement, level: lk };
+            const ak = akibetLookup[item.code];
+            const wip = ak ? (ak.internalRemaining + ak.fasonRemaining) : 0;
+            const netQty = Math.max(0, item.requirement - wip);
+            if (netQty > 0) {
+              if (reqItems[item.code]) {
+                reqItems[item.code].qty += netQty;
+              } else {
+                reqItems[item.code] = { code: item.code, name: item.name, qty: netQty, level: lk };
+              }
             }
           }
         });
@@ -4964,6 +4982,150 @@ function MRPPlanlama({ db, userRole }) {
   const onReqDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleReqImport(f); };
   const onReqFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleReqImport(f); };
 
+  // ==================== AKİBET (İŞ EMRİ DURUM) EXCEL PARSER ====================
+  const parseAkibetExcel = (workbook) => {
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    // Find header row (Stok Kodu + Emir No)
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(10, rows.length); i++) {
+      const c0 = String(rows[i][0] || "").trim();
+      if (c0 === "Stok Kodu" || c0.includes("Stok Kod")) { headerIdx = i; break; }
+    }
+    if (headerIdx < 0) return null;
+
+    const headerCells = rows[headerIdx].map(c => String(c || "").trim());
+
+    // Detect fixed columns
+    const colCode = 0, colName = 1, colUnit = 2, colEmirNo = 3, colEmirQty = 4;
+
+    // Detect operation column pairs: "XXX Ger.Miktar" + "XXX İşlem Mik."
+    const opCols = [];
+    for (let ci = 5; ci < headerCells.length; ci++) {
+      const h = headerCells[ci];
+      if (h.includes("Ger.Miktar")) {
+        const opName = h.replace("Ger.Miktar", "").trim();
+        const isFason = opName.toUpperCase().includes("FASON");
+        opCols.push({ name: opName, isFason, gerCol: ci, islCol: ci + 1 });
+      }
+    }
+
+    const pNum = (v) => {
+      if (v === "" || v === undefined || v === null) return 0;
+      const n = parseFloat(String(v).replace(",", "."));
+      return isNaN(n) ? 0 : n;
+    };
+
+    // Parse rows → aggregate per stockCode
+    const partsMap = {}; // stockCode → { name, unit, orders[], internalRemaining, fasonRemaining, totalQty, opDetails[] }
+
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const code = String(r[colCode] || "").trim();
+      if (!code || code === "Stok Kodu") continue;
+
+      const name = String(r[colName] || "").trim();
+      const unit = String(r[colUnit] || "").trim() || "AD";
+      const emirNo = String(r[colEmirNo] || "").trim();
+      const emirQty = pNum(r[colEmirQty]);
+
+      if (!partsMap[code]) {
+        partsMap[code] = { name, unit, orders: [], totalQty: 0, internalRemaining: 0, fasonRemaining: 0, opDetails: [] };
+      }
+      const p = partsMap[code];
+      p.totalQty += emirQty;
+
+      let orderIntRem = 0, orderFasRem = 0;
+      const orderOps = [];
+
+      for (const op of opCols) {
+        const ger = pNum(r[op.gerCol]);
+        const isl = pNum(r[op.islCol]);
+        if (ger === 0 && isl === 0) continue;
+        const remaining = Math.max(0, ger - isl);
+        const completed = Math.max(0, isl);
+        orderOps.push({ name: op.name, isFason: op.isFason, ger, isl: completed, remaining });
+        if (op.isFason) {
+          orderFasRem = Math.max(orderFasRem, remaining);
+        } else {
+          orderIntRem = Math.max(orderIntRem, remaining);
+        }
+      }
+
+      p.orders.push({ emirNo, qty: emirQty, intRem: orderIntRem, fasRem: orderFasRem, ops: orderOps });
+      p.internalRemaining += orderIntRem;
+      p.fasonRemaining += orderFasRem;
+    }
+
+    // Build summary
+    const parts = Object.entries(partsMap).map(([code, p]) => ({
+      code, name: p.name, unit: p.unit,
+      totalQty: p.totalQty,
+      internalRemaining: p.internalRemaining,
+      fasonRemaining: p.fasonRemaining,
+      orderCount: p.orders.length,
+      orders: p.orders
+    }));
+
+    const totalParts = parts.length;
+    const withInternal = parts.filter(p => p.internalRemaining > 0).length;
+    const withFason = parts.filter(p => p.fasonRemaining > 0).length;
+
+    return {
+      parts, totalParts, withInternal, withFason,
+      opColumns: opCols.map(o => ({ name: o.name, isFason: o.isFason })),
+      importedAt: new Date().toISOString()
+    };
+  };
+
+  const handleAkibetImport = (file) => {
+    setAkibetImporting(true);
+    setAkibetImportResult(null);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      let result = null;
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        result = parseAkibetExcel(wb);
+        if (!result || result.totalParts === 0) {
+          setAkibetImportResult({ error: "İş emri verisi bulunamadı. VIO Emir Akibet Raporu formatını kontrol edin." });
+          setAkibetImporting(false);
+          return;
+        }
+      } catch (err) {
+        setAkibetImportResult({ error: "Excel parse hatası: " + err.message });
+        setAkibetImporting(false);
+        return;
+      }
+      try {
+        await saveAkibet(result);
+        setAkibetImportResult({
+          success: true, totalParts: result.totalParts,
+          withInternal: result.withInternal, withFason: result.withFason,
+          opColumns: result.opColumns.length
+        });
+      } catch (err) {
+        setAkibetImportResult({ error: "Firestore kayıt hatası: " + err.message });
+      }
+      setAkibetImporting(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const onAkibetDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleAkibetImport(f); };
+  const onAkibetFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleAkibetImport(f); };
+
+  // Build akibet lookup: stockCode → { internalRemaining, fasonRemaining, totalQty }
+  const akibetLookup = useMemo(() => {
+    if (!akibet || !akibet.parts) return {};
+    const map = {};
+    akibet.parts.forEach(p => {
+      map[p.code] = { internalRemaining: p.internalRemaining, fasonRemaining: p.fasonRemaining, totalQty: p.totalQty, orderCount: p.orderCount };
+    });
+    return map;
+  }, [akibet]);
+
   // ==================== TREE VIEW HELPERS ====================
   const getModelData = () => selectedModel && bomModels[selectedModel] ? bomModels[selectedModel] : null;
 
@@ -5184,6 +5346,7 @@ function MRPPlanlama({ db, userRole }) {
         <KPI label="Operasyonlar" value={totalOps} sub={`${wcCount} iş merkezi`} accent="#185FA5" />
         <KPI label="Fason operasyonlar" value={faCount} sub="Dış tedarik tipi" accent="#D85A30" />
         <KPI label="İhtiyaç" value={requirements ? requirements.totalNeeded || 0 : "—"} sub={requirements ? `${requirements.totalItems || 0} kalem · ${requirements.period || ""}` : "Henüz import edilmedi"} accent="#1D9E75" />
+        <KPI label="Üretimde" value={akibet ? `${akibet.withInternal || 0} iç · ${akibet.withFason || 0} fason` : "—"} sub={akibet ? `${akibet.totalParts || 0} parça · ${new Date(akibet.importedAt).toLocaleDateString("tr-TR")}` : "Akibet yüklenmedi"} accent="#F59E0B" />
         <KPI label="Çizelge" value={schedule ? (schedule.totalJobs || 0) + " iş" : "—"} sub={schedule ? `${schedule.lastCalculated ? new Date(schedule.lastCalculated).toLocaleDateString("tr-TR") : ""} · ${schedule.bottleneck ? "Darboğaz: " + (schedule.wcStats?.[schedule.bottleneck]?.name || schedule.bottleneck) : ""}` : "Hesaplanmadı"} accent="#3B82F6" />
       </div>
 
@@ -5463,19 +5626,61 @@ function MRPPlanlama({ db, userRole }) {
             </div>
           )}
 
+          {/* Akibet import */}
+          {canEdit && (
+            <div
+              onDrop={onAkibetDrop} onDragOver={e => e.preventDefault()}
+              style={{ border: "2px dashed var(--color-border-secondary)", borderRadius: 12, padding: "14px 20px", textAlign: "center", marginBottom: 16, background: "var(--color-background-secondary)", cursor: "pointer", display: "flex", alignItems: "center", gap: 16, justifyContent: "center" }}
+              onClick={() => document.getElementById("akibet-file-input").click()}
+            >
+              <div style={{ fontSize: 20 }}>🔄</div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>VIO İş Emri Akibet Raporu sürükle & bırak</div>
+                <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Üretimdeki ve fasondaki miktarları görmek için — günlük güncelleme önerilir</div>
+              </div>
+              {akibet && (
+                <div style={{ fontSize: 10, color: "var(--color-text-success)", textAlign: "left", borderLeft: "1px solid var(--color-border-tertiary)", paddingLeft: 12 }}>
+                  ✓ {akibet.totalParts} parça yüklü<br/>{new Date(akibet.importedAt).toLocaleString("tr-TR")}
+                </div>
+              )}
+              <input id="akibet-file-input" type="file" accept=".xlsx,.xls" onChange={onAkibetFileSelect} style={{ display: "none" }} />
+            </div>
+          )}
+          {akibetImporting && <div style={{ padding: 10, background: "var(--color-background-info)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>Akibet import ediliyor...</div>}
+          {akibetImportResult && akibetImportResult.error && (
+            <div style={{ padding: 10, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)" }}>{akibetImportResult.error}</div>
+          )}
+          {akibetImportResult && akibetImportResult.success && (
+            <div style={{ padding: 10, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
+              ✓ Akibet: {akibetImportResult.totalParts} parça · {akibetImportResult.withInternal} üretimde · {akibetImportResult.withFason} fasonda · {akibetImportResult.opColumns} operasyon tipi
+            </div>
+          )}
+
           {requirements && requirements.levels && (() => {
             const levKeys = Object.keys(requirements.levels).sort();
-            const allItems = levKeys.flatMap(k => (requirements.levels[k]?.items || []).map(it => ({ ...it, _level: k })));
+            const allItems = levKeys.flatMap(k => (requirements.levels[k]?.items || []).map(it => {
+              // Enrich with akibet data
+              const ak = akibetLookup[it.code];
+              const intRem = ak ? ak.internalRemaining : 0;
+              const fasRem = ak ? ak.fasonRemaining : 0;
+              const wip = intRem + fasRem; // work in progress total
+              const netReq = Math.max(0, (it.requirement || 0) - wip);
+              return { ...it, _level: k, _intRem: intRem, _fasRem: fasRem, _wip: wip, _netReq: netReq, _akOrders: ak?.orderCount || 0 };
+            }));
             const levelLabels = { L0: "Ana Ürünler", L1: "Seviye 1 — Montaj", L2: "Seviye 2 — İşlenmiş", L3: "Seviye 3 — Hammadde" };
 
             let filtered = reqLevel === "all" ? allItems : allItems.filter(i => i._level === reqLevel);
             if (reqFilter === "needed") filtered = filtered.filter(i => i.requirement > 0);
             else if (reqFilter === "stocked") filtered = filtered.filter(i => i.stock > 0);
+            else if (reqFilter === "net") filtered = filtered.filter(i => i._netReq > 0);
+            else if (reqFilter === "wip") filtered = filtered.filter(i => i._wip > 0);
             if (reqSearch.trim()) {
               const q = reqSearch.toLowerCase();
               filtered = filtered.filter(i => i.code.toLowerCase().includes(q) || i.name.toLowerCase().includes(q));
             }
             const totalReq = filtered.filter(i => i.requirement > 0).length;
+            const totalNet = filtered.filter(i => i._netReq > 0).length;
+            const hasAkibet = Object.keys(akibetLookup).length > 0;
 
             return (
               <div>
@@ -5483,7 +5688,9 @@ function MRPPlanlama({ db, userRole }) {
                   <span>Dönem: <b>{requirements.period}</b></span>
                   <span>{requirements.totalItems} kalem</span>
                   <span style={{ color: "var(--color-text-danger)" }}>{requirements.totalNeeded} gereksinimli</span>
-                  {requirements.bomMatched > 0 && <span>BOM eşleşme: {requirements.bomMatched}/{requirements.bomMatched + (requirements.bomUnmatched||0)}</span>}
+                  {hasAkibet && <span style={{ color: "#F59E0B" }}>🔄 {allItems.filter(i => i._wip > 0).length} üretimde/fasonda</span>}
+                  {hasAkibet && <span style={{ color: "#EF4444", fontWeight: 500 }}>🔴 {allItems.filter(i => i._netReq > 0).length} net açık</span>}
+                  {requirements.bomMatched > 0 && <span>BOM: {requirements.bomMatched}/{requirements.bomMatched + (requirements.bomUnmatched||0)}</span>}
                 </div>
 
                 <div style={{ display: "flex", gap: 6, marginBottom: 8, flexWrap: "wrap", alignItems: "center" }}>
@@ -5499,6 +5706,8 @@ function MRPPlanlama({ db, userRole }) {
                   <select value={reqFilter} onChange={e => setReqFilter(e.target.value)} style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11, background: "var(--color-background-secondary)" }}>
                     <option value="all">Tümü</option>
                     <option value="needed">Gereksinimli</option>
+                    {hasAkibet && <option value="net">Net Açık (üretim düşülmüş)</option>}
+                    {hasAkibet && <option value="wip">Üretimde/Fasonda</option>}
                     <option value="stocked">Stokta var</option>
                   </select>
                 </div>
@@ -5507,7 +5716,7 @@ function MRPPlanlama({ db, userRole }) {
                   style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-secondary)", fontSize: 12, outline: "none", marginBottom: 8 }} />
 
                 <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 6 }}>
-                  {filtered.length} kalem · {totalReq} gereksinimli
+                  {filtered.length} kalem · {totalReq} gereksinimli{hasAkibet && ` · ${totalNet} net açık`}
                 </div>
 
                 <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", maxHeight: "60vh", overflowY: "auto" }}>
@@ -5516,11 +5725,12 @@ function MRPPlanlama({ db, userRole }) {
                       <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Stok Kodu</th>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Stok Adı</th>
-                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Br</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>İstenen</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Stok</th>
-                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Yoldaki</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Gereksinim</th>
+                        {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Üretimde</th>}
+                        {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#C2410C" }}>Fasonda</th>}
+                        {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Net Açık</th>}
                         <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Svye</th>
                         <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>BOM</th>
                       </tr>
@@ -5528,16 +5738,34 @@ function MRPPlanlama({ db, userRole }) {
                     <tbody>
                       {filtered.map((item, idx) => {
                         const hasReq = item.requirement > 0;
+                        const hasNet = item._netReq > 0;
                         const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517" };
+                        // Row background: red if net open, yellow if has WIP but covered, transparent otherwise
+                        const rowBg = hasAkibet
+                          ? (hasNet ? "var(--color-background-danger)" : item._wip > 0 ? "#FFFBEB" : "transparent")
+                          : (hasReq ? "var(--color-background-danger)" : "transparent");
                         return (
-                          <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: hasReq ? "var(--color-background-danger)" : "transparent" }}>
+                          <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
                             <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{item.code}</td>
-                            <td style={{ padding: "5px 8px", maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</td>
-                            <td style={{ padding: "5px 8px", textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 10 }}>{item.unit}</td>
+                            <td style={{ padding: "5px 8px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{item.name}</td>
                             <td style={{ padding: "5px 8px", textAlign: "right" }}>{item.demanded || "—"}</td>
                             <td style={{ padding: "5px 8px", textAlign: "right", color: item.stock > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{item.stock || "—"}</td>
-                            <td style={{ padding: "5px 8px", textAlign: "right", color: "var(--color-text-tertiary)" }}>{item.onWay || "—"}</td>
-                            <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasReq ? 600 : 400, color: hasReq ? "var(--color-text-danger)" : "var(--color-text-tertiary)" }}>{item.requirement || "—"}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasReq ? 500 : 400, color: hasReq ? "var(--color-text-danger)" : "var(--color-text-tertiary)" }}>{item.requirement || "—"}</td>
+                            {hasAkibet && (
+                              <td style={{ padding: "5px 8px", textAlign: "right", color: item._intRem > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>
+                                {item._intRem > 0 ? item._intRem : "—"}
+                              </td>
+                            )}
+                            {hasAkibet && (
+                              <td style={{ padding: "5px 8px", textAlign: "right", color: item._fasRem > 0 ? "#C2410C" : "var(--color-text-tertiary)", fontSize: 10 }}>
+                                {item._fasRem > 0 ? item._fasRem : "—"}
+                              </td>
+                            )}
+                            {hasAkibet && (
+                              <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasNet ? 700 : 400, color: hasNet ? "#DC2626" : item._wip > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)", fontSize: hasNet ? 11 : 10 }}>
+                                {hasNet ? item._netReq : item._wip > 0 ? "✓ Karşılandı" : "—"}
+                              </td>
+                            )}
                             <td style={{ padding: "5px 4px", textAlign: "center" }}>
                               <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: (lvC[item._level]||"#888") + "18", color: lvC[item._level]||"#888" }}>{item._level}</span>
                             </td>
