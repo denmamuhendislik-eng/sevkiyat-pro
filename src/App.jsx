@@ -3528,20 +3528,11 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                     )}
                     {!todayPln && <div style={{fontSize:isOperator?"12px":"10px",color:"var(--color-text-tertiary)",paddingLeft:isOperator?18:14}}>Bugün plan yok</div>}
                   </div>
-                  {/* Sayaç */}
+                  {/* Sayaç — tıklayınca onay modalı açılır */}
                   <div style={{display:"flex",alignItems:"center",gap:isOperator?12:6,justifyContent:isOperator?"flex-end":"center",width:isOperator?undefined:"100%"}}>
-                    <button onClick={()=>{
-                      if(todayGer<=0) return;
-                      if(isOperator) { setGerConfirm({pid,productName:kisaAd(p.nameTR),oldVal:todayGer,newVal:todayGer-1,color:p.color}); }
-                      else { updateCell(today,pid,"actual",todayGer-1); }
-                    }}
-                      style={{width:isOperator?48:32,height:isOperator?48:32,borderRadius:"50%",border:"1.5px solid var(--color-border-secondary)",background:"var(--color-background-primary)",fontSize:isOperator?"22px":"16px",fontWeight:600,cursor:"pointer",color:"var(--color-text-secondary)",display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
                     <span style={{fontSize:isOperator?"28px":"18px",fontWeight:700,color:done?"#16a34a":behind?"#dc2626":"var(--color-text-primary)",minWidth:isOperator?50:30,textAlign:"center"}}>{todayGer}</span>
-                    <button onClick={()=>{
-                      if(isOperator) { setGerConfirm({pid,productName:kisaAd(p.nameTR),oldVal:todayGer,newVal:todayGer+1,color:p.color}); }
-                      else { updateCell(today,pid,"actual",todayGer+1); }
-                    }}
-                      style={{width:isOperator?48:32,height:isOperator?48:32,borderRadius:"50%",border:"1.5px solid var(--color-border-info)",background:"var(--color-background-info)",fontSize:isOperator?"22px":"16px",fontWeight:600,cursor:"pointer",color:"var(--color-text-info)",display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
+                    <button onClick={()=>setGerConfirm({pid,productName:kisaAd(p.nameTR),oldVal:todayGer,newVal:todayGer,color:p.color,plan:todayPln})}
+                      style={{width:isOperator?48:32,height:isOperator?48:32,borderRadius:isOperator?12:8,border:"1.5px solid var(--color-border-info)",background:"var(--color-background-info)",fontSize:isOperator?"14px":"11px",fontWeight:600,cursor:"pointer",color:"var(--color-text-info)",display:"flex",alignItems:"center",justifyContent:"center"}}>Giriş</button>
                   </div>
                 </div>
               );
@@ -3561,34 +3552,62 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         </div>
       )}
 
-      {/* GER Onay Modalı — Operatör */}
+      {/* GER Onay Modalı — Tüm roller */}
       {gerConfirm && (
         <div style={{position:"fixed",inset:0,zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.5)",padding:20}} onClick={()=>setGerConfirm(null)}>
-          <div onClick={e=>e.stopPropagation()} style={{background:"var(--color-background-primary)",borderRadius:16,padding:"24px 28px",maxWidth:340,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
-            <div style={{textAlign:"center",marginBottom:20}}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"var(--color-background-primary)",borderRadius:16,padding:"24px 28px",maxWidth:360,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
+            <div style={{textAlign:"center",marginBottom:16}}>
               <div style={{width:48,height:48,borderRadius:"50%",background:gerConfirm.color||"#3B82F6",margin:"0 auto 12px",display:"flex",alignItems:"center",justifyContent:"center"}}>
-                <span style={{fontSize:24,color:"#fff",fontWeight:700}}>{gerConfirm.newVal > gerConfirm.oldVal ? "+" : "−"}</span>
+                <span style={{fontSize:20,color:"#fff",fontWeight:700}}>✎</span>
               </div>
-              <div style={{fontSize:18,fontWeight:700,color:"var(--color-text-primary)",marginBottom:4}}>{gerConfirm.productName}</div>
-              <div style={{fontSize:13,color:"var(--color-text-secondary)"}}>Üretim Gerçekleşme Girişi</div>
+              <div style={{fontSize:18,fontWeight:700,color:"var(--color-text-primary)",marginBottom:2}}>{gerConfirm.productName}</div>
+              <div style={{fontSize:12,color:"var(--color-text-tertiary)"}}>
+                {new Date(today+"T00:00:00").toLocaleDateString("tr-TR",{weekday:"long",day:"2-digit",month:"long"})}
+                {gerConfirm.plan > 0 && <span> · Plan: <b>{gerConfirm.plan}</b> adet</span>}
+              </div>
             </div>
+
+            {/* Mevcut değer */}
+            <div style={{textAlign:"center",marginBottom:8}}>
+              <span style={{fontSize:11,color:"var(--color-text-tertiary)"}}>Kayıtlı: {gerConfirm.oldVal} adet</span>
+            </div>
+
+            {/* +/- kontrol + direkt input */}
             <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16,marginBottom:20}}>
-              <div style={{textAlign:"center"}}>
-                <div style={{fontSize:11,color:"var(--color-text-tertiary)",marginBottom:2}}>Mevcut</div>
-                <div style={{fontSize:28,fontWeight:700,color:"var(--color-text-secondary)"}}>{gerConfirm.oldVal}</div>
-              </div>
-              <div style={{fontSize:24,color:"var(--color-text-tertiary)"}}>→</div>
-              <div style={{textAlign:"center"}}>
-                <div style={{fontSize:11,color:"var(--color-text-tertiary)",marginBottom:2}}>Yeni</div>
-                <div style={{fontSize:28,fontWeight:700,color:gerConfirm.newVal > gerConfirm.oldVal?"#2563EB":"#DC2626"}}>{gerConfirm.newVal}</div>
-              </div>
+              <button onClick={()=>setGerConfirm(prev=>({...prev,newVal:Math.max(0,prev.newVal-1)}))}
+                style={{width:56,height:56,borderRadius:"50%",border:"2px solid var(--color-border-secondary)",background:"var(--color-background-primary)",fontSize:28,fontWeight:600,cursor:"pointer",color:"var(--color-text-secondary)",display:"flex",alignItems:"center",justifyContent:"center"}}
+              >−</button>
+              <input
+                type="number" min="0"
+                value={gerConfirm.newVal}
+                onChange={e=>{const v=parseInt(e.target.value);if(!isNaN(v)&&v>=0)setGerConfirm(prev=>({...prev,newVal:v}));}}
+                style={{width:80,height:64,borderRadius:12,border:"2px solid var(--color-border-info)",background:"var(--color-background-secondary)",fontSize:32,fontWeight:700,textAlign:"center",color:gerConfirm.newVal!==gerConfirm.oldVal?(gerConfirm.newVal>gerConfirm.oldVal?"#2563EB":"#DC2626"):"var(--color-text-primary)",outline:"none"}}
+                autoFocus
+              />
+              <button onClick={()=>setGerConfirm(prev=>({...prev,newVal:prev.newVal+1}))}
+                style={{width:56,height:56,borderRadius:"50%",border:"2px solid var(--color-border-info)",background:"var(--color-background-info)",fontSize:28,fontWeight:600,cursor:"pointer",color:"var(--color-text-info)",display:"flex",alignItems:"center",justifyContent:"center"}}
+              >+</button>
             </div>
-            <div style={{fontSize:11,color:"var(--color-text-tertiary)",textAlign:"center",marginBottom:16}}>
-              {new Date(today+"T00:00:00").toLocaleDateString("tr-TR",{weekday:"long",day:"2-digit",month:"long"})} · Aynı gün içinde değiştirebilirsiniz
-            </div>
+
+            {/* Fark gösterimi */}
+            {gerConfirm.newVal !== gerConfirm.oldVal && (
+              <div style={{textAlign:"center",marginBottom:12,fontSize:13,fontWeight:500,color:gerConfirm.newVal>gerConfirm.oldVal?"#2563EB":"#DC2626"}}>
+                {gerConfirm.newVal > gerConfirm.oldVal ? "+" : ""}{gerConfirm.newVal - gerConfirm.oldVal} adet {gerConfirm.newVal > gerConfirm.oldVal ? "artış" : "azalış"}
+              </div>
+            )}
+            {gerConfirm.plan > 0 && (
+              <div style={{textAlign:"center",marginBottom:12,fontSize:11,color:gerConfirm.newVal>=gerConfirm.plan?"#16a34a":"#F59E0B"}}>
+                {gerConfirm.newVal >= gerConfirm.plan ? "✓ Plan tamamlandı" : `${gerConfirm.plan - gerConfirm.newVal} adet eksik (plan: ${gerConfirm.plan})`}
+              </div>
+            )}
+
             <div style={{display:"flex",gap:10}}>
               <button onClick={()=>setGerConfirm(null)} style={{flex:1,padding:"12px",borderRadius:10,border:"1.5px solid var(--color-border-secondary)",background:"transparent",fontSize:14,fontWeight:500,cursor:"pointer",color:"var(--color-text-secondary)"}}>İptal</button>
-              <button onClick={()=>{updateCell(today,gerConfirm.pid,"actual",gerConfirm.newVal);setGerConfirm(null);}} style={{flex:1,padding:"12px",borderRadius:10,border:"none",background:gerConfirm.color||"#3B82F6",fontSize:14,fontWeight:600,cursor:"pointer",color:"#fff"}}>Onayla</button>
+              <button
+                onClick={()=>{updateCell(today,gerConfirm.pid,"actual",gerConfirm.newVal);setGerConfirm(null);}}
+                disabled={gerConfirm.newVal === gerConfirm.oldVal}
+                style={{flex:1,padding:"12px",borderRadius:10,border:"none",background:gerConfirm.newVal!==gerConfirm.oldVal?(gerConfirm.color||"#3B82F6"):"var(--color-background-secondary)",fontSize:14,fontWeight:600,cursor:gerConfirm.newVal!==gerConfirm.oldVal?"pointer":"not-allowed",color:gerConfirm.newVal!==gerConfirm.oldVal?"#fff":"var(--color-text-tertiary)"}}
+              >{gerConfirm.newVal === gerConfirm.oldVal ? "Değişiklik yok" : "Kaydet"}</button>
             </div>
           </div>
         </div>
