@@ -1978,15 +1978,32 @@ export default function App() {
               const kg=getCKG(c.id);const st=getStatus(kg);const fill=maxKG>0?Math.min(kg/maxKG*100,100):0;
               const shipped=isShipped(c);const sel=selectedCids.has(c.id);
               const items=Object.entries(yd.quantities[c.id]||{}).filter(([,q])=>q>0).map(([pid,qty])=>{
-                const p=products.find(pr=>pr.id===Number(pid));return p?{name:lang==="TR"?p.nameTR:p.nameEN,qty,kg:p.kg,totalKG:p.kg*qty}:null;
+                const p=products.find(pr=>pr.id===Number(pid));return p?{pid:Number(pid),name:lang==="TR"?p.nameTR:p.nameEN,qty,kg:p.kg,totalKG:p.kg*qty}:null;
               }).filter(Boolean).sort((a,b)=>b.kg-a.kg);
+              // Paketleme verisi
+              const pd = yd.packingData?.[c.id];
+              const hasPacking = pd && pd.pallets && pd.pallets.length > 0;
+              const packedMap = {};
+              let packedKG = 0;
+              let palletCount = 0;
+              if (hasPacking) {
+                palletCount = pd.pallets.length;
+                pd.pallets.forEach(pl => pl.items.forEach(it => {
+                  packedMap[it.pid] = (packedMap[it.pid]||0) + it.qty;
+                  const p = products.find(pr=>pr.id===it.pid);
+                  if (p) packedKG += it.qty * p.kg;
+                }));
+              }
+              const allPacked = hasPacking && items.every(it => (packedMap[it.pid]||0) >= it.qty);
+              const packPct = kg > 0 ? Math.round((packedKG / kg) * 100) : 0;
               return <div key={c.id} style={{background:"var(--color-background-primary)",borderRadius:12,padding:14,border:`2px solid ${sel?"#534AB7":st.s==="ok"?"#1D9E75":st.s==="empty"?"var(--color-border-tertiary)":"#E24B4A"}`,opacity:shipped?0.7:1,transition:"border 0.15s"}}>
                 <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:10}}>
                   <div style={{display:"flex",alignItems:"center",gap:8}}>
                     {!shipped&&<div onClick={()=>toggleCid(c.id)} style={{width:24,height:24,borderRadius:6,border:`2.5px solid ${sel?"#534AB7":"#888"}`,background:sel?"#534AB7":"var(--color-background-secondary)",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",fontSize:14,color:"#fff",flexShrink:0,fontWeight:700,boxShadow:sel?"0 0 0 3px rgba(83,74,183,0.2)":"none",transition:"all 0.15s"}}>{sel?"✓":""}</div>}
                     <div style={{fontSize:13,fontWeight:600}}>{fmtDate(c.date)}</div>
                   </div>
-                  <div style={{display:"flex",gap:4}}>
+                  <div style={{display:"flex",gap:4,alignItems:"center"}}>
+                    {hasPacking && <span style={{padding:"2px 6px",borderRadius:4,fontSize:9,fontWeight:600,background:allPacked?"rgba(22,163,106,0.12)":"rgba(186,117,23,0.12)",color:allPacked?"#16a34a":"#BA7517"}}>{allPacked?"✓ Paketlendi":"◐ Paketleniyor"} · {palletCount} palet</span>}
                     <span style={{padding:"2px 6px",borderRadius:4,fontSize:10,fontWeight:600,background:st.bg,color:st.c}}>{st.i} {st.l}</span>
                     <Badge status={shipped?"shipped":"planned"}/>
                   </div>
@@ -1995,32 +2012,48 @@ export default function App() {
                   <span style={{color:"var(--color-text-secondary)"}}>Toplam ağırlık</span>
                   <span style={{fontWeight:700,color:st.c}}>{Math.round(kg).toLocaleString()} KG</span>
                 </div>
-                <div style={{height:5,background:"var(--color-background-tertiary)",borderRadius:3,overflow:"hidden",marginBottom:10,position:"relative"}}>
+                <div style={{height:5,background:"var(--color-background-tertiary)",borderRadius:3,overflow:"hidden",marginBottom:hasPacking?6:10,position:"relative"}}>
                   <div style={{position:"absolute",left:`${maxKG>0?minKG/maxKG*100:0}%`,top:0,bottom:0,width:1,background:"var(--color-text-tertiary)",opacity:0.5}}/>
                   <div style={{height:"100%",width:`${fill}%`,borderRadius:3,background:st.c,transition:"width 0.3s"}}/>
                 </div>
+                {hasPacking && (
+                  <div style={{display:"flex",justifyContent:"space-between",fontSize:10,marginBottom:8,color:"var(--color-text-tertiary)"}}>
+                    <span>📦 {palletCount} palet · {Math.round(packedKG).toLocaleString()} KG paketlendi</span>
+                    <span style={{fontWeight:600,color:allPacked?"#16a34a":packPct>=50?"#BA7517":"#dc2626"}}>{packPct}%</span>
+                  </div>
+                )}
                 {items.length>0?<table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
                   <thead><tr style={{borderBottom:"1.5px solid var(--color-border-tertiary)"}}>
                     <th style={{textAlign:"left",padding:"4px 4px",color:"var(--color-text-tertiary)",fontWeight:600}}>Ürün</th>
                     <th style={{textAlign:"right",padding:"4px 4px",color:"var(--color-text-tertiary)",fontWeight:600,whiteSpace:"nowrap"}}>Adet</th>
                     <th style={{textAlign:"right",padding:"4px 4px",color:"var(--color-text-tertiary)",fontWeight:600,whiteSpace:"nowrap"}}>Birim KG</th>
                     <th style={{textAlign:"right",padding:"4px 4px",color:"var(--color-text-tertiary)",fontWeight:600,whiteSpace:"nowrap"}}>Toplam KG</th>
+                    {hasPacking && <th style={{textAlign:"center",padding:"4px 4px",color:"var(--color-text-tertiary)",fontWeight:600,whiteSpace:"nowrap",width:28}}>📦</th>}
                   </tr></thead>
                   <tbody>
-                    {items.map((it,i)=><tr key={i} style={{borderBottom:i<items.length-1?"1px solid var(--color-border-tertiary)":"none"}}>
-                      <td style={{padding:"4px 4px",color:"var(--color-text-secondary)"}}>{it.name}</td>
-                      <td style={{textAlign:"right",padding:"4px 4px",fontWeight:500}}>{it.qty}</td>
-                      <td style={{textAlign:"right",padding:"4px 4px",color:"var(--color-text-tertiary)"}}>{it.kg}</td>
-                      <td style={{textAlign:"right",padding:"4px 4px",fontWeight:500}}>{Math.round(it.totalKG).toLocaleString()}</td>
-                    </tr>)}
+                    {items.map((it,i)=>{
+                      const pk = packedMap[it.pid]||0;
+                      const fullyPacked = pk >= it.qty;
+                      const partialPacked = pk > 0 && pk < it.qty;
+                      return <tr key={i} style={{borderBottom:i<items.length-1?"1px solid var(--color-border-tertiary)":"none",background:fullyPacked?"rgba(22,163,106,0.06)":partialPacked?"rgba(186,117,23,0.04)":"transparent"}}>
+                        <td style={{padding:"4px 4px",color:fullyPacked?"#16a34a":"var(--color-text-secondary)"}}>{it.name}</td>
+                        <td style={{textAlign:"right",padding:"4px 4px",fontWeight:500}}>{it.qty}</td>
+                        <td style={{textAlign:"right",padding:"4px 4px",color:"var(--color-text-tertiary)"}}>{it.kg}</td>
+                        <td style={{textAlign:"right",padding:"4px 4px",fontWeight:500}}>{Math.round(it.totalKG).toLocaleString()}</td>
+                        {hasPacking && <td style={{textAlign:"center",padding:"4px 2px",fontSize:10,fontWeight:600,color:fullyPacked?"#16a34a":partialPacked?"#BA7517":"var(--color-text-tertiary)"}}>
+                          {fullyPacked?"✓":partialPacked?`${pk}/${it.qty}`:"·"}
+                        </td>}
+                      </tr>;
+                    })}
                     <tr style={{borderTop:"2px solid var(--color-text-primary)"}}>
                       <td style={{padding:"5px 4px",fontWeight:700}}>TOPLAM</td><td></td><td></td>
                       <td style={{textAlign:"right",padding:"5px 4px",fontWeight:700}}>{Math.round(kg).toLocaleString()} KG</td>
+                      {hasPacking && <td></td>}
                     </tr>
                   </tbody>
                 </table>
                 :<div style={{color:"var(--color-text-tertiary)",textAlign:"center",padding:10,fontSize:10}}>Boş</div>}
-                {canPack&&items.length>0&&<div style={{marginTop:8,textAlign:"right"}}><button onClick={(e)=>{e.stopPropagation();openPacking(c.id);}} style={{padding:"5px 14px",borderRadius:6,border:"1.5px solid #534AB7",background:"rgba(83,74,183,0.08)",color:"#534AB7",fontSize:11,fontWeight:600,cursor:"pointer"}}>📦 Paketle</button></div>}
+                {canPack&&items.length>0&&<div style={{marginTop:8,textAlign:"right"}}><button onClick={(e)=>{e.stopPropagation();openPacking(c.id);}} style={{padding:"5px 14px",borderRadius:6,border:"1.5px solid #534AB7",background:"rgba(83,74,183,0.08)",color:"#534AB7",fontSize:11,fontWeight:600,cursor:"pointer"}}>{hasPacking?"📦 Paketlemeyi Düzenle":"📦 Paketle"}</button></div>}
               </div>;
             })}
           </div></div>}
