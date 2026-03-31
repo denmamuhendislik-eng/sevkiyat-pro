@@ -224,6 +224,27 @@ export default function App() {
     saveToFirestore({ yearsData, products, combRules, minKG, maxKG, packingStandards });
   }, [yearsData, products, combRules, minKG, maxKG, packingStandards, canPack, dataLoaded, saveToFirestore]);
 
+  // *** BİR SEFERLİK İSİM GÜNCELLEME — deploy sonrası kaldırılacak ***
+  useEffect(() => {
+    if (!isAdmin || !dataLoaded || !firestoreReady.current || products.length === 0) return;
+    const rawProducts = PARSED.products;
+    let updated = false;
+    const newProducts = products.map(p => {
+      const rawP = rawProducts.find(r => r.id === p.id);
+      if (rawP && rawP.nameTR !== p.nameTR) {
+        console.log(`İsim güncellendi: pid:${p.id} "${p.nameTR}" → "${rawP.nameTR}"`);
+        updated = true;
+        return { ...p, nameTR: rawP.nameTR };
+      }
+      return p;
+    });
+    if (updated) {
+      setProducts(newProducts);
+      console.log("✅ Ürün isimleri Ofmer listesinden güncellendi!");
+    }
+  }, [isAdmin, dataLoaded, products.length]);
+  // *** MIGRATION SONU — çalıştıktan sonra bu bloğu sil ***
+
   // Initial data upload (first time only)
   const uploadInitialData = async () => {
     const snap = await getDoc(doc(db, "appData", "state"));
