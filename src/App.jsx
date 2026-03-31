@@ -5320,7 +5320,28 @@ function MRPPlanlama({ db, userRole }) {
       ops[key] = { stockCode: data.stockCode, opCode: data.opCode, cycleTime: avgCycle, renewalTime: avgRenewal, machineCount: data.machines.length };
     }
 
-    return { ops, totalOps: Object.keys(ops).length, totalRows: Object.values(opsMap).reduce((s, d) => s + d.machines.length, 0) };
+    // Extract unique machines: machineId → { name, opCodes[] }
+    const detectedMachines = {};
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const opRaw = String(r[1] || "").trim();
+      const machineRaw = String(r[2] || "").trim();
+      if (!opRaw || !machineRaw) continue;
+      const opMatch = opRaw.match(/^(\d+)/);
+      const mParts = machineRaw.split(" - ", 2);
+      const mId = (mParts[0] || "").trim();
+      const mName = (mParts[1] || mId).trim();
+      if (!mId || !opMatch) continue;
+      if (!detectedMachines[mId]) detectedMachines[mId] = { name: mName, opCodes: new Set() };
+      detectedMachines[mId].opCodes.add(opMatch[1]);
+    }
+    // Convert Sets to arrays
+    const machines = {};
+    for (const [id, m] of Object.entries(detectedMachines)) {
+      machines[id] = { name: m.name, opCodes: [...m.opCodes] };
+    }
+
+    return { ops, machines, totalOps: Object.keys(ops).length, totalRows: Object.values(opsMap).reduce((s, d) => s + d.machines.length, 0), totalMachines: Object.keys(machines).length };
   };
 
   const handleMesImport = async (file) => {
@@ -5388,7 +5409,58 @@ function MRPPlanlama({ db, userRole }) {
         mKeys.forEach(mk => { if (updatedBom[mk]._cloned) delete updatedBom[mk]._cloned; });
 
         await saveBom(updatedBom);
-        setMesImportResult({ success: true, totalOps: result.totalOps, totalRows: result.totalRows, matched, notFound });
+
+        // Auto-populate work center machines from MES
+        let machinesAdded = 0;
+        if (workCenters && result.machines && Object.keys(result.machines).length > 0) {
+          // Build opCode → wcCode map from BOM
+          const opToWC = {};
+          mKeys.forEach(mk => {
+            (updatedBom[mk]?.parts || []).forEach(p => {
+              p.operations.forEach(op => {
+                if (op.wcCode && op.opCode) opToWC[op.opCode] = op.wcCode;
+              });
+            });
+          });
+
+          // Map each MES machine to a work center via its opCodes
+          const newWC = { ...workCenters, centers: { ...workCenters.centers } };
+          const existingMachineIds = new Set();
+          Object.values(newWC.centers).forEach(wc => {
+            (wc.machines || []).forEach(m => existingMachineIds.add(m.id));
+          });
+
+          for (const [machineId, mData] of Object.entries(result.machines)) {
+            if (existingMachineIds.has(machineId)) continue; // already exists
+
+            // Find wcCode from any of this machine's opCodes
+            let wcCode = null;
+            for (const opCode of mData.opCodes) {
+              if (opToWC[opCode]) { wcCode = opToWC[opCode]; break; }
+            }
+            if (!wcCode) continue; // can't map to a work center
+
+            // Ensure work center exists
+            if (!newWC.centers[wcCode]) {
+              newWC.centers[wcCode] = { name: wcCode, machines: [], opCodes: [] };
+            }
+            const wc = newWC.centers[wcCode];
+            if (!wc.machines) wc.machines = [];
+            wc.machines.push({
+              id: machineId,
+              name: mData.name,
+              hoursPerDay: newWC.shiftHours || 9,
+              mesOpCodes: mData.opCodes
+            });
+            machinesAdded++;
+          }
+
+          if (machinesAdded > 0) {
+            await saveWC(newWC);
+          }
+        }
+
+        setMesImportResult({ success: true, totalOps: result.totalOps, totalRows: result.totalRows, matched, notFound, totalMachines: result.totalMachines, machinesAdded });
       } catch (err) {
         setMesImportResult({ error: "Firestore kayıt hatası: " + err.message });
       }
@@ -5696,6 +5768,11 @@ function MRPPlanlama({ db, userRole }) {
           {mesImportResult && mesImportResult.success && (
             <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
               ✓ MES: {mesImportResult.totalRows} satır · {mesImportResult.totalOps} parça×operasyon · <b>{mesImportResult.matched} eşleşti</b> · {mesImportResult.notFound} BOM'da bulunamadı
+              {mesImportResult.machinesAdded > 0 && (
+                <span style={{ display: "block", marginTop: 4, fontSize: 11 }}>
+                  ↳ Tezgah: {mesImportResult.totalMachines} tespit · <b>{mesImportResult.machinesAdded} yeni eklendi</b> (İş Merkezleri tab'ından kontrol edin)
+                </span>
+              )}
             </div>
           )}
 
@@ -5850,6 +5927,7 @@ function MRPPlanlama({ db, userRole }) {
                     <div key={mi} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0", fontSize: 11, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{m.id}</span>
                       <span style={{ flex: 1 }}>{m.name}</span>
+                      {m.mesOpCodes && <span style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#ECFDF5", color: "#10B981" }}>MES</span>}
                       <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{m.hoursPerDay}s/gün</span>
                       {canEdit && <span onClick={() => removeMachine(code, mi)} style={{ fontSize: 10, cursor: "pointer", color: "var(--color-text-tertiary)" }}>✕</span>}
                     </div>
