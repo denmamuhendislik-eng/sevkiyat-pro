@@ -4178,6 +4178,8 @@ function MRPPlanlama({ db, userRole }) {
   const [importResult, setImportResult] = useState(null);
   const [wcEdit, setWcEdit] = useState(null);
   const [faEdit, setFaEdit] = useState(null);
+  const [mesImporting, setMesImporting] = useState(false);
+  const [mesImportResult, setMesImportResult] = useState(null);
 
   // Adım 4 — Kapasite & Çizelge State
   const SCHED_DOC = "mrpSchedule";
@@ -4701,9 +4703,9 @@ function MRPPlanlama({ db, userRole }) {
               existingOverrides[p.stockCode] = { supplyType: p.supplyType, _autoSupplyType: p._autoSupplyType };
               overrideCount++;
             }
-            const customOps = p.operations?.filter(op => op.setupTime != null || op.cycleTime != null);
+            const customOps = p.operations?.filter(op => op.setupTime != null || op.cycleTime != null || op.mesSource);
             if (customOps && customOps.length > 0) {
-              existingOpTimes[p.stockCode] = customOps.map(op => ({ opCode: op.opCode, setupTime: op.setupTime, cycleTime: op.cycleTime }));
+              existingOpTimes[p.stockCode] = customOps.map(op => ({ opCode: op.opCode, setupTime: op.setupTime, cycleTime: op.cycleTime, mesRenewalTime: op.mesRenewalTime, mesSource: op.mesSource }));
               opTimeCount += customOps.length;
             }
           });
@@ -4740,6 +4742,8 @@ function MRPPlanlama({ db, userRole }) {
                 if (match) {
                   if (match.setupTime != null) op.setupTime = match.setupTime;
                   if (match.cycleTime != null) op.cycleTime = match.cycleTime;
+                  if (match.mesRenewalTime) op.mesRenewalTime = match.mesRenewalTime;
+                  if (match.mesSource) op.mesSource = match.mesSource;
                 }
               });
             }
@@ -5251,6 +5255,151 @@ function MRPPlanlama({ db, userRole }) {
     return map;
   }, [purchase]);
 
+  // ==================== MES SÜRE IMPORT ====================
+  const parseMesExcel = (workbook) => {
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    // Find header
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(5, rows.length); i++) {
+      if (String(rows[i][0] || "").includes("STOK")) { headerIdx = i; break; }
+    }
+    if (headerIdx < 0) return null;
+
+    // Convert time value (XLSX decimal day fraction or string "H:MM:SS") to minutes
+    const timeToMin = (v) => {
+      if (v === "" || v === undefined || v === null || v === 0) return 0;
+      if (typeof v === "number") return Math.round(v * 24 * 60 * 100) / 100; // decimal day → minutes
+      const s = String(v);
+      const m = s.match(/^(\d+):(\d+):(\d+)$/);
+      if (m) return parseInt(m[1]) * 60 + parseInt(m[2]) + parseInt(m[3]) / 60;
+      return 0;
+    };
+
+    // Parse rows: stockCode + opCode → {cycleTime, renewalTime, machines[]}
+    const opsMap = {}; // "stockCode|opCode" → { cycleTimes[], renewalTimes[], machines[] }
+
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const stokRaw = String(r[0] || "").trim();
+      const opRaw = String(r[1] || "").trim();
+      const machineRaw = String(r[2] || "").trim();
+      if (!stokRaw || !opRaw) continue;
+
+      // Parse stock code: "151-0222 - 52014 HELİS ORTA DİŞLİ C54"
+      const stockMatch = stokRaw.match(/^([\d\w]+-[\d\w]+)/);
+      if (!stockMatch) continue;
+      const stockCode = stockMatch[1];
+
+      // Parse op code: "101 - 1. TORNALAMA İŞLEMİ"
+      const opMatch = opRaw.match(/^(\d+)/);
+      if (!opMatch) continue;
+      const opCode = opMatch[1];
+
+      // Parse machine: "CNC-101 - TOPTURN CNC TORNA"
+      const machineMatch = machineRaw.match(/^([\w\-]+)/);
+      const machineId = machineMatch ? machineMatch[1] : "";
+
+      const cycleMin = timeToMin(r[3]);
+      const renewalMin = timeToMin(r[4]);
+
+      const key = stockCode + "|" + opCode;
+      if (!opsMap[key]) opsMap[key] = { stockCode, opCode, cycleTimes: [], renewalTimes: [], machines: [] };
+      // Only add non-zero times
+      if (cycleMin > 0) opsMap[key].cycleTimes.push(cycleMin);
+      if (renewalMin > 0) opsMap[key].renewalTimes.push(renewalMin);
+      opsMap[key].machines.push({ id: machineId, cycle: cycleMin, renewal: renewalMin });
+    }
+
+    // Calculate averages
+    const ops = {};
+    for (const [key, data] of Object.entries(opsMap)) {
+      const avgCycle = data.cycleTimes.length > 0 ? Math.round(data.cycleTimes.reduce((a, b) => a + b, 0) / data.cycleTimes.length * 100) / 100 : 0;
+      const avgRenewal = data.renewalTimes.length > 0 ? Math.round(data.renewalTimes.reduce((a, b) => a + b, 0) / data.renewalTimes.length * 100) / 100 : 0;
+      ops[key] = { stockCode: data.stockCode, opCode: data.opCode, cycleTime: avgCycle, renewalTime: avgRenewal, machineCount: data.machines.length };
+    }
+
+    return { ops, totalOps: Object.keys(ops).length, totalRows: Object.values(opsMap).reduce((s, d) => s + d.machines.length, 0) };
+  };
+
+  const handleMesImport = async (file) => {
+    setMesImporting(true);
+    setMesImportResult(null);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      let result = null;
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        result = parseMesExcel(wb);
+        if (!result || result.totalOps === 0) {
+          setMesImportResult({ error: "MES verisi bulunamadı. Format: STOK, OPERASYON, MAKİNE, ÇEVRİM SÜRESİ sütunları bekleniyor." });
+          setMesImporting(false);
+          return;
+        }
+      } catch (err) {
+        setMesImportResult({ error: "Excel parse hatası: " + err.message });
+        setMesImporting(false);
+        return;
+      }
+
+      // Merge into BOM models
+      try {
+        let matched = 0, notFound = 0;
+        const updatedBom = { ...bomModels };
+        const mKeys = Object.keys(updatedBom).filter(k => k !== "undefined");
+
+        for (const [key, mesOp] of Object.entries(result.ops)) {
+          if (mesOp.cycleTime === 0) continue;
+          let found = false;
+          for (const mk of mKeys) {
+            const model = updatedBom[mk];
+            if (!model || !model.parts) continue;
+            for (let pi = 0; pi < model.parts.length; pi++) {
+              const part = model.parts[pi];
+              if (part.stockCode !== mesOp.stockCode) continue;
+              for (let oi = 0; oi < part.operations.length; oi++) {
+                if (part.operations[oi].opCode === mesOp.opCode) {
+                  // Deep clone to avoid mutation issues
+                  if (!updatedBom[mk]._cloned) {
+                    updatedBom[mk] = { ...updatedBom[mk], parts: [...updatedBom[mk].parts] };
+                    updatedBom[mk]._cloned = true;
+                  }
+                  updatedBom[mk].parts[pi] = { ...updatedBom[mk].parts[pi], operations: [...updatedBom[mk].parts[pi].operations] };
+                  updatedBom[mk].parts[pi].operations[oi] = {
+                    ...updatedBom[mk].parts[pi].operations[oi],
+                    cycleTime: mesOp.cycleTime,
+                    mesRenewalTime: mesOp.renewalTime,
+                    mesSource: "MES Import " + new Date().toLocaleDateString("tr-TR")
+                  };
+                  found = true;
+                  matched++;
+                  break;
+                }
+              }
+              if (found) break;
+            }
+            if (found) break;
+          }
+          if (!found) notFound++;
+        }
+
+        // Clean up clone flags
+        mKeys.forEach(mk => { if (updatedBom[mk]._cloned) delete updatedBom[mk]._cloned; });
+
+        await saveBom(updatedBom);
+        setMesImportResult({ success: true, totalOps: result.totalOps, totalRows: result.totalRows, matched, notFound });
+      } catch (err) {
+        setMesImportResult({ error: "Firestore kayıt hatası: " + err.message });
+      }
+      setMesImporting(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const onMesDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleMesImport(f); };
+  const onMesFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleMesImport(f); };
+
   // ==================== TREE VIEW HELPERS ====================
   const getModelData = () => selectedModel && bomModels[selectedModel] ? bomModels[selectedModel] : null;
 
@@ -5359,6 +5508,7 @@ function MRPPlanlama({ db, userRole }) {
               <div style={{ fontSize: 10, fontWeight: 500, color: "var(--color-text-info)", marginBottom: 4 }}>Operasyon Süreleri — {p.stockCode}</div>
               {p.operations.map((op, oi) => {
                 const isFason = parseInt(op.opCode) >= 600;
+                const hasMes = !!op.mesSource;
                 return (
                   <div key={oi} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", fontSize: 11 }}>
                     <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 32 }}>{op.opCode}</span>
@@ -5374,11 +5524,13 @@ function MRPPlanlama({ db, userRole }) {
                         <label style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Çevrim:</label>
                         <input type="number" min="0" step="0.1" value={op.cycleTime ?? ""} placeholder="dk/ad"
                           onChange={e => updateOpTime(selectedModel, p.idx, oi, "cycleTime", e.target.value)}
-                          style={{ width: 48, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center" }}
+                          style={{ width: 48, padding: "2px 4px", borderRadius: 3, border: hasMes ? "1.5px solid #10B981" : "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center", background: hasMes ? "#ECFDF5" : "var(--color-background-primary)" }}
                           disabled={!canEdit}
                         />
-                        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 56 }}>
-                          İM: {op.wcCode || "?"}
+                        {op.mesRenewalTime > 0 && <span style={{ fontSize: 8, color: "#10B981" }} title="MES yenileme süresi">+{op.mesRenewalTime}dk</span>}
+                        {hasMes && <span style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#ECFDF5", color: "#10B981" }}>MES</span>}
+                        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 40 }}>
+                          İM:{op.wcCode || "?"}
                         </span>
                       </>
                     ) : (
@@ -5388,7 +5540,7 @@ function MRPPlanlama({ db, userRole }) {
                 );
               })}
               <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 4, borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 3 }}>
-                Boş alanlar varsayılan kullanır (Ayar: 30dk, Çevrim: 5dk/ad)
+                Boş alanlar varsayılan kullanır (Ayar: 30dk, Çevrim: 5dk/ad) · <span style={{ color: "#10B981" }}>Yeşil çerçeve = MES kaynağı</span>
               </div>
             </div>
           )}
@@ -5519,6 +5671,31 @@ function MRPPlanlama({ db, userRole }) {
                   ↳ Korunan: {importResult.overridesKept > 0 && `${importResult.overridesKept} supply type override`}{importResult.overridesKept > 0 && importResult.opTimesKept > 0 && " · "}{importResult.opTimesKept > 0 && `${importResult.opTimesKept} operasyon süresi`}
                 </span>
               )}
+            </div>
+          )}
+
+          {/* MES Import */}
+          {canEdit && modelKeys.length > 0 && (
+            <div
+              onDrop={onMesDrop} onDragOver={e => e.preventDefault()}
+              style={{ border: "2px dashed var(--color-border-secondary)", borderRadius: 12, padding: "14px 20px", textAlign: "center", marginBottom: 16, background: "var(--color-background-secondary)", cursor: "pointer", display: "flex", alignItems: "center", gap: 16, justifyContent: "center" }}
+              onClick={() => document.getElementById("mes-file-input").click()}
+            >
+              <div style={{ fontSize: 20 }}>⏱</div>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 500 }}>MES Operasyon Süreleri sürükle & bırak</div>
+                <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Çevrim ve yenileme sürelerini BOM'a aktarır — mevcut BOM modelleriyle eşleştirir</div>
+              </div>
+              <input id="mes-file-input" type="file" accept=".xlsx,.xls" onChange={onMesFileSelect} style={{ display: "none" }} />
+            </div>
+          )}
+          {mesImporting && <div style={{ padding: 10, background: "var(--color-background-info)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>MES süreleri eşleştiriliyor...</div>}
+          {mesImportResult && mesImportResult.error && (
+            <div style={{ padding: 10, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)" }}>{mesImportResult.error}</div>
+          )}
+          {mesImportResult && mesImportResult.success && (
+            <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
+              ✓ MES: {mesImportResult.totalRows} satır · {mesImportResult.totalOps} parça×operasyon · <b>{mesImportResult.matched} eşleşti</b> · {mesImportResult.notFound} BOM'da bulunamadı
             </div>
           )}
 
