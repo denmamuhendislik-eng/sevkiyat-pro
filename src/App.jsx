@@ -2662,6 +2662,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const [tmpStock, setTmpStock]           = useState({});
   const [autoPlanPreview, setAutoPlanPreview] = useState(null); // { newMs, summary }
   const [newHolidayDate, setNewHolidayDate] = useState("");
+  const [gerConfirm, setGerConfirm] = useState(null); // { pid, productName, oldVal, newVal, color }
 
   // --- Firestore yükle ---
   useEffect(() => {
@@ -3529,10 +3530,17 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                   </div>
                   {/* Sayaç */}
                   <div style={{display:"flex",alignItems:"center",gap:isOperator?12:6,justifyContent:isOperator?"flex-end":"center",width:isOperator?undefined:"100%"}}>
-                    <button onClick={()=>{if(todayGer>0)updateCell(today,pid,"actual",todayGer-1);}}
+                    <button onClick={()=>{
+                      if(todayGer<=0) return;
+                      if(isOperator) { setGerConfirm({pid,productName:kisaAd(p.nameTR),oldVal:todayGer,newVal:todayGer-1,color:p.color}); }
+                      else { updateCell(today,pid,"actual",todayGer-1); }
+                    }}
                       style={{width:isOperator?48:32,height:isOperator?48:32,borderRadius:"50%",border:"1.5px solid var(--color-border-secondary)",background:"var(--color-background-primary)",fontSize:isOperator?"22px":"16px",fontWeight:600,cursor:"pointer",color:"var(--color-text-secondary)",display:"flex",alignItems:"center",justifyContent:"center"}}>−</button>
                     <span style={{fontSize:isOperator?"28px":"18px",fontWeight:700,color:done?"#16a34a":behind?"#dc2626":"var(--color-text-primary)",minWidth:isOperator?50:30,textAlign:"center"}}>{todayGer}</span>
-                    <button onClick={()=>updateCell(today,pid,"actual",todayGer+1)}
+                    <button onClick={()=>{
+                      if(isOperator) { setGerConfirm({pid,productName:kisaAd(p.nameTR),oldVal:todayGer,newVal:todayGer+1,color:p.color}); }
+                      else { updateCell(today,pid,"actual",todayGer+1); }
+                    }}
                       style={{width:isOperator?48:32,height:isOperator?48:32,borderRadius:"50%",border:"1.5px solid var(--color-border-info)",background:"var(--color-background-info)",fontSize:isOperator?"22px":"16px",fontWeight:600,cursor:"pointer",color:"var(--color-text-info)",display:"flex",alignItems:"center",justifyContent:"center"}}>+</button>
                   </div>
                 </div>
@@ -3550,6 +3558,39 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
               </div>
             ) : null;
           })()}
+        </div>
+      )}
+
+      {/* GER Onay Modalı — Operatör */}
+      {gerConfirm && (
+        <div style={{position:"fixed",inset:0,zIndex:9999,display:"flex",alignItems:"center",justifyContent:"center",background:"rgba(0,0,0,0.5)",padding:20}} onClick={()=>setGerConfirm(null)}>
+          <div onClick={e=>e.stopPropagation()} style={{background:"var(--color-background-primary)",borderRadius:16,padding:"24px 28px",maxWidth:340,width:"100%",boxShadow:"0 20px 60px rgba(0,0,0,0.2)"}}>
+            <div style={{textAlign:"center",marginBottom:20}}>
+              <div style={{width:48,height:48,borderRadius:"50%",background:gerConfirm.color||"#3B82F6",margin:"0 auto 12px",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                <span style={{fontSize:24,color:"#fff",fontWeight:700}}>{gerConfirm.newVal > gerConfirm.oldVal ? "+" : "−"}</span>
+              </div>
+              <div style={{fontSize:18,fontWeight:700,color:"var(--color-text-primary)",marginBottom:4}}>{gerConfirm.productName}</div>
+              <div style={{fontSize:13,color:"var(--color-text-secondary)"}}>Üretim Gerçekleşme Girişi</div>
+            </div>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"center",gap:16,marginBottom:20}}>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:11,color:"var(--color-text-tertiary)",marginBottom:2}}>Mevcut</div>
+                <div style={{fontSize:28,fontWeight:700,color:"var(--color-text-secondary)"}}>{gerConfirm.oldVal}</div>
+              </div>
+              <div style={{fontSize:24,color:"var(--color-text-tertiary)"}}>→</div>
+              <div style={{textAlign:"center"}}>
+                <div style={{fontSize:11,color:"var(--color-text-tertiary)",marginBottom:2}}>Yeni</div>
+                <div style={{fontSize:28,fontWeight:700,color:gerConfirm.newVal > gerConfirm.oldVal?"#2563EB":"#DC2626"}}>{gerConfirm.newVal}</div>
+              </div>
+            </div>
+            <div style={{fontSize:11,color:"var(--color-text-tertiary)",textAlign:"center",marginBottom:16}}>
+              {new Date(today+"T00:00:00").toLocaleDateString("tr-TR",{weekday:"long",day:"2-digit",month:"long"})} · Aynı gün içinde değiştirebilirsiniz
+            </div>
+            <div style={{display:"flex",gap:10}}>
+              <button onClick={()=>setGerConfirm(null)} style={{flex:1,padding:"12px",borderRadius:10,border:"1.5px solid var(--color-border-secondary)",background:"transparent",fontSize:14,fontWeight:500,cursor:"pointer",color:"var(--color-text-secondary)"}}>İptal</button>
+              <button onClick={()=>{updateCell(today,gerConfirm.pid,"actual",gerConfirm.newVal);setGerConfirm(null);}} style={{flex:1,padding:"12px",borderRadius:10,border:"none",background:gerConfirm.color||"#3B82F6",fontSize:14,fontWeight:600,cursor:"pointer",color:"#fff"}}>Onayla</button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -3951,7 +3992,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                             <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2,padding:"2px 0"}}>&nbsp;</div>
                           ) : (<>
                             <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>ger</div>
-                            {canActual && canEditGer(d)
+                            {canActual && canEditGer(d) && !isOperator
                               ? <input key={d+"-a-"+pid+"-"+(av||0)} type="number" min="0" defaultValue={av!==undefined&&av!==0?av:""} placeholder="—" onBlur={e=>updateCell(d,pid,"actual",e.target.value)}
                                   style={{...INP,color:behind?"var(--color-text-danger)":av?"var(--color-text-primary)":"var(--color-text-tertiary)",borderBottom:behind?"1px solid var(--color-border-danger)":""}}/>
                               : <span style={{fontSize:"12px",color:behind?"var(--color-text-danger)":"var(--color-text-secondary)"}}>{av!==undefined?av:"—"}</span>
