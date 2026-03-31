@@ -619,28 +619,74 @@ export default function App() {
     const el=document.getElementById("pdf-preview");
     if(!el) return;
     const isLabel = el.querySelector('[data-label="true"]') !== null;
-    const iframe=document.createElement("iframe");
-    iframe.style.cssText="position:fixed;top:0;left:0;width:0;height:0;border:none;";
-    document.body.appendChild(iframe);
-    const doc=iframe.contentDocument;
-    doc.open();
-    const pageStyle = isLabel 
-      ? `@page{size:100mm 200mm;margin:0}*{margin:0;padding:0;box-sizing:border-box}.label-page{width:100mm;height:200mm;page-break-after:always}`
-      : `*{margin:0;padding:0;box-sizing:border-box}@media print{div{break-inside:avoid}[style*="page-break-after"]{page-break-after:always}}`;
-    doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>${pageStyle}</style></head><body>${el.innerHTML}</body></html>`);
-    doc.close();
-    // Wait for all images (including external QR codes) to load before printing
-    const imgs = doc.querySelectorAll("img");
-    if(imgs.length > 0) {
-      let loaded = 0;
-      const onReady = () => { loaded++; if(loaded >= imgs.length) { iframe.contentWindow.focus(); iframe.contentWindow.print(); setTimeout(()=>document.body.removeChild(iframe),2000); }};
-      imgs.forEach(img => { if(img.complete) onReady(); else { img.onload = onReady; img.onerror = onReady; }});
-      // Fallback: print after 5 seconds even if images didn't load
-      setTimeout(() => { if(loaded < imgs.length) { iframe.contentWindow.focus(); iframe.contentWindow.print(); setTimeout(()=>document.body.removeChild(iframe),2000); }}, 5000);
+    
+    if (isLabel) {
+      // Labels: open in new window with exact dimensions to force correct print size
+      const pw = window.open("", "_blank", "width=420,height=820,scrollbars=no,menubar=no,toolbar=no");
+      if (!pw) { alert("Popup engellenmiş. Lütfen bu site için popup'lara izin verin."); return; }
+      pw.document.open();
+      pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
+<title>Palet Etiketi</title>
+<style>
+  @page { size: 100mm 200mm; margin: 0; }
+  @media print {
+    html, body { width: 100mm; margin: 0; padding: 0; }
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .no-print { display: none !important; }
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: Arial, sans-serif; }
+  .label-page { width: 100mm; height: 200mm; page-break-after: always; overflow: hidden; }
+  .print-hint { padding: 10px 16px; background: #FEF3C7; border-bottom: 1px solid #F59E0B; font-size: 12px; color: #92400E; }
+  .print-hint b { color: #DC2626; }
+  .print-actions { padding: 10px 16px; display: flex; gap: 8px; }
+  .print-actions button { padding: 8px 20px; font-size: 13px; cursor: pointer; border-radius: 6px; border: 1px solid #ccc; background: #fff; }
+  .print-actions button.primary { background: #2563EB; color: #fff; border: none; font-weight: 600; }
+</style>
+</head><body>
+<div class="no-print">
+  <div class="print-hint">
+    ⚠ Yazdırma ayarlarında: Kağıt boyutu → <b>100 × 200 mm</b> &nbsp;·&nbsp; Ölçek → <b>Gerçek boyut / 100%</b> &nbsp;·&nbsp; Kenar boşlukları → <b>Yok</b>
+  </div>
+  <div class="print-actions">
+    <button class="primary" onclick="window.print()">🖨 Yazdır</button>
+    <button onclick="window.close()">✕ Kapat</button>
+  </div>
+</div>
+${el.innerHTML}
+</body></html>`);
+      pw.document.close();
+      // Wait for images then auto-print
+      const imgs = pw.document.querySelectorAll("img");
+      if (imgs.length > 0) {
+        let loaded = 0;
+        const onReady = () => { loaded++; if (loaded >= imgs.length) setTimeout(() => pw.print(), 300); };
+        imgs.forEach(img => { if (img.complete) onReady(); else { img.onload = onReady; img.onerror = onReady; }});
+        setTimeout(() => { if (loaded < imgs.length) pw.print(); }, 5000);
+      } else {
+        setTimeout(() => pw.print(), 300);
+      }
     } else {
-      iframe.contentWindow.focus();
-      iframe.contentWindow.print();
-      setTimeout(()=>document.body.removeChild(iframe),1000);
+      // Non-label content: use iframe approach (unchanged)
+      const iframe=document.createElement("iframe");
+      iframe.style.cssText="position:fixed;top:0;left:0;width:0;height:0;border:none;";
+      document.body.appendChild(iframe);
+      const doc=iframe.contentDocument;
+      doc.open();
+      const pageStyle = `*{margin:0;padding:0;box-sizing:border-box}@media print{div{break-inside:avoid}[style*="page-break-after"]{page-break-after:always}}`;
+      doc.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><style>${pageStyle}</style></head><body>${el.innerHTML}</body></html>`);
+      doc.close();
+      const imgs = doc.querySelectorAll("img");
+      if(imgs.length > 0) {
+        let loaded = 0;
+        const onReady = () => { loaded++; if(loaded >= imgs.length) { iframe.contentWindow.focus(); iframe.contentWindow.print(); setTimeout(()=>document.body.removeChild(iframe),2000); }};
+        imgs.forEach(img => { if(img.complete) onReady(); else { img.onload = onReady; img.onerror = onReady; }});
+        setTimeout(() => { if(loaded < imgs.length) { iframe.contentWindow.focus(); iframe.contentWindow.print(); setTimeout(()=>document.body.removeChild(iframe),2000); }}, 5000);
+      } else {
+        iframe.contentWindow.focus();
+        iframe.contentWindow.print();
+        setTimeout(()=>document.body.removeChild(iframe),1000);
+      }
     }
   };
 
