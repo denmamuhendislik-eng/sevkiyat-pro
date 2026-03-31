@@ -4247,6 +4247,23 @@ function MRPPlanlama({ db, userRole }) {
     await saveBom({ ...bomModels, [modelKey]: model });
   };
 
+  // ==================== SUPPLY TYPE OVERRIDE ====================
+  const updateSupplyType = async (modelKey, partIdx, newType) => {
+    if (!canEdit || !bomModels[modelKey]) return;
+    const model = { ...bomModels[modelKey] };
+    const parts = [...model.parts];
+    const part = { ...parts[partIdx] };
+    const oldAuto = part._autoSupplyType || part.supplyType;
+    part.supplyType = newType;
+    // Mark as manually overridden (store original auto-detected type)
+    if (!part._autoSupplyType) part._autoSupplyType = oldAuto;
+    // If set back to auto-detected, remove override flag
+    if (newType === oldAuto) delete part._autoSupplyType;
+    parts[partIdx] = part;
+    model.parts = parts;
+    await saveBom({ ...bomModels, [modelKey]: model });
+  };
+
   // ==================== SCHEDULE CALCULATION ENGINE ====================
   const dateStr = (d) => d.toISOString().split("T")[0];
   const addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
@@ -4286,65 +4303,48 @@ function MRPPlanlama({ db, userRole }) {
         });
       });
 
-      // 3) Create jobs: match requirements → BOM operations
+      // 3) Create jobs: match requirements → BOM operations (SINGLE CHAIN — fason included in sequence)
       const jobs = [];
-      const fasonOrders = [];
       let jobId = 0;
 
       for (const [code, req] of Object.entries(reqItems)) {
         const bom = bomLookup[code];
         if (!bom || bom.part.operations.length === 0) continue;
+        // Skip BUY/RAW parts — they're purchased, not produced
+        if (bom.part.supplyType === "BUY" || bom.part.supplyType === "RAW") continue;
 
-        const internalOps = [];
-        const fasonOps = [];
-        bom.part.operations.forEach(op => {
+        // ALL operations in sequence (internal + fason together, order preserved from BOM)
+        const operations = bom.part.operations.map(op => {
           const isFason = parseInt(op.opCode) >= 600;
-          if (isFason) fasonOps.push(op);
-          else internalOps.push(op);
+          const fa = isFason ? (workCenters.fason || {})[op.opCode] : null;
+          const setup = op.setupTime ?? 30;
+          const cycle = op.cycleTime ?? 5;
+          const totalMin = isFason ? 0 : (setup + (cycle * req.qty)); // fason has no internal machine time
+          return {
+            opCode: op.opCode, opName: op.opName,
+            wcCode: op.wcCode, wcName: op.wcName,
+            setupTime: op.setupTime, cycleTime: op.cycleTime,
+            totalMin, isFason,
+            leadTimeDays: isFason ? (fa?.leadTimeDays || 14) : 0,
+            supplier: isFason ? (fa?.supplier || "") : "",
+            machineId: null, startDate: null, endDate: null, status: "planned"
+          };
         });
 
-        // Internal operations → job
-        if (internalOps.length > 0) {
-          const operations = internalOps.map(op => {
-            const setup = op.setupTime ?? 30; // default 30 dk
-            const cycle = op.cycleTime ?? 5;  // default 5 dk/adet
-            const totalMin = setup + (cycle * req.qty);
-            return {
-              opCode: op.opCode, opName: op.opName,
-              wcCode: op.wcCode, wcName: op.wcName,
-              setupTime: op.setupTime, cycleTime: op.cycleTime,
-              totalMin, machineId: null, startDate: null, endDate: null, status: "planned"
-            };
-          });
-          jobs.push({
-            id: "J" + String(++jobId).padStart(4, "0"),
-            partCode: code, partName: req.name, qty: req.qty,
-            level: req.level, supplyType: bom.part.supplyType,
-            operations, totalMin: operations.reduce((s, o) => s + o.totalMin, 0)
-          });
-        }
-
-        // Fason operations → fason orders
-        fasonOps.forEach(op => {
-          const fa = (workCenters.fason || {})[op.opCode];
-          const leadDays = fa?.leadTimeDays || 14;
-          fasonOrders.push({
-            id: "F" + String(fasonOrders.length + 1).padStart(4, "0"),
-            partCode: code, partName: req.name, qty: req.qty,
-            opCode: op.opCode, opName: op.opName,
-            supplier: fa?.supplier || "",
-            leadTimeDays: leadDays,
-            sendDate: null, returnDate: null, status: "planned"
-          });
+        const totalMin = operations.reduce((s, o) => s + o.totalMin, 0);
+        jobs.push({
+          id: "J" + String(++jobId).padStart(4, "0"),
+          partCode: code, partName: req.name, qty: req.qty,
+          level: req.level, supplyType: bom.part.supplyType,
+          operations, totalMin
         });
       }
 
-      // 4) Sort jobs: L0 first, then by totalMin desc (heavy jobs first)
-      const levelOrder = { L0: 0, L1: 1, L2: 2, L3: 3 };
-      jobs.sort((a, b) => (levelOrder[a.level] || 9) - (levelOrder[b.level] || 9) || b.totalMin - a.totalMin);
+      // 4) Sort jobs: L3 first (deepest parts first — bottom-up), then by totalMin desc
+      const levelOrder = { L3: 0, L2: 1, L1: 2, L0: 3 };
+      jobs.sort((a, b) => (levelOrder[a.level] ?? 9) - (levelOrder[b.level] ?? 9) || b.totalMin - a.totalMin);
 
-      // 5) Forward scheduling — assign operations to machines
-      // Machine availability tracker: { machineId: nextFreeDate }
+      // 5) Forward scheduling — SINGLE CHAIN per job, fason = wait period
       const machineAvail = {};
       const centers = workCenters.centers || {};
       for (const [wcCode, wc] of Object.entries(centers)) {
@@ -4353,7 +4353,6 @@ function MRPPlanlama({ db, userRole }) {
         });
       }
 
-      // Helper: find least-loaded machine for a work center
       const findMachine = (wcCode) => {
         const wc = centers[wcCode];
         if (!wc || !wc.machines || wc.machines.length === 0) return null;
@@ -4365,64 +4364,74 @@ function MRPPlanlama({ db, userRole }) {
         return best;
       };
 
-      // Schedule each job's operations sequentially
+      const addBizDays = (from, days) => {
+        let d = new Date(from);
+        let count = 0;
+        while (count < days) { d = addDays(d, 1); if (!isWeekend(d)) count++; }
+        return d;
+      };
+
+      // Schedule each job's operations SEQUENTIALLY (chain)
       for (const job of jobs) {
         let jobCursor = new Date(today);
+
         for (const op of job.operations) {
-          const machineId = findMachine(op.wcCode);
-          if (!machineId) {
-            // No machine — assign virtual, mark unassigned
-            op.machineId = op.wcCode + "_NONE";
-            op.startDate = dateStr(jobCursor);
-            const daysNeeded = Math.ceil(op.totalMin / shiftMin);
-            let d = new Date(jobCursor);
-            for (let i = 0; i < daysNeeded; i++) { d = nextWorkday(d); d = addDays(d, 1); }
+          if (op.isFason) {
+            // Fason: send date = jobCursor, return date = +leadTimeDays biz days
+            op.startDate = dateStr(nextWorkday(jobCursor));
+            const returnD = addBizDays(jobCursor, op.leadTimeDays);
+            op.endDate = dateStr(returnD);
+            op.machineId = "FASON_" + op.opCode;
+            // Chain waits: next op can't start until fason returns
+            jobCursor = addDays(returnD, 1);
+          } else {
+            // Internal op: assign to least-loaded machine
+            const machineId = findMachine(op.wcCode);
+            if (!machineId) {
+              op.machineId = op.wcCode + "_NONE";
+              op.startDate = dateStr(nextWorkday(jobCursor));
+              const daysNeeded = Math.max(1, Math.ceil(op.totalMin / shiftMin));
+              let d = nextWorkday(jobCursor);
+              for (let i = 1; i < daysNeeded; i++) { d = addDays(d, 1); if (isWeekend(d)) d = nextWorkday(d); }
+              op.endDate = dateStr(d);
+              jobCursor = addDays(d, 1);
+              continue;
+            }
+            let start = new Date(Math.max(machineAvail[machineId]?.getTime() || today.getTime(), jobCursor.getTime()));
+            start = nextWorkday(start);
+            op.machineId = machineId;
+            op.startDate = dateStr(start);
+
+            let remaining = op.totalMin;
+            let d = new Date(start);
+            while (remaining > 0) {
+              if (!isWeekend(d)) remaining -= shiftMin;
+              if (remaining > 0) d = addDays(d, 1);
+            }
             d = nextWorkday(d);
             op.endDate = dateStr(d);
-            jobCursor = d;
-            continue;
+            machineAvail[machineId] = addDays(d, 1);
+            jobCursor = addDays(d, 1);
           }
-          // Start from max(machine available, job cursor)
-          let start = new Date(Math.max(machineAvail[machineId]?.getTime() || today.getTime(), jobCursor.getTime()));
-          start = nextWorkday(start);
-          op.machineId = machineId;
-          op.startDate = dateStr(start);
-
-          // Calculate end date based on totalMin / daily capacity
-          let remaining = op.totalMin;
-          let d = new Date(start);
-          while (remaining > 0) {
-            if (!isWeekend(d)) {
-              remaining -= shiftMin;
-            }
-            if (remaining > 0) {
-              d = addDays(d, 1);
-            }
-          }
-          d = nextWorkday(d);
-          op.endDate = dateStr(d);
-          // Update machine availability to day after end
-          machineAvail[machineId] = addDays(d, 1);
-          jobCursor = addDays(d, 1);
         }
       }
 
-      // 6) Schedule fason orders
-      let fasonCursor = new Date(today);
-      fasonOrders.forEach(fo => {
-        fo.sendDate = dateStr(fasonCursor);
-        let ret = new Date(fasonCursor);
-        let bizDays = 0;
-        while (bizDays < fo.leadTimeDays) {
-          ret = addDays(ret, 1);
-          if (!isWeekend(ret)) bizDays++;
-        }
-        fo.returnDate = dateStr(ret);
+      // 6) Build fasonOrders summary from jobs (for display table)
+      const fasonOrders = [];
+      jobs.forEach(j => {
+        j.operations.filter(op => op.isFason).forEach(op => {
+          fasonOrders.push({
+            id: "F" + String(fasonOrders.length + 1).padStart(4, "0"),
+            jobId: j.id, partCode: j.partCode, partName: j.partName, qty: j.qty,
+            opCode: op.opCode, opName: op.opName,
+            supplier: op.supplier, leadTimeDays: op.leadTimeDays,
+            sendDate: op.startDate, returnDate: op.endDate, status: "planned"
+          });
+        });
       });
 
       // 7) Calculate utilization stats per work center
       const wcStats = {};
-      // Find schedule range
       let minDate = null, maxDate = null;
       jobs.forEach(j => j.operations.forEach(op => {
         if (op.startDate) {
@@ -4434,7 +4443,6 @@ function MRPPlanlama({ db, userRole }) {
       }));
 
       if (minDate && maxDate) {
-        // Count working days in range
         let totalWorkDays = 0;
         let d = new Date(minDate);
         while (d <= maxDate) { if (!isWeekend(d)) totalWorkDays++; d = addDays(d, 1); }
@@ -4444,7 +4452,7 @@ function MRPPlanlama({ db, userRole }) {
           const totalCapMin = totalWorkDays * machineCount * shiftMin;
           let loadMin = 0;
           jobs.forEach(j => j.operations.forEach(op => {
-            if (op.wcCode === wcCode) loadMin += op.totalMin;
+            if (op.wcCode === wcCode && !op.isFason) loadMin += op.totalMin;
           }));
           wcStats[wcCode] = {
             name: wc.name, machineCount,
@@ -4455,7 +4463,6 @@ function MRPPlanlama({ db, userRole }) {
         }
       }
 
-      // Find bottleneck
       let bottleneck = null, maxUtil = 0;
       for (const [code, st] of Object.entries(wcStats)) {
         if (st.utilization > maxUtil) { maxUtil = st.utilization; bottleneck = code; }
@@ -4659,9 +4666,80 @@ function MRPPlanlama({ db, userRole }) {
         return;
       }
 
-      // Step 2: Save to Firestore
+      // Step 2: Save to Firestore (with override preservation)
       try {
         const modelKey = result.modelCode.replace(/[^a-zA-Z0-9-]/g, "_");
+
+        // Check for existing overrides + op times in current BOM data
+        const existingModel = bomModels[modelKey];
+        let overrideCount = 0;
+        let opTimeCount = 0;
+        const existingOverrides = {}; // stockCode → { supplyType, _autoSupplyType }
+        const existingOpTimes = {};   // stockCode → [ { opCode, setupTime, cycleTime } ]
+
+        if (existingModel && existingModel.parts) {
+          existingModel.parts.forEach(p => {
+            if (p._autoSupplyType) {
+              existingOverrides[p.stockCode] = { supplyType: p.supplyType, _autoSupplyType: p._autoSupplyType };
+              overrideCount++;
+            }
+            const customOps = p.operations?.filter(op => op.setupTime != null || op.cycleTime != null);
+            if (customOps && customOps.length > 0) {
+              existingOpTimes[p.stockCode] = customOps.map(op => ({ opCode: op.opCode, setupTime: op.setupTime, cycleTime: op.cycleTime }));
+              opTimeCount += customOps.length;
+            }
+          });
+        }
+
+        // If overrides or op times exist, ask user
+        let keepOverrides = true;
+        if (overrideCount > 0 || opTimeCount > 0) {
+          const msg = [
+            `${result.modelCode} zaten mevcut.`,
+            overrideCount > 0 ? `• ${overrideCount} parçada supply type override var` : "",
+            opTimeCount > 0 ? `• ${opTimeCount} operasyonda manuel süre tanımlı` : "",
+            "",
+            "Bu değişiklikler korunsun mu?",
+            "(İptal = sıfırla, Tamam = koru)"
+          ].filter(Boolean).join("\n");
+          keepOverrides = confirm(msg);
+        }
+
+        // Apply overrides and op times to new parts
+        if (keepOverrides && (overrideCount > 0 || opTimeCount > 0)) {
+          result.parts.forEach(p => {
+            // Restore supply type overrides
+            const ov = existingOverrides[p.stockCode];
+            if (ov) {
+              p._autoSupplyType = p.supplyType; // store new auto-detected
+              p.supplyType = ov.supplyType;      // keep user's override
+            }
+            // Restore op times
+            const ot = existingOpTimes[p.stockCode];
+            if (ot && p.operations) {
+              p.operations.forEach(op => {
+                const match = ot.find(t => t.opCode === op.opCode);
+                if (match) {
+                  if (match.setupTime != null) op.setupTime = match.setupTime;
+                  if (match.cycleTime != null) op.cycleTime = match.cycleTime;
+                }
+              });
+            }
+          });
+        }
+
+        // Re-run supply type detection for parts with operations (but skip overridden ones)
+        result.parts.forEach(p => {
+          if (p._autoSupplyType) return; // manually overridden — skip
+          if (p.operations.length > 0 && (p.supplyType === "MAKE" || p.supplyType === "MAKE+FASON" || p.supplyType === "FASON")) {
+            const hasFason = p.operations.some(op => parseInt(op.opCode) >= 600);
+            const allFason = p.operations.every(op => parseInt(op.opCode) >= 600);
+            if (allFason) p.supplyType = "FASON";
+            else if (hasFason) p.supplyType = "MAKE+FASON";
+            else p.supplyType = "MAKE";
+          }
+        });
+
         const newBomModels = {
           ...bomModels,
           [modelKey]: {
@@ -4703,7 +4781,9 @@ function MRPPlanlama({ db, userRole }) {
           levelCounts: result.levelCounts,
           opCount: result.opCount,
           wcCount: Object.keys(result.detectedWCs).length,
-          faCount: Object.keys(result.detectedFason).length
+          faCount: Object.keys(result.detectedFason).length,
+          overridesKept: keepOverrides ? overrideCount : 0,
+          opTimesKept: keepOverrides ? opTimeCount : 0
         });
         setSelectedModel(modelKey);
       } catch (err) {
@@ -4953,7 +5033,26 @@ function MRPPlanlama({ db, userRole }) {
             <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)", minWidth: 70, flexShrink: 0 }}>{p.stockCode}</span>
             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.stockName}</span>
             <span style={{ fontSize: 11, color: "var(--color-text-secondary)", minWidth: 40, textAlign: "right", flexShrink: 0 }}>{p.qty} {p.unit}</span>
-            <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c, flexShrink: 0 }}>{p.supplyType}</span>
+            {canEdit ? (
+              <select
+                value={p.supplyType}
+                onClick={(e) => e.stopPropagation()}
+                onChange={(e) => { e.stopPropagation(); updateSupplyType(selectedModel, p.idx, e.target.value); }}
+                style={{
+                  padding: "1px 2px 1px 4px", borderRadius: 4, fontSize: 9, fontWeight: 500,
+                  background: sc.bg, color: sc.c, flexShrink: 0,
+                  border: p._autoSupplyType ? "1.5px solid " + sc.c : "1px solid transparent",
+                  cursor: "pointer", outline: "none", appearance: "auto"
+                }}
+                title={p._autoSupplyType ? `Otomatik: ${p._autoSupplyType} → Manuel: ${p.supplyType}` : p.supplyType}
+              >
+                {["MAKE","MAKE+FASON","FASON","BUY","RAW","PRODUCT"].map(t => (
+                  <option key={t} value={t}>{t}</option>
+                ))}
+              </select>
+            ) : (
+              <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c, flexShrink: 0 }}>{p.supplyType}</span>
+            )}
             {p.operations.length > 0 && (
               <span
                 onClick={(e) => { e.stopPropagation(); setEditingOpPart(isEditingOps ? null : { modelKey: selectedModel, partIdx: p.idx }); }}
@@ -5127,6 +5226,11 @@ function MRPPlanlama({ db, userRole }) {
           {importResult && importResult.success && (
             <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
               ✓ {importResult.modelCode} — {importResult.modelName} · {importResult.partCount} parça ({importResult.levelCounts.L0}/{importResult.levelCounts.L1}/{importResult.levelCounts.L2}/{importResult.levelCounts.L3 || 0}) · {importResult.opCount} operasyon · {importResult.wcCount} iş merkezi · {importResult.faCount} fason tipi
+              {(importResult.overridesKept > 0 || importResult.opTimesKept > 0) && (
+                <span style={{ display: "block", marginTop: 4, fontSize: 11 }}>
+                  ↳ Korunan: {importResult.overridesKept > 0 && `${importResult.overridesKept} supply type override`}{importResult.overridesKept > 0 && importResult.opTimesKept > 0 && " · "}{importResult.opTimesKept > 0 && `${importResult.opTimesKept} operasyon süresi`}
+                </span>
+              )}
             </div>
           )}
 
@@ -5497,6 +5601,20 @@ function MRPPlanlama({ db, userRole }) {
           noneWCs.forEach(wc => {
             machineRows.push({ id: wc + "_NONE", name: (centers[wc]?.name || wc) + " (tezgah yok)", wcCode: wc, wcName: centers[wc]?.name || wc, isVirtual: true });
           });
+          // Add fason rows
+          const fasonCodes = new Set();
+          jobs.forEach(j => j.operations.forEach(op => {
+            if (op.isFason && op.machineId) fasonCodes.add(op.opCode);
+          }));
+          const fasonDefs = workCenters?.fason || {};
+          [...fasonCodes].sort().forEach(opCode => {
+            machineRows.push({
+              id: "FASON_" + opCode,
+              name: (fasonDefs[opCode]?.name || "Fason " + opCode),
+              wcCode: "FASON", wcName: "Fason",
+              isFason: true
+            });
+          });
         }
 
         const cellW = Math.max(28, 36 / ganttZoom);
@@ -5529,10 +5647,13 @@ function MRPPlanlama({ db, userRole }) {
 
         // Op stats
         const opsWithTime = [];
+        let opsFasonCount = 0;
         jobs.forEach(j => j.operations.forEach(op => {
-          if (op.setupTime != null || op.cycleTime != null) opsWithTime.push(op);
+          if (op.isFason) opsFasonCount++;
+          else if (op.setupTime != null || op.cycleTime != null) opsWithTime.push(op);
         }));
         const opsTotal = jobs.reduce((s, j) => s + j.operations.length, 0);
+        const opsInternal = opsTotal - opsFasonCount;
         const opsMES = opsWithTime.length;
 
         return (
@@ -5569,8 +5690,8 @@ function MRPPlanlama({ db, userRole }) {
             {/* KPI summary row */}
             {s && (
               <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
-                <KPI label="İş Emri" value={s.totalJobs || 0} sub={`${opsTotal} operasyon`} accent="#3B82F6" />
-                <KPI label="MES Süreli Op" value={opsMES} sub={`${opsTotal > 0 ? Math.round(opsMES/opsTotal*100) : 0}% tanımlı`} accent="#10B981" />
+                <KPI label="İş Emri" value={s.totalJobs || 0} sub={`${opsTotal} op (${opsInternal} iç + ${opsFasonCount} fason)`} accent="#3B82F6" />
+                <KPI label="MES Süreli Op" value={opsMES} sub={`${opsInternal > 0 ? Math.round(opsMES/opsInternal*100) : 0}% iç op tanımlı`} accent="#10B981" />
                 <KPI label="Fason Sipariş" value={s.totalFason || 0} sub="Dış operasyon" accent="#F59E0B" />
                 <KPI label="Darboğaz" value={s.bottleneck ? (wcSt[s.bottleneck]?.name || s.bottleneck) : "—"} sub={s.bottleneck ? `%${wcSt[s.bottleneck]?.utilization || 0} doluluk` : ""} accent="#EF4444" />
                 <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
@@ -5635,7 +5756,7 @@ function MRPPlanlama({ db, userRole }) {
                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{j.partCode}</span>
                       <span>{j.partName}</span>
                       <span style={{ color: "var(--color-text-tertiary)" }}>Adet: {j.qty}</span>
-                      <span style={{ color: "var(--color-text-tertiary)" }}>{j.operations.length} op · {Math.round(j.totalMin)} dk toplam</span>
+                      <span style={{ color: "var(--color-text-tertiary)" }}>{j.operations.length} op ({j.operations.filter(o=>o.isFason).length} fason) · {Math.round(j.totalMin)} dk iç üretim</span>
                       <span onClick={() => setSelectedJob(null)} style={{ cursor: "pointer", color: "var(--color-text-tertiary)", marginLeft: "auto" }}>✕</span>
                     </div>
                   );
@@ -5654,8 +5775,8 @@ function MRPPlanlama({ db, userRole }) {
                           <div key={mi} style={{
                             height: rowH, padding: "0 8px", borderBottom: "0.5px solid var(--color-border-tertiary)",
                             display: "flex", alignItems: "center", fontSize: 10,
-                            background: mr.isVirtual ? "#FEF2F2" : "var(--color-background-primary)",
-                            color: mr.isVirtual ? "#EF4444" : "var(--color-text-secondary)"
+                            background: mr.isFason ? "#FFF7ED" : mr.isVirtual ? "#FEF2F2" : "var(--color-background-primary)",
+                            color: mr.isFason ? "#C2410C" : mr.isVirtual ? "#EF4444" : "var(--color-text-secondary)"
                           }}>
                             <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                               <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{mr.id}</span>
@@ -5718,23 +5839,28 @@ function MRPPlanlama({ db, userRole }) {
                                 const width = Math.max(cellW - 2, (ei - si + 1) * cellW - 2);
                                 const color = jobColorMap[op.jobId] || "#888";
                                 const isSelected = selectedJob === op.jobId;
+                                const isFasonOp = op.isFason;
                                 return (
                                   <div
                                     key={oi}
                                     onClick={() => setSelectedJob(isSelected ? null : op.jobId)}
-                                    title={`${op.jobId} · ${op.partCode} · Op${op.opCode} · ${Math.round(op.totalMin)}dk`}
+                                    title={`${op.jobId} · ${op.partCode} · Op${op.opCode}${isFasonOp ? " (FASON)" : ""} · ${isFasonOp ? op.leadTimeDays + " gün" : Math.round(op.totalMin) + "dk"}`}
                                     style={{
                                       position: "absolute", top: 3, left, width,
                                       height: rowH - 6, borderRadius: 4,
-                                      background: color, opacity: isSelected ? 1 : 0.8,
+                                      background: isFasonOp
+                                        ? `repeating-linear-gradient(135deg, ${color}, ${color} 3px, ${color}99 3px, ${color}99 6px)`
+                                        : color,
+                                      opacity: isSelected ? 1 : 0.8,
                                       cursor: "pointer", overflow: "hidden",
                                       display: "flex", alignItems: "center", padding: "0 4px",
+                                      border: isFasonOp ? "1.5px dashed rgba(255,255,255,0.5)" : "none",
                                       boxShadow: isSelected ? "0 0 0 2px " + color + ", 0 2px 6px rgba(0,0,0,0.15)" : "none",
                                       transition: "opacity 0.15s, box-shadow 0.15s"
                                     }}
                                   >
                                     <span style={{ fontSize: 8, color: "#fff", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                      {op.partCode}
+                                      {isFasonOp ? "⧖ " : ""}{op.partCode}
                                     </span>
                                   </div>
                                 );
@@ -5766,6 +5892,10 @@ function MRPPlanlama({ db, userRole }) {
                       </span>
                     ))}
                     {jobs.length > 20 && <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", padding: "2px 4px" }}>+{jobs.length - 20} daha</span>}
+                    <span style={{ marginLeft: 8, fontSize: 9, color: "var(--color-text-tertiary)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ width: 16, height: 8, borderRadius: 2, background: "repeating-linear-gradient(135deg, #888, #888 2px, #88888866 2px, #88888866 4px)", border: "1px dashed #888" }} />
+                      = Fason (dış tedarik bekleme)
+                    </span>
                   </div>
                 )}
               </div>
@@ -5780,6 +5910,7 @@ function MRPPlanlama({ db, userRole }) {
                     <thead>
                       <tr style={{ background: "var(--color-background-secondary)" }}>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>ID</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>İş Emri</th>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Parça</th>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Operasyon</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Adet</th>
@@ -5793,6 +5924,7 @@ function MRPPlanlama({ db, userRole }) {
                       {fasonOrd.map((fo, fi) => (
                         <tr key={fi} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
                           <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{fo.id}</td>
+                          <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-info)", cursor: "pointer" }} onClick={() => setSelectedJob(fo.jobId)}>{fo.jobId}</td>
                           <td style={{ padding: "5px 8px" }}>
                             <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", marginRight: 4 }}>{fo.partCode}</span>
                             <span style={{ fontSize: 10 }}>{fo.partName}</span>
@@ -5860,8 +5992,12 @@ function MRPPlanlama({ db, userRole }) {
                             </td>
                             <td style={{ padding: "5px 8px", textAlign: "center" }}>
                               {j.operations.map((op, oi) => (
-                                <span key={oi} style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "var(--color-background-secondary)", color: "var(--color-text-secondary)", marginRight: 2 }}>
-                                  {op.opCode}
+                                <span key={oi} style={{
+                                  fontSize: 9, padding: "1px 4px", borderRadius: 3, marginRight: 2,
+                                  background: op.isFason ? "#FBEAF0" : "var(--color-background-secondary)",
+                                  color: op.isFason ? "#72243E" : "var(--color-text-secondary)"
+                                }}>
+                                  {op.isFason ? "⧖" : ""}{op.opCode}
                                 </span>
                               ))}
                             </td>
