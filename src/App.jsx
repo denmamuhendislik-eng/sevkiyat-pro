@@ -1499,7 +1499,8 @@ export default function App() {
     XLSX.writeFile(wb, `${isEN?"PackList":"CekiListe"}_${dateStr.replace(/\./g,"")}.xlsx`);
   };
 
-  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"}];
+  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"},{id:"mrp",icon:"⚙️",l:"MRP Planlama"}];
+  const canSeeMRP = isAdmin || isUretim;
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
@@ -1540,7 +1541,7 @@ export default function App() {
           {sidebar&&<span style={{fontWeight:600,fontSize:14,whiteSpace:"nowrap"}}>Sevkiyat Pro</span>}
         </div>
         <div style={{flex:1,padding:"6px 0"}}>
-          {nav.map(n=>(
+          {nav.filter(n=>n.id!=="mrp"||canSeeMRP).map(n=>(
             <div key={n.id} onClick={()=>setPage(n.id)} style={{display:"flex",alignItems:"center",gap:10,padding:sidebar?"9px 14px":"9px 14px",cursor:"pointer",background:page===n.id?"var(--color-background-info)":"transparent",fontSize:13,fontWeight:page===n.id?500:400,color:page===n.id?"var(--color-text-info)":"var(--color-text-secondary)",transition:"all 0.15s"}}>
               <span style={{fontSize:15,flexShrink:0}}>{n.icon}</span>
               {sidebar&&<span style={{whiteSpace:"nowrap"}}>{n.l}</span>}
@@ -2210,6 +2211,9 @@ export default function App() {
 
           {/* ========== MONTAJ PAGE ========== */}
           {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={userRole} selectedYear={selYear}/>}
+
+          {/* ========== MRP PAGE ========== */}
+          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole}/>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
@@ -4144,6 +4148,687 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
               <button onClick={()=>{save(autoPlanPreview.newMs);setAutoPlanPreview(null);}} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Planı Uygula</button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+// ============================================================
+// MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
+// ============================================================
+function MRPPlanlama({ db, userRole }) {
+  const BOM_COL = "bomData"; const WC_COL = "workCenters"; const WC_DOC = "state";
+  const isAdmin = userRole === "admin";
+  const canEdit = isAdmin;
+
+  // State
+  const [bomModels, setBomModels] = useState({});
+  const [workCenters, setWorkCenters] = useState(null);
+  const [activeTab, setActiveTab] = useState("bom");
+  const [selectedModel, setSelectedModel] = useState(null);
+  const [expandedNodes, setExpandedNodes] = useState({});
+  const [bomSearch, setBomSearch] = useState("");
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const [wcEdit, setWcEdit] = useState(null);
+  const [faEdit, setFaEdit] = useState(null);
+
+  // Firestore listeners
+  useEffect(() => {
+    if (!db) return;
+    const unsubs = [];
+    // BOM models — listen to collection
+    const bomRef = doc(db, BOM_COL, "models");
+    unsubs.push(onSnapshot(bomRef, snap => {
+      if (snap.exists()) setBomModels(snap.data());
+    }, () => {}));
+    // Work centers
+    const wcRef = doc(db, WC_COL, WC_DOC);
+    unsubs.push(onSnapshot(wcRef, snap => {
+      if (snap.exists()) setWorkCenters(snap.data());
+      else setWorkCenters({ centers: {}, fason: {}, shiftHours: 9, efficiency: 0.85 });
+    }, () => {}));
+    return () => unsubs.forEach(u => u());
+  }, [db]);
+
+  // Save helpers
+  const saveBom = async (data) => {
+    if (!db || !canEdit) return;
+    await setDoc(doc(db, BOM_COL, "models"), data);
+  };
+  const saveWC = async (data) => {
+    if (!db || !canEdit) return;
+    await setDoc(doc(db, WC_COL, WC_DOC), data);
+  };
+
+  // ==================== BOM EXCEL PARSER ====================
+  const parseBomExcel = (workbook) => {
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+    // Find header row (Stok Kodu)
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(10, rows.length); i++) {
+      const c0 = String(rows[i][0] || "").trim();
+      if (c0 === "Stok Kodu" || c0.includes("Stok Kod")) { headerIdx = i; break; }
+    }
+    if (headerIdx < 0) return null;
+
+    // Find model info from header area
+    let modelCode = "", modelName = "";
+    for (let i = 0; i < headerIdx; i++) {
+      const txt = String(rows[i][0] || "");
+      const m = txt.match(/Ürün Ağacı:\s*(\S+)\s*-\s*(.+)/);
+      if (m) { modelCode = m[1].trim(); modelName = m[2].trim(); break; }
+      const m2 = txt.match(/Ürün\s+\(([^)]+)\)\s+(.+)/);
+      if (m2) { modelCode = m2[1].trim(); modelName = m2[2].trim(); break; }
+    }
+
+    const parts = [];
+    const operations = {};    // partIdx -> [ops]
+    const detectedWCs = {};   // wcCode -> {name, opCodes}
+    const detectedFason = {}; // opCode -> {name, count}
+
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      let col0 = String(rows[i][0] || "").trim();
+      let col1 = String(rows[i][1] || "").trim();
+      const col2 = rows[i][2];
+      const col3 = String(rows[i][3] || "").trim();
+
+      if (!col0 && !col1) continue; // empty row
+
+      // Detect level from leading dots
+      let level = 0;
+      const dotMatch = col0.match(/^(\.\s+)+/);
+      if (dotMatch) {
+        level = (dotMatch[0].match(/\./g) || []).length;
+        col0 = col0.replace(/^(\.\s+)+/, "").trim();
+        col1 = col1.replace(/^(\.\s+)+/, "").trim();
+      }
+      // Also check pipe characters for deeper nesting
+      const pipeMatch = col0.match(/^\|\s+/);
+      if (pipeMatch) {
+        col0 = col0.replace(/^\|\s+/, "").trim();
+        col1 = col1.replace(/^\|\s+/, "").trim();
+      }
+
+      // Check if operation row
+      const opMatch = col0.match(/^Oper:\s*\((\d+)\)\s*(.*)/);
+      if (opMatch) {
+        const opCode = opMatch[1];
+        const opName = opMatch[2].trim();
+        // Extract work center from col1
+        let wcCode = "", wcName = "";
+        const wcMatch = col1.match(/İş\.Mrk:\s*\((\d+)\)\s*(.*)/);
+        if (wcMatch) { wcCode = wcMatch[1]; wcName = wcMatch[2].trim(); }
+
+        // Store operation for next part
+        const lastPartIdx = parts.length - 1;
+        if (lastPartIdx >= 0) {
+          if (!operations[lastPartIdx]) operations[lastPartIdx] = [];
+          operations[lastPartIdx].push({ opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null });
+        }
+
+        // Detect work centers
+        if (wcCode) {
+          const isFason = parseInt(opCode) >= 600;
+          if (isFason) {
+            if (!detectedFason[opCode]) detectedFason[opCode] = { name: opName, count: 0 };
+            detectedFason[opCode].count++;
+          } else {
+            if (!detectedWCs[wcCode]) detectedWCs[wcCode] = { name: wcName, opCodes: new Set() };
+            detectedWCs[wcCode].opCodes.add(opCode);
+          }
+        }
+        continue;
+      }
+
+      // Regular part row — must have a stock code pattern
+      const codeMatch = col0.match(/^(\d{3}-\d{4})/);
+      if (!codeMatch) continue;
+
+      const stockCode = codeMatch[1];
+      const stockName = col1 || col0.replace(stockCode, "").trim();
+      let qty = 1;
+      if (col2 !== "" && col2 !== undefined) {
+        const qStr = String(col2).replace(",", ".");
+        const parsed = parseFloat(qStr);
+        if (!isNaN(parsed)) qty = parsed;
+      }
+
+      // Detect supply type from stock code prefix
+      const prefix = stockCode.split("-")[0];
+      let supplyType = "MAKE";
+      if (prefix === "150") supplyType = "RAW";
+      else if (prefix === "157") supplyType = "BUY";
+      else if (prefix === "152") supplyType = "PRODUCT";
+
+      parts.push({
+        stockCode,
+        stockName,
+        level,
+        qty,
+        unit: col3 || "AD",
+        supplyType,
+        parentIdx: null
+      });
+    }
+
+    // Assign parentIdx based on levels
+    const stack = []; // [{idx, level}]
+    for (let i = 0; i < parts.length; i++) {
+      const p = parts[i];
+      while (stack.length > 0 && stack[stack.length - 1].level >= p.level) stack.pop();
+      if (stack.length > 0) p.parentIdx = stack[stack.length - 1].idx;
+      stack.push({ idx: i, level: p.level });
+    }
+
+    // Attach operations to parts
+    for (let i = 0; i < parts.length; i++) {
+      parts[i].operations = operations[i] || [];
+      // Update supply type if has fason operations
+      if (parts[i].supplyType === "MAKE" && parts[i].operations.some(op => parseInt(op.opCode) >= 600)) {
+        parts[i].supplyType = "MAKE+FASON";
+      }
+      // Pure fason: only fason ops, no in-house ops
+      if (parts[i].operations.length > 0 && parts[i].operations.every(op => parseInt(op.opCode) >= 600)) {
+        if (parts[i].supplyType !== "RAW" && parts[i].supplyType !== "BUY") {
+          parts[i].supplyType = "FASON";
+        }
+      }
+    }
+
+    // Build detected work centers for auto-setup
+    const wcResult = {};
+    for (const [code, wc] of Object.entries(detectedWCs)) {
+      wcResult[code] = { name: wc.name, machines: [], opCodes: [...wc.opCodes] };
+    }
+    const faResult = {};
+    for (const [code, fa] of Object.entries(detectedFason)) {
+      faResult[code] = { name: fa.name, leadTimeDays: 14, supplier: "", count: fa.count };
+    }
+
+    return {
+      modelCode, modelName,
+      parts,
+      partCount: parts.length,
+      levelCounts: { L0: parts.filter(p => p.level === 0).length, L1: parts.filter(p => p.level === 1).length, L2: parts.filter(p => p.level === 2).length },
+      opCount: Object.values(operations).flat().length,
+      detectedWCs: wcResult,
+      detectedFason: faResult,
+      importedAt: new Date().toISOString()
+    };
+  };
+
+  // ==================== IMPORT HANDLER ====================
+  const handleBomImport = (file) => {
+    setImporting(true);
+    setImportResult(null);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const wb = XLSX.read(e.target.result, { type: "array" });
+        const result = parseBomExcel(wb);
+        if (!result || result.parts.length === 0) {
+          setImportResult({ error: "BOM verisi bulunamadı. Dosya formatını kontrol edin." });
+          setImporting(false);
+          return;
+        }
+
+        // Save to state and Firestore
+        const modelKey = result.modelCode.replace(/[^a-zA-Z0-9-]/g, "_");
+        const newBomModels = {
+          ...bomModels,
+          [modelKey]: {
+            modelCode: result.modelCode,
+            modelName: result.modelName,
+            parts: result.parts,
+            partCount: result.partCount,
+            levelCounts: result.levelCounts,
+            opCount: result.opCount,
+            importedAt: result.importedAt
+          }
+        };
+        await saveBom(newBomModels);
+
+        // Auto-setup work centers if not yet defined
+        if (workCenters && Object.keys(workCenters.centers || {}).length === 0) {
+          const newWC = {
+            ...workCenters,
+            centers: result.detectedWCs,
+            fason: result.detectedFason
+          };
+          await saveWC(newWC);
+        } else if (workCenters) {
+          // Merge new fason/wc that don't exist yet
+          const merged = { ...workCenters };
+          for (const [k, v] of Object.entries(result.detectedWCs)) {
+            if (!merged.centers[k]) merged.centers[k] = v;
+          }
+          for (const [k, v] of Object.entries(result.detectedFason)) {
+            if (!merged.fason[k]) merged.fason[k] = v;
+          }
+          await saveWC(merged);
+        }
+
+        setImportResult({
+          success: true,
+          modelCode: result.modelCode,
+          modelName: result.modelName,
+          partCount: result.partCount,
+          levelCounts: result.levelCounts,
+          opCount: result.opCount,
+          wcCount: Object.keys(result.detectedWCs).length,
+          faCount: Object.keys(result.detectedFason).length
+        });
+        setSelectedModel(modelKey);
+      } catch (err) {
+        setImportResult({ error: "Parse hatası: " + err.message });
+      }
+      setImporting(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const onDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleBomImport(f); };
+  const onFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleBomImport(f); };
+
+  // ==================== TREE VIEW HELPERS ====================
+  const getModelData = () => selectedModel && bomModels[selectedModel] ? bomModels[selectedModel] : null;
+
+  const toggleNode = (idx) => setExpandedNodes(prev => ({ ...prev, [idx]: !prev[idx] }));
+  const expandAll = () => {
+    const md = getModelData();
+    if (!md) return;
+    const all = {};
+    md.parts.forEach((_, i) => { all[i] = true; });
+    setExpandedNodes(all);
+  };
+  const collapseAll = () => setExpandedNodes({});
+
+  const getChildren = (parts, parentIdx) => {
+    return parts.map((p, i) => ({ ...p, idx: i })).filter(p => p.parentIdx === parentIdx);
+  };
+
+  const supplyColors = {
+    "MAKE": { bg: "#E6F1FB", c: "#0C447C" },
+    "MAKE+FASON": { bg: "#EEEDFE", c: "#3C3489" },
+    "FASON": { bg: "#FBEAF0", c: "#72243E" },
+    "BUY": { bg: "#EAF3DE", c: "#27500A" },
+    "RAW": { bg: "#FAEEDA", c: "#633806" },
+    "PRODUCT": { bg: "#E1F5EE", c: "#04342C" }
+  };
+
+  const levelColors = ["#185FA5", "#1D9E75", "#BA7517", "#993C1D"];
+
+  // Filter parts by search
+  const filterParts = (parts) => {
+    if (!bomSearch.trim()) return null; // null = show tree normally
+    const q = bomSearch.toLowerCase();
+    return parts.map((p, i) => ({ ...p, idx: i })).filter(p =>
+      p.stockCode.toLowerCase().includes(q) || p.stockName.toLowerCase().includes(q)
+    );
+  };
+
+  // ==================== RENDER TREE NODE ====================
+  const renderTreeNode = (parts, parentIdx, depth = 0) => {
+    const children = getChildren(parts, parentIdx);
+    if (children.length === 0) return null;
+
+    return children.map(p => {
+      const hasKids = parts.some(pp => pp.parentIdx === p.idx);
+      const isExpanded = expandedNodes[p.idx];
+      const sc = supplyColors[p.supplyType] || supplyColors["MAKE"];
+      const lc = levelColors[Math.min(p.level, 3)];
+
+      return (
+        <Fragment key={p.idx}>
+          <div
+            onClick={() => hasKids && toggleNode(p.idx)}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "5px 8px 5px " + (20 + depth * 24) + "px",
+              fontSize: 12, cursor: hasKids ? "pointer" : "default",
+              background: isExpanded ? "var(--color-background-secondary)" : "transparent",
+              borderBottom: "0.5px solid var(--color-border-tertiary)",
+              transition: "background 0.1s"
+            }}
+          >
+            <span style={{ width: 16, textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)", flexShrink: 0 }}>
+              {hasKids ? (isExpanded ? "▼" : "▶") : "·"}
+            </span>
+            <span style={{ width: 4, height: 4, borderRadius: 2, background: lc, flexShrink: 0 }} />
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)", minWidth: 70, flexShrink: 0 }}>{p.stockCode}</span>
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.stockName}</span>
+            <span style={{ fontSize: 11, color: "var(--color-text-secondary)", minWidth: 40, textAlign: "right", flexShrink: 0 }}>{p.qty} {p.unit}</span>
+            <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c, flexShrink: 0 }}>{p.supplyType}</span>
+            {p.operations.length > 0 && (
+              <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", flexShrink: 0 }}>{p.operations.length} op</span>
+            )}
+          </div>
+          {isExpanded && hasKids && renderTreeNode(parts, p.idx, depth + 1)}
+        </Fragment>
+      );
+    });
+  };
+
+  // ==================== WORK CENTER UI ====================
+  const addMachine = (wcCode) => {
+    if (!workCenters || !canEdit) return;
+    const wc = workCenters.centers[wcCode];
+    if (!wc) return;
+    const machines = wc.machines || [];
+    const nextId = wcCode + (machines.length + 1).toString().padStart(2, "0");
+    const newWC = {
+      ...workCenters,
+      centers: {
+        ...workCenters.centers,
+        [wcCode]: { ...wc, machines: [...machines, { id: nextId, name: "Tezgah " + nextId, hoursPerDay: workCenters.shiftHours || 9 }] }
+      }
+    };
+    saveWC(newWC);
+  };
+
+  const removeMachine = (wcCode, machineIdx) => {
+    if (!workCenters || !canEdit) return;
+    const wc = workCenters.centers[wcCode];
+    const machines = [...(wc.machines || [])];
+    machines.splice(machineIdx, 1);
+    const newWC = { ...workCenters, centers: { ...workCenters.centers, [wcCode]: { ...wc, machines } } };
+    saveWC(newWC);
+  };
+
+  const updateFason = (code, field, value) => {
+    if (!workCenters || !canEdit) return;
+    const fa = workCenters.fason[code] || {};
+    const newWC = { ...workCenters, fason: { ...workCenters.fason, [code]: { ...fa, [field]: value } } };
+    saveWC(newWC);
+  };
+
+  const updateWCGlobal = (field, value) => {
+    if (!workCenters || !canEdit) return;
+    saveWC({ ...workCenters, [field]: value });
+  };
+
+  // ==================== DELETE MODEL ====================
+  const deleteModel = async (key) => {
+    if (!canEdit) return;
+    const newBom = { ...bomModels };
+    delete newBom[key];
+    await saveBom(newBom);
+    if (selectedModel === key) setSelectedModel(null);
+  };
+
+  // ==================== STATS ====================
+  const modelKeys = Object.keys(bomModels).filter(k => k !== "undefined");
+  const totalParts = modelKeys.reduce((s, k) => s + (bomModels[k]?.partCount || 0), 0);
+  const totalOps = modelKeys.reduce((s, k) => s + (bomModels[k]?.opCount || 0), 0);
+  const wcCount = workCenters ? Object.keys(workCenters.centers || {}).length : 0;
+  const faCount = workCenters ? Object.keys(workCenters.fason || {}).length : 0;
+
+  // ==================== RENDER ====================
+  const md = getModelData();
+  const filteredParts = md ? filterParts(md.parts) : null;
+
+  const tabStyle = (id) => ({
+    padding: "6px 16px", borderRadius: 6, fontSize: 12, fontWeight: activeTab === id ? 500 : 400,
+    cursor: "pointer", border: "none",
+    background: activeTab === id ? "var(--color-background-info)" : "transparent",
+    color: activeTab === id ? "var(--color-text-info)" : "var(--color-text-secondary)"
+  });
+
+  return (
+    <div style={{ padding: 20, maxWidth: 1200 }}>
+      {/* KPI Row */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+        <KPI label="BOM modelleri" value={modelKeys.length} sub={`${totalParts} toplam parça`} accent="#534AB7" />
+        <KPI label="Operasyonlar" value={totalOps} sub={`${wcCount} iş merkezi`} accent="#185FA5" />
+        <KPI label="Fason operasyonlar" value={faCount} sub="Dış tedarik tipi" accent="#D85A30" />
+        <KPI label="Kapasite" value={workCenters ? `${workCenters.shiftHours || 9}s/gün` : "—"} sub={workCenters ? `%${Math.round((workCenters.efficiency || 0.85) * 100)} verimlilik` : ""} accent="#1D9E75" />
+      </div>
+
+      {/* Tab bar */}
+      <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
+        <button onClick={() => setActiveTab("bom")} style={tabStyle("bom")}>Ürün Ağacı (BOM)</button>
+        <button onClick={() => setActiveTab("wc")} style={tabStyle("wc")}>İş Merkezleri</button>
+        <button onClick={() => setActiveTab("fason")} style={tabStyle("fason")}>Fason Operasyonlar</button>
+      </div>
+
+      {/* ========== BOM TAB ========== */}
+      {activeTab === "bom" && (
+        <div>
+          {/* Import area */}
+          {canEdit && (
+            <div
+              onDrop={onDrop} onDragOver={e => e.preventDefault()}
+              style={{
+                border: "2px dashed var(--color-border-secondary)", borderRadius: 12,
+                padding: "24px 20px", textAlign: "center", marginBottom: 16,
+                background: "var(--color-background-secondary)", cursor: "pointer",
+                transition: "border-color 0.2s"
+              }}
+              onClick={() => document.getElementById("bom-file-input").click()}
+            >
+              <div style={{ fontSize: 24, marginBottom: 6 }}>📄</div>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 4 }}>BOM Excel'i sürükle & bırak</div>
+              <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>VIO Ürün Ağacı formatı (.xlsx) — her dosya bir model</div>
+              <input id="bom-file-input" type="file" accept=".xlsx,.xls" onChange={onFileSelect} style={{ display: "none" }} />
+            </div>
+          )}
+
+          {/* Import result */}
+          {importing && <div style={{ padding: 12, background: "var(--color-background-info)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>Import ediliyor...</div>}
+          {importResult && importResult.error && (
+            <div style={{ padding: 12, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)" }}>{importResult.error}</div>
+          )}
+          {importResult && importResult.success && (
+            <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
+              ✓ {importResult.modelCode} — {importResult.modelName} · {importResult.partCount} parça ({importResult.levelCounts.L0}/{importResult.levelCounts.L1}/{importResult.levelCounts.L2}) · {importResult.opCount} operasyon · {importResult.wcCount} iş merkezi · {importResult.faCount} fason tipi
+            </div>
+          )}
+
+          {/* Model selector */}
+          {modelKeys.length > 0 && (
+            <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
+              {modelKeys.map(k => {
+                const m = bomModels[k];
+                const isActive = selectedModel === k;
+                return (
+                  <div key={k} onClick={() => setSelectedModel(k)} style={{
+                    padding: "8px 14px", borderRadius: 8, cursor: "pointer",
+                    border: isActive ? "1.5px solid var(--color-border-info)" : "1px solid var(--color-border-tertiary)",
+                    background: isActive ? "var(--color-background-info)" : "var(--color-background-primary)",
+                    fontSize: 12, display: "flex", alignItems: "center", gap: 8, transition: "all 0.15s"
+                  }}>
+                    <span style={{ fontWeight: 500 }}>{m.modelName?.replace("REDÜKTÖR DİŞLİ TAKIMLARI ", "") || k}</span>
+                    <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{m.partCount} parça</span>
+                    {canEdit && (
+                      <span onClick={(e) => { e.stopPropagation(); if (confirm(`${m.modelCode} silinsin mi?`)) deleteModel(k); }}
+                        style={{ fontSize: 10, color: "var(--color-text-tertiary)", cursor: "pointer", marginLeft: 4 }}>✕</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Tree view */}
+          {md && (
+            <div>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+                <input
+                  value={bomSearch} onChange={e => setBomSearch(e.target.value)}
+                  placeholder="Stok kodu veya isim ara..."
+                  style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-secondary)", fontSize: 12, outline: "none" }}
+                />
+                <button onClick={expandAll} style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid var(--color-border-tertiary)", background: "transparent", fontSize: 11, cursor: "pointer" }}>Tümünü Aç</button>
+                <button onClick={collapseAll} style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid var(--color-border-tertiary)", background: "transparent", fontSize: 11, cursor: "pointer" }}>Kapat</button>
+              </div>
+
+              {/* Legend */}
+              <div style={{ display: "flex", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
+                {Object.entries(supplyColors).map(([k, v]) => (
+                  <span key={k} style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, background: v.bg, color: v.c }}>{k}</span>
+                ))}
+                <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginLeft: 8 }}>
+                  Seviye: <span style={{ color: levelColors[0] }}>● L0</span> <span style={{ color: levelColors[1] }}>● L1</span> <span style={{ color: levelColors[2] }}>● L2</span>
+                </span>
+              </div>
+
+              {/* Stats bar */}
+              <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 6, padding: "4px 8px", background: "var(--color-background-secondary)", borderRadius: 6 }}>
+                {md.modelCode} — {md.partCount} parça · L0: {md.levelCounts?.L0 || 0} · L1: {md.levelCounts?.L1 || 0} · L2: {md.levelCounts?.L2 || 0} · {md.opCount} operasyon
+              </div>
+
+              {/* Tree or flat search results */}
+              <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", maxHeight: "60vh", overflowY: "auto" }}>
+                {filteredParts ? (
+                  // Flat search results
+                  filteredParts.length > 0 ? filteredParts.map(p => {
+                    const sc = supplyColors[p.supplyType] || supplyColors["MAKE"];
+                    return (
+                      <div key={p.idx} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px 5px 20px", fontSize: 12, borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
+                        <span style={{ width: 4, height: 4, borderRadius: 2, background: levelColors[Math.min(p.level, 3)], flexShrink: 0 }} />
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)", minWidth: 70 }}>{p.stockCode}</span>
+                        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.stockName}</span>
+                        <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>L{p.level}</span>
+                        <span style={{ fontSize: 11, color: "var(--color-text-secondary)", minWidth: 40, textAlign: "right" }}>{p.qty} {p.unit}</span>
+                        <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c }}>{p.supplyType}</span>
+                        {p.operations.length > 0 && <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.operations.map(o => o.opCode).join(",")}</span>}
+                      </div>
+                    );
+                  }) : <div style={{ padding: 20, textAlign: "center", fontSize: 12, color: "var(--color-text-tertiary)" }}>Sonuç bulunamadı</div>
+                ) : (
+                  // Tree view
+                  renderTreeNode(md.parts, null, 0)
+                )}
+              </div>
+            </div>
+          )}
+
+          {!md && modelKeys.length === 0 && (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-tertiary)" }}>
+              <div style={{ fontSize: 32, marginBottom: 8 }}>📄</div>
+              <div style={{ fontSize: 14 }}>Henüz BOM verisi yok</div>
+              <div style={{ fontSize: 12, marginTop: 4 }}>VIO'dan Ürün Ağacı Excel'ini sürükleyip bırakın</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========== WORK CENTERS TAB ========== */}
+      {activeTab === "wc" && workCenters && (
+        <div>
+          {/* Global settings */}
+          <div style={{ display: "flex", gap: 16, marginBottom: 16, alignItems: "center", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
+            <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Günlük vardiya:</label>
+            <input type="number" value={workCenters.shiftHours || 9} onChange={e => updateWCGlobal("shiftHours", parseFloat(e.target.value) || 9)}
+              style={{ width: 50, padding: "4px 6px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 12, textAlign: "center" }}
+              disabled={!canEdit}
+            />
+            <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>saat</span>
+            <label style={{ fontSize: 12, color: "var(--color-text-secondary)", marginLeft: 16 }}>Verimlilik:</label>
+            <input type="number" step="0.05" min="0" max="1" value={workCenters.efficiency || 0.85}
+              onChange={e => updateWCGlobal("efficiency", parseFloat(e.target.value) || 0.85)}
+              style={{ width: 50, padding: "4px 6px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 12, textAlign: "center" }}
+              disabled={!canEdit}
+            />
+            <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+              = {Math.round((workCenters.shiftHours || 9) * 60 * (workCenters.efficiency || 0.85))} dk/gün efektif
+            </span>
+          </div>
+
+          {/* Work center cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
+            {Object.entries(workCenters.centers || {}).sort((a, b) => a[0].localeCompare(b[0])).map(([code, wc]) => {
+              const machines = wc.machines || [];
+              const dailyCap = machines.length * (workCenters.shiftHours || 9) * 60 * (workCenters.efficiency || 0.85);
+              return (
+                <div key={code} style={{ background: "var(--color-background-primary)", border: "0.5px solid var(--color-border-tertiary)", borderRadius: 10, padding: 14 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div>
+                      <span style={{ fontSize: 14, fontWeight: 500 }}>{wc.name || code}</span>
+                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginLeft: 6 }}>({code})</span>
+                    </div>
+                    <span style={{ fontSize: 10, padding: "2px 6px", borderRadius: 4, background: "var(--color-background-info)", color: "var(--color-text-info)" }}>
+                      {Math.round(dailyCap)} dk/gün
+                    </span>
+                  </div>
+
+                  {/* Machines list */}
+                  {machines.map((m, mi) => (
+                    <div key={mi} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0", fontSize: 11, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{m.id}</span>
+                      <span style={{ flex: 1 }}>{m.name}</span>
+                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{m.hoursPerDay}s/gün</span>
+                      {canEdit && <span onClick={() => removeMachine(code, mi)} style={{ fontSize: 10, cursor: "pointer", color: "var(--color-text-tertiary)" }}>✕</span>}
+                    </div>
+                  ))}
+
+                  {machines.length === 0 && <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", padding: "4px 0" }}>Tezgah tanımlı değil</div>}
+
+                  {canEdit && (
+                    <button onClick={() => addMachine(code)} style={{
+                      marginTop: 6, width: "100%", padding: "4px", borderRadius: 4,
+                      border: "1px dashed var(--color-border-secondary)", background: "transparent",
+                      fontSize: 10, color: "var(--color-text-secondary)", cursor: "pointer"
+                    }}>+ Tezgah Ekle</button>
+                  )}
+
+                  {/* Operations in this WC */}
+                  {wc.opCodes && wc.opCodes.length > 0 && (
+                    <div style={{ marginTop: 6, fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                      Op: {wc.opCodes.join(", ")}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+
+          {Object.keys(workCenters.centers || {}).length === 0 && (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-tertiary)" }}>
+              <div style={{ fontSize: 14, marginBottom: 4 }}>İş merkezi tanımlı değil</div>
+              <div style={{ fontSize: 12 }}>BOM import edildiğinde iş merkezleri otomatik algılanır</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ========== FASON TAB ========== */}
+      {activeTab === "fason" && workCenters && (
+        <div>
+          <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+            <div style={{ display: "grid", gridTemplateColumns: "60px 1fr 90px 90px 1fr", gap: 0, padding: "8px 12px", background: "var(--color-background-secondary)", fontSize: 11, fontWeight: 500, color: "var(--color-text-secondary)" }}>
+              <span>Kod</span><span>Operasyon</span><span>Süre (gün)</span><span>Parça sayısı</span><span>Tedarikçi</span>
+            </div>
+            {Object.entries(workCenters.fason || {}).sort((a, b) => a[0].localeCompare(b[0])).map(([code, fa]) => (
+              <div key={code} style={{ display: "grid", gridTemplateColumns: "60px 1fr 90px 90px 1fr", gap: 0, padding: "8px 12px", fontSize: 12, borderTop: "0.5px solid var(--color-border-tertiary)", alignItems: "center" }}>
+                <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)" }}>{code}</span>
+                <span>{fa.name}</span>
+                <input type="number" value={fa.leadTimeDays || 14}
+                  onChange={e => updateFason(code, "leadTimeDays", parseInt(e.target.value) || 14)}
+                  style={{ width: 50, padding: "3px 4px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11, textAlign: "center" }}
+                  disabled={!canEdit}
+                />
+                <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{fa.count || "—"}</span>
+                <input type="text" value={fa.supplier || ""} placeholder="Tedarikçi adı"
+                  onChange={e => updateFason(code, "supplier", e.target.value)}
+                  style={{ padding: "3px 6px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11, width: "100%" }}
+                  disabled={!canEdit}
+                />
+              </div>
+            ))}
+          </div>
+
+          {Object.keys(workCenters.fason || {}).length === 0 && (
+            <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-tertiary)" }}>
+              <div style={{ fontSize: 14, marginBottom: 4 }}>Fason operasyon tanımlı değil</div>
+              <div style={{ fontSize: 12 }}>BOM import edildiğinde fason operasyonlar otomatik algılanır</div>
+            </div>
+          )}
         </div>
       )}
     </div>
