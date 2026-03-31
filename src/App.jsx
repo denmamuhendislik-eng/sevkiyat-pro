@@ -4159,7 +4159,9 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 // MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
 // ============================================================
 function MRPPlanlama({ db, userRole }) {
-  const BOM_COL = "bomData"; const WC_COL = "workCenters"; const WC_DOC = "state";
+  const APP_COL = "appData";
+  const BOM_DOC = "bomModels";
+  const WC_DOC = "workCenters";
   const isAdmin = userRole === "admin";
   const canEdit = isAdmin;
 
@@ -4179,13 +4181,13 @@ function MRPPlanlama({ db, userRole }) {
   useEffect(() => {
     if (!db) return;
     const unsubs = [];
-    // BOM models — listen to collection
-    const bomRef = doc(db, BOM_COL, "models");
+    // BOM models
+    const bomRef = doc(db, APP_COL, BOM_DOC);
     unsubs.push(onSnapshot(bomRef, snap => {
       if (snap.exists()) setBomModels(snap.data());
     }, () => {}));
     // Work centers
-    const wcRef = doc(db, WC_COL, WC_DOC);
+    const wcRef = doc(db, APP_COL, WC_DOC);
     unsubs.push(onSnapshot(wcRef, snap => {
       if (snap.exists()) setWorkCenters(snap.data());
       else setWorkCenters({ centers: {}, fason: {}, shiftHours: 9, efficiency: 0.85 });
@@ -4196,11 +4198,11 @@ function MRPPlanlama({ db, userRole }) {
   // Save helpers
   const saveBom = async (data) => {
     if (!db || !canEdit) return;
-    await setDoc(doc(db, BOM_COL, "models"), data);
+    await setDoc(doc(db, APP_COL, BOM_DOC), data);
   };
   const saveWC = async (data) => {
     if (!db || !canEdit) return;
-    await setDoc(doc(db, WC_COL, WC_DOC), data);
+    await setDoc(doc(db, APP_COL, WC_DOC), data);
   };
 
   // ==================== BOM EXCEL PARSER ====================
@@ -4368,16 +4370,24 @@ function MRPPlanlama({ db, userRole }) {
     setImportResult(null);
     const reader = new FileReader();
     reader.onload = async (e) => {
+      let result = null;
+      // Step 1: Parse Excel
       try {
         const wb = XLSX.read(e.target.result, { type: "array" });
-        const result = parseBomExcel(wb);
+        result = parseBomExcel(wb);
         if (!result || result.parts.length === 0) {
-          setImportResult({ error: "BOM verisi bulunamadı. Dosya formatını kontrol edin." });
+          setImportResult({ error: "BOM verisi bulunamadı. Dosya formatını kontrol edin.\nBeklenen format: VIO Ürün Ağacı Excel'i (Stok Kodu, Stok Adı, Miktar, Brm sütunları)" });
           setImporting(false);
           return;
         }
+      } catch (err) {
+        setImportResult({ error: "Excel parse hatası: " + err.message });
+        setImporting(false);
+        return;
+      }
 
-        // Save to state and Firestore
+      // Step 2: Save to Firestore
+      try {
         const modelKey = result.modelCode.replace(/[^a-zA-Z0-9-]/g, "_");
         const newBomModels = {
           ...bomModels,
@@ -4402,7 +4412,6 @@ function MRPPlanlama({ db, userRole }) {
           };
           await saveWC(newWC);
         } else if (workCenters) {
-          // Merge new fason/wc that don't exist yet
           const merged = { ...workCenters };
           for (const [k, v] of Object.entries(result.detectedWCs)) {
             if (!merged.centers[k]) merged.centers[k] = v;
@@ -4425,7 +4434,9 @@ function MRPPlanlama({ db, userRole }) {
         });
         setSelectedModel(modelKey);
       } catch (err) {
-        setImportResult({ error: "Parse hatası: " + err.message });
+        setImportResult({
+          error: "Firestore kayıt hatası: " + err.message + "\n\nParse başarılı (" + result.partCount + " parça algılandı) ama veritabanına kaydedilemedi.\nFirestore Security Rules'da 'appData' koleksiyonuna yazma izni olduğundan emin olun."
+        });
       }
       setImporting(false);
     };
@@ -4621,7 +4632,7 @@ function MRPPlanlama({ db, userRole }) {
           {/* Import result */}
           {importing && <div style={{ padding: 12, background: "var(--color-background-info)", borderRadius: 8, marginBottom: 12, fontSize: 12 }}>Import ediliyor...</div>}
           {importResult && importResult.error && (
-            <div style={{ padding: 12, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)" }}>{importResult.error}</div>
+            <div style={{ padding: 12, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)", whiteSpace: "pre-wrap" }}>{importResult.error}</div>
           )}
           {importResult && importResult.success && (
             <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
