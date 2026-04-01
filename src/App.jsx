@@ -4846,16 +4846,25 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         // NOT: ANA ürünler montaj stoğu kullanır (VIO stoktan farklı), onlar için kayıt gerekmez
         if (!isAna && productStock > 0 && rawDemand > 0) {
           const consumed = Math.min(rawDemand, productStock);
-          const stkCode = VIO_CODES[pid] || product?.vioCode;
-          if (stkCode) {
-            if (!stockConsumed[stkCode]) stockConsumed[stkCode] = 0;
-            stockConsumed[stkCode] += consumed;
+          const consumedCodes = new Set();
+          // 1) VIO_CODES kodu
+          if (VIO_CODES[pid]) consumedCodes.add(VIO_CODES[pid]);
+          // 2) product.vioCode (BOM güncellesi ile değişmiş olabilir)
+          if (product?.vioCode) consumedCodes.add(product.vioCode);
+          // 3) direct:CODE mapping'deki kod (BOM explosion'da bu kod kullanılır)
+          if (typeof mapping === "string" && mapping.startsWith("direct:") && mapping.length > 7) {
+            consumedCodes.add(mapping.substring(7));
           }
-          // product.vioCode farklı bir kod ise onu da kaydet
-          if (product?.vioCode && product.vioCode !== stkCode) {
-            if (!stockConsumed[product.vioCode]) stockConsumed[product.vioCode] = 0;
-            stockConsumed[product.vioCode] += consumed;
+          // 4) BOM modeli varsa L0 parçanın stockCode'u
+          if (typeof mapping === "string" && !mapping.startsWith("direct:") && bomModels[mapping]) {
+            const l0 = (bomModels[mapping].parts || []).find(p => p.level === 0);
+            if (l0?.stockCode) consumedCodes.add(l0.stockCode);
+            if (bomModels[mapping].modelCode) consumedCodes.add(bomModels[mapping].modelCode);
           }
+          consumedCodes.forEach(code => {
+            if (!stockConsumed[code]) stockConsumed[code] = 0;
+            stockConsumed[code] += consumed;
+          });
         }
 
         demandSummary[pid] = { source, rawDemand, productStock, netDemand, name: product?.nameTR || `PID ${pid}` };
