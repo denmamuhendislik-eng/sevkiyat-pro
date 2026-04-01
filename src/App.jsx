@@ -3065,14 +3065,18 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
   // --- Takvim günleri ---
   const calDays = useMemo(() => {
-    const startD = new Date(today); startD.setDate(startD.getDate() - 3);
+    // Geriye 5 iş günü git (hafta sonu + tatil atla)
+    const hols = new Set(ms.capacity?.holidays || []);
+    const startD = new Date(today);
+    let workDaysBack = 0;
+    while (workDaysBack < 5) { startD.setDate(startD.getDate() - 1); if (!isWeekend(startD.toISOString().slice(0,10)) && !hols.has(startD.toISOString().slice(0,10))) workDaysBack++; }
     const lastC  = allContainers.filter(c => !c.shipped).slice(-1)[0];
     const endD   = lastC ? new Date(lastC.date) : new Date(today);
     endD.setDate(endD.getDate() + 7);
     const days = []; const cur = new Date(startD);
     while (cur <= endD) { days.push(cur.toISOString().slice(0,10)); cur.setDate(cur.getDate()+1); }
     return days;
-  }, [allContainers, today]);
+  }, [allContainers, today, ms]);
 
   const shipDates = useMemo(() => new Set(allContainers.filter(c => !c.shipped).map(c => c.date)), [allContainers]);
 
