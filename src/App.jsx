@@ -777,7 +777,7 @@ ${el.innerHTML}
     if(!newP.nameTR||!newP.nameEN||!newP.kg||!newP.vioCode) return;
     const id=Math.max(...products.map(p=>p.id))+1;
     const colors=["#3B8BD4","#1D9E75","#D85A30","#D4537E","#534AB7","#639922","#BA7517","#E24B4A"];
-    setProducts(prev=>[...prev,{id,nameTR:newP.nameTR,nameEN:newP.nameEN||newP.nameTR,kg:parseFloat(newP.kg),color:colors[id%colors.length]}]);
+    setProducts(prev=>[...prev,{id,nameTR:newP.nameTR,nameEN:newP.nameEN||newP.nameTR,kg:parseFloat(newP.kg),color:colors[id%colors.length],vioCode:newP.vioCode||""}]);
     // Save packing standard if provided
     const qpp = parseInt(newP.qtyPerPallet)||0;
     if(qpp > 0) {
@@ -7674,15 +7674,75 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
         const hasAkibet = Object.keys(akibetLookup).length > 0;
         const hasPurchase = Object.keys(purchaseLookup).length > 0;
 
+        // VIO code helpers
+        const getVioCode = (pid) => VIO_CODES[pid] || "";
+        // Find if product appears as PRODUCT part in any BOM (different stockCode)
+        const getBomProductCode = (pid) => {
+          const vioCode = getVioCode(pid);
+          const allBomParts = [];
+          Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
+            (bomModels[mk]?.parts || []).forEach(p => {
+              if (p.supplyType === "PRODUCT") allBomParts.push(p.stockCode);
+            });
+          });
+          // Check if VIO code is in BOM parts
+          if (vioCode && allBomParts.includes(vioCode)) return vioCode;
+          // Check product name similarity (fuzzy match)
+          const product = products?.find(p => p.id === pid);
+          if (!product) return vioCode;
+          // Look for stockCode in BOM that matches this product name keywords
+          const keywords = product.nameTR.toLowerCase().split(/\s+/).filter(w => w.length > 3);
+          for (const mk of Object.keys(bomModels).filter(k => k !== "undefined")) {
+            for (const p of (bomModels[mk]?.parts || [])) {
+              if (p.supplyType === "PRODUCT" && keywords.some(kw => (p.stockName || "").toLowerCase().includes(kw))) {
+                return p.stockCode; // BOM'daki kodu kullan
+              }
+            }
+          }
+          return vioCode;
+        };
+
+        // Auto-map: fill unmapped products
+        const autoMap = () => {
+          const newMapping = { ...bomMapping };
+          demandProducts.forEach(p => {
+            if (isMappedUI(p.id)) return; // zaten eşleştirilmiş
+            // Check if any BOM model's modelCode matches VIO code
+            const vCode = getVioCode(p.id);
+            const bomCode = getBomProductCode(p.id);
+            const code = bomCode || vCode;
+            if (code) {
+              // Check if a BOM model's first L0 part matches this code
+              let foundModel = null;
+              Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
+                const first = (m.parts || []).find(pp => pp.level === 0);
+                if (first && first.stockCode === code) foundModel = mk;
+                if (m.modelCode === code) foundModel = mk;
+              });
+              if (foundModel) {
+                newMapping[p.id] = foundModel;
+              } else if (code) {
+                newMapping[p.id] = "direct:" + code;
+              }
+            }
+          });
+          saveBomMapping(newMapping);
+        };
+
         return (
           <div>
             {/* Step 1 — Mapping */}
             <div style={{ marginBottom: 20 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10, flexWrap: "wrap" }}>
                 <span style={{ fontSize: 14, fontWeight: 600 }}>1️⃣ Ürün ↔ BOM Eşleştirme</span>
                 <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
                   {mappedCount}/{demandProducts.length} ürün eşleştirildi · {modelOptions.length} BOM modeli mevcut
                 </span>
+                {canEdit && mappedCount < demandProducts.length && (
+                  <button onClick={autoMap} style={{ marginLeft: "auto", padding: "5px 14px", borderRadius: 6, border: "1px solid #7C3AED", background: "#F5F3FF", color: "#7C3AED", fontSize: 11, fontWeight: 500, cursor: "pointer" }}>
+                    🔄 Otomatik Eşleştir ({demandProducts.length - mappedCount} eksik)
+                  </button>
+                )}
               </div>
               {demandProducts.length === 0 ? (
                 <div style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)", background: "var(--color-background-secondary)", borderRadius: 8, fontSize: 12 }}>
@@ -7694,6 +7754,7 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                     <thead>
                       <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>VIO Kodu</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Modeli / Stok Kodu</th>
                         <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
@@ -7706,9 +7767,18 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                         const directCode = isDirect ? m.substring(7) : "";
                         const hasBom = m && !isDirect && bomModels[m];
                         const mapped = hasBom || (isDirect && directCode.length > 0);
+                        const vCode = getVioCode(p.id);
+                        const bomCode = getBomProductCode(p.id);
+                        const codeConflict = vCode && bomCode && vCode !== bomCode;
                         return (
                           <tr key={p.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: mapped ? "transparent" : "#FEF2F2" }}>
-                            <td style={{ padding: "5px 8px", fontWeight: 500, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nameTR}</td>
+                            <td style={{ padding: "5px 8px", fontWeight: 500, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nameTR}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{vCode || "—"}</span>
+                              {codeConflict && (
+                                <span title={`VIO: ${vCode} ≠ BOM: ${bomCode}`} style={{ marginLeft: 3, fontSize: 10, cursor: "help", color: "#D97706" }}>⚠</span>
+                              )}
+                            </td>
                             <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{demand.byProduct[p.id]?.qty || 0}</td>
                             <td style={{ padding: "5px 8px" }}>
                               {canEdit ? (
