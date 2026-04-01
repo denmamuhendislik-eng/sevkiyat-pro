@@ -4612,7 +4612,12 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
       const y = Number(year);
       if (y < expYear) return; // skip past years
       (yd.containers || []).forEach(c => {
-        if (c.shipped) return;
+        // Use same logic as sevkiyat plan: date-based shipped check
+        const parts = c.date.split("-");
+        const d = new Date(parts[0], parts[1]-1, parts[2]);
+        d.setDate(d.getDate() + 1);
+        const shipped = c.shipped || d <= new Date();
+        if (shipped) return;
         if (cutoff && new Date(c.date) > cutoff) return;
         const qty = yd.quantities?.[c.id] || {};
         let cTotal = 0;
