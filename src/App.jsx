@@ -540,8 +540,13 @@ export default function App() {
         const desc=descIdx>=0?String(r[descIdx]||""):"";
         if(qty<=0) continue;
         
-        // 1) Kod eşleştirme (mevcut VIO_CODES)
-        const pid=VIO_REVERSE[code];
+        // 1) Kod eşleştirme (mevcut VIO_CODES + ürünlerdeki güncel vioCode)
+        let pid=VIO_REVERSE[code];
+        // Güncel vioCode'lardan da kontrol et (BOM'a Güncelle ile değişenler)
+        if (!pid) {
+          const byVioCode = products.find(pr => pr.vioCode === code);
+          if (byVioCode) pid = byVioCode.id;
+        }
         if(pid){
           const p=products.find(pr=>pr.id===pid);
           matched.push({pid,code,qty,name:p?.nameTR||code,nameEN:p?.nameEN||"",kg:p?.kg||0,matchType:"code"});
@@ -4777,7 +4782,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       // Doğrudan talep ekleme (BOM'u olmayan ürünler)
       directItems.forEach(item => {
         if (!grossReq[item.stockCode]) {
-          grossReq[item.stockCode] = { code: item.stockCode, name: item.name, unit: "AD", level: -1, supplyType: "DIRECT", grossQty: 0, sources: [] };
+          grossReq[item.stockCode] = { code: item.stockCode, name: item.name, unit: "AD", level: -1, supplyType: "BUY", grossQty: 0, sources: [] };
         }
         grossReq[item.stockCode].grossQty += item.qty;
         grossReq[item.stockCode].sources.push({ pid: item.pid, modelKey: null, qty: item.qty, pass: 0 });
@@ -4867,7 +4872,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     else if (expFilter === "make") items = items.filter(r => r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON");
     else if (expFilter === "buy") items = items.filter(r => r.supplyType === "BUY" || r.supplyType === "RAW");
     else if (expFilter === "fason") items = items.filter(r => r.supplyType === "FASON" || r.supplyType === "MAKE+FASON");
-    else if (expFilter === "direct") items = items.filter(r => r.supplyType === "DIRECT");
     else if (expFilter === "cross") items = items.filter(r => r.crossCheck);
     if (expSearch) {
       const q = expSearch.toLowerCase();
@@ -7738,14 +7742,17 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         };
         const mappedCount = demandProducts.filter(p => isMappedUI(p.id)).length;
 
-        const levelLabels = { 0: "L0 — Ana", 1: "L1 — Montaj", 2: "L2 — İşlenmiş", 3: "L3 — Hammadde", "-1": "Doğrudan" };
-        const supplyColors = { MAKE: "#1D9E75", "MAKE+FASON": "#D97706", FASON: "#C2410C", BUY: "#2563EB", RAW: "#92400E", PRODUCT: "#534AB7", DIRECT: "#7C3AED" };
+        const levelLabels = { 0: "L0 — Ana", 1: "L1 — Montaj", 2: "L2 — İşlenmiş", 3: "L3 — Hammadde" };
+        const supplyColors = { MAKE: "#1D9E75", "MAKE+FASON": "#D97706", FASON: "#C2410C", BUY: "#2563EB", RAW: "#92400E", PRODUCT: "#534AB7" };
         const hasStock = Object.keys(stockLookup).length > 0;
         const hasAkibet = Object.keys(akibetLookup).length > 0;
         const hasPurchase = Object.keys(purchaseLookup).length > 0;
 
         // VIO code helpers
-        const getVioCode = (pid) => VIO_CODES[pid] || "";
+        const getVioCode = (pid) => {
+          const p = products?.find(pr => pr.id === pid);
+          return p?.vioCode || VIO_CODES[pid] || "";
+        };
 
         // Build comprehensive BOM PRODUCT lookup from all imported BOMs
         const bomProductLookup = (() => {
@@ -7869,8 +7876,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               newMapping[p.id] = "direct:" + codeToCheck;
             }
 
-            // BOM'da isim farklıysa güncelleme listesine ekle
-            if (comp?.bomName && comp.bomName !== p.nameTR) {
+            // BOM'da isim veya kod farklıysa güncelleme listesine ekle
+            if (comp?.bomCode && (comp.codeDiff || (comp.bomName && comp.bomName !== p.nameTR))) {
               productUpdates.push({ pid: p.id, bomCode: comp.bomCode, bomName: comp.bomName });
             }
           });
@@ -7880,18 +7887,22 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           // Ürün isimlerini BOM'a göre güncelle
           if (productUpdates.length > 0) {
             const doUpdate = confirm(
-              `${productUpdates.length} ürünün ismi BOM'dakinden farklı.\n\n` +
+              `${productUpdates.length} ürünün kodu/ismi BOM'dakinden farklı.\n\n` +
               productUpdates.slice(0, 5).map(u => {
                 const p = products.find(pr => pr.id === u.pid);
-                return `• ${p?.nameTR || ""}\n  → ${u.bomName}`;
+                const vio = getVioCode(u.pid);
+                const lines = [`• ${p?.nameTR || ""}`];
+                if (vio !== u.bomCode) lines.push(`  Kod: ${vio} → ${u.bomCode}`);
+                if (u.bomName && u.bomName !== p?.nameTR) lines.push(`  İsim: → ${u.bomName}`);
+                return lines.join("\n");
               }).join("\n") +
               (productUpdates.length > 5 ? `\n... ve ${productUpdates.length - 5} tane daha` : "") +
-              "\n\nÜrün isimlerini BOM'a göre güncellensin mi?"
+              "\n\nBOM'a göre güncellensin mi?"
             );
             if (doUpdate) {
               setProducts(prev => prev.map(p => {
                 const upd = productUpdates.find(u => u.pid === p.id);
-                if (upd) return { ...p, nameTR: upd.bomName };
+                if (upd) return { ...p, ...(upd.bomName ? { nameTR: upd.bomName } : {}), ...(upd.bomCode ? { vioCode: upd.bomCode } : {}) };
                 return p;
               }));
             }
@@ -7963,32 +7974,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                             <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{demand.byProduct[p.id]?.qty || 0}</td>
                             <td style={{ padding: "5px 8px" }}>
                               {canEdit ? (
-                                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                isDirect ? (
+                                  <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#7C3AED", background: "#F5F3FF", padding: "2px 6px", borderRadius: 4 }}>📦 {directCode}</span>
+                                ) : (
                                   <select
-                                    value={isDirect ? "__direct__" : (m || "")}
-                                    onChange={e => {
-                                      const val = e.target.value;
-                                      if (val === "__direct__") {
-                                        saveBomMapping({ ...bomMapping, [p.id]: "direct:" });
-                                      } else {
-                                        saveBomMapping({ ...bomMapping, [p.id]: val || null });
-                                      }
-                                    }}
-                                    style={{ flex: 1, padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
+                                    value={m || ""}
+                                    onChange={e => saveBomMapping({ ...bomMapping, [p.id]: e.target.value || null })}
+                                    style={{ width: "100%", padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
                                   >
                                     <option value="">— Seçin —</option>
                                     {modelOptions.map(mo => <option key={mo.key} value={mo.key}>{mo.label}</option>)}
-                                    <option value="__direct__">📦 Doğrudan stok kodu (BOM'suz)</option>
                                   </select>
-                                  {isDirect && (
-                                    <input
-                                      placeholder="VIO stok kodu..."
-                                      value={directCode}
-                                      onChange={e => saveBomMapping({ ...bomMapping, [p.id]: "direct:" + e.target.value.trim() })}
-                                      style={{ width: 120, padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid #7C3AED", background: "#F5F3FF", fontFamily: "var(--font-mono)" }}
-                                    />
-                                  )}
-                                </div>
+                                )
                               ) : (
                                 <span style={{ fontSize: 10, color: "var(--color-text-secondary)" }}>
                                   {hasBom ? bomModels[m].modelCode : isDirect ? `📦 ${directCode}` : "Eşleştirilmedi"}
@@ -8010,10 +8007,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     });
                                     newMapping[p.id] = foundModel || ("direct:" + bomCode);
                                     saveBomMapping(newMapping);
-                                    // İsmi de güncelle
-                                    if (bomName && bomName !== p.nameTR) {
-                                      setProducts(prev => prev.map(pr => pr.id === p.id ? { ...pr, nameTR: bomName } : pr));
-                                    }
+                                    // İsmi ve VIO kodunu güncelle
+                                    setProducts(prev => prev.map(pr => pr.id === p.id ? { 
+                                      ...pr, 
+                                      ...(bomName && bomName !== pr.nameTR ? { nameTR: bomName } : {}),
+                                      vioCode: bomCode 
+                                    } : pr));
                                   }}
                                   title={`VIO: ${vCode} → BOM: ${bomCode}\nİsim: ${p.nameTR} → ${bomName}`}
                                   style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid #7C3AED", background: "#F5F3FF", color: "#7C3AED", fontSize: 9, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
@@ -8179,7 +8178,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       { id: "make", label: "MAKE", count: exp.parts.filter(r => r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON").length },
                       { id: "buy", label: "BUY/RAW", count: exp.parts.filter(r => r.supplyType === "BUY" || r.supplyType === "RAW").length },
                       { id: "fason", label: "FASON", count: exp.parts.filter(r => r.supplyType === "FASON" || r.supplyType === "MAKE+FASON").length },
-                      ...(exp.parts.some(r => r.supplyType === "DIRECT") ? [{ id: "direct", label: "📦 Doğrudan", count: exp.parts.filter(r => r.supplyType === "DIRECT").length }] : []),
                       ...(exp.crossCheckIssues > 0 ? [{ id: "cross", label: "⚠ Çapraz", count: exp.crossCheckIssues }] : [])
                     ].map(f => (
                       <button key={f.id} onClick={() => setExpFilter(f.id)} style={{
