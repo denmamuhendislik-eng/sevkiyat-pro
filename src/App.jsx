@@ -2392,7 +2392,7 @@ ${el.innerHTML}
           {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={userRole} selectedYear={selYear}/>}
 
           {/* ========== MRP PAGE ========== */}
-          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} products={products} yearsData={yearsData}/>}
+          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} products={products} yearsData={yearsData} setProducts={setProducts}/>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
@@ -4398,7 +4398,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 // ============================================================
 // MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
 // ============================================================
-function MRPPlanlama({ db, userRole, products, yearsData }) {
+function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const APP_COL = "appData";
   const BOM_DOC = "bomModels";
   const WC_DOC = "workCenters";
