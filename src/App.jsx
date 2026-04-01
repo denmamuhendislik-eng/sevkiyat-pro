@@ -7746,57 +7746,156 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
 
         // VIO code helpers
         const getVioCode = (pid) => VIO_CODES[pid] || "";
-        // Find if product appears as PRODUCT part in any BOM (different stockCode)
-        const getBomProductCode = (pid) => {
-          const vioCode = getVioCode(pid);
-          const allBomParts = [];
-          Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
-            (bomModels[mk]?.parts || []).forEach(p => {
-              if (p.supplyType === "PRODUCT") allBomParts.push(p.stockCode);
+
+        // Build comprehensive BOM PRODUCT lookup from all imported BOMs
+        const bomProductLookup = (() => {
+          const lookup = [];
+          Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
+            (m.parts || []).forEach(p => {
+              const nameTokens = (p.stockName || "").toUpperCase().replace(/[,]/g, ".").split(/\s+/).filter(t => t.length >= 2);
+              lookup.push({ stockCode: p.stockCode, stockName: p.stockName || "", modelKey: mk, supplyType: p.supplyType, level: p.level, nameTokens });
             });
           });
-          // Check if VIO code is in BOM parts
-          if (vioCode && allBomParts.includes(vioCode)) return vioCode;
-          // Check product name similarity (fuzzy match)
+          return lookup;
+        })();
+
+        // Match a product to its BOM code using name similarity
+        const findBomMatch = (pid) => {
           const product = products?.find(p => p.id === pid);
-          if (!product) return vioCode;
-          // Look for stockCode in BOM that matches this product name keywords
-          const keywords = product.nameTR.toLowerCase().split(/\s+/).filter(w => w.length > 3);
-          for (const mk of Object.keys(bomModels).filter(k => k !== "undefined")) {
-            for (const p of (bomModels[mk]?.parts || [])) {
-              if (p.supplyType === "PRODUCT" && keywords.some(kw => (p.stockName || "").toLowerCase().includes(kw))) {
-                return p.stockCode; // BOM'daki kodu kullan
-              }
-            }
+          if (!product) return null;
+          const vioCode = getVioCode(pid);
+          
+          // 1) Direct VIO code match in BOM
+          const directMatch = bomProductLookup.find(b => b.stockCode === vioCode);
+          if (directMatch) return { ...directMatch, matchType: "vioCode" };
+
+          // 2) Name token matching — extract first meaningful token from product name
+          const prodName = product.nameTR.toUpperCase().replace(/[,]/g, ".");
+          const prodTokens = prodName.split(/\s+/).filter(t => t.length >= 2);
+          const firstToken = prodTokens[0] || "";
+
+          // Try to find BOM part where stockName starts with same token
+          if (firstToken.length >= 3) {
+            // Exact first-token match
+            const nameMatch = bomProductLookup.find(b => {
+              const bomFirst = b.nameTokens[0] || "";
+              return bomFirst === firstToken;
+            });
+            if (nameMatch) return { ...nameMatch, matchType: "nameExact" };
+
+            // stockName contains the first token
+            const containsMatch = bomProductLookup.find(b => 
+              b.stockName.toUpperCase().replace(/[,]/g, ".").includes(firstToken) && 
+              (b.supplyType === "PRODUCT" || b.supplyType === "MAKE" || b.supplyType === "BUY" || b.supplyType === "RAW")
+            );
+            if (containsMatch) return { ...containsMatch, matchType: "nameContains" };
           }
-          return vioCode;
+
+          // 3) Multi-token matching (first 2 tokens)
+          if (prodTokens.length >= 2) {
+            const twoTokens = prodTokens[0] + " " + prodTokens[1];
+            const multiMatch = bomProductLookup.find(b => {
+              const bomTwo = (b.nameTokens[0] || "") + " " + (b.nameTokens[1] || "");
+              return bomTwo === twoTokens;
+            });
+            if (multiMatch) return { ...multiMatch, matchType: "nameMulti" };
+          }
+
+          return null;
         };
 
-        // Auto-map: fill unmapped products
+        // Build comparison data for all demand products
+        const productComparison = (() => {
+          return demandProducts.map(p => {
+            const vioCode = getVioCode(p.id);
+            const bomMatch = findBomMatch(p.id);
+            const bomCode = bomMatch?.stockCode || "";
+            const bomName = bomMatch?.stockName || "";
+            const codeMatch = vioCode && bomCode && vioCode === bomCode;
+            const codeDiff = vioCode && bomCode && vioCode !== bomCode;
+            
+            // Name comparison: extract first token from both
+            const ourFirstToken = p.nameTR.split(/\s+/)[0].replace(/[,]/g, ".").toUpperCase();
+            const bomFirstToken = (bomName.split(/\s+/)[0] || "").replace(/[,]/g, ".").toUpperCase();
+            const nameFirstMatch = ourFirstToken && bomFirstToken && ourFirstToken === bomFirstToken;
+            
+            return {
+              pid: p.id, nameTR: p.nameTR, vioCode, bomCode, bomName,
+              bomMatchType: bomMatch?.matchType || null,
+              bomSupplyType: bomMatch?.supplyType || null,
+              bomModelKey: bomMatch?.modelKey || null,
+              codeMatch, codeDiff, nameFirstMatch,
+              status: !bomMatch ? "no_bom" : codeMatch ? "ok" : codeDiff ? "code_diff" : "ok"
+            };
+          });
+        })();
+
+        const codeDiffCount = productComparison.filter(c => c.codeDiff).length;
+        const noBomCount = productComparison.filter(c => c.status === "no_bom").length;
+
+        // Auto-map: fill unmapped products using BOM matching + update names/codes
         const autoMap = () => {
           const newMapping = { ...bomMapping };
+          const productUpdates = []; // { pid, bomCode, bomName } — isimleri güncellenecek ürünler
+          
           demandProducts.forEach(p => {
-            if (isMappedUI(p.id)) return; // zaten eşleştirilmiş
-            // Check if any BOM model's modelCode matches VIO code
-            const vCode = getVioCode(p.id);
-            const bomCode = getBomProductCode(p.id);
-            const code = bomCode || vCode;
-            if (code) {
-              // Check if a BOM model's first L0 part matches this code
-              let foundModel = null;
+            if (isMappedUI(p.id)) return;
+            const comp = productComparison.find(c => c.pid === p.id);
+            
+            // 1) Check if BOM model exists for this product
+            let foundModel = null;
+            const codeToCheck = comp?.bomCode || getVioCode(p.id);
+            
+            if (codeToCheck) {
               Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
                 const first = (m.parts || []).find(pp => pp.level === 0);
-                if (first && first.stockCode === code) foundModel = mk;
-                if (m.modelCode === code) foundModel = mk;
+                if (first && first.stockCode === codeToCheck) foundModel = mk;
+                if (m.modelCode === codeToCheck) foundModel = mk;
               });
-              if (foundModel) {
-                newMapping[p.id] = foundModel;
-              } else if (code) {
-                newMapping[p.id] = "direct:" + code;
-              }
+            }
+            // Also try VIO code if bomCode didn't match
+            if (!foundModel && comp?.vioCode) {
+              Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
+                const first = (m.parts || []).find(pp => pp.level === 0);
+                if (first && first.stockCode === comp.vioCode) foundModel = mk;
+              });
+            }
+
+            if (foundModel) {
+              newMapping[p.id] = foundModel;
+            } else if (comp?.bomCode) {
+              newMapping[p.id] = "direct:" + comp.bomCode;
+            } else if (codeToCheck) {
+              newMapping[p.id] = "direct:" + codeToCheck;
+            }
+
+            // BOM'da isim farklıysa güncelleme listesine ekle
+            if (comp?.bomName && comp.bomName !== p.nameTR) {
+              productUpdates.push({ pid: p.id, bomCode: comp.bomCode, bomName: comp.bomName });
             }
           });
+          
           saveBomMapping(newMapping);
+          
+          // Ürün isimlerini BOM'a göre güncelle
+          if (productUpdates.length > 0) {
+            const doUpdate = confirm(
+              `${productUpdates.length} ürünün ismi BOM'dakinden farklı.\n\n` +
+              productUpdates.slice(0, 5).map(u => {
+                const p = products.find(pr => pr.id === u.pid);
+                return `• ${p?.nameTR || ""}\n  → ${u.bomName}`;
+              }).join("\n") +
+              (productUpdates.length > 5 ? `\n... ve ${productUpdates.length - 5} tane daha` : "") +
+              "\n\nÜrün isimlerini BOM'a göre güncellensin mi?"
+            );
+            if (doUpdate) {
+              setProducts(prev => prev.map(p => {
+                const upd = productUpdates.find(u => u.pid === p.id);
+                if (upd) return { ...p, nameTR: upd.bomName };
+                return p;
+              }));
+            }
+          }
         };
 
         return (
@@ -7807,6 +7906,8 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                 <span style={{ fontSize: 14, fontWeight: 600 }}>1️⃣ Ürün ↔ BOM Eşleştirme</span>
                 <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
                   {mappedCount}/{demandProducts.length} ürün eşleştirildi · {modelOptions.length} BOM modeli mevcut
+                  {codeDiffCount > 0 && <span style={{ color: "#D97706", marginLeft: 6 }}>⚠ {codeDiffCount} kod farkı</span>}
+                  {noBomCount > 0 && <span style={{ color: "#9CA3AF", marginLeft: 6 }}>· {noBomCount} BOM'da yok</span>}
                 </span>
                 {canEdit && mappedCount < demandProducts.length && (
                   <button onClick={autoMap} style={{ marginLeft: "auto", padding: "5px 14px", borderRadius: 6, border: "1px solid #7C3AED", background: "#F5F3FF", color: "#7C3AED", fontSize: 11, fontWeight: 500, cursor: "pointer" }}>
@@ -7823,10 +7924,12 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                     <thead>
                       <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
-                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün (Sevkiyat)</th>
                         <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>VIO Kodu</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#7C3AED" }}>BOM Kodu</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#7C3AED" }}>BOM İsmi</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Modeli / Stok Kodu</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Eşleştirme</th>
                         <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
                       </tr>
                     </thead>
@@ -7837,17 +7940,25 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                         const directCode = isDirect ? m.substring(7) : "";
                         const hasBom = m && !isDirect && bomModels[m];
                         const mapped = hasBom || (isDirect && directCode.length > 0);
-                        const vCode = getVioCode(p.id);
-                        const bomCode = getBomProductCode(p.id);
-                        const codeConflict = vCode && bomCode && vCode !== bomCode;
+                        const comp = productComparison.find(c => c.pid === p.id);
+                        const vCode = comp?.vioCode || "";
+                        const bomCode = comp?.bomCode || "";
+                        const bomName = comp?.bomName || "";
+                        const codeDiff = comp?.codeDiff || false;
+                        const rowBg = codeDiff ? "#FEF3C7" : !mapped ? "#FEF2F2" : "transparent";
                         return (
-                          <tr key={p.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: mapped ? "transparent" : "#FEF2F2" }}>
-                            <td style={{ padding: "5px 8px", fontWeight: 500, maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nameTR}</td>
+                          <tr key={p.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
+                            <td style={{ padding: "5px 8px", fontWeight: 500, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nameTR}</td>
                             <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{vCode || "—"}</span>
-                              {codeConflict && (
-                                <span title={`VIO: ${vCode} ≠ BOM: ${bomCode}`} style={{ marginLeft: 3, fontSize: 10, cursor: "help", color: "#D97706" }}>⚠</span>
-                              )}
+                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: codeDiff ? "#B45309" : "var(--color-text-secondary)" }}>{vCode || "—"}</span>
+                            </td>
+                            <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                              {bomCode ? (
+                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: codeDiff ? "#7C3AED" : "var(--color-text-secondary)", fontWeight: codeDiff ? 600 : 400 }}>{bomCode}</span>
+                              ) : <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>—</span>}
+                            </td>
+                            <td style={{ padding: "5px 8px", fontSize: 10, color: "var(--color-text-secondary)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {bomName || "—"}
                             </td>
                             <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{demand.byProduct[p.id]?.qty || 0}</td>
                             <td style={{ padding: "5px 8px" }}>
@@ -7885,7 +7996,9 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                               )}
                             </td>
                             <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                              {mapped ? (
+                              {codeDiff ? (
+                                <span style={{ fontSize: 9, padding: "2px 5px", borderRadius: 3, background: "#FEF3C7", color: "#B45309", fontWeight: 500 }} title={`VIO: ${vCode} ≠ BOM: ${bomCode}`}>⚠ Kod farkı</span>
+                              ) : mapped ? (
                                 <span style={{ color: isDirect ? "#7C3AED" : "var(--color-text-success)", fontSize: isDirect ? 10 : 12 }}>
                                   {isDirect ? "📦" : "✓"}
                                 </span>
