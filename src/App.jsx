@@ -517,18 +517,67 @@ export default function App() {
       const descIdx=header.findIndex(v=>v.includes("DESC"));
       
       const matched=[];const unmatched=[];
+      // Build name-based lookup for fallback matching
+      const nameLookup = {};
+      products.forEach(p => {
+        // Extract key identifier from nameTR (first meaningful token: "52014", "121408-F", "D20,5", "330910-01" etc.)
+        const tokens = p.nameTR.split(/\s+/);
+        const key = tokens[0].toUpperCase().replace(/[,]/g, ".");
+        if (!nameLookup[key]) nameLookup[key] = [];
+        nameLookup[key].push(p);
+        // Also index by first 2 tokens for longer identifiers like "121408-F BÜKME"
+        if (tokens.length >= 2) {
+          const key2 = (tokens[0] + " " + tokens[1]).toUpperCase().replace(/[,]/g, ".");
+          if (!nameLookup[key2]) nameLookup[key2] = [];
+          nameLookup[key2].push(p);
+        }
+      });
+
       for(let i=headerIdx+1;i<rows.length;i++){
         const r=rows[i];if(!r||!r[codeIdx]) continue;
         const code=String(r[codeIdx]).trim();
         const qty=parseInt(r[qtyIdx])||0;
         const desc=descIdx>=0?String(r[descIdx]||""):"";
         if(qty<=0) continue;
+        
+        // 1) Kod eşleştirme (mevcut VIO_CODES)
         const pid=VIO_REVERSE[code];
         if(pid){
           const p=products.find(pr=>pr.id===pid);
-          matched.push({pid,code,qty,name:p?.nameTR||code,nameEN:p?.nameEN||"",kg:p?.kg||0});
+          matched.push({pid,code,qty,name:p?.nameTR||code,nameEN:p?.nameEN||"",kg:p?.kg||0,matchType:"code"});
         } else {
-          unmatched.push({code,qty,desc,nameTR:"",nameEN:desc,kg:"",approved:false});
+          // 2) İsim bazlı fallback — desc'ten anahtar kelime çıkar
+          const descUp = desc.toUpperCase().replace(/[,]/g, ".");
+          const descTokens = descUp.split(/\s+/).filter(t => t.length > 0);
+          let nameMatch = null;
+          
+          // Try first token, then first 2 tokens
+          if (descTokens.length >= 2) {
+            const key2 = descTokens[0] + " " + descTokens[1];
+            if (nameLookup[key2]?.length === 1) nameMatch = nameLookup[key2][0];
+          }
+          if (!nameMatch && descTokens.length >= 1) {
+            if (nameLookup[descTokens[0]]?.length === 1) nameMatch = nameLookup[descTokens[0]][0];
+          }
+          // Also try matching code itself as a name token (e.g. code "150-0228" might appear in product names)
+          if (!nameMatch) {
+            const codeToken = code.toUpperCase();
+            if (nameLookup[codeToken]?.length === 1) nameMatch = nameLookup[codeToken][0];
+          }
+          // Broader: search all products for desc containing first meaningful word
+          if (!nameMatch && descTokens.length > 0) {
+            const firstToken = descTokens[0];
+            if (firstToken.length >= 4) {
+              const candidates = products.filter(p => p.nameTR.toUpperCase().replace(/[,]/g, ".").startsWith(firstToken));
+              if (candidates.length === 1) nameMatch = candidates[0];
+            }
+          }
+
+          if (nameMatch) {
+            matched.push({pid:nameMatch.id, code, qty, name:nameMatch.nameTR, nameEN:nameMatch.nameEN||"", kg:nameMatch.kg||0, matchType:"name", originalCode:code, expectedCode:VIO_CODES[nameMatch.id]||"?"});
+          } else {
+            unmatched.push({code,qty,desc,nameTR:"",nameEN:desc,kg:"",approved:false});
+          }
         }
       }
       setImportData({matched,unmatched});
@@ -562,7 +611,8 @@ export default function App() {
       });
       return{...prev,[importYear]:{...y,orders}};
     });
-    alert(`${importData.matched.length} ürün siparişi ${importYear} yılına aktarıldı!`);
+    const nameMatchCount = importData.matched.filter(m => m.matchType === "name").length;
+    alert(`${importData.matched.length} ürün siparişi ${importYear} yılına aktarıldı!${nameMatchCount > 0 ? `\n⚠ ${nameMatchCount} ürün isim eşleşmesi ile bulundu (kod farklı).` : ""}`);
     setImportData(null);setImportNewProducts([]);
   };
 
@@ -1979,11 +2029,21 @@ ${el.innerHTML}
             {importData&&<div>
               {/* Matched Products */}
               <div style={{marginBottom:16}}>
-                <h4 style={{fontSize:14,fontWeight:600,marginBottom:8,color:"#1D9E75"}}>✓ Eşleşen ürünler ({importData.matched.length})</h4>
+                {(() => {
+                  const codeMatched = importData.matched.filter(m => m.matchType === "code");
+                  const nameMatched = importData.matched.filter(m => m.matchType === "name");
+                  return <>
+                    <h4 style={{fontSize:14,fontWeight:600,marginBottom:8,color:"#1D9E75"}}>
+                      ✓ Eşleşen ürünler ({importData.matched.length})
+                      {nameMatched.length > 0 && <span style={{fontSize:11,fontWeight:400,color:"#D97706",marginLeft:8}}>⚠ {nameMatched.length} isim eşleşmesi (kod farklı)</span>}
+                    </h4>
+                  </>;
+                })()}
                 {importData.matched.length>0?<table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
                   <thead><tr style={{borderBottom:"2px solid var(--color-border-tertiary)"}}>
                     <th style={{textAlign:"left",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>VIO Kodu</th>
                     <th style={{textAlign:"left",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Ürün</th>
+                    <th style={{textAlign:"center",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Eşleşme</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Import</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Mevcut</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Toplam</th>
@@ -1991,9 +2051,19 @@ ${el.innerHTML}
                   <tbody>
                     {importData.matched.map((m,i)=>{
                       const existing=(yearsData[importYear]?.orders||{})[m.pid]||0;
-                      return <tr key={i} style={{borderBottom:"1px solid var(--color-border-tertiary)",background:i%2===0?"transparent":"var(--color-background-secondary)"}}>
-                        <td style={{padding:"5px 8px",fontFamily:"monospace",fontSize:10}}>{m.code}</td>
+                      const isNameMatch = m.matchType === "name";
+                      return <tr key={i} style={{borderBottom:"1px solid var(--color-border-tertiary)",background:isNameMatch?"#FEF3C7":i%2===0?"transparent":"var(--color-background-secondary)"}}>
+                        <td style={{padding:"5px 8px",fontFamily:"monospace",fontSize:10}}>
+                          {m.code}
+                          {isNameMatch && <div style={{fontSize:9,color:"#B45309",marginTop:2}}>Beklenen: {m.expectedCode}</div>}
+                        </td>
                         <td style={{padding:"5px 8px"}}>{m.name}</td>
+                        <td style={{padding:"5px 8px",textAlign:"center"}}>
+                          {isNameMatch 
+                            ? <span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FEF3C7",color:"#B45309",fontWeight:500}} title={`Kod: ${m.originalCode} → İsim eşleşmesi ile ${m.name} bulundu`}>⚠ İsim</span>
+                            : <span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#DCFCE7",color:"#16A34A"}}>✓ Kod</span>
+                          }
+                        </td>
                         <td style={{textAlign:"right",padding:"5px 8px",fontWeight:600,color:"#534AB7"}}>+{m.qty}</td>
                         <td style={{textAlign:"right",padding:"5px 8px",color:"var(--color-text-tertiary)"}}>{existing}</td>
                         <td style={{textAlign:"right",padding:"5px 8px",fontWeight:600,color:"#1D9E75"}}>{existing+m.qty}</td>
