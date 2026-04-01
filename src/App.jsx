@@ -4448,6 +4448,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [stockIncludeUretim, setStockIncludeUretim] = useState(false);
   const [stockIncludeFason, setStockIncludeFason] = useState(false);
 
+  // Montaj planı verisi (ANA_IDS ürünler için talep + stok kaynağı)
+  const ANA_IDS = [1, 2, 3, 4, 5];
+  const [montajState, setMontajState] = useState(null);
+
   // Firestore listeners
   useEffect(() => {
     if (!db) return;
@@ -4482,6 +4486,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const stockRef = doc(db, APP_COL, STOCK_DOC);
     unsubs.push(onSnapshot(stockRef, snap => {
       if (snap.exists()) setStock(snap.data());
+    }, () => {}));
+    // Montaj planı verisi
+    const montajRef = doc(db, "montajData", "state");
+    unsubs.push(onSnapshot(montajRef, snap => {
+      if (snap.exists()) setMontajState(snap.data());
     }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
@@ -4677,6 +4686,51 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   // Compute unshipped demand from sevkiyat planı
   const [expYear, setExpYear] = useState(new Date().getFullYear());
   const availableYears = useMemo(() => yearsData ? Object.keys(yearsData).map(Number).sort() : [], [yearsData]);
+
+  // Montaj planından ANA ürünlerin güncel stoku ve kalan üretim planı
+  const montajCalc = useMemo(() => {
+    if (!montajState || !yearsData) return { stock: {}, remainingPlan: {}, hasMontaj: false };
+    const { initialStock = {}, initDate = "", days = {} } = montajState;
+    const today = new Date().toISOString().slice(0, 10);
+
+    // 1) Güncel stok = başlangıç + üretilen (bugüne kadar) − sevk edilen (initDate sonrası)
+    const stock = {};
+    ANA_IDS.forEach(pid => { stock[pid] = Number(initialStock[pid]) || 0; });
+    Object.entries(days).forEach(([date, day]) => {
+      if (date > today) return;
+      ANA_IDS.forEach(pid => { stock[pid] += Number(day.actual?.[pid]) || 0; });
+    });
+    // initDate sonrası sevk edilenleri düş (tüm yıllar)
+    Object.entries(yearsData).forEach(([year, yd]) => {
+      (yd.containers || []).forEach(c => {
+        // shipped kontrolü: tarih bazlı (sevkiyat planıyla aynı mantık)
+        const parts = c.date.split("-");
+        const d = new Date(parts[0], parts[1] - 1, parts[2]);
+        d.setDate(d.getDate() + 1);
+        const shipped = c.shipped || d <= new Date();
+        if (!shipped) return;
+        if (initDate && c.date <= initDate) return;
+        const q = yd.quantities?.[c.id] || {};
+        ANA_IDS.forEach(pid => { stock[pid] -= Number(q[pid]) || 0; });
+      });
+    });
+
+    // 2) Kalan üretim planı = bugünden itibaren plan - gerçekleşen
+    const remainingPlan = {};
+    ANA_IDS.forEach(pid => { remainingPlan[pid] = 0; });
+    Object.entries(days).forEach(([date, day]) => {
+      if (date < today) return; // geçmiş günleri atla
+      ANA_IDS.forEach(pid => {
+        const planned = Number(day.planned?.[pid]) || 0;
+        const actual = Number(day.actual?.[pid]) || 0;
+        const remaining = Math.max(0, planned - actual);
+        remainingPlan[pid] += remaining;
+      });
+    });
+
+    return { stock, remainingPlan, hasMontaj: true };
+  }, [montajState, yearsData]);
+
   const unshippedDemand = useMemo(() => {
     if (!yearsData || !products) return { byProduct: {}, containers: [], totalProducts: 0, totalUnits: 0 };
     const byProduct = {};
@@ -4758,25 +4812,50 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         });
       };
 
-      // Pass 1: Sevkiyat planından gelen doğrudan talep
-      const directItems = []; // BOM'u olmayan ürünlerin doğrudan talebi
+      // Pass 1: Talep hesaplama (kaynak: montaj planı veya sevkiyat planı)
+      const directItems = [];
+      const demandSummary = {}; // pid → { source, rawDemand, productStock, netDemand }
+
       Object.entries(initialDemand).forEach(([pidStr, dInfo]) => {
         const pid = Number(pidStr);
         const mapping = bomMapping[pid];
-        if (!mapping) return; // eşleştirilmemiş
+        if (!mapping) return;
+
+        const isAna = ANA_IDS.includes(pid);
+        const product = products?.find(p => p.id === pid);
+        let rawDemand, productStock, netDemand, source;
+
+        if (isAna && montajCalc.hasMontaj) {
+          // ANA ürün — montaj planından talep ve stok
+          rawDemand = montajCalc.remainingPlan[pid] || 0;
+          productStock = Math.max(0, montajCalc.stock[pid] || 0);
+          source = "montaj";
+        } else {
+          // Diğer ürünler — sevkiyat planından talep, VIO stoktan mamul stok
+          rawDemand = dInfo.qty;
+          const stk = stockLookup[VIO_CODES[pid] || product?.vioCode] || stockLookup[product?.vioCode] || {};
+          productStock = stk.ambar || 0;
+          source = "sevkiyat";
+        }
+
+        // Net talep = ham talep − mamul stok (negatif olamaz)
+        netDemand = Math.max(0, rawDemand - productStock);
+
+        demandSummary[pid] = { source, rawDemand, productStock, netDemand, name: product?.nameTR || `PID ${pid}` };
+
+        if (netDemand <= 0) return; // stok yeterli, üretim/alım gerekmez
 
         // "direct:STOK_KODU" formatı → BOM'u olmayan ürün, doğrudan talep
         if (typeof mapping === "string" && mapping.startsWith("direct:")) {
           const stockCode = mapping.substring(7);
-          const product = products?.find(p => p.id === pid);
-          directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: dInfo.qty });
+          directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: netDemand });
           return;
         }
 
         // Normal BOM eşleştirmesi
         const modelKey = mapping;
         if (!modelKey || !bomModels[modelKey]) return;
-        explodeProduct(pid, dInfo.qty, modelKey, 1);
+        explodeProduct(pid, netDemand, modelKey, 1);
       });
 
       // Doğrudan talep ekleme (BOM'u olmayan ürünler)
@@ -4853,6 +4932,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         mappedProducts, unmappedProducts,
         crossCheckIssues: crossCheckIssues.length,
         pass2Count, productDemandCodes: Object.keys(productDemand),
+        demandSummary,
         calculatedAt: new Date().toISOString()
       });
     } catch (err) {
@@ -8175,13 +8255,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               // Per-product summary
               const productSummary = (() => {
                 const pMap = {};
+                const ds = exp.demandSummary || {};
                 parts.forEach(r => {
                   (r.sources || []).forEach(s => {
                     const pid = typeof s.pid === "number" ? s.pid : null;
                     if (!pid) return;
                     if (!pMap[pid]) {
                       const pr = products?.find(p => p.id === pid);
-                      pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`, demand: demand.byProduct[pid]?.qty || 0, totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
+                      const d = ds[pid] || {};
+                      pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`,
+                        source: d.source || "sevkiyat", rawDemand: d.rawDemand || 0,
+                        productStock: d.productStock || 0, netDemand: d.netDemand || 0,
+                        totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
                     }
                     pMap[pid].totalParts++;
                     if (r.netQty > 0) {
@@ -8192,7 +8277,17 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     } else { pMap[pid].covered++; }
                   });
                 });
-                return Object.values(pMap).sort((a, b) => b.netOpenParts - a.netOpenParts || b.demand - a.demand);
+                // demandSummary'de olup parts'ta olmayan ürünleri de ekle (stokla karşılananlar)
+                Object.entries(ds).forEach(([pidStr, d]) => {
+                  const pid = Number(pidStr);
+                  if (!pMap[pid]) {
+                    const pr = products?.find(p => p.id === pid);
+                    pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`,
+                      source: d.source, rawDemand: d.rawDemand, productStock: d.productStock, netDemand: d.netDemand,
+                      totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
+                  }
+                });
+                return Object.values(pMap).sort((a, b) => b.netOpenParts - a.netOpenParts || b.netDemand - a.netDemand);
               })();
 
               return (
@@ -8244,38 +8339,56 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                           <thead><tr style={{ background: "var(--color-background-secondary)" }}>
                             <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
+                            <th style={{ padding: "8px 6px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Kaynak</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
-                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Toplam Parça</th>
-                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#16A34A" }}>✓ Karşılanan</th>
-                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#DC2626" }}>Eksik Parça</th>
-                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>🛒 Satınalma</th>
-                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#1D9E75" }}>🏭 Üretim</th>
-                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#C2410C" }}>🚚 Fason</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>Mamul Stok</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#DC2626" }}>Net Talep</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Parça</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#16A34A" }}>✓ Tamam</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#DC2626" }}>Eksik</th>
+                            <th style={{ padding: "8px 6px", textAlign: "center", fontWeight: 500, fontSize: 9, color: "#2563EB" }}>🛒</th>
+                            <th style={{ padding: "8px 6px", textAlign: "center", fontWeight: 500, fontSize: 9, color: "#1D9E75" }}>🏭</th>
+                            <th style={{ padding: "8px 6px", textAlign: "center", fontWeight: 500, fontSize: 9, color: "#C2410C" }}>🚚</th>
                             <th style={{ padding: "8px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
                           </tr></thead>
                           <tbody>
                             {productSummary.map((ps, i) => {
                               const pct = ps.totalParts > 0 ? Math.round((ps.covered / ps.totalParts) * 100) : 0;
-                              const isOk = ps.netOpenParts === 0;
+                              const isFullyCovered = ps.netDemand === 0;
+                              const isPartsOk = ps.netOpenParts === 0 && ps.netDemand > 0;
+                              const rowBg = isFullyCovered ? "#F0FDF4" : isPartsOk ? "transparent" : "#FEF2F2";
                               return (
-                                <tr key={ps.pid} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: isOk ? "transparent" : "#FEF2F2" }}>
-                                  <td style={{ padding: "6px 10px", fontWeight: 500 }}>{ps.name}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{ps.demand}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{ps.totalParts}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", color: "#16A34A" }}>{ps.covered}</td>
+                                <tr key={ps.pid} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
+                                  <td style={{ padding: "6px 10px", fontWeight: 500, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ps.name}</td>
+                                  <td style={{ padding: "6px 6px", textAlign: "center" }}>
+                                    <span style={{ fontSize: 9, padding: "2px 6px", borderRadius: 3,
+                                      background: ps.source === "montaj" ? "#DBEAFE" : "#F3E8FF",
+                                      color: ps.source === "montaj" ? "#1D4ED8" : "#7C3AED" }}>
+                                      {ps.source === "montaj" ? "Montaj" : "Sevkiyat"}
+                                    </span>
+                                  </td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{ps.rawDemand}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.productStock > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" }}>{ps.productStock > 0 ? ps.productStock : "—"}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: ps.netDemand > 0 ? "#DC2626" : "#16A34A" }}>
+                                    {ps.netDemand > 0 ? ps.netDemand : "✓ Stok yeterli"}
+                                  </td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{ps.totalParts || "—"}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", color: "#16A34A" }}>{ps.covered || "—"}</td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: ps.netOpenParts > 0 ? 700 : 400, color: ps.netOpenParts > 0 ? "#DC2626" : "var(--color-text-tertiary)" }}>{ps.netOpenParts || "—"}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", color: ps.buyOpen > 0 ? "#2563EB" : "var(--color-text-tertiary)" }}>{ps.buyOpen || "—"}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", color: ps.makeOpen > 0 ? "#1D9E75" : "var(--color-text-tertiary)" }}>{ps.makeOpen || "—"}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", color: ps.fasonOpen > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{ps.fasonOpen || "—"}</td>
+                                  <td style={{ padding: "6px 6px", textAlign: "center", fontSize: 10, color: ps.buyOpen > 0 ? "#2563EB" : "var(--color-text-tertiary)" }}>{ps.buyOpen || "—"}</td>
+                                  <td style={{ padding: "6px 6px", textAlign: "center", fontSize: 10, color: ps.makeOpen > 0 ? "#1D9E75" : "var(--color-text-tertiary)" }}>{ps.makeOpen || "—"}</td>
+                                  <td style={{ padding: "6px 6px", textAlign: "center", fontSize: 10, color: ps.fasonOpen > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{ps.fasonOpen || "—"}</td>
                                   <td style={{ padding: "6px 8px", textAlign: "center" }}>
-                                    {isOk ? (
-                                      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: "#DCFCE7", color: "#16A34A", fontWeight: 500 }}>✓ Hazır</span>
+                                    {isFullyCovered ? (
+                                      <span style={{ fontSize: 9, padding: "2px 8px", borderRadius: 4, background: "#DCFCE7", color: "#16A34A", fontWeight: 500 }}>✓ Stokta</span>
+                                    ) : isPartsOk ? (
+                                      <span style={{ fontSize: 9, padding: "2px 8px", borderRadius: 4, background: "#DCFCE7", color: "#16A34A", fontWeight: 500 }}>✓ Hazır</span>
                                     ) : (
                                       <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
-                                        <div style={{ width: 50, height: 6, borderRadius: 3, background: "#FEE2E2", overflow: "hidden" }}>
+                                        <div style={{ width: 40, height: 5, borderRadius: 3, background: "#FEE2E2", overflow: "hidden" }}>
                                           <div style={{ width: `${pct}%`, height: "100%", background: pct >= 80 ? "#F59E0B" : "#DC2626", borderRadius: 3 }} />
                                         </div>
-                                        <span style={{ fontSize: 9, color: "#DC2626", fontWeight: 500 }}>%{pct}</span>
+                                        <span style={{ fontSize: 9, color: "#DC2626" }}>%{pct}</span>
                                       </div>
                                     )}
                                   </td>
@@ -8284,6 +8397,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                             })}
                           </tbody>
                         </table>
+                      </div>
+                      {/* Legend */}
+                      <div style={{ marginTop: 8, fontSize: 10, color: "var(--color-text-tertiary)", display: "flex", gap: 16, flexWrap: "wrap" }}>
+                        <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#DBEAFE", color: "#1D4ED8", fontSize: 9 }}>Montaj</span> = talep montaj planından, stok montaj stoktan</span>
+                        <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#F3E8FF", color: "#7C3AED", fontSize: 9 }}>Sevkiyat</span> = talep sevkiyat planından, stok VIO raporundan</span>
                       </div>
                     </div>
                   )}
