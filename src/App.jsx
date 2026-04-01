@@ -2322,7 +2322,7 @@ ${el.innerHTML}
           {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={userRole} selectedYear={selYear}/>}
 
           {/* ========== MRP PAGE ========== */}
-          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole}/>}
+          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} products={products} yearsData={yearsData}/>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
@@ -4328,7 +4328,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 // ============================================================
 // MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
 // ============================================================
-function MRPPlanlama({ db, userRole }) {
+function MRPPlanlama({ db, userRole, products, yearsData }) {
   const APP_COL = "appData";
   const BOM_DOC = "bomModels";
   const WC_DOC = "workCenters";
@@ -4582,6 +4582,182 @@ function MRPPlanlama({ db, userRole }) {
     }
     return entries.sort((a, b) => b.total - a.total);
   }, [stock, stockSearch, stockFilter, bomModels]);
+
+  // ==================== BOM EXPLOSION ENGINE ====================
+  const MAPPING_DOC = "mrpBomMapping";
+  const [bomMapping, setBomMapping] = useState({});
+  const [explosionResult, setExplosionResult] = useState(null);
+  const [exploding, setExploding] = useState(false);
+  const [expCutoff, setExpCutoff] = useState(""); // tarih filtresi: bu tarihe kadar
+
+  // Firestore listener for BOM mapping
+  useEffect(() => {
+    if (!db) return;
+    const ref = doc(db, APP_COL, MAPPING_DOC);
+    const unsub = onSnapshot(ref, snap => { if (snap.exists()) setBomMapping(snap.data()); }, () => {});
+    return () => unsub();
+  }, [db]);
+  const saveBomMapping = async (data) => { if (!db || !canEdit) return; await setDoc(doc(db, APP_COL, MAPPING_DOC), data); };
+
+  // Compute unshipped demand from sevkiyat planı
+  const unshippedDemand = useMemo(() => {
+    if (!yearsData || !products) return { byProduct: {}, containers: [], totalProducts: 0, totalUnits: 0 };
+    const byProduct = {};
+    const containers = [];
+    const cutoff = expCutoff ? new Date(expCutoff + "T23:59:59") : null;
+    Object.entries(yearsData).forEach(([year, yd]) => {
+      (yd.containers || []).forEach(c => {
+        if (c.shipped) return;
+        if (cutoff && new Date(c.date) > cutoff) return;
+        const qty = yd.quantities?.[c.id] || {};
+        let cTotal = 0;
+        Object.entries(qty).forEach(([pid, q]) => {
+          const pidN = Number(pid);
+          if (q > 0) {
+            if (!byProduct[pidN]) byProduct[pidN] = { qty: 0, containers: [] };
+            byProduct[pidN].qty += q;
+            byProduct[pidN].containers.push(c.id);
+            cTotal += q;
+          }
+        });
+        if (cTotal > 0) containers.push({ id: c.id, date: c.date, year: Number(year), total: cTotal });
+      });
+    });
+    const totalProducts = Object.keys(byProduct).length;
+    const totalUnits = Object.values(byProduct).reduce((s, p) => s + p.qty, 0);
+    return { byProduct, containers: containers.sort((a, b) => a.date.localeCompare(b.date)), totalProducts, totalUnits };
+  }, [yearsData, products, expCutoff]);
+
+  // BOM Explosion — recursive multi-level
+  const runBomExplosion = () => {
+    if (exploding) return;
+    setExploding(true);
+    try {
+      const demand = unshippedDemand.byProduct;
+      const grossReq = {}; // stockCode → { name, unit, qty, level, supplyType, sources[] }
+
+      // Walk each product
+      Object.entries(demand).forEach(([pidStr, dInfo]) => {
+        const pid = Number(pidStr);
+        const modelKey = bomMapping[pid];
+        if (!modelKey || !bomModels[modelKey]) return;
+        const model = bomModels[modelKey];
+        const parts = model.parts || [];
+        if (parts.length === 0) return;
+
+        const demandQty = dInfo.qty;
+        const partQtys = {}; // partIdx → total qty needed for this product demand
+
+        // Walk parts in order (they're stored parent before child)
+        parts.forEach((p, i) => {
+          let needed;
+          if (p.parentIdx === null || p.parentIdx === undefined) {
+            // L0 part — qty per 1 finished product
+            needed = (p.qty || 1) * demandQty;
+          } else {
+            // Child part — qty per parent × parent's total
+            const parentNeeded = partQtys[p.parentIdx] || 0;
+            needed = (p.qty || 1) * parentNeeded;
+          }
+          partQtys[i] = needed;
+
+          // Skip PRODUCT type (finished assemblies that are themselves in sevkiyat plan)
+          if (p.supplyType === "PRODUCT") return;
+
+          // Add to gross requirements
+          const code = p.stockCode;
+          if (!grossReq[code]) {
+            grossReq[code] = {
+              code, name: p.stockName, unit: p.unit || "AD",
+              level: p.level, supplyType: p.supplyType,
+              grossQty: 0, sources: []
+            };
+          }
+          grossReq[code].grossQty += needed;
+          grossReq[code].sources.push({ pid, modelKey, qty: needed });
+          // Keep the deepest level if same code appears at multiple levels
+          if (p.level > grossReq[code].level) grossReq[code].level = p.level;
+        });
+      });
+
+      // Net requirement: subtract stock, akibet, purchase
+      const results = Object.values(grossReq).map(r => {
+        const stk = stockLookup[r.code];
+        const stkAmbar = stk ? stk.ambar : 0;
+        const stkUretim = stk ? stk.uretim : 0;
+        const stkFason = stk ? stk.fason : 0;
+        const stkAvail = stkAmbar + (stockIncludeUretim ? stkUretim : 0) + (stockIncludeFason ? stkFason : 0);
+
+        const ak = akibetLookup[r.code];
+        const wipInt = ak ? ak.internalRemaining : 0;
+        const wipFas = ak ? ak.fasonRemaining : 0;
+        const wipTotal = wipInt + wipFas;
+
+        const po = purchaseLookup[r.code];
+        const openPO = po ? po.totalRemaining : 0;
+
+        const netQty = Math.max(0, r.grossQty - stkAvail - wipTotal);
+        const gap = Math.max(0, netQty - openPO);
+
+        // Çapraz kontrol: stok raporu üretim/fason vs akibet
+        let crossCheck = null;
+        if (stk && ak && (stkUretim > 0 || stkFason > 0)) {
+          const stokWip = stkUretim + stkFason;
+          const akibetWip = wipTotal;
+          const diff = stokWip - akibetWip;
+          if (Math.abs(diff) > 0.5) {
+            crossCheck = { stokWip, akibetWip, diff };
+          }
+        }
+
+        return {
+          ...r, stkAmbar, stkUretim, stkFason, stkAvail,
+          wipInt, wipFas, wipTotal,
+          openPO, netQty, gap, crossCheck,
+          productCount: r.sources.length
+        };
+      });
+
+      results.sort((a, b) => a.level - b.level || b.netQty - a.netQty);
+
+      // Stats
+      const mappedProducts = Object.keys(demand).filter(pid => bomMapping[Number(pid)] && bomModels[bomMapping[Number(pid)]]).length;
+      const unmappedProducts = Object.keys(demand).filter(pid => !bomMapping[Number(pid)] || !bomModels[bomMapping[Number(pid)]]).map(Number);
+      const crossCheckIssues = results.filter(r => r.crossCheck);
+
+      setExplosionResult({
+        parts: results,
+        totalGross: results.length,
+        totalNet: results.filter(r => r.netQty > 0).length,
+        totalGap: results.filter(r => r.gap > 0).length,
+        mappedProducts, unmappedProducts,
+        crossCheckIssues: crossCheckIssues.length,
+        calculatedAt: new Date().toISOString()
+      });
+    } catch (err) {
+      setExplosionResult({ error: err.message });
+    }
+    setExploding(false);
+  };
+
+  // Explosion filter states
+  const [expFilter, setExpFilter] = useState("all");
+  const [expSearch, setExpSearch] = useState("");
+  const filteredExpResults = useMemo(() => {
+    if (!explosionResult?.parts) return [];
+    let items = explosionResult.parts;
+    if (expFilter === "net") items = items.filter(r => r.netQty > 0);
+    else if (expFilter === "gap") items = items.filter(r => r.gap > 0);
+    else if (expFilter === "make") items = items.filter(r => r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON");
+    else if (expFilter === "buy") items = items.filter(r => r.supplyType === "BUY" || r.supplyType === "RAW");
+    else if (expFilter === "fason") items = items.filter(r => r.supplyType === "FASON" || r.supplyType === "MAKE+FASON");
+    else if (expFilter === "cross") items = items.filter(r => r.crossCheck);
+    if (expSearch) {
+      const q = expSearch.toLowerCase();
+      items = items.filter(r => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
+    }
+    return items;
+  }, [explosionResult, expFilter, expSearch]);
 
   // ==================== OPERATION TIME EDITING ====================
   const updateOpTime = async (modelKey, partIdx, opIdx, field, value) => {
@@ -6046,6 +6222,7 @@ function MRPPlanlama({ db, userRole }) {
         <button onClick={() => setActiveTab("wc")} style={tabStyle("wc")}>İş Merkezleri</button>
         <button onClick={() => setActiveTab("fason")} style={tabStyle("fason")}>Fason Operasyonlar</button>
         <button onClick={() => setActiveTab("schedule")} style={tabStyle("schedule")}>Kapasite & Çizelge</button>
+        <button onClick={() => setActiveTab("explosion")} style={tabStyle("explosion")}>🔥 MRP Hesaplama</button>
       </div>
 
       {/* ========== STOK RAPORU TAB ========== */}
@@ -7421,6 +7598,306 @@ function MRPPlanlama({ db, userRole }) {
                 </div>
                 <div style={{ fontSize: 11, marginTop: 12, color: "var(--color-text-info)" }}>
                   İpucu: BOM tab'ında parçaların ⏱ ikonuna tıklayarak operasyon sürelerini girebilirsiniz
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
+
+      {/* ========== MRP HESAPLAMA TAB ========== */}
+      {activeTab === "explosion" && (() => {
+        const modelKeys = Object.keys(bomModels).filter(k => k !== "undefined");
+        const modelOptions = modelKeys.map(k => ({ key: k, label: `${bomModels[k].modelCode || k} — ${bomModels[k].modelName || ""}` }));
+        const demand = unshippedDemand;
+
+        // Products that have unshipped demand
+        const demandProducts = products ? products.filter(p => demand.byProduct[p.id]) : [];
+        const mappedCount = demandProducts.filter(p => bomMapping[p.id] && bomModels[bomMapping[p.id]]).length;
+
+        const levelLabels = { 0: "L0 — Ana", 1: "L1 — Montaj", 2: "L2 — İşlenmiş", 3: "L3 — Hammadde" };
+        const supplyColors = { MAKE: "#1D9E75", "MAKE+FASON": "#D97706", FASON: "#C2410C", BUY: "#2563EB", RAW: "#92400E", PRODUCT: "#534AB7" };
+        const hasStock = Object.keys(stockLookup).length > 0;
+        const hasAkibet = Object.keys(akibetLookup).length > 0;
+        const hasPurchase = Object.keys(purchaseLookup).length > 0;
+
+        return (
+          <div>
+            {/* Step 1 — Mapping */}
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 10 }}>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>1️⃣ Ürün ↔ BOM Eşleştirme</span>
+                <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                  {mappedCount}/{demandProducts.length} ürün eşleştirildi · {modelOptions.length} BOM modeli mevcut
+                </span>
+              </div>
+              {demandProducts.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)", background: "var(--color-background-secondary)", borderRadius: 8, fontSize: 12 }}>
+                  Sevkiyat planında sevk edilmemiş konteyner yok
+                </div>
+              ) : (
+                <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden", maxHeight: 320, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
+                        <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Modeli</th>
+                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {demandProducts.map(p => {
+                        const mapped = bomMapping[p.id] && bomModels[bomMapping[p.id]];
+                        return (
+                          <tr key={p.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: mapped ? "transparent" : "#FEF2F2" }}>
+                            <td style={{ padding: "5px 8px", fontWeight: 500 }}>{p.nameTR}</td>
+                            <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{demand.byProduct[p.id]?.qty || 0}</td>
+                            <td style={{ padding: "5px 8px" }}>
+                              {canEdit ? (
+                                <select
+                                  value={bomMapping[p.id] || ""}
+                                  onChange={e => { const val = e.target.value; saveBomMapping({ ...bomMapping, [p.id]: val || null }); }}
+                                  style={{ width: "100%", padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
+                                >
+                                  <option value="">— Seçin —</option>
+                                  {modelOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
+                                </select>
+                              ) : (
+                                <span style={{ fontSize: 10, color: "var(--color-text-secondary)" }}>
+                                  {mapped ? `${bomModels[bomMapping[p.id]].modelCode}` : "Eşleştirilmedi"}
+                                </span>
+                              )}
+                            </td>
+                            <td style={{ padding: "5px 8px", textAlign: "center" }}>
+                              {mapped ? <span style={{ color: "var(--color-text-success)", fontSize: 12 }}>✓</span> : <span style={{ color: "#DC2626", fontSize: 10 }}>Eksik</span>}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            {/* Step 2 — Config + Run */}
+            <div style={{ marginBottom: 20, padding: "14px 16px", background: "var(--color-background-secondary)", borderRadius: 10, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
+              <span style={{ fontSize: 14, fontWeight: 600 }}>2️⃣ Hesapla</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                Son tarih:
+                <input type="date" value={expCutoff} onChange={e => setExpCutoff(e.target.value)}
+                  style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11 }} />
+                {expCutoff && <button onClick={() => setExpCutoff("")} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "var(--color-text-tertiary)" }}>✕</button>}
+              </label>
+              <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                {demand.containers.length} konteyner · {demand.totalUnits} ürün
+                {expCutoff ? ` · ${expCutoff}'e kadar` : " · tüm sevk edilmemişler"}
+              </span>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
+                {hasStock && <span style={{ fontSize: 10, padding: "2px 6px", background: "#8B5CF620", borderRadius: 3, color: "#8B5CF6" }}>📦 Stok</span>}
+                {hasAkibet && <span style={{ fontSize: 10, padding: "2px 6px", background: "#F59E0B20", borderRadius: 3, color: "#D97706" }}>🔄 Akibet</span>}
+                {hasPurchase && <span style={{ fontSize: 10, padding: "2px 6px", background: "#3B82F620", borderRadius: 3, color: "#2563EB" }}>🛒 Sipariş</span>}
+              </div>
+              <button
+                onClick={runBomExplosion}
+                disabled={exploding || mappedCount === 0}
+                style={{
+                  padding: "8px 20px", borderRadius: 8, border: "none", cursor: mappedCount > 0 ? "pointer" : "not-allowed",
+                  background: mappedCount > 0 ? "#7C3AED" : "var(--color-border-secondary)",
+                  color: "#fff", fontWeight: 600, fontSize: 13
+                }}
+              >
+                {exploding ? "⏳ Hesaplanıyor..." : "🔥 BOM Explosion"}
+              </button>
+            </div>
+
+            {/* Step 3 — Results */}
+            {explosionResult && !explosionResult.error && (() => {
+              const exp = explosionResult;
+              return (
+                <div>
+                  {/* Summary */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 16 }}>
+                    <div style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #7C3AED" }}>
+                      <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Brüt İhtiyaç</div>
+                      <div style={{ fontSize: 18, fontWeight: 600 }}>{exp.totalGross} <span style={{ fontSize: 10, fontWeight: 400 }}>kalem</span></div>
+                    </div>
+                    <div style={{ background: "#FEF2F2", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #DC2626" }}>
+                      <div style={{ fontSize: 10, color: "#DC2626" }}>Net Açık</div>
+                      <div style={{ fontSize: 18, fontWeight: 600, color: "#DC2626" }}>{exp.totalNet} <span style={{ fontSize: 10, fontWeight: 400 }}>kalem</span></div>
+                    </div>
+                    <div style={{ background: "#FFF7ED", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #D97706" }}>
+                      <div style={{ fontSize: 10, color: "#D97706" }}>Sipariş Açığı</div>
+                      <div style={{ fontSize: 18, fontWeight: 600, color: "#D97706" }}>{exp.totalGap} <span style={{ fontSize: 10, fontWeight: 400 }}>kalem</span></div>
+                    </div>
+                    {exp.crossCheckIssues > 0 && (
+                      <div style={{ background: "#FEF3C7", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #B45309" }}>
+                        <div style={{ fontSize: 10, color: "#B45309" }}>⚠ Çapraz Kontrol</div>
+                        <div style={{ fontSize: 18, fontWeight: 600, color: "#B45309" }}>{exp.crossCheckIssues} <span style={{ fontSize: 10, fontWeight: 400 }}>uyumsuz</span></div>
+                      </div>
+                    )}
+                    {exp.unmappedProducts.length > 0 && (
+                      <div style={{ background: "#FEE2E2", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #EF4444" }}>
+                        <div style={{ fontSize: 10, color: "#EF4444" }}>Eşleştirilmemiş</div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "#EF4444" }}>
+                          {exp.unmappedProducts.map(pid => products?.find(p => p.id === pid)?.nameTR || pid).join(", ")}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Filters */}
+                  <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
+                    <input placeholder="Stok kodu veya adı ara..." value={expSearch} onChange={e => setExpSearch(e.target.value)}
+                      style={{ flex: 1, minWidth: 200, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12, background: "var(--color-background-primary)" }} />
+                    {[
+                      { id: "all", label: "Tümü", count: exp.parts.length },
+                      { id: "net", label: "Net Açık", count: exp.totalNet },
+                      { id: "gap", label: "Sipariş Açığı", count: exp.totalGap },
+                      { id: "make", label: "MAKE", count: exp.parts.filter(r => r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON").length },
+                      { id: "buy", label: "BUY/RAW", count: exp.parts.filter(r => r.supplyType === "BUY" || r.supplyType === "RAW").length },
+                      { id: "fason", label: "FASON", count: exp.parts.filter(r => r.supplyType === "FASON" || r.supplyType === "MAKE+FASON").length },
+                      ...(exp.crossCheckIssues > 0 ? [{ id: "cross", label: "⚠ Çapraz", count: exp.crossCheckIssues }] : [])
+                    ].map(f => (
+                      <button key={f.id} onClick={() => setExpFilter(f.id)} style={{
+                        padding: "4px 10px", borderRadius: 5, fontSize: 11, border: "1px solid",
+                        cursor: "pointer", fontWeight: expFilter === f.id ? 600 : 400,
+                        background: expFilter === f.id ? "#7C3AED18" : "transparent",
+                        color: expFilter === f.id ? "#7C3AED" : "var(--color-text-secondary)",
+                        borderColor: expFilter === f.id ? "#7C3AED" : "var(--color-border-secondary)"
+                      }}>
+                        {f.label} ({f.count})
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Results table */}
+                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 4 }}>
+                    {filteredExpResults.length} kalem · Hesaplama: {new Date(exp.calculatedAt).toLocaleString("tr-TR")}
+                  </div>
+                  <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden", maxHeight: "60vh", overflowY: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
+                          <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Stok Kodu</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Stok Adı</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Tip</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Brüt</th>
+                          {hasStock && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>📦 Stok</th>}
+                          {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#D97706" }}>🔄 WIP</th>}
+                          <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Net Açık</th>
+                          {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Sipariş</th>}
+                          {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#B45309" }}>Açık</th>}
+                          <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Svye</th>
+                          {exp.crossCheckIssues > 0 && <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>⚠</th>}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {filteredExpResults.slice(0, 300).map((r, idx) => {
+                          const hasNet = r.netQty > 0;
+                          const hasGap = r.gap > 0;
+                          const rowBg = r.crossCheck ? "#FEF3C7" : hasGap ? "#FEF2F2" : hasNet ? "#FFFBEB" : "transparent";
+                          return (
+                            <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
+                              <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10 }}>{r.code}</td>
+                              <td style={{ padding: "5px 8px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</td>
+                              <td style={{ padding: "5px 4px", textAlign: "center" }}>
+                                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (supplyColors[r.supplyType] || "#888") + "18", color: supplyColors[r.supplyType] || "#888", fontWeight: 500 }}>
+                                  {r.supplyType}
+                                </span>
+                              </td>
+                              <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{r.grossQty % 1 === 0 ? r.grossQty : r.grossQty.toFixed(1)}</td>
+                              {hasStock && (
+                                <td style={{ padding: "5px 8px", textAlign: "right", fontSize: 10, color: r.stkAvail > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" }}
+                                  title={`Ambar: ${r.stkAmbar} · Üretim: ${r.stkUretim} · Fason: ${r.stkFason}`}>
+                                  {r.stkAvail > 0 ? r.stkAvail : "—"}
+                                </td>
+                              )}
+                              {hasAkibet && (
+                                <td style={{ padding: "5px 8px", textAlign: "right", fontSize: 10, color: r.wipTotal > 0 ? "#D97706" : "var(--color-text-tertiary)" }}
+                                  title={`İç: ${r.wipInt} · Fason: ${r.wipFas}`}>
+                                  {r.wipTotal > 0 ? r.wipTotal : "—"}
+                                </td>
+                              )}
+                              <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasNet ? 700 : 400, color: hasNet ? "#DC2626" : "var(--color-text-success)", fontSize: hasNet ? 11 : 10 }}>
+                                {hasNet ? (r.netQty % 1 === 0 ? r.netQty : r.netQty.toFixed(1)) : "✓"}
+                              </td>
+                              {hasPurchase && (
+                                <td style={{ padding: "5px 8px", textAlign: "right", fontSize: 10, color: r.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)" }}>
+                                  {r.openPO > 0 ? r.openPO : "—"}
+                                </td>
+                              )}
+                              {hasPurchase && (
+                                <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasGap ? 700 : 400, fontSize: hasGap ? 11 : 10, color: hasGap ? "#B45309" : r.netQty > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
+                                  {hasGap ? (r.gap % 1 === 0 ? r.gap : r.gap.toFixed(1)) : r.netQty > 0 && r.openPO > 0 ? "✓" : "—"}
+                                </td>
+                              )}
+                              <td style={{ padding: "5px 4px", textAlign: "center" }}>
+                                <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#88888818", color: "#888" }}>{levelLabels[r.level] ? `L${r.level}` : `L${r.level}`}</span>
+                              </td>
+                              {exp.crossCheckIssues > 0 && (
+                                <td style={{ padding: "5px 4px", textAlign: "center", fontSize: 10 }}>
+                                  {r.crossCheck ? (
+                                    <span title={`Stok raporu: ${r.crossCheck.stokWip} · Akibet: ${r.crossCheck.akibetWip} · Fark: ${r.crossCheck.diff > 0 ? "+" : ""}${r.crossCheck.diff}`} style={{ cursor: "help", color: "#B45309" }}>⚠</span>
+                                  ) : null}
+                                </td>
+                              )}
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                    {filteredExpResults.length > 300 && (
+                      <div style={{ padding: "8px 12px", textAlign: "center", fontSize: 11, color: "var(--color-text-tertiary)", background: "var(--color-background-secondary)" }}>
+                        İlk 300 kalem gösteriliyor — arama ile daraltın
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Çapraz Kontrol Detay */}
+                  {exp.crossCheckIssues > 0 && expFilter === "cross" && (
+                    <div style={{ marginTop: 16, padding: "12px 16px", background: "#FEF3C7", borderRadius: 8, border: "1px solid #F59E0B" }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "#B45309", marginBottom: 8 }}>⚠ Stok vs Akibet Çapraz Kontrol ({exp.crossCheckIssues} uyumsuzluk)</div>
+                      <div style={{ fontSize: 11, color: "#92400E", marginBottom: 8 }}>
+                        Stok raporundaki üretim hattı + fason miktarları ile akibet raporundaki kalan miktarlar arasında fark var.
+                        Olası sebepler: iş emri başlatılmadan transfer, fason dönüşü ambar girişi yapılmamış, veya rapor zamanları farklı.
+                      </div>
+                      {filteredExpResults.filter(r => r.crossCheck).map((r, i) => (
+                        <div key={i} style={{ display: "flex", gap: 12, padding: "4px 0", borderTop: i > 0 ? "1px solid #FBBF2440" : "none", fontSize: 11, alignItems: "center" }}>
+                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, minWidth: 80 }}>{r.code}</span>
+                          <span style={{ flex: 1 }}>{r.name}</span>
+                          <span>Stok WIP: <b>{r.crossCheck.stokWip}</b></span>
+                          <span>Akibet WIP: <b>{r.crossCheck.akibetWip}</b></span>
+                          <span style={{ fontWeight: 600, color: r.crossCheck.diff > 0 ? "#DC2626" : "#059669" }}>
+                            Fark: {r.crossCheck.diff > 0 ? "+" : ""}{r.crossCheck.diff}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {/* Error state */}
+            {explosionResult?.error && (
+              <div style={{ padding: "12px 16px", background: "var(--color-background-danger)", borderRadius: 8, color: "var(--color-text-danger)", fontSize: 12 }}>
+                ❌ {explosionResult.error}
+              </div>
+            )}
+
+            {/* Empty state */}
+            {!explosionResult && (
+              <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-tertiary)" }}>
+                <div style={{ fontSize: 36, marginBottom: 10 }}>🔥</div>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>BOM Explosion — Kendi MRP Motorumuz</div>
+                <div style={{ fontSize: 12, marginTop: 6, maxWidth: 500, margin: "6px auto 0", lineHeight: 1.6 }}>
+                  VIO MRP'sine bağımlılığı kaldırır. Sevkiyat planındaki tüm ürünler için BOM ağacını patlatarak
+                  brüt ihtiyacı hesaplar, sonra stok / akibet / açık sipariş düşerek net ihtiyacı bulur.
+                </div>
+                <div style={{ fontSize: 11, marginTop: 16, color: "var(--color-text-info)", maxWidth: 400, margin: "16px auto 0" }}>
+                  Adımlar: (1) Ürünleri BOM modelleriyle eşleştirin → (2) "BOM Explosion" butonuna basın
                 </div>
               </div>
             )}
