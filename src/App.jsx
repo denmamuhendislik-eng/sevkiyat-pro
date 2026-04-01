@@ -7996,7 +7996,31 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                               )}
                             </td>
                             <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                              {codeDiff ? (
+                              {codeDiff && canEdit ? (
+                                <button
+                                  onClick={() => {
+                                    // BOM koduna göre eşleştirmeyi güncelle
+                                    const newMapping = { ...bomMapping };
+                                    // BOM model var mı kontrol et
+                                    let foundModel = null;
+                                    Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, mo]) => {
+                                      const first = (mo.parts || []).find(pp => pp.level === 0);
+                                      if (first && first.stockCode === bomCode) foundModel = mk;
+                                      if (mo.modelCode === bomCode) foundModel = mk;
+                                    });
+                                    newMapping[p.id] = foundModel || ("direct:" + bomCode);
+                                    saveBomMapping(newMapping);
+                                    // İsmi de güncelle
+                                    if (bomName && bomName !== p.nameTR) {
+                                      setProducts(prev => prev.map(pr => pr.id === p.id ? { ...pr, nameTR: bomName } : pr));
+                                    }
+                                  }}
+                                  title={`VIO: ${vCode} → BOM: ${bomCode}\nİsim: ${p.nameTR} → ${bomName}`}
+                                  style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid #7C3AED", background: "#F5F3FF", color: "#7C3AED", fontSize: 9, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
+                                >
+                                  🔄 BOM'a Güncelle
+                                </button>
+                              ) : codeDiff ? (
                                 <span style={{ fontSize: 9, padding: "2px 5px", borderRadius: 3, background: "#FEF3C7", color: "#B45309", fontWeight: 500 }} title={`VIO: ${vCode} ≠ BOM: ${bomCode}`}>⚠ Kod farkı</span>
                               ) : mapped ? (
                                 <span style={{ color: isDirect ? "#7C3AED" : "var(--color-text-success)", fontSize: isDirect ? 10 : 12 }}>
