@@ -3165,11 +3165,14 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const dayEntries = Object.entries(days).filter(([d]) => d <= today).sort((a,b) => a[0].localeCompare(b[0]));
 
     // 1) Plan Uyum Oranı — sadece PLN olan günlerde GER/PLN
+    // Bugün GER girişi yoksa bugünü dahil etme (operatör gün sonu girer)
+    const todayHasGer = ANA_IDS.some(pid => Number(days[today]?.actual?.[pid]) > 0);
+    const complianceEntries = todayHasGer ? dayEntries : dayEntries.filter(([d]) => d < today);
     const compliance = {};
     let totalPln = 0, totalGer = 0;
     ANA_IDS.forEach(pid => {
       let pln = 0, ger = 0, daysWithPlan = 0, daysOnTarget = 0;
-      dayEntries.forEach(([, day]) => {
+      complianceEntries.forEach(([, day]) => {
         const p = Number(day.planned?.[pid]) || 0;
         const g = Number(day.actual?.[pid]) || 0;
         if (p > 0) { pln += p; ger += g; daysWithPlan++; if (g >= p) daysOnTarget++; }
