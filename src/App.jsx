@@ -2828,7 +2828,16 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const ANA_IDS   = [1,2,3,4,5];
 
   // today en başta tanımlanıyor — tüm useMemo'lar kullanabilsin
-  const today = new Date().toISOString().slice(0,10);
+  // Gece 12'de otomatik güncellenir (operatör paneli sıfırlansın diye)
+  const [today, setToday] = useState(() => new Date().toISOString().slice(0,10));
+  useEffect(() => {
+    const checkMidnight = () => {
+      const now = new Date().toISOString().slice(0,10);
+      if (now !== today) setToday(now);
+    };
+    const id = setInterval(checkMidnight, 30000); // 30 saniyede bir kontrol
+    return () => clearInterval(id);
+  }, [today]);
 
   const anaProducts = products.filter(p => ANA_IDS.includes(p.id));
   const deepClone   = o => JSON.parse(JSON.stringify(o));
