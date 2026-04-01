@@ -4363,6 +4363,16 @@ function MRPPlanlama({ db, userRole }) {
   const [selectedJob, setSelectedJob] = useState(null);
   const [editingOpPart, setEditingOpPart] = useState(null);
 
+  // Adım 5 — VIO Stok Raporu State
+  const STOCK_DOC = "mrpStock";
+  const [stock, setStock] = useState(null);
+  const [stockImporting, setStockImporting] = useState(false);
+  const [stockImportResult, setStockImportResult] = useState(null);
+  const [stockSearch, setStockSearch] = useState("");
+  const [stockFilter, setStockFilter] = useState("all");
+  const [stockIncludeUretim, setStockIncludeUretim] = useState(false);
+  const [stockIncludeFason, setStockIncludeFason] = useState(false);
+
   // Firestore listeners
   useEffect(() => {
     if (!db) return;
@@ -4393,6 +4403,11 @@ function MRPPlanlama({ db, userRole }) {
     unsubs.push(onSnapshot(akibetRef, snap => {
       if (snap.exists()) setAkibet(snap.data());
     }, () => {}));
+    // VIO Stok Raporu
+    const stockRef = doc(db, APP_COL, STOCK_DOC);
+    unsubs.push(onSnapshot(stockRef, snap => {
+      if (snap.exists()) setStock(snap.data());
+    }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
 
@@ -4417,6 +4432,156 @@ function MRPPlanlama({ db, userRole }) {
     if (!db || !canEdit) return;
     await setDoc(doc(db, APP_COL, AKIBET_DOC), data);
   };
+  const saveStock = async (data) => {
+    if (!db || !canEdit) return;
+    await setDoc(doc(db, APP_COL, STOCK_DOC), data);
+  };
+
+  // ==================== VIO STOK RAPORU PARSER ====================
+  const AMBAR_LOCS = new Set(["Hammadde ve Malzeme", "Yardımcı Malzeme Ambarı", "Merkez Ambarı", "Kontrol ve Giriş Ambarı", "Sevkiyat Ambarı", "Montaj Hattı"]);
+  const URETIM_LOCS = new Set(["Üretim Hattı", "PRES HATTI", "KAYNAK HATTI", "TALAŞ AMBARI", "Lazer Mamül Ambarı"]);
+  const HARIC_LOCS = new Set(["Iskarta Ambarı", "Hurda ve Talaş Ambarı", "Lazer Hurda Ambarı", "Yeniden İşleme Ambarı"]);
+  const classifyLoc = (loc) => {
+    if (!loc) return "ambar";
+    if (AMBAR_LOCS.has(loc)) return "ambar";
+    if (URETIM_LOCS.has(loc)) return "uretim";
+    if (HARIC_LOCS.has(loc)) return "haric";
+    return "fason";
+  };
+
+  const parseStockReport = (workbook) => {
+    const sheet = workbook.Sheets[workbook.SheetNames[0]];
+    const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    const pNum = (v) => { if (v === "" || v === undefined || v === null) return 0; const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
+    let currentGroup = "";
+    const partsMap = {};
+    const locSet = new Set();
+    const fasonSet = new Set();
+    let dataRows = 0;
+
+    for (let i = 0; i < rows.length; i++) {
+      const c0 = String(rows[i][0] || "").trim();
+      if (!c0) continue;
+      // Group header: "001        KESİCİ UÇ VE TAKIM"
+      if (/^\d{3}\s{2,}/.test(c0)) { currentGroup = c0.replace(/\s{2,}/g, " ").trim(); continue; }
+      // Skip non-data
+      if (c0 === "Stok Kodu" || c0.startsWith("DENMA") || c0.startsWith("Miktar") || c0.startsWith("Son Stok")) continue;
+      // Must look like a stock code
+      if (!c0.match(/^[\w\d]/)) continue;
+
+      const name = String(rows[i][1] || "").trim();
+      const loc = String(rows[i][2] || "").trim();
+      const qty = pNum(rows[i][3]);
+      const unit = String(rows[i][4] || "").trim() || "AD";
+      const opName = String(rows[i][8] || "").trim() || null;
+      const opNo = String(rows[i][9] || "").trim() || null;
+
+      if (!loc) continue; // skip if no location
+      const cat = classifyLoc(loc);
+      locSet.add(loc);
+      if (cat === "fason") fasonSet.add(loc);
+      dataRows++;
+
+      if (!partsMap[c0]) {
+        partsMap[c0] = { code: c0, name, unit, group: currentGroup, ambar: 0, uretim: 0, fason: 0, haric: 0, total: 0, locs: [] };
+      }
+      const p = partsMap[c0];
+      p[cat] += qty;
+      p.total += qty;
+      // Keep location details (compact)
+      p.locs.push({ l: loc, q: qty, ...(opName ? { o: opName } : {}), ...(opNo ? { n: opNo } : {}), c: cat });
+    }
+
+    const parts = Object.values(partsMap);
+    return {
+      parts, totalCodes: parts.length, totalRows: dataRows,
+      categories: {
+        ambar: { count: parts.filter(p => p.ambar > 0).length, total: Math.round(parts.reduce((s, p) => s + p.ambar, 0)) },
+        uretim: { count: parts.filter(p => p.uretim > 0).length, total: Math.round(parts.reduce((s, p) => s + p.uretim, 0)) },
+        fason: { count: parts.filter(p => p.fason > 0).length, total: Math.round(parts.reduce((s, p) => s + p.fason, 0)) },
+        haric: { count: parts.filter(p => p.haric > 0).length, total: Math.round(parts.reduce((s, p) => s + p.haric, 0)) }
+      },
+      locations: [...locSet].sort(),
+      fasonCompanies: [...fasonSet].sort()
+    };
+  };
+
+  const handleStockImport = (file) => {
+    if (stockImporting || !canEdit) return;
+    setStockImporting(true);
+    setStockImportResult(null);
+    const reader = new FileReader();
+    reader.onload = async (e) => {
+      try {
+        const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
+        const result = parseStockReport(wb);
+        if (result.totalCodes === 0) {
+          setStockImportResult({ error: "Stok verisi bulunamadı. Dosya formatını kontrol edin.\nBeklenen format: VIO Son Stok Raporu (Stok Kodu, Stok Adı, Yer Adı, Miktar sütunları)" });
+          setStockImporting(false);
+          return;
+        }
+        // Store compactly — parts as object keyed by code (for O(1) lookup by BOM explosion)
+        const partsObj = {};
+        result.parts.forEach(p => {
+          partsObj[p.code] = { n: p.name, u: p.unit, g: p.group, a: p.ambar, r: p.uretim, f: p.fason, h: p.haric, t: p.total, lc: p.locs.length };
+        });
+        await saveStock({
+          importedAt: new Date().toISOString(), fileName: file.name,
+          totalCodes: result.totalCodes, totalRows: result.totalRows,
+          categories: result.categories, fasonCompanies: result.fasonCompanies,
+          parts: partsObj
+        });
+        setStockImportResult({
+          success: true, totalCodes: result.totalCodes, totalRows: result.totalRows,
+          categories: result.categories, fasonCompanies: result.fasonCompanies,
+          // Keep full details in memory for UI preview (not stored in Firestore)
+          _preview: result.parts
+        });
+      } catch (err) {
+        setStockImportResult({ error: "Import hatası: " + err.message });
+      }
+      setStockImporting(false);
+    };
+    reader.readAsArrayBuffer(file);
+  };
+
+  const onStockDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleStockImport(f); };
+  const onStockFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleStockImport(f); };
+
+  // Stock lookup helper: code → { ambar, uretim, fason, haric, total }
+  const stockLookup = useMemo(() => {
+    if (!stock?.parts) return {};
+    const map = {};
+    Object.entries(stock.parts).forEach(([code, p]) => {
+      map[code] = { ambar: p.a || 0, uretim: p.r || 0, fason: p.f || 0, haric: p.h || 0, total: p.t || 0, name: p.n, unit: p.u, group: p.g };
+    });
+    return map;
+  }, [stock]);
+
+  // Filtered stock parts for table display
+  const filteredStockParts = useMemo(() => {
+    if (!stock?.parts) return [];
+    let entries = Object.entries(stock.parts).map(([code, p]) => ({ code, name: p.n, unit: p.u, group: p.g, ambar: p.a || 0, uretim: p.r || 0, fason: p.f || 0, haric: p.h || 0, total: p.t || 0 }));
+    // Search filter
+    if (stockSearch) {
+      const q = stockSearch.toLowerCase();
+      entries = entries.filter(p => p.code.toLowerCase().includes(q) || (p.name || "").toLowerCase().includes(q));
+    }
+    // Category filter
+    if (stockFilter === "ambar") entries = entries.filter(p => p.ambar > 0);
+    else if (stockFilter === "uretim") entries = entries.filter(p => p.uretim > 0);
+    else if (stockFilter === "fason") entries = entries.filter(p => p.fason > 0);
+    else if (stockFilter === "haric") entries = entries.filter(p => p.haric > 0);
+    else if (stockFilter === "bom") {
+      // BOM'daki parçalar
+      const bomCodes = new Set();
+      Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
+        (bomModels[mk]?.parts || []).forEach(p => bomCodes.add(p.stockCode));
+      });
+      entries = entries.filter(p => bomCodes.has(p.code));
+    }
+    return entries.sort((a, b) => b.total - a.total);
+  }, [stock, stockSearch, stockFilter, bomModels]);
 
   // ==================== OPERATION TIME EDITING ====================
   const updateOpTime = async (modelKey, partIdx, opIdx, field, value) => {
@@ -4473,7 +4638,7 @@ function MRPPlanlama({ db, userRole }) {
         });
       });
 
-      // 2) Collect requirements with qty > 0 (subtract WIP from akibet if available)
+      // 2) Collect requirements with qty > 0 (subtract stock + WIP from akibet if available)
       const reqItems = {};
       const levKeys = Object.keys(requirements.levels || {});
       levKeys.forEach(lk => {
@@ -4481,7 +4646,10 @@ function MRPPlanlama({ db, userRole }) {
           if (item.requirement > 0) {
             const ak = akibetLookup[item.code];
             const wip = ak ? (ak.internalRemaining + ak.fasonRemaining) : 0;
-            const netQty = Math.max(0, item.requirement - wip);
+            // VIO Stok düşümü
+            const stk = stockLookup[item.code];
+            const stkAvail = stk ? (stk.ambar + (stockIncludeUretim ? stk.uretim : 0) + (stockIncludeFason ? stk.fason : 0)) : 0;
+            const netQty = Math.max(0, item.requirement - stkAvail - wip);
             if (netQty > 0) {
               if (reqItems[item.code]) {
                 reqItems[item.code].qty += netQty;
@@ -5867,16 +6035,239 @@ function MRPPlanlama({ db, userRole }) {
         <KPI label="İhtiyaç" value={requirements ? requirements.totalNeeded || 0 : "—"} sub={requirements ? `${requirements.totalItems || 0} kalem · ${requirements.period || ""}` : "Henüz import edilmedi"} accent="#1D9E75" />
         <KPI label="Üretimde" value={akibet ? `${akibet.withInternal || 0} iç · ${akibet.withFason || 0} fason` : "—"} sub={akibet ? `${akibet.totalParts || 0} parça · ${new Date(akibet.importedAt).toLocaleDateString("tr-TR")}` : "Akibet yüklenmedi"} accent="#F59E0B" />
         <KPI label="Çizelge" value={schedule ? (schedule.totalJobs || 0) + " iş" : "—"} sub={schedule ? `${schedule.lastCalculated ? new Date(schedule.lastCalculated).toLocaleDateString("tr-TR") : ""} · ${schedule.bottleneck ? "Darboğaz: " + (schedule.wcStats?.[schedule.bottleneck]?.name || schedule.bottleneck) : ""}` : "Hesaplanmadı"} accent="#3B82F6" />
+        <KPI label="VIO Stok" value={stock ? stock.totalCodes || 0 : "—"} sub={stock ? `${stock.categories?.ambar?.count || 0} ambar · ${stock.categories?.uretim?.count || 0} üretim · ${new Date(stock.importedAt).toLocaleDateString("tr-TR")}` : "Stok yüklenmedi"} accent="#8B5CF6" />
       </div>
 
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
         <button onClick={() => setActiveTab("bom")} style={tabStyle("bom")}>Ürün Ağacı (BOM)</button>
+        <button onClick={() => setActiveTab("stock")} style={tabStyle("stock")}>📦 Stok Raporu</button>
         <button onClick={() => setActiveTab("req")} style={tabStyle("req")}>İhtiyaç Listesi</button>
         <button onClick={() => setActiveTab("wc")} style={tabStyle("wc")}>İş Merkezleri</button>
         <button onClick={() => setActiveTab("fason")} style={tabStyle("fason")}>Fason Operasyonlar</button>
         <button onClick={() => setActiveTab("schedule")} style={tabStyle("schedule")}>Kapasite & Çizelge</button>
       </div>
+
+      {/* ========== STOK RAPORU TAB ========== */}
+      {activeTab === "stock" && (
+        <div>
+          {/* Import area */}
+          {canEdit && (
+            <div
+              onDrop={onStockDrop} onDragOver={e => e.preventDefault()}
+              style={{
+                border: "2px dashed var(--color-border-secondary)", borderRadius: 12,
+                padding: "24px 20px", textAlign: "center", marginBottom: 16,
+                background: "var(--color-background-secondary)", cursor: "pointer"
+              }}
+              onClick={() => document.getElementById("stock-file-input").click()}
+            >
+              <input type="file" id="stock-file-input" accept=".xlsx,.xls" style={{ display: "none" }} onChange={onStockFileSelect} />
+              {stockImporting ? (
+                <div style={{ color: "var(--color-text-info)", fontSize: 13 }}>⏳ Stok raporu okunuyor...</div>
+              ) : (
+                <>
+                  <div style={{ fontSize: 24, marginBottom: 6 }}>📦</div>
+                  <div style={{ fontSize: 13, fontWeight: 500 }}>VIO Son Stok Raporu (.xlsx)</div>
+                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>Sürükle-bırak veya tıkla · Stok Kodu, Stok Adı, Yer Adı, Miktar sütunları</div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Import result */}
+          {stockImportResult && (
+            <div style={{
+              padding: "12px 16px", borderRadius: 8, marginBottom: 16, fontSize: 12,
+              background: stockImportResult.error ? "var(--color-background-danger)" : "var(--color-background-success)",
+              color: stockImportResult.error ? "var(--color-text-danger)" : "var(--color-text-success)",
+              border: `1px solid ${stockImportResult.error ? "var(--color-border-danger)" : "var(--color-border-success)"}`
+            }}>
+              {stockImportResult.error ? (
+                <div style={{ whiteSpace: "pre-wrap" }}>❌ {stockImportResult.error}</div>
+              ) : (
+                <div>
+                  ✅ <strong>{stockImportResult.totalCodes}</strong> stok kodu import edildi ({stockImportResult.totalRows} satır)
+                  <span style={{ marginLeft: 12 }}>
+                    📦 Ambar: {stockImportResult.categories?.ambar?.count || 0} · 
+                    🏭 Üretim: {stockImportResult.categories?.uretim?.count || 0} · 
+                    🚚 Fason: {stockImportResult.categories?.fason?.count || 0} · 
+                    🗑 Hariç: {stockImportResult.categories?.haric?.count || 0}
+                  </span>
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Stock data display */}
+          {stock && stock.parts && (() => {
+            const cats = stock.categories || {};
+            const bomCodes = new Set();
+            Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
+              (bomModels[mk]?.parts || []).forEach(p => bomCodes.add(p.stockCode));
+            });
+            const stockCodes = new Set(Object.keys(stock.parts));
+            const bomInStock = [...bomCodes].filter(c => stockCodes.has(c)).length;
+
+            return (
+              <div>
+                {/* Summary cards */}
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 10, marginBottom: 16 }}>
+                  <div style={{ background: "var(--color-background-success)", border: "1px solid var(--color-border-success)", borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: "var(--color-text-success)", marginBottom: 4 }}>📦 Ambar Stok</div>
+                    <div style={{ fontSize: 18, fontWeight: 600 }}>{cats.ambar?.count || 0} <span style={{ fontSize: 11, fontWeight: 400 }}>kalem</span></div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Hammadde, Yardımcı, Sevkiyat, Montaj</div>
+                  </div>
+                  <div style={{ background: "var(--color-background-warning)", border: "1px solid var(--color-border-warning)", borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: "var(--color-text-warning)", marginBottom: 4 }}>🏭 Üretim Hattı</div>
+                    <div style={{ fontSize: 18, fontWeight: 600 }}>{cats.uretim?.count || 0} <span style={{ fontSize: 11, fontWeight: 400 }}>kalem</span></div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Üretim, Pres, Kaynak, Talaş</div>
+                  </div>
+                  <div style={{ background: "#FFF7ED", border: "1px solid #FDBA74", borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: "#C2410C", marginBottom: 4 }}>🚚 Fason</div>
+                    <div style={{ fontSize: 18, fontWeight: 600 }}>{cats.fason?.count || 0} <span style={{ fontSize: 11, fontWeight: 400 }}>kalem</span></div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{(stock.fasonCompanies || []).length} tedarikçi</div>
+                  </div>
+                  <div style={{ background: "var(--color-background-info)", border: "1px solid var(--color-border-info)", borderRadius: 8, padding: "12px 14px" }}>
+                    <div style={{ fontSize: 11, color: "var(--color-text-info)", marginBottom: 4 }}>🔗 BOM Eşleşme</div>
+                    <div style={{ fontSize: 18, fontWeight: 600 }}>{bomInStock} <span style={{ fontSize: 11, fontWeight: 400 }}>/ {bomCodes.size} parça</span></div>
+                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>BOM'daki parçaların stok kaydı</div>
+                  </div>
+                </div>
+
+                {/* Toggles for MRP calculation */}
+                <div style={{ display: "flex", gap: 16, alignItems: "center", marginBottom: 12, padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8, fontSize: 12 }}>
+                  <span style={{ fontWeight: 500 }}>MRP'de kullanılacak stok:</span>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                    <input type="checkbox" checked disabled /> Ambar (her zaman)
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                    <input type="checkbox" checked={stockIncludeUretim} onChange={e => setStockIncludeUretim(e.target.checked)} /> Üretim hattı
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                    <input type="checkbox" checked={stockIncludeFason} onChange={e => setStockIncludeFason(e.target.checked)} /> Fason
+                  </label>
+                  <span style={{ color: "var(--color-text-tertiary)", marginLeft: "auto" }}>
+                    İpucu: Üretim hattı ve fason'daki stoklar genelde iş emri ile takip edilir (Akibet raporu)
+                  </span>
+                </div>
+
+                {/* Fason companies list */}
+                {(stock.fasonCompanies || []).length > 0 && (
+                  <details style={{ marginBottom: 12, fontSize: 12 }}>
+                    <summary style={{ cursor: "pointer", color: "var(--color-text-info)", fontWeight: 500 }}>
+                      🚚 Fason tedarikçiler ({stock.fasonCompanies.length})
+                    </summary>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 8 }}>
+                      {stock.fasonCompanies.map(fc => (
+                        <span key={fc} style={{ padding: "3px 8px", background: "#FFF7ED", border: "1px solid #FDBA74", borderRadius: 4, fontSize: 11 }}>{fc}</span>
+                      ))}
+                    </div>
+                  </details>
+                )}
+
+                {/* Search + filter bar */}
+                <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+                  <input
+                    placeholder="Stok kodu veya adı ara..."
+                    value={stockSearch} onChange={e => setStockSearch(e.target.value)}
+                    style={{ flex: 1, padding: "7px 12px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12, background: "var(--color-background-primary)" }}
+                  />
+                  {[
+                    { id: "all", label: "Tümü", count: stock.totalCodes },
+                    { id: "ambar", label: "📦 Ambar", count: cats.ambar?.count || 0 },
+                    { id: "uretim", label: "🏭 Üretim", count: cats.uretim?.count || 0 },
+                    { id: "fason", label: "🚚 Fason", count: cats.fason?.count || 0 },
+                    { id: "bom", label: "🔗 BOM", count: bomInStock },
+                    { id: "haric", label: "🗑 Hariç", count: cats.haric?.count || 0 }
+                  ].map(f => (
+                    <button key={f.id} onClick={() => setStockFilter(f.id)} style={{
+                      padding: "5px 10px", borderRadius: 5, fontSize: 11, border: "1px solid",
+                      cursor: "pointer", fontWeight: stockFilter === f.id ? 600 : 400,
+                      background: stockFilter === f.id ? "var(--color-background-info)" : "transparent",
+                      color: stockFilter === f.id ? "var(--color-text-info)" : "var(--color-text-secondary)",
+                      borderColor: stockFilter === f.id ? "var(--color-border-info)" : "var(--color-border-secondary)"
+                    }}>
+                      {f.label} ({f.count})
+                    </button>
+                  ))}
+                </div>
+
+                {/* Parts table */}
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 6 }}>
+                  {filteredStockParts.length} kalem gösteriliyor · Import: {new Date(stock.importedAt).toLocaleString("tr-TR")} · {stock.fileName}
+                </div>
+                <div style={{ maxHeight: 520, overflowY: "auto", border: "1px solid var(--color-border-secondary)", borderRadius: 8 }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 2 }}>
+                        <th style={{ padding: "8px 10px", textAlign: "left", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600 }}>Stok Kodu</th>
+                        <th style={{ padding: "8px 10px", textAlign: "left", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600 }}>Stok Adı</th>
+                        <th style={{ padding: "8px 6px", textAlign: "right", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600, color: "#16A34A" }}>📦 Ambar</th>
+                        <th style={{ padding: "8px 6px", textAlign: "right", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600, color: "#D97706" }}>🏭 Üretim</th>
+                        <th style={{ padding: "8px 6px", textAlign: "right", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600, color: "#C2410C" }}>🚚 Fason</th>
+                        <th style={{ padding: "8px 6px", textAlign: "right", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600, color: "#6B7280" }}>🗑 Hariç</th>
+                        <th style={{ padding: "8px 6px", textAlign: "right", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600 }}>Toplam</th>
+                        <th style={{ padding: "8px 6px", textAlign: "center", borderBottom: "1px solid var(--color-border-secondary)", fontWeight: 600 }}>Br</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredStockParts.slice(0, 200).map((p, i) => {
+                        const inBom = bomCodes.has(p.code);
+                        return (
+                          <tr key={p.code + i} style={{ borderBottom: "1px solid var(--color-border-secondary)", background: inBom ? "rgba(99,102,241,0.04)" : "transparent" }}>
+                            <td style={{ padding: "5px 10px", fontFamily: "var(--font-mono)", fontSize: 10, whiteSpace: "nowrap" }}>
+                              {inBom && <span title="BOM'da var" style={{ marginRight: 4 }}>🔗</span>}
+                              {p.code}
+                            </td>
+                            <td style={{ padding: "5px 10px", maxWidth: 300, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontFamily: "var(--font-mono)", color: p.ambar > 0 ? "#16A34A" : "var(--color-text-tertiary)" }}>{p.ambar > 0 ? p.ambar : "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontFamily: "var(--font-mono)", color: p.uretim > 0 ? "#D97706" : "var(--color-text-tertiary)" }}>{p.uretim > 0 ? p.uretim : "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontFamily: "var(--font-mono)", color: p.fason > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{p.fason > 0 ? p.fason : "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontFamily: "var(--font-mono)", color: p.haric > 0 ? "#6B7280" : "var(--color-text-tertiary)" }}>{p.haric > 0 ? p.haric : "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{p.total}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center", color: "var(--color-text-tertiary)" }}>{p.unit}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                  {filteredStockParts.length > 200 && (
+                    <div style={{ padding: "8px 12px", textAlign: "center", fontSize: 11, color: "var(--color-text-tertiary)", background: "var(--color-background-secondary)" }}>
+                      İlk 200 kalem gösteriliyor ({filteredStockParts.length - 200} daha var) — arama ile daraltın
+                    </div>
+                  )}
+                </div>
+
+                {/* Lokasyon sınıflandırma açıklaması */}
+                <details style={{ marginTop: 12, fontSize: 11, color: "var(--color-text-secondary)" }}>
+                  <summary style={{ cursor: "pointer", fontWeight: 500 }}>ℹ Lokasyon sınıflandırma kuralları</summary>
+                  <div style={{ marginTop: 8, display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                    <div><strong style={{ color: "#16A34A" }}>📦 Ambar (Gerçek Stok):</strong> Hammadde ve Malzeme, Yardımcı Malzeme Ambarı, Merkez Ambarı, Kontrol ve Giriş Ambarı, Sevkiyat Ambarı, Montaj Hattı</div>
+                    <div><strong style={{ color: "#D97706" }}>🏭 Üretim Hattı (Ara Stok):</strong> Üretim Hattı, PRES HATTI, KAYNAK HATTI, TALAŞ AMBARI, Lazer Mamül Ambarı</div>
+                    <div><strong style={{ color: "#C2410C" }}>🚚 Fason (Dış Tedarikçi):</strong> {(stock.fasonCompanies || []).join(", ") || "—"}</div>
+                    <div><strong style={{ color: "#6B7280" }}>🗑 Hariç (Sayılmaz):</strong> Iskarta Ambarı, Hurda ve Talaş Ambarı, Lazer Hurda Ambarı, Yeniden İşleme Ambarı</div>
+                  </div>
+                </details>
+              </div>
+            );
+          })()}
+
+          {/* Empty state */}
+          {(!stock || !stock.parts) && !stockImporting && (
+            <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-tertiary)" }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>📦</div>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>VIO Stok Raporu henüz yüklenmedi</div>
+              <div style={{ fontSize: 12, marginTop: 6, maxWidth: 400, margin: "6px auto 0" }}>
+                VIO ERP'den "Son Stok Raporu (Operasyon)" Excel dosyasını export edin ve yukarıdaki alana sürükleyin.
+              </div>
+              <div style={{ fontSize: 11, marginTop: 12, color: "var(--color-text-info)" }}>
+                İpucu: Raporda Stok Kodu, Stok Adı, Yer Adı ve Miktar sütunları olmalı
+              </div>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* ========== BOM TAB ========== */}
       {activeTab === "bom" && (
@@ -6282,9 +6673,15 @@ function MRPPlanlama({ db, userRole }) {
               const intRem = ak ? ak.internalRemaining : 0;
               const fasRem = ak ? ak.fasonRemaining : 0;
               const wip = intRem + fasRem;
-              const netReq = Math.max(0, (it.requirement || 0) - wip);
+              // VIO Stok
+              const stk = stockLookup[it.code];
+              const stkAmbar = stk ? stk.ambar : 0;
+              const stkUretim = stk ? stk.uretim : 0;
+              const stkFason = stk ? stk.fason : 0;
+              const stkAvail = stkAmbar + (stockIncludeUretim ? stkUretim : 0) + (stockIncludeFason ? stkFason : 0);
+              const netReq = Math.max(0, (it.requirement || 0) - stkAvail - wip);
               const sType = getSupplyType(it.code);
-              return { ...it, _level: k, _intRem: intRem, _fasRem: fasRem, _wip: wip, _netReq: netReq, _akOrders: ak?.orderCount || 0, _supplyType: sType };
+              return { ...it, _level: k, _intRem: intRem, _fasRem: fasRem, _wip: wip, _stkAmbar: stkAmbar, _stkUretim: stkUretim, _stkFason: stkFason, _stkAvail: stkAvail, _netReq: netReq, _akOrders: ak?.orderCount || 0, _supplyType: sType };
             }));
             const levelLabels = { L0: "Ana Ürünler", L1: "Seviye 1 — Montaj", L2: "Seviye 2 — İşlenmiş", L3: "Seviye 3 — Hammadde" };
 
@@ -6294,11 +6691,12 @@ function MRPPlanlama({ db, userRole }) {
             allItems.forEach(it => {
               if ((it._supplyType === "BUY" || it._supplyType === "RAW") && it.requirement > 0) {
                 if (!purchaseMap[it.code]) {
-                  purchaseMap[it.code] = { code: it.code, name: it.name, unit: it.unit, supplyType: it._supplyType, requirement: 0, stock: 0, wip: 0, openPO: 0, suppliers: [], netReq: 0, gap: 0, sources: 0 };
+                  purchaseMap[it.code] = { code: it.code, name: it.name, unit: it.unit, supplyType: it._supplyType, requirement: 0, stock: 0, vioStock: 0, wip: 0, openPO: 0, suppliers: [], netReq: 0, gap: 0, sources: 0 };
                 }
                 const pm = purchaseMap[it.code];
                 pm.requirement += it.requirement || 0;
                 pm.stock = Math.max(pm.stock, it.stock || 0);
+                pm.vioStock = Math.max(pm.vioStock, it._stkAvail || 0);
                 pm.wip += it._wip || 0;
                 pm.sources++;
               }
@@ -6310,8 +6708,7 @@ function MRPPlanlama({ db, userRole }) {
                 pm.openPO = po.totalRemaining;
                 pm.suppliers = po.suppliers || [];
               }
-              pm.netReq = Math.max(0, pm.requirement - pm.wip);
-              // gap = net requirement - open PO (negative = excess PO, positive = need new order)
+              pm.netReq = Math.max(0, pm.requirement - pm.vioStock - pm.wip);
               pm.gap = pm.netReq - pm.openPO;
             });
             const purchaseList = Object.values(purchaseMap).sort((a, b) => b.netReq - a.netReq || a.code.localeCompare(b.code));
@@ -6324,6 +6721,7 @@ function MRPPlanlama({ db, userRole }) {
             else if (reqFilter === "stocked") filtered = filtered.filter(i => i.stock > 0);
             else if (reqFilter === "net") filtered = filtered.filter(i => i._netReq > 0);
             else if (reqFilter === "wip") filtered = filtered.filter(i => i._wip > 0);
+            else if (reqFilter === "instock") filtered = filtered.filter(i => i._stkAvail > 0);
             else if (reqFilter === "purchase") filtered = filtered.filter(i => (i._supplyType === "BUY" || i._supplyType === "RAW") && i.requirement > 0);
             if (reqSearch.trim()) {
               const q = reqSearch.toLowerCase();
@@ -6337,6 +6735,7 @@ function MRPPlanlama({ db, userRole }) {
             const totalReq = filtered.filter(i => i.requirement > 0).length;
             const totalNet = filtered.filter(i => i._netReq > 0).length;
             const hasAkibet = Object.keys(akibetLookup).length > 0;
+            const hasStock = Object.keys(stockLookup).length > 0;
 
             return (
               <div>
@@ -6344,8 +6743,9 @@ function MRPPlanlama({ db, userRole }) {
                   <span>Dönem: <b>{requirements.period}</b></span>
                   <span>{requirements.totalItems} kalem</span>
                   <span style={{ color: "var(--color-text-danger)" }}>{requirements.totalNeeded} gereksinimli</span>
+                  {hasStock && <span style={{ color: "#8B5CF6" }}>📦 {allItems.filter(i => i._stkAvail > 0).length} stokta</span>}
                   {hasAkibet && <span style={{ color: "#F59E0B" }}>🔄 {allItems.filter(i => i._wip > 0).length} üretimde/fasonda</span>}
-                  {hasAkibet && <span style={{ color: "#EF4444", fontWeight: 500 }}>🔴 {allItems.filter(i => i._netReq > 0).length} net açık</span>}
+                  {(hasAkibet || hasStock) && <span style={{ color: "#EF4444", fontWeight: 500 }}>🔴 {allItems.filter(i => i._netReq > 0).length} net açık</span>}
                   <span style={{ color: "#633806" }}>🛒 {purchaseList.filter(p => p.gap > 0).length} sipariş açığı{hasPurchase ? "" : " (sipariş verisi yok)"}</span>
                   {requirements.bomMatched > 0 && <span>BOM: {requirements.bomMatched}/{requirements.bomMatched + (requirements.bomUnmatched||0)}</span>}
                 </div>
@@ -6363,10 +6763,11 @@ function MRPPlanlama({ db, userRole }) {
                   <select value={reqFilter} onChange={e => setReqFilter(e.target.value)} style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11, background: "var(--color-background-secondary)" }}>
                     <option value="all">Tümü</option>
                     <option value="needed">Gereksinimli</option>
-                    {hasAkibet && <option value="net">Net Açık (üretim düşülmüş)</option>}
+                    {(hasAkibet || hasStock) && <option value="net">Net Açık (stok+üretim düşülmüş)</option>}
+                    {hasStock && <option value="instock">📦 VIO Stokta var</option>}
                     {hasAkibet && <option value="wip">Üretimde/Fasonda</option>}
                     <option value="purchase">🛒 Satınalma (BUY/RAW)</option>
-                    <option value="stocked">Stokta var</option>
+                    <option value="stocked">Stokta var (VIO ihtiyaç)</option>
                   </select>
                 </div>
 
@@ -6376,7 +6777,7 @@ function MRPPlanlama({ db, userRole }) {
                 <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 6 }}>
                   {isPurchaseView
                     ? `Satınalma: ${purchaseRaw.length} hammadde (RAW) · ${purchaseBuy.length} standart parça (BUY)${hasPurchase ? ` · ${purchaseList.filter(p=>p.gap>0).length} yeni sipariş gerekli · ${purchaseList.filter(p=>p.openPO>0 && p.gap<=0).length} takipte` : ""}`
-                    : `${filtered.length} kalem · ${totalReq} gereksinimli${hasAkibet ? ` · ${totalNet} net açık` : ""}`
+                    : `${filtered.length} kalem · ${totalReq} gereksinimli${(hasAkibet || hasStock) ? ` · ${totalNet} net açık` : ""}`
                   }
                 </div>
 
@@ -6399,6 +6800,7 @@ function MRPPlanlama({ db, userRole }) {
                                 <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#633806" }}>Hammadde Adı</th>
                                 <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#633806" }}>Br</th>
                                 <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>İhtiyaç</th>
+                                {hasStock && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>📦 Stok</th>}
                                 {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Üretimde</th>}
                                 <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#633806" }}>Net İhtiyaç</th>
                                 {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Açık Sipariş</th>}
@@ -6416,6 +6818,7 @@ function MRPPlanlama({ db, userRole }) {
                                     <td style={{ padding: "5px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
                                     <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
                                     <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement % 1 === 0 ? p.requirement : p.requirement.toFixed(2)}</td>
+                                    {hasStock && <td style={{ padding: "5px 8px", textAlign: "right", color: p.vioStock > 0 ? "#8B5CF6" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.vioStock > 0 ? p.vioStock : "—"}</td>}
                                     {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
                                     <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500, color: p.netReq > 0 ? "#92400E" : "var(--color-text-success)" }}>{p.netReq > 0 ? (p.netReq % 1 === 0 ? p.netReq : p.netReq.toFixed(2)) : "✓"}</td>
                                     {hasPurchase && <td style={{ padding: "5px 8px", textAlign: "right", color: p.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.openPO > 0 ? p.openPO : "—"}</td>}
@@ -6447,6 +6850,7 @@ function MRPPlanlama({ db, userRole }) {
                                 <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Parça Adı</th>
                                 <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Br</th>
                                 <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>İhtiyaç</th>
+                                {hasStock && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>📦 Stok</th>}
                                 {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Üretimde</th>}
                                 <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#27500A" }}>Net İhtiyaç</th>
                                 {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Açık Sipariş</th>}
@@ -6463,6 +6867,7 @@ function MRPPlanlama({ db, userRole }) {
                                     <td style={{ padding: "5px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
                                     <td style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{p.unit}</td>
                                     <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>{p.requirement}</td>
+                                    {hasStock && <td style={{ padding: "5px 8px", textAlign: "right", color: p.vioStock > 0 ? "#8B5CF6" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.vioStock > 0 ? p.vioStock : "—"}</td>}
                                     {hasAkibet && <td style={{ padding: "5px 8px", textAlign: "right", color: p.wip > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.wip > 0 ? p.wip : "—"}</td>}
                                     <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500, color: p.netReq > 0 ? "#92400E" : "var(--color-text-success)" }}>{p.netReq > 0 ? p.netReq : "✓"}</td>
                                     {hasPurchase && <td style={{ padding: "5px 8px", textAlign: "right", color: p.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>{p.openPO > 0 ? p.openPO : "—"}</td>}
@@ -6488,9 +6893,10 @@ function MRPPlanlama({ db, userRole }) {
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>İstenen</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Stok</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Gereksinim</th>
+                        {hasStock && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>📦 VIO Stok</th>}
                         {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Üretimde</th>}
                         {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#C2410C" }}>Fasonda</th>}
-                        {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Net Açık</th>}
+                        {(hasAkibet || hasStock) && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Net Açık</th>}
                         <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>Svye</th>
                         <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "var(--color-text-secondary)" }}>BOM</th>
                       </tr>
@@ -6500,9 +6906,8 @@ function MRPPlanlama({ db, userRole }) {
                         const hasReq = item.requirement > 0;
                         const hasNet = item._netReq > 0;
                         const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517" };
-                        // Row background: red if net open, yellow if has WIP but covered, transparent otherwise
-                        const rowBg = hasAkibet
-                          ? (hasNet ? "var(--color-background-danger)" : item._wip > 0 ? "#FFFBEB" : "transparent")
+                        const rowBg = (hasAkibet || hasStock)
+                          ? (hasNet ? "var(--color-background-danger)" : (item._wip > 0 || item._stkAvail > 0) ? "#FFFBEB" : "transparent")
                           : (hasReq ? "var(--color-background-danger)" : "transparent");
                         return (
                           <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
@@ -6511,6 +6916,11 @@ function MRPPlanlama({ db, userRole }) {
                             <td style={{ padding: "5px 8px", textAlign: "right" }}>{item.demanded || "—"}</td>
                             <td style={{ padding: "5px 8px", textAlign: "right", color: item.stock > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{item.stock || "—"}</td>
                             <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasReq ? 500 : 400, color: hasReq ? "var(--color-text-danger)" : "var(--color-text-tertiary)" }}>{item.requirement || "—"}</td>
+                            {hasStock && (
+                              <td style={{ padding: "5px 8px", textAlign: "right", fontSize: 10 }} title={`Ambar: ${item._stkAmbar} · Üretim: ${item._stkUretim} · Fason: ${item._stkFason}`}>
+                                {item._stkAvail > 0 ? <span style={{ color: "#8B5CF6", fontWeight: 500 }}>{item._stkAvail}</span> : <span style={{ color: "var(--color-text-tertiary)" }}>—</span>}
+                              </td>
+                            )}
                             {hasAkibet && (
                               <td style={{ padding: "5px 8px", textAlign: "right", color: item._intRem > 0 ? "#2563EB" : "var(--color-text-tertiary)", fontSize: 10 }}>
                                 {item._intRem > 0 ? item._intRem : "—"}
@@ -6521,9 +6931,9 @@ function MRPPlanlama({ db, userRole }) {
                                 {item._fasRem > 0 ? item._fasRem : "—"}
                               </td>
                             )}
-                            {hasAkibet && (
-                              <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasNet ? 700 : 400, color: hasNet ? "#DC2626" : item._wip > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)", fontSize: hasNet ? 11 : 10 }}>
-                                {hasNet ? item._netReq : item._wip > 0 ? "✓ Karşılandı" : "—"}
+                            {(hasAkibet || hasStock) && (
+                              <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasNet ? 700 : 400, color: hasNet ? "#DC2626" : (item._wip > 0 || item._stkAvail > 0) ? "var(--color-text-success)" : "var(--color-text-tertiary)", fontSize: hasNet ? 11 : 10 }}>
+                                {hasNet ? item._netReq : (item._wip > 0 || item._stkAvail > 0) ? "✓ Karşılandı" : "—"}
                               </td>
                             )}
                             <td style={{ padding: "5px 4px", textAlign: "center" }}>
