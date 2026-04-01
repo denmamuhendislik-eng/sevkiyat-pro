@@ -4600,17 +4600,23 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
   const saveBomMapping = async (data) => { if (!db || !canEdit) return; await setDoc(doc(db, APP_COL, MAPPING_DOC), data); };
 
   // Compute unshipped demand from sevkiyat planı
+  const [expYear, setExpYear] = useState(new Date().getFullYear());
+  const availableYears = useMemo(() => yearsData ? Object.keys(yearsData).map(Number).sort() : [], [yearsData]);
   const unshippedDemand = useMemo(() => {
     if (!yearsData || !products) return { byProduct: {}, containers: [], totalProducts: 0, totalUnits: 0 };
     const byProduct = {};
     const containers = [];
     const cutoff = expCutoff ? new Date(expCutoff + "T23:59:59") : null;
+    // Only scan selected year (and future)
     Object.entries(yearsData).forEach(([year, yd]) => {
+      const y = Number(year);
+      if (y < expYear) return; // skip past years
       (yd.containers || []).forEach(c => {
         if (c.shipped) return;
         if (cutoff && new Date(c.date) > cutoff) return;
         const qty = yd.quantities?.[c.id] || {};
         let cTotal = 0;
+        const cProducts = {};
         Object.entries(qty).forEach(([pid, q]) => {
           const pidN = Number(pid);
           if (q > 0) {
@@ -4618,120 +4624,127 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
             byProduct[pidN].qty += q;
             byProduct[pidN].containers.push(c.id);
             cTotal += q;
+            cProducts[pidN] = q;
           }
         });
-        if (cTotal > 0) containers.push({ id: c.id, date: c.date, year: Number(year), total: cTotal });
+        if (cTotal > 0) containers.push({ id: c.id, date: c.date, year: y, total: cTotal, products: cProducts });
       });
     });
     const totalProducts = Object.keys(byProduct).length;
     const totalUnits = Object.values(byProduct).reduce((s, p) => s + p.qty, 0);
     return { byProduct, containers: containers.sort((a, b) => a.date.localeCompare(b.date)), totalProducts, totalUnits };
-  }, [yearsData, products, expCutoff]);
+  }, [yearsData, products, expCutoff, expYear]);
 
-  // BOM Explosion — recursive multi-level
+  // BOM Explosion — multi-level, multi-pass for PRODUCT type
   const runBomExplosion = () => {
     if (exploding) return;
     setExploding(true);
     try {
-      const demand = unshippedDemand.byProduct;
-      const grossReq = {}; // stockCode → { name, unit, qty, level, supplyType, sources[] }
+      const initialDemand = { ...unshippedDemand.byProduct };
+      const grossReq = {};
+      const productDemand = {}; // stockCode → accumulated PRODUCT demand (for pass 2)
 
-      // Walk each product
-      Object.entries(demand).forEach(([pidStr, dInfo]) => {
-        const pid = Number(pidStr);
-        const modelKey = bomMapping[pid];
-        if (!modelKey || !bomModels[modelKey]) return;
+      // Helper: explode one product through its BOM
+      const explodeProduct = (pid, demandQty, modelKey, pass) => {
         const model = bomModels[modelKey];
+        if (!model) return;
         const parts = model.parts || [];
         if (parts.length === 0) return;
+        const partQtys = {};
 
-        const demandQty = dInfo.qty;
-        const partQtys = {}; // partIdx → total qty needed for this product demand
-
-        // Walk parts in order (they're stored parent before child)
         parts.forEach((p, i) => {
           let needed;
           if (p.parentIdx === null || p.parentIdx === undefined) {
-            // L0 part — qty per 1 finished product
             needed = (p.qty || 1) * demandQty;
           } else {
-            // Child part — qty per parent × parent's total
             const parentNeeded = partQtys[p.parentIdx] || 0;
             needed = (p.qty || 1) * parentNeeded;
           }
           partQtys[i] = needed;
 
-          // Skip PRODUCT type (finished assemblies that are themselves in sevkiyat plan)
-          if (p.supplyType === "PRODUCT") return;
-
-          // Add to gross requirements
           const code = p.stockCode;
           if (!grossReq[code]) {
-            grossReq[code] = {
-              code, name: p.stockName, unit: p.unit || "AD",
-              level: p.level, supplyType: p.supplyType,
-              grossQty: 0, sources: []
-            };
+            grossReq[code] = { code, name: p.stockName, unit: p.unit || "AD", level: p.level, supplyType: p.supplyType, grossQty: 0, sources: [] };
           }
           grossReq[code].grossQty += needed;
-          grossReq[code].sources.push({ pid, modelKey, qty: needed });
-          // Keep the deepest level if same code appears at multiple levels
+          grossReq[code].sources.push({ pid, modelKey, qty: needed, pass });
           if (p.level > grossReq[code].level) grossReq[code].level = p.level;
+
+          // PRODUCT tipi → pass 2'de alt malzemeleri patlatılacak
+          if (p.supplyType === "PRODUCT") {
+            if (!productDemand[code]) productDemand[code] = 0;
+            productDemand[code] += needed;
+          }
         });
+      };
+
+      // Pass 1: Sevkiyat planından gelen doğrudan talep
+      Object.entries(initialDemand).forEach(([pidStr, dInfo]) => {
+        const pid = Number(pidStr);
+        const modelKey = bomMapping[pid];
+        if (!modelKey || !bomModels[modelKey]) return;
+        explodeProduct(pid, dInfo.qty, modelKey, 1);
       });
 
-      // Net requirement: subtract stock, akibet, purchase
+      // Pass 2: PRODUCT tipi parçaların alt BOM'larını patlat
+      // stockCode → bomModels modelKey eşleştirmesi
+      const modelByStockCode = {};
+      Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
+        if (m.modelCode) modelByStockCode[m.modelCode] = mk;
+        const firstPart = (m.parts || []).find(p => p.level === 0);
+        if (firstPart) modelByStockCode[firstPart.stockCode] = mk;
+      });
+
+      let pass2Count = 0;
+      Object.entries(productDemand).forEach(([stockCode, totalQty]) => {
+        const mk = modelByStockCode[stockCode];
+        if (mk && bomModels[mk]) {
+          explodeProduct(stockCode, totalQty, mk, 2);
+          pass2Count++;
+        }
+      });
+
+      // Net requirement calculation
       const results = Object.values(grossReq).map(r => {
         const stk = stockLookup[r.code];
         const stkAmbar = stk ? stk.ambar : 0;
         const stkUretim = stk ? stk.uretim : 0;
         const stkFason = stk ? stk.fason : 0;
         const stkAvail = stkAmbar + (stockIncludeUretim ? stkUretim : 0) + (stockIncludeFason ? stkFason : 0);
-
         const ak = akibetLookup[r.code];
         const wipInt = ak ? ak.internalRemaining : 0;
         const wipFas = ak ? ak.fasonRemaining : 0;
         const wipTotal = wipInt + wipFas;
-
         const po = purchaseLookup[r.code];
         const openPO = po ? po.totalRemaining : 0;
-
         const netQty = Math.max(0, r.grossQty - stkAvail - wipTotal);
         const gap = Math.max(0, netQty - openPO);
 
-        // Çapraz kontrol: stok raporu üretim/fason vs akibet
         let crossCheck = null;
         if (stk && ak && (stkUretim > 0 || stkFason > 0)) {
           const stokWip = stkUretim + stkFason;
           const akibetWip = wipTotal;
           const diff = stokWip - akibetWip;
-          if (Math.abs(diff) > 0.5) {
-            crossCheck = { stokWip, akibetWip, diff };
-          }
+          if (Math.abs(diff) > 0.5) crossCheck = { stokWip, akibetWip, diff };
         }
 
-        return {
-          ...r, stkAmbar, stkUretim, stkFason, stkAvail,
-          wipInt, wipFas, wipTotal,
-          openPO, netQty, gap, crossCheck,
-          productCount: r.sources.length
-        };
+        return { ...r, stkAmbar, stkUretim, stkFason, stkAvail, wipInt, wipFas, wipTotal, openPO, netQty, gap, crossCheck, productCount: r.sources.length };
       });
 
       results.sort((a, b) => a.level - b.level || b.netQty - a.netQty);
 
-      // Stats
-      const mappedProducts = Object.keys(demand).filter(pid => bomMapping[Number(pid)] && bomModels[bomMapping[Number(pid)]]).length;
-      const unmappedProducts = Object.keys(demand).filter(pid => !bomMapping[Number(pid)] || !bomModels[bomMapping[Number(pid)]]).map(Number);
+      const allPids = Object.keys(initialDemand).map(Number);
+      const mappedProducts = allPids.filter(pid => bomMapping[pid] && bomModels[bomMapping[pid]]).length;
+      const unmappedProducts = allPids.filter(pid => !bomMapping[pid] || !bomModels[bomMapping[pid]]);
       const crossCheckIssues = results.filter(r => r.crossCheck);
 
       setExplosionResult({
-        parts: results,
-        totalGross: results.length,
+        parts: results, totalGross: results.length,
         totalNet: results.filter(r => r.netQty > 0).length,
         totalGap: results.filter(r => r.gap > 0).length,
         mappedProducts, unmappedProducts,
         crossCheckIssues: crossCheckIssues.length,
+        pass2Count, productDemandCodes: Object.keys(productDemand),
         calculatedAt: new Date().toISOString()
       });
     } catch (err) {
@@ -7681,9 +7694,66 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
               )}
             </div>
 
+            {/* Container Detail — hangi konteynerler sayılıyor */}
+            {demand.containers.length > 0 && (
+              <details style={{ marginBottom: 16, border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden" }}>
+                <summary style={{ cursor: "pointer", padding: "10px 14px", background: "var(--color-background-secondary)", fontSize: 12, fontWeight: 500, display: "flex", alignItems: "center", gap: 8 }}>
+                  📋 Sayılan Konteynerler ({demand.containers.length}) — toplam {demand.totalUnits} ürün
+                  {expCutoff && <span style={{ fontSize: 10, color: "var(--color-text-info)", fontWeight: 400 }}>({expCutoff}'e kadar)</span>}
+                </summary>
+                <div style={{ maxHeight: 280, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0 }}>
+                        <th style={{ padding: "5px 8px", textAlign: "left", fontSize: 10, fontWeight: 500 }}>Konteyner</th>
+                        <th style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, fontWeight: 500 }}>Tarih</th>
+                        <th style={{ padding: "5px 8px", textAlign: "center", fontSize: 10, fontWeight: 500 }}>Yıl</th>
+                        {demandProducts.slice(0, 8).map(p => (
+                          <th key={p.id} style={{ padding: "5px 4px", textAlign: "right", fontSize: 9, fontWeight: 500, maxWidth: 60, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                            title={p.nameTR}>{p.nameTR.substring(0, 12)}</th>
+                        ))}
+                        <th style={{ padding: "5px 8px", textAlign: "right", fontSize: 10, fontWeight: 600 }}>Toplam</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {demand.containers.map((c, i) => (
+                        <tr key={c.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                          <td style={{ padding: "4px 8px", fontFamily: "var(--font-mono)", fontSize: 10 }}>{c.id}</td>
+                          <td style={{ padding: "4px 8px", textAlign: "center", fontSize: 10 }}>{c.date}</td>
+                          <td style={{ padding: "4px 8px", textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>{c.year}</td>
+                          {demandProducts.slice(0, 8).map(p => (
+                            <td key={p.id} style={{ padding: "4px 4px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10, color: (c.products?.[p.id] || 0) > 0 ? "var(--color-text-primary)" : "var(--color-text-tertiary)" }}>
+                              {(c.products?.[p.id] || 0) > 0 ? c.products[p.id] : "—"}
+                            </td>
+                          ))}
+                          <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600 }}>{c.total}</td>
+                        </tr>
+                      ))}
+                      {/* Toplam satırı */}
+                      <tr style={{ borderTop: "2px solid var(--color-border-secondary)", background: "var(--color-background-secondary)", fontWeight: 600 }}>
+                        <td colSpan={3} style={{ padding: "5px 8px", fontSize: 10 }}>TOPLAM</td>
+                        {demandProducts.slice(0, 8).map(p => (
+                          <td key={p.id} style={{ padding: "5px 4px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                            {demand.byProduct[p.id]?.qty || 0}
+                          </td>
+                        ))}
+                        <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10 }}>{demand.totalUnits}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </details>
+            )}
+
             {/* Step 2 — Config + Run */}
             <div style={{ marginBottom: 20, padding: "14px 16px", background: "var(--color-background-secondary)", borderRadius: 10, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap" }}>
               <span style={{ fontSize: 14, fontWeight: 600 }}>2️⃣ Hesapla</span>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                Yıl:
+                <select value={expYear} onChange={e => setExpYear(Number(e.target.value))} style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11 }}>
+                  {availableYears.map(y => <option key={y} value={y}>{y}</option>)}
+                </select>
+              </label>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
                 Son tarih:
                 <input type="date" value={expCutoff} onChange={e => setExpCutoff(e.target.value)}
@@ -7692,7 +7762,7 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
               </label>
               <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
                 {demand.containers.length} konteyner · {demand.totalUnits} ürün
-                {expCutoff ? ` · ${expCutoff}'e kadar` : " · tüm sevk edilmemişler"}
+                {expCutoff ? ` · ${expCutoff}'e kadar` : ` · ${expYear}+ sevk edilmemişler`}
               </span>
               <div style={{ display: "flex", gap: 8, alignItems: "center", marginLeft: "auto" }}>
                 {hasStock && <span style={{ fontSize: 10, padding: "2px 6px", background: "#8B5CF620", borderRadius: 3, color: "#8B5CF6" }}>📦 Stok</span>}
@@ -7735,6 +7805,12 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                       <div style={{ background: "#FEF3C7", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #B45309" }}>
                         <div style={{ fontSize: 10, color: "#B45309" }}>⚠ Çapraz Kontrol</div>
                         <div style={{ fontSize: 18, fontWeight: 600, color: "#B45309" }}>{exp.crossCheckIssues} <span style={{ fontSize: 10, fontWeight: 400 }}>uyumsuz</span></div>
+                      </div>
+                    )}
+                    {exp.pass2Count > 0 && (
+                      <div style={{ background: "#F5F3FF", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #7C3AED" }}>
+                        <div style={{ fontSize: 10, color: "#7C3AED" }}>🔁 Pass 2 (PRODUCT)</div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "#7C3AED" }}>{exp.pass2Count} <span style={{ fontSize: 10, fontWeight: 400 }}>ürünün alt BOM'u patlatıldı</span></div>
                       </div>
                     )}
                     {exp.unmappedProducts.length > 0 && (
