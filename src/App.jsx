@@ -4814,7 +4814,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
       // Pass 1: Talep hesaplama (kaynak: montaj planı veya sevkiyat planı)
       const directItems = [];
-      const stockConsumed = {}; // stockCode → bağımsız talep için tüketilen stok miktarı (çift düşüm engeli)
       const demandSummary = {}; // pid → { source, rawDemand, productStock, netDemand }
 
       Object.entries(initialDemand).forEach(([pidStr, dInfo]) => {
@@ -4842,41 +4841,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         // Net talep = ham talep − mamul stok (negatif olamaz)
         netDemand = Math.max(0, rawDemand - productStock);
 
-        // Bağımsız talep için tüketilen VIO stoğu kaydet (BOM bağımlı talepte çift düşüm engeli)
-        // NOT: ANA ürünler montaj stoğu kullanır (VIO stoktan farklı), onlar için kayıt gerekmez
-        if (!isAna && productStock > 0 && rawDemand > 0) {
-          const consumed = Math.min(rawDemand, productStock);
-          const consumedCodes = new Set();
-          // 1) VIO_CODES kodu
-          if (VIO_CODES[pid]) consumedCodes.add(VIO_CODES[pid]);
-          // 2) product.vioCode (BOM güncellesi ile değişmiş olabilir)
-          if (product?.vioCode) consumedCodes.add(product.vioCode);
-          // 3) direct:CODE mapping'deki kod (BOM explosion'da bu kod kullanılır)
-          if (typeof mapping === "string" && mapping.startsWith("direct:") && mapping.length > 7) {
-            consumedCodes.add(mapping.substring(7));
-          }
-          // 4) BOM modeli varsa L0 parçanın stockCode'u
-          if (typeof mapping === "string" && !mapping.startsWith("direct:") && bomModels[mapping]) {
-            const l0 = (bomModels[mapping].parts || []).find(p => p.level === 0);
-            if (l0?.stockCode) consumedCodes.add(l0.stockCode);
-            if (bomModels[mapping].modelCode) consumedCodes.add(bomModels[mapping].modelCode);
-          }
-          consumedCodes.forEach(code => {
-            if (!stockConsumed[code]) stockConsumed[code] = 0;
-            stockConsumed[code] += consumed;
-          });
-        }
-
         demandSummary[pid] = { source, rawDemand, productStock, netDemand, name: product?.nameTR || `PID ${pid}` };
 
-        if (netDemand <= 0) return; // stok yeterli, üretim/alım gerekmez
-
         // "direct:STOK_KODU" formatı → BOM'u olmayan ürün, doğrudan talep
+        // BOM ÖNCELİKLİ: rawDemand ile ekle — stok düşümü net hesapta tek seferde yapılır
+        // Böylece aynı stok kodu BOM'da da geçiyorsa, BOM tüketimi sonrası kalan stok ürün mamul stoğuna yansır
         if (typeof mapping === "string" && mapping.startsWith("direct:")) {
           const stockCode = mapping.substring(7);
-          directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: netDemand });
+          if (rawDemand > 0) {
+            directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: rawDemand });
+          }
           return;
         }
+
+        if (netDemand <= 0) return; // stok yeterli, üretim/alım gerekmez
 
         // Normal BOM eşleştirmesi
         const modelKey = mapping;
@@ -4917,10 +4895,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const stkAmbar = stk ? stk.ambar : 0;
         const stkUretim = stk ? stk.uretim : 0;
         const stkFason = stk ? stk.fason : 0;
-        const rawStkAvail = stkAmbar + (stockIncludeUretim ? stkUretim : 0) + (stockIncludeFason ? stkFason : 0);
-        // Bağımsız talep için tüketilen stoğu düş (çift düşüm engeli)
-        const consumed = stockConsumed[r.code] || 0;
-        const stkAvail = Math.max(0, rawStkAvail - consumed);
+        const stkAvail = stkAmbar + (stockIncludeUretim ? stkUretim : 0) + (stockIncludeFason ? stkFason : 0);
         const ak = akibetLookup[r.code];
         const wipInt = ak ? ak.internalRemaining : 0;
         const wipFas = ak ? ak.fasonRemaining : 0;
@@ -4930,6 +4905,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const netQty = Math.max(0, r.grossQty - stkAvail - wipTotal);
         const gap = Math.max(0, netQty - openPO);
 
+        // BOM bağımlı talep miktarı (pass>=1, direct/bağımsız hariç)
+        const bomDependentQty = r.sources.filter(s => s.pass >= 1).reduce((sum, s) => sum + s.qty, 0);
+
         let crossCheck = null;
         if (stk && ak && (stkUretim > 0 || stkFason > 0)) {
           const stokWip = stkUretim + stkFason;
@@ -4938,10 +4916,40 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           if (Math.abs(diff) > 0.5) crossCheck = { stokWip, akibetWip, diff };
         }
 
-        return { ...r, stkAmbar, stkUretim, stkFason, rawStkAvail, stkConsumed: consumed, stkAvail, wipInt, wipFas, wipTotal, openPO, netQty, gap, crossCheck, productCount: r.sources.length };
+        return { ...r, stkAmbar, stkUretim, stkFason, stkAvail, bomDependentQty, wipInt, wipFas, wipTotal, openPO, netQty, gap, crossCheck, productCount: r.sources.length };
       });
 
       results.sort((a, b) => a.level - b.level || b.netQty - a.netQty);
+
+      // BOM'da tüketilen stok hesabı — BOM bağımlı talep stoğu öncelikle kullanır
+      // bomStockUsed[code] = BOM için ayrılan stok (bağımsız talepten önce)
+      const bomStockUsed = {};
+      results.forEach(r => {
+        if (r.bomDependentQty > 0 && r.stkAvail > 0) {
+          bomStockUsed[r.code] = Math.min(r.bomDependentQty, r.stkAvail);
+        }
+      });
+
+      // demandSummary güncelle: BOM'da tüketilen stoğu ürün mamul stoğundan düş
+      Object.entries(demandSummary).forEach(([pidStr, d]) => {
+        const pid = Number(pidStr);
+        const product = products?.find(p => p.id === pid);
+        // Ürünün tüm olası stok kodlarını kontrol et
+        const codesToCheck = new Set();
+        if (VIO_CODES[pid]) codesToCheck.add(VIO_CODES[pid]);
+        if (product?.vioCode) codesToCheck.add(product.vioCode);
+        const mapping = bomMapping[pid];
+        if (typeof mapping === "string" && mapping.startsWith("direct:") && mapping.length > 7) {
+          codesToCheck.add(mapping.substring(7));
+        }
+        let totalBomUsed = 0;
+        codesToCheck.forEach(code => {
+          if (bomStockUsed[code]) totalBomUsed = Math.max(totalBomUsed, bomStockUsed[code]);
+        });
+        d.bomStockUsed = totalBomUsed;
+        d.effectiveStock = Math.max(0, d.productStock - totalBomUsed);
+        d.adjustedNetDemand = Math.max(0, d.rawDemand - d.effectiveStock);
+      });
 
       const allPids = Object.keys(initialDemand).map(Number);
       const isMapped = (pid) => {
@@ -8271,7 +8279,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 level: { label: "Svye", align: "center", render: r => <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: ["#534AB718","#185FA518","#1D9E7518","#BA751718"][r.level] || "#88888818", color: ["#534AB7","#185FA5","#1D9E75","#BA7517"][r.level] || "#888" }}>L{r.level}</span> },
                 type: { label: "Tip", align: "center", render: r => <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (supplyColors[r.supplyType] || "#888") + "18", color: supplyColors[r.supplyType] || "#888", fontWeight: 500 }}>{r.supplyType}</span> },
                 gross: { label: "Brüt", align: "right", mono: true, render: r => fmtQty(r.grossQty) },
-                stock: { label: "📦 Stok", align: "right", hColor: "#8B5CF6", render: r => r.stkAvail > 0 || r.stkConsumed > 0 ? <span title={r.stkConsumed > 0 ? `Toplam: ${r.rawStkAvail} · Bağımsız talep: −${r.stkConsumed} · Kalan: ${r.stkAvail}` : `Stok: ${r.stkAvail}`}>{r.stkAvail > 0 ? r.stkAvail : 0}{r.stkConsumed > 0 ? <span style={{ fontSize: 8, color: "#B45309", marginLeft: 2 }}>⚡</span> : null}</span> : "—", cc: r => r.stkAvail > 0 ? "#8B5CF6" : r.stkConsumed > 0 ? "#B45309" : "var(--color-text-tertiary)" },
+                stock: { label: "📦 Stok", align: "right", hColor: "#8B5CF6", render: r => r.stkAvail > 0 ? <span title={r.bomDependentQty > 0 ? `Stok: ${r.stkAvail} · BOM talep: ${fmtQty(r.bomDependentQty)} · BOM ayrılan: ${Math.min(r.bomDependentQty, r.stkAvail)}` : `Stok: ${r.stkAvail}`}>{r.stkAvail}{r.bomDependentQty > 0 && r.bomDependentQty <= r.stkAvail ? <span style={{ fontSize: 8, color: "#7C3AED", marginLeft: 2 }}>⚡</span> : null}</span> : "—", cc: r => r.stkAvail > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" },
                 wip: { label: "🔄 WIP", align: "right", hColor: "#D97706", render: r => r.wipTotal > 0 ? r.wipTotal : "—", cc: r => r.wipTotal > 0 ? "#D97706" : "var(--color-text-tertiary)" },
                 net: { label: "Net Açık", align: "right", hColor: "#DC2626", fw: r => r.netQty > 0 ? 700 : 400, render: r => r.netQty > 0 ? fmtQty(r.netQty) : "✓", cc: r => r.netQty > 0 ? "#DC2626" : "var(--color-text-success)" },
                 po: { label: "Açık Sip.", align: "right", hColor: "#2563EB", render: r => r.openPO > 0 ? r.openPO : "—", cc: r => r.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)" },
@@ -8295,6 +8303,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`,
                         source: d.source || "sevkiyat", rawDemand: d.rawDemand || 0,
                         productStock: d.productStock || 0, netDemand: d.netDemand || 0,
+                        bomStockUsed: d.bomStockUsed || 0, effectiveStock: d.effectiveStock ?? d.productStock ?? 0,
+                        adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
                         totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
                     }
                     pMap[pid].totalParts++;
@@ -8313,10 +8323,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     const pr = products?.find(p => p.id === pid);
                     pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`,
                       source: d.source, rawDemand: d.rawDemand, productStock: d.productStock, netDemand: d.netDemand,
+                      bomStockUsed: d.bomStockUsed || 0, effectiveStock: d.effectiveStock ?? d.productStock ?? 0,
+                      adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
                       totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
                   }
                 });
-                return Object.values(pMap).sort((a, b) => b.netOpenParts - a.netOpenParts || b.netDemand - a.netDemand);
+                return Object.values(pMap).sort((a, b) => b.netOpenParts - a.netOpenParts || (b.adjustedNetDemand || b.netDemand) - (a.adjustedNetDemand || a.netDemand));
               })();
 
               return (
@@ -8371,6 +8383,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                             <th style={{ padding: "8px 6px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Kaynak</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>Mamul Stok</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#7C3AED" }}>⚡ BOM</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#16A34A" }}>Kalan Stok</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#DC2626" }}>Net Talep</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Parça</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#16A34A" }}>✓ Tamam</th>
@@ -8383,8 +8397,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           <tbody>
                             {productSummary.map((ps, i) => {
                               const pct = ps.totalParts > 0 ? Math.round((ps.covered / ps.totalParts) * 100) : 0;
-                              const isFullyCovered = ps.netDemand === 0;
-                              const isPartsOk = ps.netOpenParts === 0 && ps.netDemand > 0;
+                              const displayNetDemand = ps.adjustedNetDemand ?? ps.netDemand;
+                              const isFullyCovered = displayNetDemand === 0;
+                              const isPartsOk = ps.netOpenParts === 0 && displayNetDemand > 0;
                               const rowBg = isFullyCovered ? "#F0FDF4" : isPartsOk ? "transparent" : "#FEF2F2";
                               return (
                                 <tr key={ps.pid} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
@@ -8398,8 +8413,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{ps.rawDemand}</td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.productStock > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" }}>{ps.productStock > 0 ? ps.productStock : "—"}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: ps.netDemand > 0 ? "#DC2626" : "#16A34A" }}>
-                                    {ps.netDemand > 0 ? ps.netDemand : "✓ Stok yeterli"}
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.bomStockUsed > 0 ? "#7C3AED" : "var(--color-text-tertiary)", fontSize: 10 }}>
+                                    {ps.bomStockUsed > 0 ? <span title={`BOM bağımlı talep için ${ps.bomStockUsed} adet stoktan ayrıldı`}>−{ps.bomStockUsed}</span> : "—"}
+                                  </td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 500, color: ps.effectiveStock > 0 ? "#16A34A" : "var(--color-text-tertiary)" }}>
+                                    {ps.effectiveStock > 0 ? ps.effectiveStock : ps.bomStockUsed > 0 ? "0" : "—"}
+                                  </td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: displayNetDemand > 0 ? "#DC2626" : "#16A34A" }}>
+                                    {displayNetDemand > 0 ? displayNetDemand : "✓ Stok yeterli"}
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right" }}>{ps.totalParts || "—"}</td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", color: "#16A34A" }}>{ps.covered || "—"}</td>
@@ -8431,6 +8452,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       <div style={{ marginTop: 8, fontSize: 10, color: "var(--color-text-tertiary)", display: "flex", gap: 16, flexWrap: "wrap" }}>
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#DBEAFE", color: "#1D4ED8", fontSize: 9 }}>Montaj</span> = talep montaj planından, stok montaj stoktan</span>
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#F3E8FF", color: "#7C3AED", fontSize: 9 }}>Sevkiyat</span> = talep sevkiyat planından, stok VIO raporundan</span>
+                        <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#EDE9FE", color: "#7C3AED", fontSize: 9 }}>⚡ BOM</span> = diğer ürünlerin BOM'unda kullanılan stok (öncelikli)</span>
                       </div>
                     </div>
                   )}
