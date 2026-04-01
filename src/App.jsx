@@ -7935,12 +7935,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                     <thead>
                       <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
-                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün (Sevkiyat)</th>
-                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>VIO Kodu</th>
-                        <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10, color: "#7C3AED" }}>BOM Kodu</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10, color: "#7C3AED" }}>BOM İsmi</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Eşleştirme</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Eşleştirme</th>
                         <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
                       </tr>
                     </thead>
@@ -7959,36 +7956,31 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         const rowBg = codeDiff ? "#FEF3C7" : !mapped ? "#FEF2F2" : "transparent";
                         return (
                           <tr key={p.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
-                            <td style={{ padding: "5px 8px", fontWeight: 500, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nameTR}</td>
-                            <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: codeDiff ? "#B45309" : "var(--color-text-secondary)" }}>{vCode || "—"}</span>
-                            </td>
-                            <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                              {bomCode ? (
-                                <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: codeDiff ? "#7C3AED" : "var(--color-text-secondary)", fontWeight: codeDiff ? 600 : 400 }}>{bomCode}</span>
-                              ) : <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>—</span>}
-                            </td>
-                            <td style={{ padding: "5px 8px", fontSize: 10, color: "var(--color-text-secondary)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              {bomName || "—"}
+                            <td style={{ padding: "5px 8px", maxWidth: 280 }}>
+                              <div style={{ fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nameTR}</div>
+                              {codeDiff && <div style={{ fontSize: 9, color: "#B45309", marginTop: 2 }}>Kod: {vCode} → BOM: {bomCode} · {bomName}</div>}
                             </td>
                             <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{demand.byProduct[p.id]?.qty || 0}</td>
                             <td style={{ padding: "5px 8px" }}>
                               {canEdit ? (
                                 isDirect ? (
-                                  <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#7C3AED", background: "#F5F3FF", padding: "2px 6px", borderRadius: 4 }}>📦 {directCode}</span>
+                                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                    <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#7C3AED", background: "#F5F3FF", padding: "2px 6px", borderRadius: 4 }}>📦 {directCode}</span>
+                                    <button onClick={() => saveBomMapping({ ...bomMapping, [p.id]: null })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, color: "var(--color-text-tertiary)", padding: "2px" }} title="Sıfırla">✕</button>
+                                  </div>
                                 ) : (
                                   <select
                                     value={m || ""}
                                     onChange={e => saveBomMapping({ ...bomMapping, [p.id]: e.target.value || null })}
                                     style={{ width: "100%", padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
                                   >
-                                    <option value="">— Seçin —</option>
+                                    <option value="">— BOM Modeli Seçin —</option>
                                     {modelOptions.map(mo => <option key={mo.key} value={mo.key}>{mo.label}</option>)}
                                   </select>
                                 )
                               ) : (
                                 <span style={{ fontSize: 10, color: "var(--color-text-secondary)" }}>
-                                  {hasBom ? bomModels[m].modelCode : isDirect ? `📦 ${directCode}` : "Eşleştirilmedi"}
+                                  {hasBom ? bomModels[m].modelCode : isDirect ? `📦 ${directCode}` : "—"}
                                 </span>
                               )}
                             </td>
@@ -7996,9 +7988,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                               {codeDiff && canEdit ? (
                                 <button
                                   onClick={() => {
-                                    // BOM koduna göre eşleştirmeyi güncelle
                                     const newMapping = { ...bomMapping };
-                                    // BOM model var mı kontrol et
                                     let foundModel = null;
                                     Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, mo]) => {
                                       const first = (mo.parts || []).find(pp => pp.level === 0);
@@ -8007,24 +7997,21 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     });
                                     newMapping[p.id] = foundModel || ("direct:" + bomCode);
                                     saveBomMapping(newMapping);
-                                    // İsmi ve VIO kodunu güncelle
                                     setProducts(prev => prev.map(pr => pr.id === p.id ? { 
                                       ...pr, 
                                       ...(bomName && bomName !== pr.nameTR ? { nameTR: bomName } : {}),
                                       vioCode: bomCode 
                                     } : pr));
                                   }}
-                                  title={`VIO: ${vCode} → BOM: ${bomCode}\nİsim: ${p.nameTR} → ${bomName}`}
+                                  title={`Kod: ${vCode} → ${bomCode}\nİsim: ${p.nameTR} → ${bomName}`}
                                   style={{ padding: "3px 8px", borderRadius: 4, border: "1px solid #7C3AED", background: "#F5F3FF", color: "#7C3AED", fontSize: 9, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}
                                 >
-                                  🔄 BOM'a Güncelle
+                                  🔄 Güncelle
                                 </button>
                               ) : codeDiff ? (
-                                <span style={{ fontSize: 9, padding: "2px 5px", borderRadius: 3, background: "#FEF3C7", color: "#B45309", fontWeight: 500 }} title={`VIO: ${vCode} ≠ BOM: ${bomCode}`}>⚠ Kod farkı</span>
+                                <span style={{ fontSize: 9, padding: "2px 5px", borderRadius: 3, background: "#FEF3C7", color: "#B45309", fontWeight: 500 }}>⚠ Kod farkı</span>
                               ) : mapped ? (
-                                <span style={{ color: isDirect ? "#7C3AED" : "var(--color-text-success)", fontSize: isDirect ? 10 : 12 }}>
-                                  {isDirect ? "📦" : "✓"}
-                                </span>
+                                <span style={{ color: "var(--color-text-success)", fontSize: 12 }}>✓</span>
                               ) : (
                                 <span style={{ color: "#DC2626", fontSize: 10 }}>Eksik</span>
                               )}
