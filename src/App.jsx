@@ -8172,6 +8172,29 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 sources: { label: "Kaynak", align: "center", fs: 10, render: r => r.productCount > 1 ? <span style={{ fontSize: 9, background: "#7C3AED18", color: "#7C3AED", padding: "1px 4px", borderRadius: 3 }}>{r.productCount} ürün</span> : "1" },
               };
 
+              // Per-product summary
+              const productSummary = (() => {
+                const pMap = {};
+                parts.forEach(r => {
+                  (r.sources || []).forEach(s => {
+                    const pid = typeof s.pid === "number" ? s.pid : null;
+                    if (!pid) return;
+                    if (!pMap[pid]) {
+                      const pr = products?.find(p => p.id === pid);
+                      pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`, demand: demand.byProduct[pid]?.qty || 0, totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
+                    }
+                    pMap[pid].totalParts++;
+                    if (r.netQty > 0) {
+                      pMap[pid].netOpenParts++;
+                      if (r.supplyType === "BUY" || r.supplyType === "RAW") pMap[pid].buyOpen++;
+                      else if (r.supplyType === "MAKE") pMap[pid].makeOpen++;
+                      else if (r.supplyType === "FASON" || r.supplyType === "MAKE+FASON") pMap[pid].fasonOpen++;
+                    } else { pMap[pid].covered++; }
+                  });
+                });
+                return Object.values(pMap).sort((a, b) => b.netOpenParts - a.netOpenParts || b.demand - a.demand);
+              })();
+
               return (
                 <div>
                   {/* Summary Cards — clickable */}
@@ -8179,10 +8202,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     {[
                       { f: "all", bg: "var(--color-background-secondary)", bl: "#7C3AED", label: "Brüt İhtiyaç", value: exp.totalGross, sub: "kalem" },
                       { f: "net", bg: "#FEF2F2", bl: "#DC2626", label: "Net Açık", value: allNetOpen.length, sub: "kalem", vc: "#DC2626" },
+                      { f: "products", bg: "#F5F3FF", bl: "#7C3AED", label: "📦 Ürün Özet", value: productSummary.length, sub: "ürün", vc: "#7C3AED" },
                       { f: "buy", bg: "#EFF6FF", bl: "#2563EB", label: "🛒 Satınalma", value: buyParts.length, sub: `${buyRaw.length} hamm. · ${buyStd.length} std.`, vc: "#2563EB" },
                       { f: "make", bg: "#F0FDF4", bl: "#1D9E75", label: "🏭 Üretim", value: makeParts.length, sub: "kalem", vc: "#1D9E75" },
                       { f: "fason", bg: "#FFF7ED", bl: "#C2410C", label: "🚚 Fason", value: fasonParts.length, sub: "kalem", vc: "#C2410C" },
-                      ...(allGap.length > 0 ? [{ f: "gap", bg: "#FEF3C7", bl: "#B45309", label: "⚡ Sipariş Açığı", value: allGap.length, sub: "acil sipariş", vc: "#B45309" }] : []),
                       ...(exp.crossCheckIssues > 0 ? [{ f: "cross", bg: "#FEF3C7", bl: "#92400E", label: "⚠ Çapraz", value: exp.crossCheckIssues, sub: "uyumsuz", vc: "#92400E" }] : []),
                     ].map(c => (
                       <div key={c.f} onClick={() => setExpFilter(c.f)} style={{ background: c.bg, borderRadius: 8, padding: "10px 14px", borderLeft: `3px solid ${c.bl}`, cursor: "pointer", opacity: expFilter === c.f ? 1 : 0.75, outline: expFilter === c.f ? `2px solid ${c.bl}` : "none", outlineOffset: -1, transition: "opacity 0.15s" }}>
@@ -8212,6 +8235,58 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       {new Date(exp.calculatedAt).toLocaleString("tr-TR")}
                     </span>
                   </div>
+
+                  {/* ===== VIEW: Ürün Özet ===== */}
+                  {expFilter === "products" && (
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#7C3AED", marginBottom: 10 }}>📦 Ürün Bazlı İhtiyaç Özeti</div>
+                      <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden" }}>
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                          <thead><tr style={{ background: "var(--color-background-secondary)" }}>
+                            <th style={{ padding: "8px 10px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Toplam Parça</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#16A34A" }}>✓ Karşılanan</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#DC2626" }}>Eksik Parça</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>🛒 Satınalma</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#1D9E75" }}>🏭 Üretim</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#C2410C" }}>🚚 Fason</th>
+                            <th style={{ padding: "8px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
+                          </tr></thead>
+                          <tbody>
+                            {productSummary.map((ps, i) => {
+                              const pct = ps.totalParts > 0 ? Math.round((ps.covered / ps.totalParts) * 100) : 0;
+                              const isOk = ps.netOpenParts === 0;
+                              return (
+                                <tr key={ps.pid} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: isOk ? "transparent" : "#FEF2F2" }}>
+                                  <td style={{ padding: "6px 10px", fontWeight: 500 }}>{ps.name}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{ps.demand}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right" }}>{ps.totalParts}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", color: "#16A34A" }}>{ps.covered}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: ps.netOpenParts > 0 ? 700 : 400, color: ps.netOpenParts > 0 ? "#DC2626" : "var(--color-text-tertiary)" }}>{ps.netOpenParts || "—"}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", color: ps.buyOpen > 0 ? "#2563EB" : "var(--color-text-tertiary)" }}>{ps.buyOpen || "—"}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", color: ps.makeOpen > 0 ? "#1D9E75" : "var(--color-text-tertiary)" }}>{ps.makeOpen || "—"}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", color: ps.fasonOpen > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{ps.fasonOpen || "—"}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                                    {isOk ? (
+                                      <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: "#DCFCE7", color: "#16A34A", fontWeight: 500 }}>✓ Hazır</span>
+                                    ) : (
+                                      <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "center" }}>
+                                        <div style={{ width: 50, height: 6, borderRadius: 3, background: "#FEE2E2", overflow: "hidden" }}>
+                                          <div style={{ width: `${pct}%`, height: "100%", background: pct >= 80 ? "#F59E0B" : "#DC2626", borderRadius: 3 }} />
+                                        </div>
+                                        <span style={{ fontSize: 9, color: "#DC2626", fontWeight: 500 }}>%{pct}</span>
+                                      </div>
+                                    )}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
 
                   {/* ===== VIEW: Satınalma ===== */}
                   {expFilter === "buy" && (
@@ -8275,7 +8350,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   )}
 
                   {/* ===== VIEW: Tümü / Net Açık / Sipariş Açığı ===== */}
-                  {!["buy","make","fason","cross"].includes(expFilter) && (
+                  {!["buy","make","fason","cross","products"].includes(expFilter) && (
                     <div>
                       <DataTable items={filteredExpResults.slice(0, 300)}
                         columns={[C.code, C.name, C.type, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap]:[]), C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
