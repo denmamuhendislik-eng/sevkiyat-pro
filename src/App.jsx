@@ -4684,11 +4684,33 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
       };
 
       // Pass 1: Sevkiyat planından gelen doğrudan talep
+      const directItems = []; // BOM'u olmayan ürünlerin doğrudan talebi
       Object.entries(initialDemand).forEach(([pidStr, dInfo]) => {
         const pid = Number(pidStr);
-        const modelKey = bomMapping[pid];
+        const mapping = bomMapping[pid];
+        if (!mapping) return; // eşleştirilmemiş
+
+        // "direct:STOK_KODU" formatı → BOM'u olmayan ürün, doğrudan talep
+        if (typeof mapping === "string" && mapping.startsWith("direct:")) {
+          const stockCode = mapping.substring(7);
+          const product = products?.find(p => p.id === pid);
+          directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: dInfo.qty });
+          return;
+        }
+
+        // Normal BOM eşleştirmesi
+        const modelKey = mapping;
         if (!modelKey || !bomModels[modelKey]) return;
         explodeProduct(pid, dInfo.qty, modelKey, 1);
+      });
+
+      // Doğrudan talep ekleme (BOM'u olmayan ürünler)
+      directItems.forEach(item => {
+        if (!grossReq[item.stockCode]) {
+          grossReq[item.stockCode] = { code: item.stockCode, name: item.name, unit: "AD", level: -1, supplyType: "DIRECT", grossQty: 0, sources: [] };
+        }
+        grossReq[item.stockCode].grossQty += item.qty;
+        grossReq[item.stockCode].sources.push({ pid: item.pid, modelKey: null, qty: item.qty, pass: 0 });
       });
 
       // Pass 2: PRODUCT tipi parçaların alt BOM'larını patlat
@@ -4739,8 +4761,14 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
       results.sort((a, b) => a.level - b.level || b.netQty - a.netQty);
 
       const allPids = Object.keys(initialDemand).map(Number);
-      const mappedProducts = allPids.filter(pid => bomMapping[pid] && bomModels[bomMapping[pid]]).length;
-      const unmappedProducts = allPids.filter(pid => !bomMapping[pid] || !bomModels[bomMapping[pid]]);
+      const isMapped = (pid) => {
+        const m = bomMapping[pid];
+        if (!m) return false;
+        if (typeof m === "string" && m.startsWith("direct:")) return true;
+        return !!bomModels[m];
+      };
+      const mappedProducts = allPids.filter(isMapped).length;
+      const unmappedProducts = allPids.filter(pid => !isMapped(pid));
       const crossCheckIssues = results.filter(r => r.crossCheck);
 
       setExplosionResult({
@@ -4769,6 +4797,7 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
     else if (expFilter === "make") items = items.filter(r => r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON");
     else if (expFilter === "buy") items = items.filter(r => r.supplyType === "BUY" || r.supplyType === "RAW");
     else if (expFilter === "fason") items = items.filter(r => r.supplyType === "FASON" || r.supplyType === "MAKE+FASON");
+    else if (expFilter === "direct") items = items.filter(r => r.supplyType === "DIRECT");
     else if (expFilter === "cross") items = items.filter(r => r.crossCheck);
     if (expSearch) {
       const q = expSearch.toLowerCase();
@@ -7631,10 +7660,16 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
 
         // Products that have unshipped demand
         const demandProducts = products ? products.filter(p => demand.byProduct[p.id]) : [];
-        const mappedCount = demandProducts.filter(p => bomMapping[p.id] && bomModels[bomMapping[p.id]]).length;
+        const isMappedUI = (pid) => {
+          const m = bomMapping[pid];
+          if (!m) return false;
+          if (typeof m === "string" && m.startsWith("direct:") && m.length > 7) return true;
+          return !!bomModels[m];
+        };
+        const mappedCount = demandProducts.filter(p => isMappedUI(p.id)).length;
 
-        const levelLabels = { 0: "L0 — Ana", 1: "L1 — Montaj", 2: "L2 — İşlenmiş", 3: "L3 — Hammadde" };
-        const supplyColors = { MAKE: "#1D9E75", "MAKE+FASON": "#D97706", FASON: "#C2410C", BUY: "#2563EB", RAW: "#92400E", PRODUCT: "#534AB7" };
+        const levelLabels = { 0: "L0 — Ana", 1: "L1 — Montaj", 2: "L2 — İşlenmiş", 3: "L3 — Hammadde", "-1": "Doğrudan" };
+        const supplyColors = { MAKE: "#1D9E75", "MAKE+FASON": "#D97706", FASON: "#C2410C", BUY: "#2563EB", RAW: "#92400E", PRODUCT: "#534AB7", DIRECT: "#7C3AED" };
         const hasStock = Object.keys(stockLookup).length > 0;
         const hasAkibet = Object.keys(akibetLookup).length > 0;
         const hasPurchase = Object.keys(purchaseLookup).length > 0;
@@ -7654,41 +7689,69 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                   Sevkiyat planında sevk edilmemiş konteyner yok
                 </div>
               ) : (
-                <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden", maxHeight: 320, overflowY: "auto" }}>
+                <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden", maxHeight: 400, overflowY: "auto" }}>
                   <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                     <thead>
                       <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
                         <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
                         <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
-                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Modeli</th>
+                        <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Modeli / Stok Kodu</th>
                         <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
                       </tr>
                     </thead>
                     <tbody>
                       {demandProducts.map(p => {
-                        const mapped = bomMapping[p.id] && bomModels[bomMapping[p.id]];
+                        const m = bomMapping[p.id];
+                        const isDirect = typeof m === "string" && m.startsWith("direct:");
+                        const directCode = isDirect ? m.substring(7) : "";
+                        const hasBom = m && !isDirect && bomModels[m];
+                        const mapped = hasBom || (isDirect && directCode.length > 0);
                         return (
                           <tr key={p.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: mapped ? "transparent" : "#FEF2F2" }}>
-                            <td style={{ padding: "5px 8px", fontWeight: 500 }}>{p.nameTR}</td>
+                            <td style={{ padding: "5px 8px", fontWeight: 500, maxWidth: 280, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.nameTR}</td>
                             <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{demand.byProduct[p.id]?.qty || 0}</td>
                             <td style={{ padding: "5px 8px" }}>
                               {canEdit ? (
-                                <select
-                                  value={bomMapping[p.id] || ""}
-                                  onChange={e => { const val = e.target.value; saveBomMapping({ ...bomMapping, [p.id]: val || null }); }}
-                                  style={{ width: "100%", padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
-                                >
-                                  <option value="">— Seçin —</option>
-                                  {modelOptions.map(m => <option key={m.key} value={m.key}>{m.label}</option>)}
-                                </select>
+                                <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                  <select
+                                    value={isDirect ? "__direct__" : (m || "")}
+                                    onChange={e => {
+                                      const val = e.target.value;
+                                      if (val === "__direct__") {
+                                        saveBomMapping({ ...bomMapping, [p.id]: "direct:" });
+                                      } else {
+                                        saveBomMapping({ ...bomMapping, [p.id]: val || null });
+                                      }
+                                    }}
+                                    style={{ flex: 1, padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
+                                  >
+                                    <option value="">— Seçin —</option>
+                                    {modelOptions.map(mo => <option key={mo.key} value={mo.key}>{mo.label}</option>)}
+                                    <option value="__direct__">📦 Doğrudan stok kodu (BOM'suz)</option>
+                                  </select>
+                                  {isDirect && (
+                                    <input
+                                      placeholder="VIO stok kodu..."
+                                      value={directCode}
+                                      onChange={e => saveBomMapping({ ...bomMapping, [p.id]: "direct:" + e.target.value.trim() })}
+                                      style={{ width: 120, padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid #7C3AED", background: "#F5F3FF", fontFamily: "var(--font-mono)" }}
+                                    />
+                                  )}
+                                </div>
                               ) : (
                                 <span style={{ fontSize: 10, color: "var(--color-text-secondary)" }}>
-                                  {mapped ? `${bomModels[bomMapping[p.id]].modelCode}` : "Eşleştirilmedi"}
+                                  {hasBom ? bomModels[m].modelCode : isDirect ? `📦 ${directCode}` : "Eşleştirilmedi"}
                                 </span>
                               )}
                             </td>
                             <td style={{ padding: "5px 8px", textAlign: "center" }}>
-                              {mapped ? <span style={{ color: "var(--color-text-success)", fontSize: 12 }}>✓</span> : <span style={{ color: "#DC2626", fontSize: 10 }}>Eksik</span>}
+                              {mapped ? (
+                                <span style={{ color: isDirect ? "#7C3AED" : "var(--color-text-success)", fontSize: isDirect ? 10 : 12 }}>
+                                  {isDirect ? "📦" : "✓"}
+                                </span>
+                              ) : (
+                                <span style={{ color: "#DC2626", fontSize: 10 }}>Eksik</span>
+                              )}
                             </td>
                           </tr>
                         );
@@ -7839,6 +7902,7 @@ function MRPPlanlama({ db, userRole, products, yearsData }) {
                       { id: "make", label: "MAKE", count: exp.parts.filter(r => r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON").length },
                       { id: "buy", label: "BUY/RAW", count: exp.parts.filter(r => r.supplyType === "BUY" || r.supplyType === "RAW").length },
                       { id: "fason", label: "FASON", count: exp.parts.filter(r => r.supplyType === "FASON" || r.supplyType === "MAKE+FASON").length },
+                      ...(exp.parts.some(r => r.supplyType === "DIRECT") ? [{ id: "direct", label: "📦 Doğrudan", count: exp.parts.filter(r => r.supplyType === "DIRECT").length }] : []),
                       ...(exp.crossCheckIssues > 0 ? [{ id: "cross", label: "⚠ Çapraz", count: exp.crossCheckIssues }] : [])
                     ].map(f => (
                       <button key={f.id} onClick={() => setExpFilter(f.id)} style={{
