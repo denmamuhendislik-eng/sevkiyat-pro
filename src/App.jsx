@@ -8116,171 +8116,173 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             {/* Step 3 — Results */}
             {explosionResult && !explosionResult.error && (() => {
               const exp = explosionResult;
-              return (
-                <div>
-                  {/* Summary */}
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 10, marginBottom: 16 }}>
-                    <div style={{ background: "var(--color-background-secondary)", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #7C3AED" }}>
-                      <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Brüt İhtiyaç</div>
-                      <div style={{ fontSize: 18, fontWeight: 600 }}>{exp.totalGross} <span style={{ fontSize: 10, fontWeight: 400 }}>kalem</span></div>
-                    </div>
-                    <div style={{ background: "#FEF2F2", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #DC2626" }}>
-                      <div style={{ fontSize: 10, color: "#DC2626" }}>Net Açık</div>
-                      <div style={{ fontSize: 18, fontWeight: 600, color: "#DC2626" }}>{exp.totalNet} <span style={{ fontSize: 10, fontWeight: 400 }}>kalem</span></div>
-                    </div>
-                    <div style={{ background: "#FFF7ED", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #D97706" }}>
-                      <div style={{ fontSize: 10, color: "#D97706" }}>Sipariş Açığı</div>
-                      <div style={{ fontSize: 18, fontWeight: 600, color: "#D97706" }}>{exp.totalGap} <span style={{ fontSize: 10, fontWeight: 400 }}>kalem</span></div>
-                    </div>
-                    {exp.crossCheckIssues > 0 && (
-                      <div style={{ background: "#FEF3C7", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #B45309" }}>
-                        <div style={{ fontSize: 10, color: "#B45309" }}>⚠ Çapraz Kontrol</div>
-                        <div style={{ fontSize: 18, fontWeight: 600, color: "#B45309" }}>{exp.crossCheckIssues} <span style={{ fontSize: 10, fontWeight: 400 }}>uyumsuz</span></div>
-                      </div>
-                    )}
-                    {exp.pass2Count > 0 && (
-                      <div style={{ background: "#F5F3FF", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #7C3AED" }}>
-                        <div style={{ fontSize: 10, color: "#7C3AED" }}>🔁 Pass 2 (PRODUCT)</div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: "#7C3AED" }}>{exp.pass2Count} <span style={{ fontSize: 10, fontWeight: 400 }}>ürünün alt BOM'u patlatıldı</span></div>
-                      </div>
-                    )}
-                    {exp.unmappedProducts.length > 0 && (
-                      <div style={{ background: "#FEE2E2", borderRadius: 8, padding: "10px 14px", borderLeft: "3px solid #EF4444" }}>
-                        <div style={{ fontSize: 10, color: "#EF4444" }}>Eşleştirilmemiş</div>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: "#EF4444" }}>
-                          {exp.unmappedProducts.map(pid => products?.find(p => p.id === pid)?.nameTR || pid).join(", ")}
-                        </div>
-                      </div>
-                    )}
-                  </div>
+              const parts = exp.parts || [];
+              
+              // Categorize parts by action
+              const buyParts = parts.filter(r => (r.supplyType === "BUY" || r.supplyType === "RAW") && r.netQty > 0);
+              const buyRaw = buyParts.filter(r => r.supplyType === "RAW");
+              const buyStd = buyParts.filter(r => r.supplyType === "BUY");
+              const makeParts = parts.filter(r => r.supplyType === "MAKE" && r.netQty > 0);
+              const fasonParts = parts.filter(r => (r.supplyType === "FASON" || r.supplyType === "MAKE+FASON") && r.netQty > 0);
+              const allNetOpen = parts.filter(r => r.netQty > 0);
+              const allGap = parts.filter(r => r.gap > 0);
 
-                  {/* Filters */}
-                  <div style={{ display: "flex", gap: 6, marginBottom: 10, alignItems: "center", flexWrap: "wrap" }}>
-                    <input placeholder="Stok kodu veya adı ara..." value={expSearch} onChange={e => setExpSearch(e.target.value)}
-                      style={{ flex: 1, minWidth: 200, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12, background: "var(--color-background-primary)" }} />
-                    {[
-                      { id: "all", label: "Tümü", count: exp.parts.length },
-                      { id: "net", label: "Net Açık", count: exp.totalNet },
-                      { id: "gap", label: "Sipariş Açığı", count: exp.totalGap },
-                      { id: "make", label: "MAKE", count: exp.parts.filter(r => r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON").length },
-                      { id: "buy", label: "BUY/RAW", count: exp.parts.filter(r => r.supplyType === "BUY" || r.supplyType === "RAW").length },
-                      { id: "fason", label: "FASON", count: exp.parts.filter(r => r.supplyType === "FASON" || r.supplyType === "MAKE+FASON").length },
-                      ...(exp.crossCheckIssues > 0 ? [{ id: "cross", label: "⚠ Çapraz", count: exp.crossCheckIssues }] : [])
-                    ].map(f => (
-                      <button key={f.id} onClick={() => setExpFilter(f.id)} style={{
-                        padding: "4px 10px", borderRadius: 5, fontSize: 11, border: "1px solid",
-                        cursor: "pointer", fontWeight: expFilter === f.id ? 600 : 400,
-                        background: expFilter === f.id ? "#7C3AED18" : "transparent",
-                        color: expFilter === f.id ? "#7C3AED" : "var(--color-text-secondary)",
-                        borderColor: expFilter === f.id ? "#7C3AED" : "var(--color-border-secondary)"
-                      }}>
-                        {f.label} ({f.count})
-                      </button>
-                    ))}
-                  </div>
+              // Enrich buy parts with purchase data
+              buyParts.forEach(p => { const po = purchaseLookup[p.code]; if (po) { p._poSuppliers = po.suppliers || []; p._poRemaining = po.totalRemaining; } });
 
-                  {/* Results table */}
-                  <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 4 }}>
-                    {filteredExpResults.length} kalem · Hesaplama: {new Date(exp.calculatedAt).toLocaleString("tr-TR")}
-                  </div>
-                  <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden", maxHeight: "60vh", overflowY: "auto" }}>
+              const fmtQty = (n) => !n ? "—" : n % 1 === 0 ? String(n) : n.toFixed(1);
+
+              // Reusable table component
+              const DataTable = ({ items, columns, emptyMsg, maxH }) => {
+                if (!items.length) return <div style={{ padding: 24, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12 }}>{emptyMsg}</div>;
+                return (
+                  <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden", maxHeight: maxH || "55vh", overflowY: "auto" }}>
                     <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                      <thead>
-                        <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
-                          <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Stok Kodu</th>
-                          <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Stok Adı</th>
-                          <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Tip</th>
-                          <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Brüt</th>
-                          {hasStock && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>📦 Stok</th>}
-                          {hasAkibet && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#D97706" }}>🔄 WIP</th>}
-                          <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#DC2626" }}>Net Açık</th>
-                          {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#2563EB" }}>Sipariş</th>}
-                          {hasPurchase && <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, fontSize: 10, color: "#B45309" }}>Açık</th>}
-                          <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Svye</th>
-                          {exp.crossCheckIssues > 0 && <th style={{ padding: "6px 4px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>⚠</th>}
-                        </tr>
-                      </thead>
+                      <thead><tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
+                        {columns.map((c, i) => <th key={i} style={{ padding: "6px 8px", textAlign: c.align || "left", fontWeight: 500, fontSize: 10, color: c.hColor || "var(--color-text-secondary)", whiteSpace: "nowrap" }}>{c.label}</th>)}
+                      </tr></thead>
                       <tbody>
-                        {filteredExpResults.slice(0, 300).map((r, idx) => {
-                          const hasNet = r.netQty > 0;
-                          const hasGap = r.gap > 0;
-                          const rowBg = r.crossCheck ? "#FEF3C7" : hasGap ? "#FEF2F2" : hasNet ? "#FFFBEB" : "transparent";
-                          return (
-                            <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg }}>
-                              <td style={{ padding: "5px 8px", fontFamily: "var(--font-mono)", fontSize: 10 }}>{r.code}</td>
-                              <td style={{ padding: "5px 8px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</td>
-                              <td style={{ padding: "5px 4px", textAlign: "center" }}>
-                                <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (supplyColors[r.supplyType] || "#888") + "18", color: supplyColors[r.supplyType] || "#888", fontWeight: 500 }}>
-                                  {r.supplyType}
-                                </span>
-                              </td>
-                              <td style={{ padding: "5px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{r.grossQty % 1 === 0 ? r.grossQty : r.grossQty.toFixed(1)}</td>
-                              {hasStock && (
-                                <td style={{ padding: "5px 8px", textAlign: "right", fontSize: 10, color: r.stkAvail > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" }}
-                                  title={`Ambar: ${r.stkAmbar} · Üretim: ${r.stkUretim} · Fason: ${r.stkFason}`}>
-                                  {r.stkAvail > 0 ? r.stkAvail : "—"}
-                                </td>
-                              )}
-                              {hasAkibet && (
-                                <td style={{ padding: "5px 8px", textAlign: "right", fontSize: 10, color: r.wipTotal > 0 ? "#D97706" : "var(--color-text-tertiary)" }}
-                                  title={`İç: ${r.wipInt} · Fason: ${r.wipFas}`}>
-                                  {r.wipTotal > 0 ? r.wipTotal : "—"}
-                                </td>
-                              )}
-                              <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasNet ? 700 : 400, color: hasNet ? "#DC2626" : "var(--color-text-success)", fontSize: hasNet ? 11 : 10 }}>
-                                {hasNet ? (r.netQty % 1 === 0 ? r.netQty : r.netQty.toFixed(1)) : "✓"}
-                              </td>
-                              {hasPurchase && (
-                                <td style={{ padding: "5px 8px", textAlign: "right", fontSize: 10, color: r.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)" }}>
-                                  {r.openPO > 0 ? r.openPO : "—"}
-                                </td>
-                              )}
-                              {hasPurchase && (
-                                <td style={{ padding: "5px 8px", textAlign: "right", fontWeight: hasGap ? 700 : 400, fontSize: hasGap ? 11 : 10, color: hasGap ? "#B45309" : r.netQty > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
-                                  {hasGap ? (r.gap % 1 === 0 ? r.gap : r.gap.toFixed(1)) : r.netQty > 0 && r.openPO > 0 ? "✓" : "—"}
-                                </td>
-                              )}
-                              <td style={{ padding: "5px 4px", textAlign: "center" }}>
-                                <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#88888818", color: "#888" }}>{levelLabels[r.level] ? `L${r.level}` : `L${r.level}`}</span>
-                              </td>
-                              {exp.crossCheckIssues > 0 && (
-                                <td style={{ padding: "5px 4px", textAlign: "center", fontSize: 10 }}>
-                                  {r.crossCheck ? (
-                                    <span title={`Stok raporu: ${r.crossCheck.stokWip} · Akibet: ${r.crossCheck.akibetWip} · Fark: ${r.crossCheck.diff > 0 ? "+" : ""}${r.crossCheck.diff}`} style={{ cursor: "help", color: "#B45309" }}>⚠</span>
-                                  ) : null}
-                                </td>
-                              )}
-                            </tr>
-                          );
+                        {items.map((r, idx) => {
+                          const bg = r.gap > 0 ? "#FEF2F2" : r.netQty > 0 && r.openPO > 0 ? "#FFFBEB" : r.crossCheck ? "#FEF3C7" : "transparent";
+                          return <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: bg }}>
+                            {columns.map((c, ci) => <td key={ci} style={{ padding: "5px 8px", textAlign: c.align || "left", fontFamily: c.mono ? "var(--font-mono)" : "inherit", fontSize: c.fs || 11, fontWeight: c.fw?.(r) || 400, color: c.cc?.(r) || "inherit", maxWidth: c.mw, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.render(r)}</td>)}
+                          </tr>;
                         })}
                       </tbody>
                     </table>
-                    {filteredExpResults.length > 300 && (
-                      <div style={{ padding: "8px 12px", textAlign: "center", fontSize: 11, color: "var(--color-text-tertiary)", background: "var(--color-background-secondary)" }}>
-                        İlk 300 kalem gösteriliyor — arama ile daraltın
+                  </div>
+                );
+              };
+
+              // Column definitions
+              const C = {
+                code: { label: "Stok Kodu", mono: true, fs: 10, render: r => r.code },
+                name: { label: "Stok Adı", mw: 240, render: r => r.name },
+                unit: { label: "Br", align: "center", fs: 10, render: r => r.unit || "AD" },
+                level: { label: "Svye", align: "center", render: r => <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: ["#534AB718","#185FA518","#1D9E7518","#BA751718"][r.level] || "#88888818", color: ["#534AB7","#185FA5","#1D9E75","#BA7517"][r.level] || "#888" }}>L{r.level}</span> },
+                type: { label: "Tip", align: "center", render: r => <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: (supplyColors[r.supplyType] || "#888") + "18", color: supplyColors[r.supplyType] || "#888", fontWeight: 500 }}>{r.supplyType}</span> },
+                gross: { label: "Brüt", align: "right", mono: true, render: r => fmtQty(r.grossQty) },
+                stock: { label: "📦 Stok", align: "right", hColor: "#8B5CF6", render: r => r.stkAvail > 0 ? r.stkAvail : "—", cc: r => r.stkAvail > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" },
+                wip: { label: "🔄 WIP", align: "right", hColor: "#D97706", render: r => r.wipTotal > 0 ? r.wipTotal : "—", cc: r => r.wipTotal > 0 ? "#D97706" : "var(--color-text-tertiary)" },
+                net: { label: "Net Açık", align: "right", hColor: "#DC2626", fw: r => r.netQty > 0 ? 700 : 400, render: r => r.netQty > 0 ? fmtQty(r.netQty) : "✓", cc: r => r.netQty > 0 ? "#DC2626" : "var(--color-text-success)" },
+                po: { label: "Açık Sip.", align: "right", hColor: "#2563EB", render: r => r.openPO > 0 ? r.openPO : "—", cc: r => r.openPO > 0 ? "#2563EB" : "var(--color-text-tertiary)" },
+                gap: { label: "Sip. Açığı", align: "right", hColor: "#B45309", fw: r => r.gap > 0 ? 700 : 400, render: r => r.gap > 0 ? fmtQty(r.gap) : r.openPO > 0 && r.netQty > 0 ? "✓ Tam" : "—", cc: r => r.gap > 0 ? "#B45309" : r.openPO > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" },
+                supplier: { label: "Tedarikçi", fs: 10, mw: 150, render: r => (r._poSuppliers?.length > 0 ? r._poSuppliers[0] : "—"), cc: () => "var(--color-text-tertiary)" },
+                cross: { label: "⚠", align: "center", render: r => r.crossCheck ? <span title={`Stok: ${r.crossCheck.stokWip} · Akibet: ${r.crossCheck.akibetWip} · Fark: ${r.crossCheck.diff > 0 ? "+" : ""}${r.crossCheck.diff}`} style={{ cursor: "help", color: "#B45309" }}>⚠</span> : null },
+                sources: { label: "Kaynak", align: "center", fs: 10, render: r => r.productCount > 1 ? <span style={{ fontSize: 9, background: "#7C3AED18", color: "#7C3AED", padding: "1px 4px", borderRadius: 3 }}>{r.productCount} ürün</span> : "1" },
+              };
+
+              return (
+                <div>
+                  {/* Summary Cards — clickable */}
+                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(135px, 1fr))", gap: 10, marginBottom: 16 }}>
+                    {[
+                      { f: "all", bg: "var(--color-background-secondary)", bl: "#7C3AED", label: "Brüt İhtiyaç", value: exp.totalGross, sub: "kalem" },
+                      { f: "net", bg: "#FEF2F2", bl: "#DC2626", label: "Net Açık", value: allNetOpen.length, sub: "kalem", vc: "#DC2626" },
+                      { f: "buy", bg: "#EFF6FF", bl: "#2563EB", label: "🛒 Satınalma", value: buyParts.length, sub: `${buyRaw.length} hamm. · ${buyStd.length} std.`, vc: "#2563EB" },
+                      { f: "make", bg: "#F0FDF4", bl: "#1D9E75", label: "🏭 Üretim", value: makeParts.length, sub: "kalem", vc: "#1D9E75" },
+                      { f: "fason", bg: "#FFF7ED", bl: "#C2410C", label: "🚚 Fason", value: fasonParts.length, sub: "kalem", vc: "#C2410C" },
+                      ...(allGap.length > 0 ? [{ f: "gap", bg: "#FEF3C7", bl: "#B45309", label: "⚡ Sipariş Açığı", value: allGap.length, sub: "acil sipariş", vc: "#B45309" }] : []),
+                      ...(exp.crossCheckIssues > 0 ? [{ f: "cross", bg: "#FEF3C7", bl: "#92400E", label: "⚠ Çapraz", value: exp.crossCheckIssues, sub: "uyumsuz", vc: "#92400E" }] : []),
+                    ].map(c => (
+                      <div key={c.f} onClick={() => setExpFilter(c.f)} style={{ background: c.bg, borderRadius: 8, padding: "10px 14px", borderLeft: `3px solid ${c.bl}`, cursor: "pointer", opacity: expFilter === c.f ? 1 : 0.75, outline: expFilter === c.f ? `2px solid ${c.bl}` : "none", outlineOffset: -1, transition: "opacity 0.15s" }}>
+                        <div style={{ fontSize: 10, color: c.vc || "var(--color-text-tertiary)" }}>{c.label}</div>
+                        <div style={{ fontSize: 18, fontWeight: 600, color: c.vc }}>{c.value} <span style={{ fontSize: 10, fontWeight: 400, color: "var(--color-text-tertiary)" }}>{c.sub}</span></div>
                       </div>
-                    )}
+                    ))}
                   </div>
 
-                  {/* Çapraz Kontrol Detay */}
-                  {exp.crossCheckIssues > 0 && expFilter === "cross" && (
-                    <div style={{ marginTop: 16, padding: "12px 16px", background: "#FEF3C7", borderRadius: 8, border: "1px solid #F59E0B" }}>
-                      <div style={{ fontSize: 12, fontWeight: 600, color: "#B45309", marginBottom: 8 }}>⚠ Stok vs Akibet Çapraz Kontrol ({exp.crossCheckIssues} uyumsuzluk)</div>
-                      <div style={{ fontSize: 11, color: "#92400E", marginBottom: 8 }}>
-                        Stok raporundaki üretim hattı + fason miktarları ile akibet raporundaki kalan miktarlar arasında fark var.
-                        Olası sebepler: iş emri başlatılmadan transfer, fason dönüşü ambar girişi yapılmamış, veya rapor zamanları farklı.
-                      </div>
-                      {filteredExpResults.filter(r => r.crossCheck).map((r, i) => (
-                        <div key={i} style={{ display: "flex", gap: 12, padding: "4px 0", borderTop: i > 0 ? "1px solid #FBBF2440" : "none", fontSize: 11, alignItems: "center" }}>
-                          <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, minWidth: 80 }}>{r.code}</span>
-                          <span style={{ flex: 1 }}>{r.name}</span>
-                          <span>Stok WIP: <b>{r.crossCheck.stokWip}</b></span>
-                          <span>Akibet WIP: <b>{r.crossCheck.akibetWip}</b></span>
-                          <span style={{ fontWeight: 600, color: r.crossCheck.diff > 0 ? "#DC2626" : "#059669" }}>
-                            Fark: {r.crossCheck.diff > 0 ? "+" : ""}{r.crossCheck.diff}
-                          </span>
+                  {/* Warnings */}
+                  {exp.unmappedProducts.length > 0 && (
+                    <div style={{ padding: "8px 14px", background: "#FEE2E2", borderRadius: 8, border: "1px solid #FECACA", marginBottom: 10, fontSize: 11, color: "#DC2626" }}>
+                      ⚠ Eşleştirilmemiş: {exp.unmappedProducts.map(pid => products?.find(p => p.id === pid)?.nameTR || pid).join(", ")}
+                    </div>
+                  )}
+                  {exp.pass2Count > 0 && (
+                    <div style={{ padding: "6px 14px", background: "#F5F3FF", borderRadius: 8, border: "1px solid #DDD6FE", marginBottom: 10, fontSize: 11, color: "#7C3AED" }}>
+                      🔁 Pass 2: {exp.pass2Count} ürünün alt BOM'u patlatıldı
+                    </div>
+                  )}
+
+                  {/* Search bar */}
+                  <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
+                    <input placeholder="Stok kodu veya adı ara..." value={expSearch} onChange={e => setExpSearch(e.target.value)}
+                      style={{ flex: 1, padding: "7px 12px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12, background: "var(--color-background-primary)" }} />
+                    <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+                      {new Date(exp.calculatedAt).toLocaleString("tr-TR")}
+                    </span>
+                  </div>
+
+                  {/* ===== VIEW: Satınalma ===== */}
+                  {expFilter === "buy" && (
+                    <div>
+                      {buyRaw.length > 0 && (<div style={{ marginBottom: 20 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#92400E", marginBottom: 8 }}>
+                          🔩 Hammadde İhtiyaç ({buyRaw.length})
+                          {buyRaw.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 10, fontWeight: 400, color: "#DC2626", marginLeft: 8 }}>· {buyRaw.filter(r => r.gap > 0).length} sipariş açığı</span>}
                         </div>
-                      ))}
+                        <DataTable items={buyRaw.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
+                          columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
+                          emptyMsg="Hammadde ihtiyacı yok" />
+                      </div>)}
+                      {buyStd.length > 0 && (<div style={{ marginBottom: 20 }}>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#1D4ED8", marginBottom: 8 }}>
+                          🔧 Standart Parça İhtiyaç ({buyStd.length})
+                          {buyStd.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 10, fontWeight: 400, color: "#DC2626", marginLeft: 8 }}>· {buyStd.filter(r => r.gap > 0).length} sipariş açığı</span>}
+                        </div>
+                        <DataTable items={buyStd.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
+                          columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
+                          emptyMsg="Standart parça ihtiyacı yok" />
+                      </div>)}
+                      {!buyParts.length && <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-success)", fontSize: 12 }}>✓ Tüm BUY/RAW parçalar stok + sipariş ile karşılanmış</div>}
+                    </div>
+                  )}
+
+                  {/* ===== VIEW: Üretim ===== */}
+                  {expFilter === "make" && (
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#1D9E75", marginBottom: 8 }}>🏭 Üretilecek Parçalar ({makeParts.length})</div>
+                      <DataTable items={makeParts.sort((a,b) => a.level - b.level || b.netQty - a.netQty)}
+                        columns={[C.code, C.name, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
+                        emptyMsg="Üretim ihtiyacı yok — tümü stok + WIP ile karşılanmış" />
+                    </div>
+                  )}
+
+                  {/* ===== VIEW: Fason ===== */}
+                  {expFilter === "fason" && (
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#C2410C", marginBottom: 8 }}>🚚 Fason İhtiyaç ({fasonParts.length})</div>
+                      <DataTable items={fasonParts.sort((a,b) => b.netQty - a.netQty)}
+                        columns={[C.code, C.name, C.type, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, C.sources]}
+                        emptyMsg="Fason ihtiyacı yok" />
+                    </div>
+                  )}
+
+                  {/* ===== VIEW: Çapraz Kontrol ===== */}
+                  {expFilter === "cross" && (
+                    <div>
+                      <div style={{ padding: "10px 14px", background: "#FEF3C7", borderRadius: 8, border: "1px solid #F59E0B", marginBottom: 12 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#B45309", marginBottom: 4 }}>Stok Raporu vs Akibet — {exp.crossCheckIssues} uyumsuzluk</div>
+                        <div style={{ fontSize: 11, color: "#92400E" }}>Olası sebepler: iş emri açılmadan transfer, fason dönüşü girişi yapılmamış, rapor zamanları farklı</div>
+                      </div>
+                      <DataTable items={parts.filter(r => r.crossCheck)}
+                        columns={[C.code, C.name,
+                          { label: "Stok WIP", align: "right", mono: true, render: r => r.crossCheck?.stokWip || 0 },
+                          { label: "Akibet WIP", align: "right", mono: true, render: r => r.crossCheck?.akibetWip || 0 },
+                          { label: "Fark", align: "right", mono: true, fw: () => 700, render: r => { const d = r.crossCheck?.diff || 0; return (d>0?"+":"")+d; }, cc: r => (r.crossCheck?.diff||0) > 0 ? "#DC2626" : "#059669" }
+                        ]} emptyMsg="Uyumsuzluk yok" />
+                    </div>
+                  )}
+
+                  {/* ===== VIEW: Tümü / Net Açık / Sipariş Açığı ===== */}
+                  {!["buy","make","fason","cross"].includes(expFilter) && (
+                    <div>
+                      <DataTable items={filteredExpResults.slice(0, 300)}
+                        columns={[C.code, C.name, C.type, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap]:[]), C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
+                        emptyMsg="Sonuç yok" />
+                      {filteredExpResults.length > 300 && (
+                        <div style={{ padding: "8px", textAlign: "center", fontSize: 11, color: "var(--color-text-tertiary)", background: "var(--color-background-secondary)", borderRadius: "0 0 8px 8px" }}>İlk 300 kalem — arama ile daraltın</div>
+                      )}
                     </div>
                   )}
                 </div>
