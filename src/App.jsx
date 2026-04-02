@@ -5030,21 +5030,37 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     await saveBom({ ...bomModels, [modelKey]: model });
   };
 
-  // ==================== SUPPLY TYPE OVERRIDE ====================
+  // ==================== SUPPLY TYPE OVERRIDE (GLOBAL) ====================
+  // Bir parçanın tipini değiştirince aynı stok kodlu TÜM BOM'lardaki parçalar güncellenir
   const updateSupplyType = async (modelKey, partIdx, newType) => {
     if (!canEdit || !bomModels[modelKey]) return;
-    const model = { ...bomModels[modelKey] };
-    const parts = [...model.parts];
-    const part = { ...parts[partIdx] };
-    const oldAuto = part._autoSupplyType || part.supplyType;
-    part.supplyType = newType;
-    // Mark as manually overridden (store original auto-detected type)
-    if (!part._autoSupplyType) part._autoSupplyType = oldAuto;
-    // If set back to auto-detected, remove override flag
-    if (newType === oldAuto) delete part._autoSupplyType;
-    parts[partIdx] = part;
-    model.parts = parts;
-    await saveBom({ ...bomModels, [modelKey]: model });
+    const targetPart = bomModels[modelKey].parts[partIdx];
+    if (!targetPart) return;
+    const stockCode = targetPart.stockCode;
+
+    // Tüm BOM'larda aynı stok kodlu parçaları bul ve güncelle
+    const updatedBom = { ...bomModels };
+    let updateCount = 0;
+    Object.keys(updatedBom).filter(k => k !== "undefined").forEach(mk => {
+      const model = updatedBom[mk];
+      if (!model?.parts) return;
+      let changed = false;
+      const parts = model.parts.map(p => {
+        if (p.stockCode !== stockCode) return p;
+        const updated = { ...p };
+        const oldAuto = updated._autoSupplyType || updated.supplyType;
+        updated.supplyType = newType;
+        if (!updated._autoSupplyType) updated._autoSupplyType = oldAuto;
+        if (newType === oldAuto) delete updated._autoSupplyType;
+        changed = true;
+        updateCount++;
+        return updated;
+      });
+      if (changed) updatedBom[mk] = { ...model, parts };
+    });
+
+    await saveBom(updatedBom);
+    if (updateCount > 1) console.log(`🌐 ${stockCode}: ${updateCount} parça güncellendi (${newType})`);
   };
 
   // ==================== SCHEDULE CALCULATION ENGINE ====================
@@ -5377,6 +5393,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       if (prefix === "150") supplyType = "RAW";
       else if (prefix === "157") supplyType = "BUY";
       else if (prefix === "152") supplyType = "PRODUCT";
+
+      // Mevcut BOM'larda bu stok kodu için manuel override varsa onu kullan (global tutarlılık)
+      const existingOverride = Object.values(bomModels || {}).flatMap(m => m?.parts || []).find(p => p.stockCode === stockCode && p._autoSupplyType);
+      if (existingOverride) supplyType = existingOverride.supplyType;
 
       const partIdx = parts.length;
       parts.push({
@@ -6246,6 +6266,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   // ==================== TREE VIEW HELPERS ====================
   const getModelData = () => selectedModel && bomModels[selectedModel] ? bomModels[selectedModel] : null;
 
+  // Stok kodu → kaç farklı BOM'da geçiyor (global supply type göstergesi)
+  const stockCodeBomCount = useMemo(() => {
+    const map = {};
+    Object.keys(bomModels || {}).filter(k => k !== "undefined").forEach(mk => {
+      const seen = new Set();
+      (bomModels[mk]?.parts || []).forEach(p => {
+        if (!seen.has(p.stockCode)) { seen.add(p.stockCode); map[p.stockCode] = (map[p.stockCode] || 0) + 1; }
+      });
+    });
+    return map;
+  }, [bomModels]);
+
   const toggleNode = (idx) => setExpandedNodes(prev => ({ ...prev, [idx]: !prev[idx] }));
   const expandAll = () => {
     const md = getModelData();
@@ -6332,6 +6364,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             ) : (
               <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c, flexShrink: 0 }}>{p.supplyType}</span>
             )}
+            {stockCodeBomCount[p.stockCode] > 1 && <span title={`${stockCodeBomCount[p.stockCode]} BOM'da geçiyor — tip değişikliği hepsine uygulanır`} style={{ fontSize: 8, color: "#7C3AED", flexShrink: 0, cursor: "help" }}>🌐{stockCodeBomCount[p.stockCode]}</span>}
             {p.operations.length > 0 && (
               <span
                 onClick={(e) => { e.stopPropagation(); setEditingOpPart(isEditingOps ? null : { modelKey: selectedModel, partIdx: p.idx }); }}
@@ -6856,6 +6889,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         ) : (
                           <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c }}>{p.supplyType}</span>
                         )}
+                        {stockCodeBomCount[p.stockCode] > 1 && <span title={`${stockCodeBomCount[p.stockCode]} BOM'da geçiyor — tip değişikliği hepsine uygulanır`} style={{ fontSize: 8, color: "#7C3AED", flexShrink: 0, cursor: "help" }}>🌐{stockCodeBomCount[p.stockCode]}</span>}
                         {p.operations.length > 0 && <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.operations.map(o => o.opCode).join(",")}</span>}
                       </div>
                     );
