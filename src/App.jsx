@@ -4428,7 +4428,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const WC_DOC = "workCenters";
   const REQ_DOC = "mrpRequirements";
   const isAdmin = userRole === "admin";
-  const canEdit = isAdmin;
+  const canEdit = isAdmin || isUretim;
 
   // State
   const [bomModels, setBomModels] = useState({});
