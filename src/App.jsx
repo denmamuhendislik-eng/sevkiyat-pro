@@ -4554,6 +4554,17 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     await setDoc(doc(db, APP_COL, "wipAssignments"), updated);
   };
 
+  // Planlanan iş emri operasyonunun tezgahını değiştir
+  const reassignOp = async (jobId, opIdx, newMachineId) => {
+    if (!db || !canEdit || !schedule?.jobs) return;
+    const updatedJobs = schedule.jobs.map(j => {
+      if (j.id !== jobId) return j;
+      const ops = j.operations.map((op, i) => i === opIdx ? { ...op, machineId: newMachineId } : op);
+      return { ...j, operations: ops };
+    });
+    await saveSchedule({ ...schedule, jobs: updatedJobs });
+  };
+
   // ==================== VIO STOK RAPORU PARSER ====================
   const AMBAR_LOCS = new Set(["Hammadde ve Malzeme", "Yardımcı Malzeme Ambarı", "Merkez Ambarı", "Kontrol ve Giriş Ambarı", "Sevkiyat Ambarı", "Montaj Hattı"]);
   const URETIM_LOCS = new Set(["Üretim Hattı", "PRES HATTI", "KAYNAK HATTI", "TALAŞ AMBARI", "Lazer Mamül Ambarı"]);
@@ -8063,13 +8074,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   {/* Bu tezgaha planlanan işler */}
                                   {(() => {
                                     const machOps = [];
-                                    jobs.forEach(j => j.operations.forEach(op => {
+                                    jobs.forEach(j => j.operations.forEach((op, opIdx) => {
                                       if (op.machineId === mId && !op.isFason) {
-                                        machOps.push({ jobId: j.id, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning });
+                                        machOps.push({ jobId: j.id, opIdx, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode });
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
                                     machOps.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+                                    // Aynı WC'deki diğer tezgahlar (taşıma hedefi)
+                                    const sameWcMachines = wcMachines.filter(([id]) => id !== mId);
                                     return (
                                       <div style={{ marginTop: 4, borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: 4 }}>
                                         <div style={{ fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 3 }}>Planlanan ({machOps.length})</div>
@@ -8082,6 +8095,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             <span style={{ fontSize: 8, fontWeight: 500, minWidth: 32, textAlign: "right" }}>{Math.round(op.totalMin)}dk</span>
                                             <span style={{ fontFamily: "var(--font-mono)", fontSize: 7, color: "var(--color-text-tertiary)", minWidth: 40 }}>{op.startDate?.substring(5) || ""}</span>
                                             {op.capWarning && <span style={{ fontSize: 7, color: "#F97316" }}>⚡</span>}
+                                            {canEdit && sameWcMachines.length > 0 && (
+                                              <select
+                                                value=""
+                                                onChange={(e) => { if (e.target.value) reassignOp(op.jobId, op.opIdx, e.target.value); }}
+                                                style={{ fontSize: 8, padding: "1px 2px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)", minWidth: 50, color: "var(--color-text-tertiary)" }}
+                                              >
+                                                <option value="">Taşı</option>
+                                                {sameWcMachines.map(([id, m]) => <option key={id} value={id}>{m.name}</option>)}
+                                              </select>
+                                            )}
                                           </div>
                                         ))}
                                         {machOps.length > 8 && <div style={{ fontSize: 8, color: "var(--color-text-tertiary)" }}>+{machOps.length - 8} daha</div>}
