@@ -4456,6 +4456,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [ganttZoom, setGanttZoom] = useState(1);
   const [selectedJob, setSelectedJob] = useState(null);
   const [schedSource, setSchedSource] = useState("vio"); // "vio" | "mrp"
+  const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
   const [editingOpPart, setEditingOpPart] = useState(null);
 
   // Adım 5 — VIO Stok Raporu State
@@ -5193,11 +5194,22 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         });
       }
 
-      const findMachine = (wcCode) => {
+      const findMachine = (wcCode, opCode) => {
         const wc = centers[wcCode];
         if (!wc || !wc.machines || wc.machines.length === 0) return null;
+        // Yetenek filtresi: mesOpCodes tanımlıysa sadece o op'u yapabilen tezgahlar
+        let eligible = wc.machines;
+        const anyHasCaps = wc.machines.some(m => m.mesOpCodes && m.mesOpCodes.length > 0);
+        if (anyHasCaps && opCode) {
+          const capable = wc.machines.filter(m => {
+            if (!m.mesOpCodes || m.mesOpCodes.length === 0) return true; // tanımsız = her şeyi yapar (eski veri)
+            return m.mesOpCodes.includes(String(opCode));
+          });
+          if (capable.length > 0) eligible = capable;
+          // capable boşsa → zorunlu fallback, tüm tezgahlar aday (uyarı işaretlenecek)
+        }
         let best = null, bestDate = null;
-        wc.machines.forEach(m => {
+        eligible.forEach(m => {
           const avail = machineAvail[m.id] || new Date(today);
           if (!bestDate || avail < bestDate) { best = m.id; bestDate = avail; }
         });
@@ -5225,8 +5237,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             // Chain waits: next op can't start until fason returns
             jobCursor = addDays(returnD, 1);
           } else {
-            // Internal op: assign to least-loaded machine
-            const machineId = findMachine(op.wcCode);
+            // Internal op: assign to capable + least-loaded machine
+            const machineId = findMachine(op.wcCode, op.opCode);
             if (!machineId) {
               op.machineId = op.wcCode + "_NONE";
               op.startDate = dateStr(nextWorkday(jobCursor));
@@ -5241,6 +5253,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             start = nextWorkday(start);
             op.machineId = machineId;
             op.startDate = dateStr(start);
+            // Yetenek uyarısı: tezgahın mesOpCodes'unda bu op var mı?
+            const assignedMachine = (centers[op.wcCode]?.machines || []).find(m => m.id === machineId);
+            if (assignedMachine?.mesOpCodes?.length > 0 && !assignedMachine.mesOpCodes.includes(String(op.opCode))) {
+              op.capWarning = true; // Bu tezgah bu operasyonu yapamayabilir
+            }
 
             let remaining = op.totalMin;
             let d = new Date(start);
@@ -5270,9 +5287,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         });
       });
 
-      // 7) Calculate utilization stats per work center
+      // 7) Calculate utilization stats per work center + per machine
       const wcStats = {};
+      const machineStats = {}; // machineId → { name, wcCode, loadMin, totalCapMin, utilization, opCount, capWarnings }
       let minDate = null, maxDate = null;
+      let totalCapWarnings = 0;
       jobs.forEach(j => j.operations.forEach(op => {
         if (op.startDate) {
           const s = new Date(op.startDate);
@@ -5280,20 +5299,40 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           if (!minDate || s < minDate) minDate = s;
           if (!maxDate || e > maxDate) maxDate = e;
         }
+        if (op.capWarning) totalCapWarnings++;
       }));
 
       if (minDate && maxDate) {
         let totalWorkDays = 0;
         let d = new Date(minDate);
         while (d <= maxDate) { if (!isWeekend(d)) totalWorkDays++; d = addDays(d, 1); }
+        const perMachineCapMin = totalWorkDays * shiftMin;
 
         for (const [wcCode, wc] of Object.entries(centers)) {
           const machineCount = (wc.machines || []).length;
           const totalCapMin = totalWorkDays * machineCount * shiftMin;
           let loadMin = 0;
-          jobs.forEach(j => j.operations.forEach(op => {
-            if (op.wcCode === wcCode && !op.isFason) loadMin += op.totalMin;
-          }));
+
+          // Her tezgah için ayrı istatistik
+          (wc.machines || []).forEach(m => {
+            let mLoad = 0, mOps = 0, mCapWarn = 0;
+            jobs.forEach(j => j.operations.forEach(op => {
+              if (op.machineId === m.id && !op.isFason) {
+                mLoad += op.totalMin;
+                mOps++;
+                if (op.capWarning) mCapWarn++;
+              }
+            }));
+            machineStats[m.id] = {
+              name: m.name, wcCode, wcName: wc.name,
+              loadMin: Math.round(mLoad), totalCapMin: Math.round(perMachineCapMin),
+              utilization: perMachineCapMin > 0 ? Math.round((mLoad / perMachineCapMin) * 100) : 0,
+              opCount: mOps, capWarnings: mCapWarn,
+              hasCaps: (m.mesOpCodes && m.mesOpCodes.length > 0)
+            };
+            loadMin += mLoad;
+          });
+
           wcStats[wcCode] = {
             name: wc.name, machineCount,
             totalCapMin: Math.round(totalCapMin),
@@ -5307,9 +5346,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       for (const [code, st] of Object.entries(wcStats)) {
         if (st.utilization > maxUtil) { maxUtil = st.utilization; bottleneck = code; }
       }
+      // Tezgah bazlı darboğaz (en yüksek dolu tezgah)
+      let machineBottleneck = null, maxMachineUtil = 0;
+      for (const [mId, ms] of Object.entries(machineStats)) {
+        if (ms.utilization > maxMachineUtil) { maxMachineUtil = ms.utilization; machineBottleneck = mId; }
+      }
 
       const schedData = {
-        jobs, fasonOrders, wcStats, bottleneck,
+        jobs, fasonOrders, wcStats, machineStats, bottleneck, machineBottleneck, totalCapWarnings,
         totalJobs: jobs.length,
         totalFason: fasonOrders.length,
         source: useMrp ? "mrp" : "vio",
@@ -7477,6 +7521,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const jobs = s?.jobs || [];
         const fasonOrd = s?.fasonOrders || [];
         const wcSt = s?.wcStats || {};
+        const mSt = s?.machineStats || {};
 
         // Gantt chart helpers
         const ganttColors = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899","#06B6D4","#84CC16","#F97316","#6366F1"];
@@ -7629,7 +7674,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 <KPI label="Kaynak" value={s.source === "mrp" ? "🔥 MRP" : "📋 VIO"} sub={`${s.totalReqItems || "?"} ihtiyaç kalemi`} accent={s.source === "mrp" ? "#D97706" : "#2563EB"} />
                 <KPI label="MES Süreli Op" value={opsMES} sub={`${opsInternal > 0 ? Math.round(opsMES/opsInternal*100) : 0}% iç op tanımlı`} accent="#10B981" />
                 <KPI label="Fason Sipariş" value={s.totalFason || 0} sub="Dış operasyon" accent="#F59E0B" />
-                <KPI label="Darboğaz" value={s.bottleneck ? (wcSt[s.bottleneck]?.name || s.bottleneck) : "—"} sub={s.bottleneck ? `%${wcSt[s.bottleneck]?.utilization || 0} doluluk` : ""} accent="#EF4444" />
+                <KPI label="Darboğaz (Merkez)" value={s.bottleneck ? (wcSt[s.bottleneck]?.name || s.bottleneck) : "—"} sub={s.bottleneck ? `%${wcSt[s.bottleneck]?.utilization || 0} doluluk` : ""} accent="#EF4444" />
+                <KPI label="Darboğaz (Tezgah)" value={s.machineBottleneck ? (mSt[s.machineBottleneck]?.name || s.machineBottleneck) : "—"} sub={s.machineBottleneck ? `%${mSt[s.machineBottleneck]?.utilization || 0} doluluk` : ""} accent="#DC2626" />
+                {(s.totalCapWarnings || 0) > 0 && (
+                  <KPI label="Yetenek Uyarısı" value={s.totalCapWarnings} sub="Uyumsuz tezgah ataması" accent="#F97316" />
+                )}
                 <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
               </div>
             )}
@@ -7637,31 +7686,85 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             {/* ---- DOLULUK DASHBOARD ---- */}
             {s && Object.keys(wcSt).length > 0 && (
               <div style={{ marginBottom: 20 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Tezgah Doluluk Oranı</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 13, fontWeight: 500 }}>Doluluk Oranı</span>
+                  <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Merkeze tıklayarak tezgah detayını görün</span>
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
                   {Object.entries(wcSt).sort((a, b) => b[1].utilization - a[1].utilization).map(([code, st]) => {
                     const isBottleneck = code === s.bottleneck;
                     const barColor = st.utilization > 90 ? "#EF4444" : st.utilization > 70 ? "#F59E0B" : "#10B981";
+                    const isExpanded = expandedWC === code;
+                    // Bu merkezin tezgahları
+                    const wcMachines = Object.entries(mSt).filter(([, ms]) => ms.wcCode === code).sort((a, b) => b[1].utilization - a[1].utilization);
+                    const hasCapWarns = wcMachines.some(([, ms]) => ms.capWarnings > 0);
                     return (
                       <div key={code} style={{
-                        padding: "10px 14px", borderRadius: 8,
+                        borderRadius: 8,
                         border: isBottleneck ? "1.5px solid #EF4444" : "0.5px solid var(--color-border-tertiary)",
-                        background: isBottleneck ? "#FEF2F2" : "var(--color-background-primary)"
+                        background: isBottleneck ? "#FEF2F2" : "var(--color-background-primary)",
+                        overflow: "hidden"
                       }}>
-                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                          <span style={{ fontSize: 12, fontWeight: 500 }}>
-                            {st.name || code}
-                            {isBottleneck && <span style={{ fontSize: 9, color: "#EF4444", marginLeft: 6 }}>⚠ DARBOĞAZ</span>}
-                          </span>
-                          <span style={{ fontSize: 12, fontWeight: 600, color: barColor }}>%{st.utilization}</span>
+                        {/* WC Header — clickable */}
+                        <div
+                          onClick={() => setExpandedWC(isExpanded ? null : code)}
+                          style={{ padding: "10px 14px", cursor: "pointer", userSelect: "none" }}
+                        >
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                            <span style={{ fontSize: 12, fontWeight: 500 }}>
+                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginRight: 4 }}>{isExpanded ? "▼" : "▶"}</span>
+                              {st.name || code}
+                              {isBottleneck && <span style={{ fontSize: 9, color: "#EF4444", marginLeft: 6 }}>⚠ DARBOĞAZ</span>}
+                              {hasCapWarns && <span style={{ fontSize: 9, color: "#F97316", marginLeft: 6 }}>⚡ YETENEK</span>}
+                            </span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: barColor }}>%{st.utilization}</span>
+                          </div>
+                          <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden" }}>
+                            <div style={{ height: "100%", width: Math.min(100, st.utilization) + "%", borderRadius: 3, background: barColor, transition: "width 0.4s ease" }} />
+                          </div>
+                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                            <span>{st.machineCount} tezgah</span>
+                            <span>{Math.round(st.loadMin / 60)}s yük / {Math.round(st.totalCapMin / 60)}s kapasite</span>
+                          </div>
                         </div>
-                        <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden" }}>
-                          <div style={{ height: "100%", width: Math.min(100, st.utilization) + "%", borderRadius: 3, background: barColor, transition: "width 0.4s ease" }} />
-                        </div>
-                        <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "var(--color-text-tertiary)" }}>
-                          <span>{st.machineCount} tezgah</span>
-                          <span>{Math.round(st.loadMin / 60)}s yük / {Math.round(st.totalCapMin / 60)}s kapasite</span>
-                        </div>
+
+                        {/* Machine detail — expanded */}
+                        {isExpanded && wcMachines.length > 0 && (
+                          <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "8px 14px 10px" }}>
+                            {wcMachines.map(([mId, ms]) => {
+                              const mColor = ms.utilization > 90 ? "#EF4444" : ms.utilization > 70 ? "#F59E0B" : ms.utilization > 30 ? "#3B82F6" : "#10B981";
+                              const isMachBn = mId === s.machineBottleneck;
+                              return (
+                                <div key={mId} style={{ marginBottom: 8 }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
+                                    <span style={{ fontSize: 11 }}>
+                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", marginRight: 4 }}>{mId}</span>
+                                      <span style={{ fontSize: 10 }}>{ms.name}</span>
+                                      {isMachBn && <span style={{ fontSize: 8, color: "#DC2626", marginLeft: 4, fontWeight: 500 }}>DARBOĞAZ</span>}
+                                      {ms.capWarnings > 0 && <span style={{ fontSize: 8, color: "#F97316", marginLeft: 4 }}>⚡{ms.capWarnings} uyumsuz</span>}
+                                      {!ms.hasCaps && <span style={{ fontSize: 8, color: "var(--color-text-tertiary)", marginLeft: 4 }}>MES tanımsız</span>}
+                                    </span>
+                                    <span style={{ fontSize: 11, fontWeight: 500, color: mColor }}>
+                                      %{ms.utilization}
+                                      <span style={{ fontSize: 9, fontWeight: 400, color: "var(--color-text-tertiary)", marginLeft: 4 }}>{ms.opCount} op</span>
+                                    </span>
+                                  </div>
+                                  <div style={{ height: 4, borderRadius: 2, background: "var(--color-background-secondary)", overflow: "hidden" }}>
+                                    <div style={{ height: "100%", width: Math.min(100, ms.utilization) + "%", borderRadius: 2, background: mColor, transition: "width 0.3s ease" }} />
+                                  </div>
+                                  <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>
+                                    {Math.round(ms.loadMin / 60)}s yük / {Math.round(ms.totalCapMin / 60)}s kapasite
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                        {isExpanded && wcMachines.length === 0 && (
+                          <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "8px 14px", fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                            Tanımlı tezgah yok
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -7780,7 +7883,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   <div
                                     key={oi}
                                     onClick={() => setSelectedJob(isSelected ? null : op.jobId)}
-                                    title={`${op.jobId} · ${op.partCode} · Op${op.opCode}${isFasonOp ? " (FASON)" : ""} · ${isFasonOp ? op.leadTimeDays + " gün" : Math.round(op.totalMin) + "dk"}`}
+                                    title={`${op.jobId} · ${op.partCode} · Op${op.opCode}${isFasonOp ? " (FASON)" : ""}${op.capWarning ? " ⚡YETENEK UYARISI" : ""} · ${isFasonOp ? op.leadTimeDays + " gün" : Math.round(op.totalMin) + "dk"}`}
                                     style={{
                                       position: "absolute", top: 3, left, width,
                                       height: rowH - 6, borderRadius: 4,
@@ -7790,13 +7893,13 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       opacity: isSelected ? 1 : 0.8,
                                       cursor: "pointer", overflow: "hidden",
                                       display: "flex", alignItems: "center", padding: "0 4px",
-                                      border: isFasonOp ? "1.5px dashed rgba(255,255,255,0.5)" : "none",
-                                      boxShadow: isSelected ? "0 0 0 2px " + color + ", 0 2px 6px rgba(0,0,0,0.15)" : "none",
+                                      border: op.capWarning ? "2px solid #F97316" : isFasonOp ? "1.5px dashed rgba(255,255,255,0.5)" : "none",
+                                      boxShadow: isSelected ? "0 0 0 2px " + color + ", 0 2px 6px rgba(0,0,0,0.15)" : op.capWarning ? "0 0 0 1px #F97316" : "none",
                                       transition: "opacity 0.15s, box-shadow 0.15s"
                                     }}
                                   >
                                     <span style={{ fontSize: 8, color: "#fff", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                      {isFasonOp ? "⧖ " : ""}{op.partCode}
+                                      {op.capWarning ? "⚡" : ""}{isFasonOp ? "⧖ " : ""}{op.partCode}
                                     </span>
                                   </div>
                                 );
@@ -7831,6 +7934,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     <span style={{ marginLeft: 8, fontSize: 9, color: "var(--color-text-tertiary)", display: "flex", alignItems: "center", gap: 4 }}>
                       <span style={{ width: 16, height: 8, borderRadius: 2, background: "repeating-linear-gradient(135deg, #888, #888 2px, #88888866 2px, #88888866 4px)", border: "1px dashed #888" }} />
                       = Fason (dış tedarik bekleme)
+                    </span>
+                    <span style={{ marginLeft: 8, fontSize: 9, color: "var(--color-text-tertiary)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ width: 16, height: 8, borderRadius: 2, background: "#3B82F6", border: "2px solid #F97316" }} />
+                      = Yetenek uyarısı (tezgah uyumsuz)
                     </span>
                   </div>
                 )}
@@ -7930,10 +8037,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                               {j.operations.map((op, oi) => (
                                 <span key={oi} style={{
                                   fontSize: 9, padding: "1px 4px", borderRadius: 3, marginRight: 2,
-                                  background: op.isFason ? "#FBEAF0" : "var(--color-background-secondary)",
-                                  color: op.isFason ? "#72243E" : "var(--color-text-secondary)"
+                                  background: op.capWarning ? "#FFF7ED" : op.isFason ? "#FBEAF0" : "var(--color-background-secondary)",
+                                  color: op.capWarning ? "#C2410C" : op.isFason ? "#72243E" : "var(--color-text-secondary)",
+                                  border: op.capWarning ? "1px solid #F97316" : "none"
                                 }}>
-                                  {op.isFason ? "⧖" : ""}{op.opCode}
+                                  {op.capWarning ? "⚡" : ""}{op.isFason ? "⧖" : ""}{op.opCode}
                                 </span>
                               ))}
                             </td>
