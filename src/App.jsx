@@ -5309,7 +5309,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       const txt = String(rows[i][0] || "");
       const m = txt.match(/Ürün Ağacı:\s*(\S+)\s*-\s*(.+)/);
       if (m) { modelCode = m[1].trim(); modelName = m[2].trim(); break; }
-      const m2 = txt.match(/\((\d{3}-\d{4})\)\s+(.+)/);
+      const m2 = txt.match(/\((\d{3}-\d{4}(?:-\d+)?)\)\s+(.+)/);
       if (m2) { modelCode = m2[1].trim(); modelName = m2[2].trim(); break; }
     }
 
@@ -5376,11 +5376,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       }
 
       // Regular part row — must have a stock code pattern
-      const codeMatch = col0.match(/^(\d{3}-\d{4})/);
+      const codeMatch = col0.match(/^(\d{3}-\d{4}(?:-\d+)?)/);
       if (!codeMatch) continue;
 
       const stockCode = codeMatch[1];
-      const stockName = col1 || col0.replace(stockCode, "").trim();
+      const stockName = col1 || col0.substring(stockCode.length).trim();
       let qty = 1;
       if (col2 !== "" && col2 !== undefined) {
         const qStr = String(col2).replace(",", ".");
@@ -6078,8 +6078,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       const machineRaw = String(r[2] || "").trim();
       if (!stokRaw || !opRaw) continue;
 
-      // Parse stock code: "151-0222 - 52014 HELİS ORTA DİŞLİ C54"
-      const stockMatch = stokRaw.match(/^([\d\w]+-[\d\w]+)/);
+      // Parse stock code: "151-0222 - 52014 HELİS ORTA DİŞLİ C54" veya "151-0162-2 - 42011 EKS MİL"
+      const stockMatch = stokRaw.match(/^([\d\w]+-[\d\w]+(?:-[\d\w]+)*)/);
       if (!stockMatch) continue;
       const stockCode = stockMatch[1];
 
