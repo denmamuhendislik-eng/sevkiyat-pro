@@ -5287,11 +5287,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         });
       });
 
-      // 7) Calculate utilization stats per work center + per machine
+      // 7) Calculate utilization stats per work center
       const wcStats = {};
-      const machineStats = {}; // machineId → { name, wcCode, loadMin, totalCapMin, utilization, opCount, capWarnings }
       let minDate = null, maxDate = null;
-      let totalCapWarnings = 0;
       jobs.forEach(j => j.operations.forEach(op => {
         if (op.startDate) {
           const s = new Date(op.startDate);
@@ -5299,40 +5297,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           if (!minDate || s < minDate) minDate = s;
           if (!maxDate || e > maxDate) maxDate = e;
         }
-        if (op.capWarning) totalCapWarnings++;
       }));
 
       if (minDate && maxDate) {
         let totalWorkDays = 0;
         let d = new Date(minDate);
         while (d <= maxDate) { if (!isWeekend(d)) totalWorkDays++; d = addDays(d, 1); }
-        const perMachineCapMin = totalWorkDays * shiftMin;
 
         for (const [wcCode, wc] of Object.entries(centers)) {
           const machineCount = (wc.machines || []).length;
           const totalCapMin = totalWorkDays * machineCount * shiftMin;
           let loadMin = 0;
-
-          // Her tezgah için ayrı istatistik
-          (wc.machines || []).forEach(m => {
-            let mLoad = 0, mOps = 0, mCapWarn = 0;
-            jobs.forEach(j => j.operations.forEach(op => {
-              if (op.machineId === m.id && !op.isFason) {
-                mLoad += op.totalMin;
-                mOps++;
-                if (op.capWarning) mCapWarn++;
-              }
-            }));
-            machineStats[m.id] = {
-              name: m.name, wcCode, wcName: wc.name,
-              loadMin: Math.round(mLoad), totalCapMin: Math.round(perMachineCapMin),
-              utilization: perMachineCapMin > 0 ? Math.round((mLoad / perMachineCapMin) * 100) : 0,
-              opCount: mOps, capWarnings: mCapWarn,
-              hasCaps: (m.mesOpCodes && m.mesOpCodes.length > 0)
-            };
-            loadMin += mLoad;
-          });
-
+          jobs.forEach(j => j.operations.forEach(op => {
+            if (op.wcCode === wcCode && !op.isFason) loadMin += op.totalMin;
+          }));
           wcStats[wcCode] = {
             name: wc.name, machineCount,
             totalCapMin: Math.round(totalCapMin),
@@ -5346,14 +5324,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       for (const [code, st] of Object.entries(wcStats)) {
         if (st.utilization > maxUtil) { maxUtil = st.utilization; bottleneck = code; }
       }
-      // Tezgah bazlı darboğaz (en yüksek dolu tezgah)
-      let machineBottleneck = null, maxMachineUtil = 0;
-      for (const [mId, ms] of Object.entries(machineStats)) {
-        if (ms.utilization > maxMachineUtil) { maxMachineUtil = ms.utilization; machineBottleneck = mId; }
-      }
 
       const schedData = {
-        jobs, fasonOrders, wcStats, machineStats, bottleneck, machineBottleneck, totalCapWarnings,
+        jobs, fasonOrders, wcStats, bottleneck,
         totalJobs: jobs.length,
         totalFason: fasonOrders.length,
         source: useMrp ? "mrp" : "vio",
@@ -7521,7 +7494,46 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const jobs = s?.jobs || [];
         const fasonOrd = s?.fasonOrders || [];
         const wcSt = s?.wcStats || {};
-        const mSt = s?.machineStats || {};
+
+        // machineStats: client-side hesaplama (jobs + workCenters'tan türetilir)
+        const mSt = (() => {
+          if (!s || !workCenters?.centers || jobs.length === 0) return {};
+          const centers = workCenters.centers;
+          const shiftMin = (workCenters.shiftHours || 9) * 60 * (workCenters.efficiency || 0.85);
+          // Toplam iş günü (çizelge aralığı)
+          let totalWorkDays = 0;
+          if (s.minDate && s.maxDate) {
+            let d = new Date(s.minDate);
+            const end = new Date(s.maxDate);
+            while (d <= end) { if (d.getDay() !== 0 && d.getDay() !== 6) totalWorkDays++; d = new Date(d); d.setDate(d.getDate() + 1); }
+          }
+          if (totalWorkDays === 0) return {};
+          const perMachineCap = totalWorkDays * shiftMin;
+          const result = {};
+          Object.entries(centers).forEach(([wcCode, wc]) => {
+            (wc.machines || []).forEach(m => {
+              let mLoad = 0, mOps = 0, mCapWarn = 0;
+              jobs.forEach(j => j.operations.forEach(op => {
+                if (op.machineId === m.id && !op.isFason) {
+                  mLoad += op.totalMin || 0;
+                  mOps++;
+                  if (op.capWarning) mCapWarn++;
+                }
+              }));
+              result[m.id] = {
+                name: m.name, wcCode, wcName: wc.name,
+                loadMin: Math.round(mLoad), totalCapMin: Math.round(perMachineCap),
+                utilization: perMachineCap > 0 ? Math.round((mLoad / perMachineCap) * 100) : 0,
+                opCount: mOps, capWarnings: mCapWarn,
+                hasCaps: !!(m.mesOpCodes && m.mesOpCodes.length > 0)
+              };
+            });
+          });
+          return result;
+        })();
+        // Tezgah darboğazı ve yetenek uyarıları (client-side)
+        const machBn = Object.entries(mSt).reduce((best, [id, ms]) => (!best || ms.utilization > (mSt[best]?.utilization || 0)) ? id : best, null);
+        const capWarnCount = Object.values(mSt).reduce((s, ms) => s + ms.capWarnings, 0);
 
         // Gantt chart helpers
         const ganttColors = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899","#06B6D4","#84CC16","#F97316","#6366F1"];
@@ -7675,9 +7687,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 <KPI label="MES Süreli Op" value={opsMES} sub={`${opsInternal > 0 ? Math.round(opsMES/opsInternal*100) : 0}% iç op tanımlı`} accent="#10B981" />
                 <KPI label="Fason Sipariş" value={s.totalFason || 0} sub="Dış operasyon" accent="#F59E0B" />
                 <KPI label="Darboğaz (Merkez)" value={s.bottleneck ? (wcSt[s.bottleneck]?.name || s.bottleneck) : "—"} sub={s.bottleneck ? `%${wcSt[s.bottleneck]?.utilization || 0} doluluk` : ""} accent="#EF4444" />
-                <KPI label="Darboğaz (Tezgah)" value={s.machineBottleneck ? (mSt[s.machineBottleneck]?.name || s.machineBottleneck) : "—"} sub={s.machineBottleneck ? `%${mSt[s.machineBottleneck]?.utilization || 0} doluluk` : ""} accent="#DC2626" />
-                {(s.totalCapWarnings || 0) > 0 && (
-                  <KPI label="Yetenek Uyarısı" value={s.totalCapWarnings} sub="Uyumsuz tezgah ataması" accent="#F97316" />
+                <KPI label="Darboğaz (Tezgah)" value={machBn ? (mSt[machBn]?.name || machBn) : "—"} sub={machBn ? `%${mSt[machBn]?.utilization || 0} doluluk` : ""} accent="#DC2626" />
+                {capWarnCount > 0 && (
+                  <KPI label="Yetenek Uyarısı" value={capWarnCount} sub="Uyumsuz tezgah ataması" accent="#F97316" />
                 )}
                 <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
               </div>
@@ -7733,7 +7745,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "8px 14px 10px" }}>
                             {wcMachines.map(([mId, ms]) => {
                               const mColor = ms.utilization > 90 ? "#EF4444" : ms.utilization > 70 ? "#F59E0B" : ms.utilization > 30 ? "#3B82F6" : "#10B981";
-                              const isMachBn = mId === s.machineBottleneck;
+                              const isMachBn = mId === machBn;
                               return (
                                 <div key={mId} style={{ marginBottom: 8 }}>
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
