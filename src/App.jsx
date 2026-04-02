@@ -7918,35 +7918,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               </div>
             )}
 
-            {/* ---- WIP DEBUG ---- */}
-            {wipLoad.debug && (
+
+            {/* ---- WIP RAPORU ---- */}
+            {wipLoad.debug && wipLoad.debug.matched > 0 && (
               <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", fontSize: 11 }}>
-                <div style={{ fontWeight: 500, marginBottom: 6, color: "#D97706" }}>WIP Eşleşme Raporu</div>
+                <div style={{ fontWeight: 500, marginBottom: 6, color: "#D97706" }}>Mevcut WIP Özeti</div>
                 <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 10, color: "var(--color-text-secondary)" }}>
                   <span>Akibet: <b>{wipLoad.debug.total}</b> parça</span>
-                  <span>WIP yok: {wipLoad.debug.noWip}</span>
-                  <span>orders boş: <b style={{ color: wipLoad.debug.noOrders > 0 ? "#EF4444" : "inherit" }}>{wipLoad.debug.noOrders}</b></span>
-                  <span>Fason (atlandı): {wipLoad.debug.fason}</span>
-                  <span>WC eşleşmedi: <b style={{ color: wipLoad.debug.noWC > 0 ? "#F59E0B" : "inherit" }}>{wipLoad.debug.noWC}</b></span>
-                  <span style={{ color: "#10B981" }}>Eşleşen: <b>{wipLoad.debug.matched}</b></span>
+                  <span style={{ color: "#10B981" }}>Eşleşen: <b>{wipLoad.debug.matched}</b> op</span>
                   <span style={{ color: "#059669" }}>BOM birebir: <b>{wipLoad.debug.bomMatch || 0}</b></span>
-                  <span style={{ color: "#D97706" }}>WC ort.: {wipLoad.debug.avgMatch || 0}</span>
-                  <span style={{ color: "var(--color-text-tertiary)" }}>varsayılan: {wipLoad.debug.defMatch || 0}</span>
-                  <span>BOM kodu: {wipLoad.debug.bomKeys || 0}</span>
-                  <span>WIP kalem: <b>{wipLoad.totalItems}</b></span>
-                  <span>Toplam: <b>{Math.round(wipLoad.totalMin / 60)}</b>s</span>
+                  <span style={{ color: "#D97706" }}>WC ortalama: {wipLoad.debug.avgMatch || 0}</span>
+                  <span style={{ color: "var(--color-text-tertiary)" }}>Varsayılan: {wipLoad.debug.defMatch || 0}</span>
+                  <span>Fason: {wipLoad.debug.fason}</span>
+                  <span>Toplam WIP: <b>{Math.round(wipLoad.totalMin / 60)}s</b> ({wipLoad.totalItems} kalem)</span>
                 </div>
                 {wipLoad.debug.wcAvgCycle && Object.keys(wipLoad.debug.wcAvgCycle).length > 0 && (
                   <div style={{ marginTop: 4, fontSize: 9, color: "var(--color-text-tertiary)" }}>
                     Çevrim süreleri (BOM ort.): {Object.entries(wipLoad.debug.wcAvgCycle).map(([wc, t]) => (
                       <span key={wc} style={{ marginRight: 8 }}>{workCenters?.centers?.[wc]?.name || wc}: <b>{t}</b>dk</span>
-                    ))}
-                  </div>
-                )}
-                {wipLoad.debug.samples?.length > 0 && (
-                  <div style={{ marginTop: 6, fontSize: 9, color: "var(--color-text-tertiary)" }}>
-                    Örnekler: {wipLoad.debug.samples.map((s, i) => (
-                      <span key={i} style={{ marginRight: 8 }}><code>{s.code}</code> → {s.reason}</span>
                     ))}
                   </div>
                 )}
@@ -8066,6 +8055,34 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           </div>
                                         ))}
                                         {machWip.length > 5 && <div style={{ fontSize: 8, color: "var(--color-text-tertiary)" }}>+{machWip.length - 5} daha</div>}
+                                      </div>
+                                    );
+                                  })()}
+                                  {/* Bu tezgaha planlanan işler */}
+                                  {(() => {
+                                    const machOps = [];
+                                    jobs.forEach(j => j.operations.forEach(op => {
+                                      if (op.machineId === mId && !op.isFason) {
+                                        machOps.push({ jobId: j.id, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning });
+                                      }
+                                    }));
+                                    if (machOps.length === 0) return null;
+                                    machOps.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+                                    return (
+                                      <div style={{ marginTop: 4, borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: 4 }}>
+                                        <div style={{ fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 3 }}>Planlanan ({machOps.length})</div>
+                                        {machOps.slice(0, 8).map((op, i) => (
+                                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2, fontSize: 9, color: "var(--color-text-secondary)" }}>
+                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--color-text-info)", minWidth: 36 }}>{op.jobId}</span>
+                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, minWidth: 58 }}>{op.partCode}</span>
+                                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 8 }}>{op.partName}</span>
+                                            <span style={{ fontSize: 8, minWidth: 28, textAlign: "right" }}>{op.qty}ad</span>
+                                            <span style={{ fontSize: 8, fontWeight: 500, minWidth: 32, textAlign: "right" }}>{Math.round(op.totalMin)}dk</span>
+                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 7, color: "var(--color-text-tertiary)", minWidth: 40 }}>{op.startDate?.substring(5) || ""}</span>
+                                            {op.capWarning && <span style={{ fontSize: 7, color: "#F97316" }}>⚡</span>}
+                                          </div>
+                                        ))}
+                                        {machOps.length > 8 && <div style={{ fontSize: 8, color: "var(--color-text-tertiary)" }}>+{machOps.length - 8} daha</div>}
                                       </div>
                                     );
                                   })()}
