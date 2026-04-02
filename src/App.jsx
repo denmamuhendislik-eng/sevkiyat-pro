@@ -8060,7 +8060,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                               let mesOps = 0, defOps = 0, mesMin = 0, defMin = 0;
                               jobs.forEach(j => j.operations.forEach(op => {
                                 if (op.machineId === mId && !op.isFason) {
-                                  if (op.timeSource === "mes") { mesOps++; mesMin += op.totalMin; }
+                                  const isMes = op.timeSource === "mes" || (op.cycleTime != null && op.cycleTime > 0);
+                                  if (isMes) { mesOps++; mesMin += op.totalMin; }
                                   else { defOps++; defMin += op.totalMin; }
                                 }
                               }));
@@ -8127,16 +8128,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     const machOps = [];
                                     jobs.forEach(j => j.operations.forEach((op, opIdx) => {
                                       if (op.machineId === mId && !op.isFason) {
-                                        machOps.push({ jobId: j.id, opIdx, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || "def" });
+                                        machOps.push({ jobId: j.id, opIdx, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def") });
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
                                     machOps.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
                                     const sameWcMachines = wcMachines.filter(([id]) => id !== mId);
                                     const mesCount = machOps.filter(o => o.timeSource === "mes").length;
-                                    const defCount = machOps.filter(o => o.timeSource === "def").length;
+                                    const defCount = machOps.filter(o => o.timeSource !== "mes").length;
                                     const mesMin = machOps.filter(o => o.timeSource === "mes").reduce((s, o) => s + o.totalMin, 0);
-                                    const defMin = machOps.filter(o => o.timeSource === "def").reduce((s, o) => s + o.totalMin, 0);
+                                    const defMin = machOps.filter(o => o.timeSource !== "mes").reduce((s, o) => s + o.totalMin, 0);
                                     return (
                                       <div style={{ marginTop: 4, borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: 4 }}>
                                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
