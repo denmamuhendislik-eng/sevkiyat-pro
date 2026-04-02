@@ -5990,7 +5990,48 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     if (!akibet?.parts || !workCenters?.centers) return { byWC: {}, byMachine: {}, items: [], totalMin: 0, debug: { reason: "no data" } };
 
     const centers = workCenters.centers || {};
-    const defaultCycle = 5; // dk/adet varsayılan
+    const defaultCycle = 5; // dk/adet fallback
+
+    // BOM lookup: stok kodu → part (operasyonlarıyla birlikte)
+    const bomLookup = {};
+    if (bomModels) {
+      Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
+        (bomModels[mk]?.parts || []).forEach(p => {
+          if (p.stockCode && (!bomLookup[p.stockCode] || p.operations.length > (bomLookup[p.stockCode].operations?.length || 0))) {
+            bomLookup[p.stockCode] = p;
+          }
+        });
+      });
+    }
+
+    // BOM'dan iş merkezi bazlı ortalama çevrim süresi (fallback için)
+    const wcAvgCycle = {};
+    if (bomModels) {
+      const wcCycleSums = {};
+      Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
+        (bomModels[mk]?.parts || []).forEach(p => {
+          (p.operations || []).forEach(op => {
+            if (op.wcCode && op.cycleTime && op.cycleTime > 0) {
+              if (!wcCycleSums[op.wcCode]) wcCycleSums[op.wcCode] = { total: 0, count: 0 };
+              wcCycleSums[op.wcCode].total += op.cycleTime;
+              wcCycleSums[op.wcCode].count++;
+            }
+          });
+        });
+      });
+      Object.entries(wcCycleSums).forEach(([wc, s]) => { wcAvgCycle[wc] = Math.round((s.total / s.count) * 100) / 100; });
+    }
+
+    // BOM eşleşmesi: akibet stok kodu → BOM part → wcCode'a göre operasyon cycle time
+    const getBomCycleTime = (akCode, wcCode) => {
+      const bom = bomLookup[akCode];
+      if (!bom || !bom.operations) return null;
+      // wcCode ile eşleşen operasyonu bul
+      const op = bom.operations.find(o => o.wcCode === wcCode && o.cycleTime > 0);
+      if (op) return { cycle: op.cycleTime, setup: op.setupTime || 0, source: "bom" };
+      // wcCode eşleşmezse herhangi bir cycle time'ı al (farklı kodlama olabilir)
+      return null;
+    };
 
     // İş merkezi isim eşleştirme: akibet op adı → wcCode
     // "TORNA MRK.3" → anahtar kelime "TORNA" → TORNA MERKEZİ wcCode'u
@@ -6023,7 +6064,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const items = [];
     const byWC = {};
     const byMachine = {};
-    let dbgTotal = 0, dbgNoWip = 0, dbgNoOrders = 0, dbgNoOps = 0, dbgFason = 0, dbgNoWC = 0, dbgMatched = 0;
+    let dbgTotal = 0, dbgNoWip = 0, dbgNoOrders = 0, dbgNoOps = 0, dbgFason = 0, dbgNoWC = 0, dbgMatched = 0, dbgBomMatch = 0, dbgAvgMatch = 0, dbgDefaultMatch = 0;
     const dbgSamples = [];
 
     akibet.parts.forEach(akPart => {
@@ -6039,7 +6080,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         ops.forEach(akOp => {
           if (akOp.remaining <= 0) return;
           const isFason = akOp.isFason;
-          if (isFason) { dbgFason++; return; } // Fason operasyonlar dahili kapasite kullanmaz
+          if (isFason) { dbgFason++; return; }
 
           const wcCode = matchWC(akOp.name);
           if (!wcCode) {
@@ -6049,7 +6090,17 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           }
 
           dbgMatched++;
-          const wipMin = defaultCycle * akOp.remaining; // setup dahil değil, kaba tahmin
+          // Çevrim süresi: 1) BOM birebir → 2) WC ortalama → 3) 5dk fallback
+          const bomTime = getBomCycleTime(akPart.code, wcCode);
+          let cycleTime, setupTime = 0, timeSource;
+          if (bomTime) {
+            cycleTime = bomTime.cycle; setupTime = bomTime.setup; timeSource = "bom"; dbgBomMatch++;
+          } else if (wcAvgCycle[wcCode]) {
+            cycleTime = wcAvgCycle[wcCode]; timeSource = "avg"; dbgAvgMatch++;
+          } else {
+            cycleTime = defaultCycle; timeSource = "def"; dbgDefaultMatch++;
+          }
+          const wipMin = setupTime + cycleTime * akOp.remaining;
           const wipKey = `${akPart.code}|${akOp.name}|${order.emirNo}`;
           const assignedMachine = wipAssignments[wipKey] || null;
 
@@ -6058,7 +6109,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             emirNo: order.emirNo, remaining: akOp.remaining,
             opCode: null, opName: akOp.name,
             wcCode, wcName: centers[wcCode]?.name || wcCode,
-            isFason: false, wipMin, machineId: assignedMachine
+            isFason: false, wipMin, timeSource, machineId: assignedMachine
           });
 
           if (assignedMachine) {
@@ -6077,9 +6128,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const totalMin = items.reduce((s, it) => s + it.wipMin, 0);
     return {
       byWC, byMachine, items, totalMin, totalItems: items.length,
-      debug: { total: dbgTotal, noWip: dbgNoWip, noOrders: dbgNoOrders, noOps: dbgNoOps, fason: dbgFason, noWC: dbgNoWC, matched: dbgMatched, wcCount: wcEntries.length, samples: dbgSamples }
+      debug: { total: dbgTotal, noWip: dbgNoWip, noOrders: dbgNoOrders, noOps: dbgNoOps, fason: dbgFason, noWC: dbgNoWC, matched: dbgMatched, bomMatch: dbgBomMatch, avgMatch: dbgAvgMatch, defMatch: dbgDefaultMatch, wcCount: wcEntries.length, bomKeys: Object.keys(bomLookup).length, samples: dbgSamples, wcAvgCycle }
     };
-  }, [akibet, workCenters, wipAssignments]);
+  }, [akibet, workCenters, wipAssignments, bomModels]);
 
   // ==================== SATINALMA AÇIK SİPARİŞ PARSER ====================
   const PURCH_DOC = "mrpPurchase";
@@ -7820,10 +7871,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   <span>Fason (atlandı): {wipLoad.debug.fason}</span>
                   <span>WC eşleşmedi: <b style={{ color: wipLoad.debug.noWC > 0 ? "#F59E0B" : "inherit" }}>{wipLoad.debug.noWC}</b></span>
                   <span style={{ color: "#10B981" }}>Eşleşen: <b>{wipLoad.debug.matched}</b></span>
-                  <span>İş merkezi: {wipLoad.debug.wcCount}</span>
+                  <span style={{ color: "#059669" }}>BOM birebir: <b>{wipLoad.debug.bomMatch || 0}</b></span>
+                  <span style={{ color: "#D97706" }}>WC ort.: {wipLoad.debug.avgMatch || 0}</span>
+                  <span style={{ color: "var(--color-text-tertiary)" }}>varsayılan: {wipLoad.debug.defMatch || 0}</span>
+                  <span>BOM kodu: {wipLoad.debug.bomKeys || 0}</span>
                   <span>WIP kalem: <b>{wipLoad.totalItems}</b></span>
                   <span>Toplam: <b>{Math.round(wipLoad.totalMin / 60)}</b>s</span>
                 </div>
+                {wipLoad.debug.wcAvgCycle && Object.keys(wipLoad.debug.wcAvgCycle).length > 0 && (
+                  <div style={{ marginTop: 4, fontSize: 9, color: "var(--color-text-tertiary)" }}>
+                    Çevrim süreleri (BOM ort.): {Object.entries(wipLoad.debug.wcAvgCycle).map(([wc, t]) => (
+                      <span key={wc} style={{ marginRight: 8 }}>{workCenters?.centers?.[wc]?.name || wc}: <b>{t}</b>dk</span>
+                    ))}
+                  </div>
+                )}
                 {wipLoad.debug.samples?.length > 0 && (
                   <div style={{ marginTop: 6, fontSize: 9, color: "var(--color-text-tertiary)" }}>
                     Örnekler: {wipLoad.debug.samples.map((s, i) => (
