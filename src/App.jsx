@@ -4701,6 +4701,13 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     return () => unsub();
   }, [db]);
   const saveBomMapping = async (data) => { if (!db || !canEdit) return; await setDoc(doc(db, APP_COL, MAPPING_DOC), data); };
+  const saveCatOverride = async (stockCode, catKey) => {
+    if (!db || !canEdit) return;
+    const overrides = { ...(bomMapping._catOverrides || {}), [stockCode]: catKey || null };
+    // null ise sil (otomatik'e dön)
+    if (!catKey) delete overrides[stockCode];
+    await saveBomMapping({ ...bomMapping, _catOverrides: overrides });
+  };
 
   // Compute unshipped demand from sevkiyat planı
   const [expYear, setExpYear] = useState(new Date().getFullYear());
@@ -8304,26 +8311,39 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               const parts = exp.parts || [];
 
               // Alt kategori belirleme (isim bazlı otomatik + global override)
-              const getPartCategory = (name, supplyType) => {
+              const ALL_CATS = {
+                raw_dokum: { cat: "raw_dokum", label: "Döküm", icon: "🔶", color: "#C2410C", bg: "#FAECE7", group: "RAW" },
+                raw_dolu: { cat: "raw_dolu", label: "Dolu malzeme", icon: "🔩", color: "#92400E", bg: "#FAEEDA", group: "RAW" },
+                raw_diger: { cat: "raw_diger", label: "Diğer hammadde", icon: "📦", color: "#854F0B", bg: "#FEF3C7", group: "RAW" },
+                buy_rulman: { cat: "buy_rulman", label: "Rulman / keçe", icon: "⚙", color: "#7C3AED", bg: "#F5F3FF", group: "BUY" },
+                buy_baglanti: { cat: "buy_baglanti", label: "Bağlantı elemanı", icon: "🔧", color: "#2563EB", bg: "#EFF6FF", group: "BUY" },
+                buy_lazer: { cat: "buy_lazer", label: "Lazer parça", icon: "✂", color: "#DC2626", bg: "#FEF2F2", group: "BUY" },
+                buy_diger: { cat: "buy_diger", label: "Diğer standart", icon: "🔹", color: "#1D4ED8", bg: "#EFF6FF", group: "BUY" },
+              };
+              const catOverrides = bomMapping._catOverrides || {};
+              const getPartCategory = (code, name, supplyType) => {
+                // 1) Manuel override varsa onu kullan
+                if (catOverrides[code] && ALL_CATS[catOverrides[code]]) return { ...ALL_CATS[catOverrides[code]], manual: true };
+                // 2) Otomatik: isim bazlı
                 const n = (name || "").toUpperCase();
                 if (supplyType === "RAW") {
-                  if (/DÖKÜM|DÖK\.|GÖVDE DÖKÜM/.test(n)) return { cat: "raw_dokum", label: "Döküm", icon: "🔶", color: "#C2410C", bg: "#FAECE7" };
-                  if (/MİL|ÇUBUK|BORU|LAMA|SAC|PLAKA|PROFİL|KÜTÜK|DOLU/.test(n)) return { cat: "raw_dolu", label: "Dolu malzeme", icon: "🔩", color: "#92400E", bg: "#FAEEDA" };
-                  return { cat: "raw_diger", label: "Diğer hammadde", icon: "📦", color: "#854F0B", bg: "#FEF3C7" };
+                  if (/DÖKÜM|DÖK\.|GÖVDE DÖKÜM/.test(n)) return ALL_CATS.raw_dokum;
+                  if (/MİL|ÇUBUK|BORU|LAMA|SAC|PLAKA|PROFİL|KÜTÜK|DOLU/.test(n)) return ALL_CATS.raw_dolu;
+                  return ALL_CATS.raw_diger;
                 }
                 if (supplyType === "BUY") {
-                  if (/RULMAN|KEÇE|SEGMAN|O-RİNG|CONTA|SİMERİNG|SEAL/.test(n)) return { cat: "buy_rulman", label: "Rulman / keçe", icon: "⚙", color: "#7C3AED", bg: "#F5F3FF" };
-                  if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ/.test(n)) return { cat: "buy_baglanti", label: "Bağlantı elemanı", icon: "🔧", color: "#2563EB", bg: "#EFF6FF" };
-                  if (/LAZER/.test(n)) return { cat: "buy_lazer", label: "Lazer parça", icon: "✂", color: "#DC2626", bg: "#FEF2F2" };
-                  return { cat: "buy_diger", label: "Diğer standart", icon: "🔹", color: "#1D4ED8", bg: "#EFF6FF" };
+                  if (/RULMAN|KEÇE|SEGMAN|O-RİNG|CONTA|SİMERİNG|SEAL/.test(n)) return ALL_CATS.buy_rulman;
+                  if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ/.test(n)) return ALL_CATS.buy_baglanti;
+                  if (/LAZER/.test(n)) return ALL_CATS.buy_lazer;
+                  return ALL_CATS.buy_diger;
                 }
-                return { cat: "other", label: "Diğer", icon: "·", color: "#888", bg: "transparent" };
+                return { cat: "other", label: "Diğer", icon: "·", color: "#888", bg: "transparent", group: "" };
               };
               
               // Categorize parts by action
               const buyParts = parts.filter(r => (r.supplyType === "BUY" || r.supplyType === "RAW") && r.netQty > 0);
               // Alt kategori tüm BUY/RAW parçalara ata (Tümü görünümünde de görünsün)
-              parts.forEach(r => { if (r.supplyType === "BUY" || r.supplyType === "RAW") r._cat = getPartCategory(r.name, r.supplyType); });
+              parts.forEach(r => { if (r.supplyType === "BUY" || r.supplyType === "RAW") r._cat = getPartCategory(r.code, r.name, r.supplyType); });
               const buyRaw = buyParts.filter(r => r.supplyType === "RAW");
               const buyStd = buyParts.filter(r => r.supplyType === "BUY");
 
@@ -8380,7 +8400,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 supplier: { label: "Tedarikçi", fs: 10, mw: 150, render: r => (r._poSuppliers?.length > 0 ? r._poSuppliers[0] : "—"), cc: () => "var(--color-text-tertiary)" },
                 cross: { label: "⚠", align: "center", render: r => r.crossCheck ? <span title={`Stok: ${r.crossCheck.stokWip} · Akibet: ${r.crossCheck.akibetWip} · Fark: ${r.crossCheck.diff > 0 ? "+" : ""}${r.crossCheck.diff}`} style={{ cursor: "help", color: "#B45309" }}>⚠</span> : null },
                 sources: { label: "Kaynak", align: "center", fs: 10, render: r => r.productCount > 1 ? <span style={{ fontSize: 9, background: "#7C3AED18", color: "#7C3AED", padding: "1px 4px", borderRadius: 3 }}>{r.productCount} ürün</span> : "1" },
-                cat: { label: "Kategori", align: "center", fs: 10, render: r => r._cat ? <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: r._cat.bg, color: r._cat.color }}>{r._cat.icon} {r._cat.label}</span> : "—" },
+                cat: { label: "Kategori", align: "center", fs: 10, render: r => r._cat ? (
+                  canEdit ? <select value={r._cat.cat} onChange={e => { const v = e.target.value; saveCatOverride(r.code, v === getPartCategory(r.code, r.name, r.supplyType).cat ? null : v); }}
+                    style={{ fontSize: 9, padding: "1px 2px", borderRadius: 4, background: r._cat.bg, color: r._cat.color, border: r._cat.manual ? "1.5px solid " + r._cat.color : "1px solid transparent", cursor: "pointer", outline: "none", appearance: "auto" }}
+                    title={r._cat.manual ? "Manuel atanmış — otomatik'e dönmek için doğru kategoriyi seç" : "Tıkla: kategori değiştir"}>
+                    {Object.values(ALL_CATS).filter(c => c.group === r.supplyType).map(c => <option key={c.cat} value={c.cat}>{c.icon} {c.label}</option>)}
+                  </select>
+                  : <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: r._cat.bg, color: r._cat.color }}>{r._cat.icon} {r._cat.label}</span>
+                ) : "—" },
               };
 
               // Per-product summary
@@ -8569,7 +8596,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 {grp.items.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 9, fontWeight: 400, color: "#DC2626" }}>· {grp.items.filter(r => r.gap > 0).length} açık</span>}
                               </div>
                               <DataTable items={grp.items.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
-                                columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
+                                columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources, C.cat]}
                                 emptyMsg="—" />
                             </div>
                           ))}
@@ -8590,7 +8617,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 {grp.items.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 9, fontWeight: 400, color: "#DC2626" }}>· {grp.items.filter(r => r.gap > 0).length} açık</span>}
                               </div>
                               <DataTable items={grp.items.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
-                                columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
+                                columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources, C.cat]}
                                 emptyMsg="—" />
                             </div>
                           ))}
