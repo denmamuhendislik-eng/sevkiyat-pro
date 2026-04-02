@@ -8318,7 +8318,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 buy_rulman: { cat: "buy_rulman", label: "Rulman / keçe", icon: "⚙", color: "#7C3AED", bg: "#F5F3FF", group: "BUY" },
                 buy_baglanti: { cat: "buy_baglanti", label: "Bağlantı elemanı", icon: "🔧", color: "#2563EB", bg: "#EFF6FF", group: "BUY" },
                 buy_lazer: { cat: "buy_lazer", label: "Lazer parça", icon: "✂", color: "#DC2626", bg: "#FEF2F2", group: "BUY" },
-                buy_diger: { cat: "buy_diger", label: "Diğer standart", icon: "🔹", color: "#1D4ED8", bg: "#EFF6FF", group: "BUY" },
+                buy_standart: { cat: "buy_standart", label: "Standart / yarı mamül", icon: "🔹", color: "#B45309", bg: "#FEF3C7", group: "BUY" },
+                buy_diger: { cat: "buy_diger", label: "Diğer", icon: "📎", color: "#5F5E5A", bg: "#F1EFE8", group: "BUY" },
               };
               const catOverrides = bomMapping._catOverrides || {};
               const getPartCategory = (code, name, supplyType) => {
@@ -8333,8 +8334,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 }
                 if (supplyType === "BUY") {
                   if (/RULMAN|KEÇE|SEGMAN|O-RİNG|CONTA|SİMERİNG|SEAL/.test(n)) return ALL_CATS.buy_rulman;
-                  if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ/.test(n)) return ALL_CATS.buy_baglanti;
+                  if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ|PRES FİT|NİPEL/.test(n)) return ALL_CATS.buy_baglanti;
                   if (/LAZER/.test(n)) return ALL_CATS.buy_lazer;
+                  if (/YARI MAMÜL|YARI MAMUL|HAZIR|İŞLENMİŞ|MONTAJLI|ALT MONTAJ|KOMPLE|KAPAK|CONTA PLAKA|ELEMAN|ADAPTÖR|MANŞETİ|BAĞLANTI|FLANŞ/.test(n)) return ALL_CATS.buy_standart;
                   return ALL_CATS.buy_diger;
                 }
                 return { cat: "other", label: "Diğer", icon: "·", color: "#888", bg: "transparent", group: "" };
