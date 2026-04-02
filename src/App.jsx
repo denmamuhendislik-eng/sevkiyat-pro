@@ -8141,10 +8141,25 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 ) : (
                                   <select
                                     value={m || ""}
-                                    onChange={e => saveBomMapping({ ...bomMapping, [p.id]: e.target.value || null })}
+                                    onChange={e => {
+                                      const val = e.target.value;
+                                      if (val === "__direct__") {
+                                        // BOM'suz doğrudan talep — VIO stok kodunu kullan
+                                        const vio = comp?.vioCode || comp?.bomCode || VIO_CODES[p.id] || p.vioCode || "";
+                                        if (vio) {
+                                          saveBomMapping({ ...bomMapping, [p.id]: "direct:" + vio });
+                                        } else {
+                                          const code = prompt("Stok kodu girin (ör: 151-0162):");
+                                          if (code?.trim()) saveBomMapping({ ...bomMapping, [p.id]: "direct:" + code.trim() });
+                                        }
+                                      } else {
+                                        saveBomMapping({ ...bomMapping, [p.id]: val || null });
+                                      }
+                                    }}
                                     style={{ width: "100%", padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
                                   >
                                     <option value="">— BOM Modeli Seçin —</option>
+                                    <option value="__direct__">📦 Doğrudan Talep (BOM'suz)</option>
                                     {modelOptions.map(mo => <option key={mo.key} value={mo.key}>{mo.label}</option>)}
                                   </select>
                                 )
