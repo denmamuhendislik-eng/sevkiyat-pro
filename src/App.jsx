@@ -7968,7 +7968,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         borderRadius: 8,
                         border: isBottleneck ? "1.5px solid #EF4444" : "0.5px solid var(--color-border-tertiary)",
                         background: isBottleneck ? "#FEF2F2" : "var(--color-background-primary)",
-                        overflow: "hidden"
+                        overflow: "hidden",
+                        gridColumn: isExpanded ? "1 / -1" : undefined
                       }}>
                         {/* WC Header — clickable */}
                         <div
@@ -8000,17 +8001,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         {/* Machine detail — expanded */}
                         {isExpanded && wcMachines.length > 0 && (
                           <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "8px 14px 10px" }}>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
                             {wcMachines.map(([mId, ms]) => {
                               const mColor = ms.utilization > 90 ? "#EF4444" : ms.utilization > 70 ? "#F59E0B" : ms.utilization > 30 ? "#3B82F6" : "#10B981";
                               const isMachBn = mId === machBn;
                               const plannedPctM = ms.totalCapMin > 0 ? Math.min(100, Math.round((ms.loadMin / ms.totalCapMin) * 100)) : 0;
                               const wipPctM = ms.totalCapMin > 0 ? Math.min(100 - plannedPctM, Math.round((ms.wipMin / ms.totalCapMin) * 100)) : 0;
                               return (
-                                <div key={mId} style={{ marginBottom: 8 }}>
+                                <div key={mId} style={{ padding: "8px 10px", borderRadius: 6, border: "0.5px solid var(--color-border-tertiary)", background: "var(--color-background-primary)" }}>
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
                                     <span style={{ fontSize: 11 }}>
-                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", marginRight: 4 }}>{mId}</span>
-                                      <span style={{ fontSize: 10 }}>{ms.name}</span>
+                                      <span style={{ fontSize: 11, fontWeight: 500 }}>{ms.name}</span>
+                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--color-text-tertiary)", marginLeft: 4 }}>{mId}</span>
                                       {isMachBn && <span style={{ fontSize: 8, color: "#DC2626", marginLeft: 4, fontWeight: 500 }}>DARBOĞAZ</span>}
                                       {ms.capWarnings > 0 && <span style={{ fontSize: 8, color: "#F97316", marginLeft: 4 }}>⚡{ms.capWarnings}</span>}
                                       {ms.wipOps > 0 && <span style={{ fontSize: 8, color: "#D97706", marginLeft: 4 }}>{ms.wipOps} WIP</span>}
@@ -8089,6 +8091,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 </div>
                               );
                             })}
+                            </div>
                             {/* WIP Atama: Bu merkezin atanmamış WIP işleri */}
                             {(() => {
                               const unassigned = wipLoad.items.filter(it => it.wcCode === code && !it.machineId && !it.isFason);
@@ -8111,7 +8114,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           style={{ fontSize: 9, padding: "1px 2px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)", minWidth: 60 }}
                                         >
                                           <option value="">Ata...</option>
-                                          {wcMachineIds.map(mid => <option key={mid} value={mid}>{mid}</option>)}
+                                          {wcMachineIds.map(mid => <option key={mid} value={mid}>{mSt[mid]?.name || mid}</option>)}
                                         </select>
                                       ) : (
                                         <span style={{ fontSize: 8, color: "var(--color-text-tertiary)", minWidth: 60 }}>—</span>
@@ -8136,7 +8139,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
                                       <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{it.remaining}ad</span>
                                       <span style={{ fontSize: 9, fontWeight: it.timeSource === "bom" ? 500 : 400, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)" }}>{Math.round(it.wipMin)}dk</span>
-                                      <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{it.machineId}</span>
+                                      <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mSt[it.machineId]?.name || it.machineId}</span>
                                       {canEdit && (
                                         <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", fontSize: 9, color: "#EF4444" }}>✕</span>
                                       )}
@@ -8190,9 +8193,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
                 <div style={{ border: "0.5px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
                   <div style={{ overflowX: "auto", overflowY: "auto", maxHeight: Math.min(500, machineRows.length * rowH + 50) }}>
-                    <div style={{ display: "flex", minWidth: 140 + ganttDays.length * cellW }}>
+                    <div style={{ display: "flex", minWidth: 200 + ganttDays.length * cellW }}>
                       {/* Y-axis: machine labels */}
-                      <div style={{ width: 140, flexShrink: 0, borderRight: "0.5px solid var(--color-border-tertiary)", position: "sticky", left: 0, zIndex: 3, background: "var(--color-background-primary)" }}>
+                      <div style={{ width: 200, flexShrink: 0, borderRight: "0.5px solid var(--color-border-tertiary)", position: "sticky", left: 0, zIndex: 3, background: "var(--color-background-primary)" }}>
                         {/* Header corner */}
                         <div style={{ height: 32, padding: "4px 8px", borderBottom: "0.5px solid var(--color-border-tertiary)", background: "var(--color-background-secondary)", display: "flex", alignItems: "center", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)" }}>
                           Tezgah
@@ -8205,8 +8208,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                             color: mr.isFason ? "#C2410C" : mr.isVirtual ? "#EF4444" : "var(--color-text-secondary)"
                           }}>
                             <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{mr.id}</span>
-                              <span style={{ marginLeft: 4, fontSize: 9, color: "var(--color-text-tertiary)" }}>{mr.wcName}</span>
+                              <span style={{ fontSize: 9, fontWeight: 500 }}>{mr.name}</span>
+                              <span style={{ marginLeft: 4, fontSize: 8, color: "var(--color-text-tertiary)" }}>{mr.wcName}</span>
                             </div>
                           </div>
                         ))}
