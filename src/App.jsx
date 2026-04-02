@@ -5985,39 +5985,52 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     return map;
   }, [akibet]);
 
-  // WIP yükü hesaplama: akibet + BOM eşleşmesiyle iş merkezi bazlı mevcut yük
+  // WIP yükü hesaplama: akibet operasyon adları → iş merkezi eşleşmesi (BOM bağımsız)
   const wipLoad = useMemo(() => {
-    if (!akibet?.parts || !bomModels) return { byWC: {}, byMachine: {}, items: [], totalMin: 0, debug: { reason: "no data" } };
+    if (!akibet?.parts || !workCenters?.centers) return { byWC: {}, byMachine: {}, items: [], totalMin: 0, debug: { reason: "no data" } };
 
-    // BOM lookup (stok kodu → operasyonlar)
-    const bomLookup = {};
-    Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
-      (bomModels[mk]?.parts || []).forEach(p => {
-        if (!bomLookup[p.stockCode] || p.operations.length > (bomLookup[p.stockCode].operations?.length || 0)) {
-          bomLookup[p.stockCode] = p;
-        }
+    const centers = workCenters.centers || {};
+    const defaultCycle = 5; // dk/adet varsayılan
+
+    // İş merkezi isim eşleştirme: akibet op adı → wcCode
+    // "TORNA MRK.3" → anahtar kelime "TORNA" → TORNA MERKEZİ wcCode'u
+    const wcEntries = Object.entries(centers).map(([code, wc]) => ({ code, name: (wc.name || code).toUpperCase() }));
+
+    const matchWC = (opName) => {
+      const upper = opName.toUpperCase().replace(/MRK\.?\s*\d+/g, "").replace(/\d+/g, "").trim();
+      if (!upper) return null;
+      // 1) Tam isim eşleşme
+      const exact = wcEntries.find(w => w.name === upper);
+      if (exact) return exact.code;
+      // 2) Akibet adı WC isminde geçiyor mu
+      const contains = wcEntries.find(w => w.name.includes(upper));
+      if (contains) return contains.code;
+      // 3) WC ismi akibet adında geçiyor mu (kısa WC isimleri için)
+      const reverse = wcEntries.find(w => {
+        const keywords = w.name.split(/[\s\-]+/).filter(k => k.length > 3);
+        return keywords.some(kw => upper.includes(kw));
       });
-    });
+      if (reverse) return reverse.code;
+      // 4) İlk kelime eşleşmesi
+      const firstWord = upper.split(/[\s\-]+/)[0];
+      if (firstWord && firstWord.length > 3) {
+        const fw = wcEntries.find(w => w.name.includes(firstWord));
+        if (fw) return fw.code;
+      }
+      return null;
+    };
 
     const items = [];
     const byWC = {};
     const byMachine = {};
-    // Debug counters
-    let dbgTotal = 0, dbgNoWip = 0, dbgNoBom = 0, dbgNoOrders = 0, dbgNoOps = 0, dbgNoOpCode = 0, dbgNoBomOp = 0, dbgMatched = 0;
-    const dbgSamples = []; // ilk 5 eşleşmeyen örnek
+    let dbgTotal = 0, dbgNoWip = 0, dbgNoOrders = 0, dbgNoOps = 0, dbgFason = 0, dbgNoWC = 0, dbgMatched = 0;
+    const dbgSamples = [];
 
     akibet.parts.forEach(akPart => {
       dbgTotal++;
       if (akPart.internalRemaining <= 0 && akPart.fasonRemaining <= 0) { dbgNoWip++; return; }
-      const bom = bomLookup[akPart.code];
-      if (!bom || !bom.operations || bom.operations.length === 0) {
-        dbgNoBom++;
-        if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "BOM yok", intRem: akPart.internalRemaining });
-        return;
-      }
-
       const orders = akPart.orders || [];
-      if (orders.length === 0) { dbgNoOrders++; if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "orders boş" }); return; }
+      if (orders.length === 0) { dbgNoOrders++; return; }
 
       orders.forEach(order => {
         const ops = order.ops || [];
@@ -6025,48 +6038,37 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
         ops.forEach(akOp => {
           if (akOp.remaining <= 0) return;
-          const opMatch = akOp.name.match(/^(\d+)/);
-          if (!opMatch) {
-            dbgNoOpCode++;
-            if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "opCode yok: " + akOp.name });
-            return;
-          }
-          const akOpCode = opMatch[1];
-          const bomOp = bom.operations.find(o => String(o.opCode) === akOpCode);
-          if (!bomOp || !bomOp.wcCode) {
-            dbgNoBomOp++;
-            if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "BOM op " + akOpCode + " yok", bomOps: bom.operations.map(o => o.opCode).join(",") });
+          const isFason = akOp.isFason;
+          if (isFason) { dbgFason++; return; } // Fason operasyonlar dahili kapasite kullanmaz
+
+          const wcCode = matchWC(akOp.name);
+          if (!wcCode) {
+            dbgNoWC++;
+            if (dbgSamples.length < 8) dbgSamples.push({ code: akPart.code, reason: "WC eşleşmedi: " + akOp.name });
             return;
           }
 
           dbgMatched++;
-          const isFason = akOp.isFason || parseInt(akOpCode) >= 600;
-          const cycleTime = bomOp.cycleTime || 5;
-          const setupTime = bomOp.setupTime || 30;
-          const wipMin = isFason ? 0 : (setupTime + cycleTime * akOp.remaining);
-          if (wipMin <= 0 && !isFason) return;
-
-          const wipKey = `${akPart.code}|${akOpCode}|${order.emirNo}`;
+          const wipMin = defaultCycle * akOp.remaining; // setup dahil değil, kaba tahmin
+          const wipKey = `${akPart.code}|${akOp.name}|${order.emirNo}`;
           const assignedMachine = wipAssignments[wipKey] || null;
 
           items.push({
             key: wipKey, code: akPart.code, name: akPart.name,
             emirNo: order.emirNo, remaining: akOp.remaining,
-            opCode: akOpCode, opName: akOp.name,
-            wcCode: bomOp.wcCode, wcName: bomOp.wcName || bomOp.wcCode,
-            isFason, wipMin, machineId: assignedMachine
+            opCode: null, opName: akOp.name,
+            wcCode, wcName: centers[wcCode]?.name || wcCode,
+            isFason: false, wipMin, machineId: assignedMachine
           });
 
-          if (!isFason) {
-            if (assignedMachine) {
-              if (!byMachine[assignedMachine]) byMachine[assignedMachine] = { totalMin: 0, count: 0 };
-              byMachine[assignedMachine].totalMin += wipMin;
-              byMachine[assignedMachine].count++;
-            } else {
-              if (!byWC[bomOp.wcCode]) byWC[bomOp.wcCode] = { totalMin: 0, count: 0 };
-              byWC[bomOp.wcCode].totalMin += wipMin;
-              byWC[bomOp.wcCode].count++;
-            }
+          if (assignedMachine) {
+            if (!byMachine[assignedMachine]) byMachine[assignedMachine] = { totalMin: 0, count: 0 };
+            byMachine[assignedMachine].totalMin += wipMin;
+            byMachine[assignedMachine].count++;
+          } else {
+            if (!byWC[wcCode]) byWC[wcCode] = { totalMin: 0, count: 0 };
+            byWC[wcCode].totalMin += wipMin;
+            byWC[wcCode].count++;
           }
         });
       });
@@ -6075,9 +6077,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const totalMin = items.reduce((s, it) => s + it.wipMin, 0);
     return {
       byWC, byMachine, items, totalMin, totalItems: items.length,
-      debug: { total: dbgTotal, noWip: dbgNoWip, noBom: dbgNoBom, noOrders: dbgNoOrders, noOps: dbgNoOps, noOpCode: dbgNoOpCode, noBomOp: dbgNoBomOp, matched: dbgMatched, bomKeys: Object.keys(bomLookup).length, samples: dbgSamples }
+      debug: { total: dbgTotal, noWip: dbgNoWip, noOrders: dbgNoOrders, noOps: dbgNoOps, fason: dbgFason, noWC: dbgNoWC, matched: dbgMatched, wcCount: wcEntries.length, samples: dbgSamples }
     };
-  }, [akibet, bomModels, wipAssignments]);
+  }, [akibet, workCenters, wipAssignments]);
 
   // ==================== SATINALMA AÇIK SİPARİŞ PARSER ====================
   const PURCH_DOC = "mrpPurchase";
@@ -7814,19 +7816,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 10, color: "var(--color-text-secondary)" }}>
                   <span>Akibet: <b>{wipLoad.debug.total}</b> parça</span>
                   <span>WIP yok: {wipLoad.debug.noWip}</span>
-                  <span>BOM eşleşmedi: <b style={{ color: wipLoad.debug.noBom > 0 ? "#EF4444" : "inherit" }}>{wipLoad.debug.noBom}</b></span>
                   <span>orders boş: <b style={{ color: wipLoad.debug.noOrders > 0 ? "#EF4444" : "inherit" }}>{wipLoad.debug.noOrders}</b></span>
-                  <span>ops boş: {wipLoad.debug.noOps}</span>
-                  <span>opCode çıkmadı: <b style={{ color: wipLoad.debug.noOpCode > 0 ? "#F59E0B" : "inherit" }}>{wipLoad.debug.noOpCode}</b></span>
-                  <span>BOM op eşleşmedi: {wipLoad.debug.noBomOp}</span>
+                  <span>Fason (atlandı): {wipLoad.debug.fason}</span>
+                  <span>WC eşleşmedi: <b style={{ color: wipLoad.debug.noWC > 0 ? "#F59E0B" : "inherit" }}>{wipLoad.debug.noWC}</b></span>
                   <span style={{ color: "#10B981" }}>Eşleşen: <b>{wipLoad.debug.matched}</b></span>
-                  <span>BOM stok kodu: {wipLoad.debug.bomKeys}</span>
+                  <span>İş merkezi: {wipLoad.debug.wcCount}</span>
                   <span>WIP kalem: <b>{wipLoad.totalItems}</b></span>
+                  <span>Toplam: <b>{Math.round(wipLoad.totalMin / 60)}</b>s</span>
                 </div>
                 {wipLoad.debug.samples?.length > 0 && (
                   <div style={{ marginTop: 6, fontSize: 9, color: "var(--color-text-tertiary)" }}>
                     Örnekler: {wipLoad.debug.samples.map((s, i) => (
-                      <span key={i} style={{ marginRight: 8 }}><code>{s.code}</code> → {s.reason}{s.bomOps ? ` (BOM ops: ${s.bomOps})` : ""}</span>
+                      <span key={i} style={{ marginRight: 8 }}><code>{s.code}</code> → {s.reason}</span>
                     ))}
                   </div>
                 )}
