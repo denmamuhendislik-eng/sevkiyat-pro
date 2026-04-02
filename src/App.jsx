@@ -8128,7 +8128,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     const machOps = [];
                                     jobs.forEach(j => j.operations.forEach((op, opIdx) => {
                                       if (op.machineId === mId && !op.isFason) {
-                                        machOps.push({ jobId: j.id, opIdx, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def") });
+                                        machOps.push({ jobId: j.id, opIdx, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, cycleTime: op.cycleTime, setupTime: op.setupTime, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def") });
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
@@ -8157,6 +8157,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 8, whiteSpace: "nowrap" }}>{op.partCode}</td>
                                                   <td style={{ padding: "3px 4px", fontSize: 8, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.partName}>{op.partName}</td>
                                                   <td style={{ padding: "3px 2px", fontSize: 8, textAlign: "right", whiteSpace: "nowrap" }}>{op.qty}ad</td>
+                                                  <td style={{ padding: "3px 2px", fontSize: 7, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#059669" : "var(--color-text-tertiary)" }} title={op.setupTime ? `Setup: ${op.setupTime}dk + Çevrim: ${op.cycleTime || 5}dk/ad` : `Çevrim: ${op.cycleTime || 5}dk/ad`}>{op.cycleTime ? op.cycleTime : 5}dk/ad</td>
                                                   <td style={{ padding: "3px 2px", fontSize: 8, fontWeight: 500, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#065F46" : "#92400E" }}>{Math.round(op.totalMin)}dk</td>
                                                   <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 7, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>{op.startDate?.substring(5) || ""}</td>
                                                   <td style={{ padding: "3px 0", width: 14 }}>
