@@ -8192,7 +8192,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                               return (
                                 <div style={{ borderTop: "0.5px dashed var(--color-border-tertiary)", marginTop: 6, paddingTop: 6 }}>
                                   <div style={{ fontSize: 10, fontWeight: 500, color: "#D97706", marginBottom: 4 }}>Atanmamış WIP ({unassigned.length})</div>
-                                  {unassigned.slice(0, 15).map(it => (
+                                  <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                                  {unassigned.map(it => (
                                     <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10 }}>
                                       <span style={{ width: 6, height: 6, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
@@ -8213,7 +8214,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       )}
                                     </div>
                                   ))}
-                                  {unassigned.length > 15 && <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>+{unassigned.length - 15} daha</div>}
+                                  </div>
                                 </div>
                               );
                             })()}
