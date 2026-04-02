@@ -7981,6 +7981,36 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     {ms.wipMin > 0 && <span style={{ color: "#D97706", marginRight: 3 }}>{Math.round(ms.wipMin / 60)}s WIP +</span>}
                                     {Math.round(ms.loadMin / 60)}s plan / {Math.round(ms.totalCapMin / 60)}s kap.
                                   </div>
+                                  {/* Bu tezgaha atanmış WIP işleri */}
+                                  {(() => {
+                                    const machWip = wipLoad.items.filter(it => it.machineId === mId && !it.isFason);
+                                    if (machWip.length === 0) return null;
+                                    const bomCount = machWip.filter(w => w.timeSource === "bom").length;
+                                    const avgCount = machWip.filter(w => w.timeSource === "avg").length;
+                                    const defCount = machWip.filter(w => w.timeSource === "def").length;
+                                    const bomMin = machWip.filter(w => w.timeSource === "bom").reduce((s, w) => s + w.wipMin, 0);
+                                    const avgMin = machWip.filter(w => w.timeSource === "avg").reduce((s, w) => s + w.wipMin, 0);
+                                    return (
+                                      <div style={{ marginTop: 4, paddingLeft: 2 }}>
+                                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 3 }}>
+                                          {bomCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{bomCount} BOM ({Math.round(bomMin)}dk)</span>}
+                                          {avgCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{avgCount} ort. ({Math.round(avgMin)}dk)</span>}
+                                          {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--color-background-secondary)", color: "var(--color-text-tertiary)" }}>{defCount} vars.</span>}
+                                        </div>
+                                        {machWip.slice(0, 5).map(it => (
+                                          <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2, fontSize: 9, color: "var(--color-text-secondary)" }}>
+                                            <span style={{ width: 5, height: 5, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
+                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8 }}>{it.code}</span>
+                                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 8 }}>{it.name}</span>
+                                            <span>{it.remaining}ad</span>
+                                            <span style={{ fontWeight: 500 }}>{Math.round(it.wipMin)}dk</span>
+                                            {canEdit && <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 8 }}>✕</span>}
+                                          </div>
+                                        ))}
+                                        {machWip.length > 5 && <div style={{ fontSize: 8, color: "var(--color-text-tertiary)" }}>+{machWip.length - 5} daha</div>}
+                                      </div>
+                                    );
+                                  })()}
                                 </div>
                               );
                             })}
@@ -7994,10 +8024,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   <div style={{ fontSize: 10, fontWeight: 500, color: "#D97706", marginBottom: 4 }}>Atanmamış WIP ({unassigned.length})</div>
                                   {unassigned.slice(0, 15).map(it => (
                                     <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10 }}>
+                                      <span style={{ width: 6, height: 6, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
                                       <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 30, textAlign: "right" }}>{it.remaining}ad</span>
-                                      <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 35, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
+                                      <span style={{ fontSize: 9, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)", fontWeight: it.timeSource === "bom" ? 500 : 400, minWidth: 35, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
                                       {canEdit && wcMachineIds.length > 0 ? (
                                         <select
                                           value=""
@@ -8025,9 +8056,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   <div style={{ fontSize: 10, fontWeight: 500, color: "#10B981", marginBottom: 4 }}>Atanmış WIP ({assigned.length})</div>
                                   {assigned.map(it => (
                                     <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10 }}>
+                                      <span style={{ width: 6, height: 6, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
                                       <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{it.remaining}ad</span>
+                                      <span style={{ fontSize: 9, fontWeight: it.timeSource === "bom" ? 500 : 400, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)" }}>{Math.round(it.wipMin)}dk</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{it.machineId}</span>
                                       {canEdit && (
                                         <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", fontSize: 9, color: "#EF4444" }}>✕</span>
