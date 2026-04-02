@@ -8302,11 +8302,36 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             {explosionResult && !explosionResult.error && (() => {
               const exp = explosionResult;
               const parts = exp.parts || [];
+
+              // Alt kategori belirleme (isim bazlı otomatik + global override)
+              const getPartCategory = (name, supplyType) => {
+                const n = (name || "").toUpperCase();
+                if (supplyType === "RAW") {
+                  if (/DÖKÜM|DÖK\.|GÖVDE DÖKÜM/.test(n)) return { cat: "raw_dokum", label: "Döküm", icon: "🔶", color: "#C2410C", bg: "#FAECE7" };
+                  if (/MİL|ÇUBUK|BORU|LAMA|SAC|PLAKA|PROFİL|KÜTÜK|DOLU/.test(n)) return { cat: "raw_dolu", label: "Dolu malzeme", icon: "🔩", color: "#92400E", bg: "#FAEEDA" };
+                  return { cat: "raw_diger", label: "Diğer hammadde", icon: "📦", color: "#854F0B", bg: "#FEF3C7" };
+                }
+                if (supplyType === "BUY") {
+                  if (/RULMAN|KEÇE|SEGMAN|O-RİNG|CONTA|SİMERİNG|SEAL/.test(n)) return { cat: "buy_rulman", label: "Rulman / keçe", icon: "⚙", color: "#7C3AED", bg: "#F5F3FF" };
+                  if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ/.test(n)) return { cat: "buy_baglanti", label: "Bağlantı elemanı", icon: "🔧", color: "#2563EB", bg: "#EFF6FF" };
+                  if (/LAZER/.test(n)) return { cat: "buy_lazer", label: "Lazer parça", icon: "✂", color: "#DC2626", bg: "#FEF2F2" };
+                  return { cat: "buy_diger", label: "Diğer standart", icon: "🔹", color: "#1D4ED8", bg: "#EFF6FF" };
+                }
+                return { cat: "other", label: "Diğer", icon: "·", color: "#888", bg: "transparent" };
+              };
               
               // Categorize parts by action
               const buyParts = parts.filter(r => (r.supplyType === "BUY" || r.supplyType === "RAW") && r.netQty > 0);
+              // Alt kategori tüm BUY/RAW parçalara ata (Tümü görünümünde de görünsün)
+              parts.forEach(r => { if (r.supplyType === "BUY" || r.supplyType === "RAW") r._cat = getPartCategory(r.name, r.supplyType); });
               const buyRaw = buyParts.filter(r => r.supplyType === "RAW");
               const buyStd = buyParts.filter(r => r.supplyType === "BUY");
+
+              // Alt kategorilere böl
+              const rawGroups = {};
+              buyRaw.forEach(r => { const k = r._cat.cat; if (!rawGroups[k]) rawGroups[k] = { ...r._cat, items: [] }; rawGroups[k].items.push(r); });
+              const buyGroups = {};
+              buyStd.forEach(r => { const k = r._cat.cat; if (!buyGroups[k]) buyGroups[k] = { ...r._cat, items: [] }; buyGroups[k].items.push(r); });
               const makeParts = parts.filter(r => r.supplyType === "MAKE" && r.netQty > 0);
               const fasonParts = parts.filter(r => (r.supplyType === "FASON" || r.supplyType === "MAKE+FASON") && r.netQty > 0);
               const allNetOpen = parts.filter(r => r.netQty > 0);
@@ -8355,6 +8380,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 supplier: { label: "Tedarikçi", fs: 10, mw: 150, render: r => (r._poSuppliers?.length > 0 ? r._poSuppliers[0] : "—"), cc: () => "var(--color-text-tertiary)" },
                 cross: { label: "⚠", align: "center", render: r => r.crossCheck ? <span title={`Stok: ${r.crossCheck.stokWip} · Akibet: ${r.crossCheck.akibetWip} · Fark: ${r.crossCheck.diff > 0 ? "+" : ""}${r.crossCheck.diff}`} style={{ cursor: "help", color: "#B45309" }}>⚠</span> : null },
                 sources: { label: "Kaynak", align: "center", fs: 10, render: r => r.productCount > 1 ? <span style={{ fontSize: 9, background: "#7C3AED18", color: "#7C3AED", padding: "1px 4px", borderRadius: 3 }}>{r.productCount} ürün</span> : "1" },
+                cat: { label: "Kategori", align: "center", fs: 10, render: r => r._cat ? <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: r._cat.bg, color: r._cat.color }}>{r._cat.icon} {r._cat.label}</span> : "—" },
               };
 
               // Per-product summary
@@ -8407,7 +8433,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       { f: "all", bg: "var(--color-background-secondary)", bl: "#7C3AED", label: "Brüt İhtiyaç", value: exp.totalGross, sub: "kalem" },
                       { f: "net", bg: "#FEF2F2", bl: "#DC2626", label: "Net Açık", value: allNetOpen.length, sub: "kalem", vc: "#DC2626" },
                       { f: "products", bg: "#F5F3FF", bl: "#7C3AED", label: "📦 Ürün Özet", value: productSummary.length, sub: "ürün", vc: "#7C3AED" },
-                      { f: "buy", bg: "#EFF6FF", bl: "#2563EB", label: "🛒 Satınalma", value: buyParts.length, sub: `${buyRaw.length} hamm. · ${buyStd.length} std.`, vc: "#2563EB" },
+                      { f: "buy", bg: "#EFF6FF", bl: "#2563EB", label: "🛒 Satınalma", value: buyParts.length, sub: `${Object.keys(rawGroups).length + Object.keys(buyGroups).length} kategori`, vc: "#2563EB" },
                       { f: "make", bg: "#F0FDF4", bl: "#1D9E75", label: "🏭 Üretim", value: makeParts.length, sub: "kalem", vc: "#1D9E75" },
                       { f: "fason", bg: "#FFF7ED", bl: "#C2410C", label: "🚚 Fason", value: fasonParts.length, sub: "kalem", vc: "#C2410C" },
                       ...(exp.crossCheckIssues > 0 ? [{ f: "cross", bg: "#FEF3C7", bl: "#92400E", label: "⚠ Çapraz", value: exp.crossCheckIssues, sub: "uyumsuz", vc: "#92400E" }] : []),
@@ -8528,24 +8554,48 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   {/* ===== VIEW: Satınalma ===== */}
                   {expFilter === "buy" && (
                     <div>
-                      {buyRaw.length > 0 && (<div style={{ marginBottom: 20 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#92400E", marginBottom: 8 }}>
-                          🔩 Hammadde İhtiyaç ({buyRaw.length})
-                          {buyRaw.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 10, fontWeight: 400, color: "#DC2626", marginLeft: 8 }}>· {buyRaw.filter(r => r.gap > 0).length} sipariş açığı</span>}
+                      {/* RAW alt kategoriler */}
+                      {Object.values(rawGroups).length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "#92400E", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "#FAEEDA", color: "#633806" }}>RAW</span>
+                            Hammadde ({buyRaw.length} kalem)
+                            {buyRaw.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 10, fontWeight: 400, color: "#DC2626" }}>· {buyRaw.filter(r => r.gap > 0).length} sipariş açığı</span>}
+                          </div>
+                          {Object.values(rawGroups).sort((a,b) => b.items.length - a.items.length).map(grp => (
+                            <div key={grp.cat} style={{ marginBottom: 14 }}>
+                              <div style={{ fontSize: 12, fontWeight: 500, color: grp.color, marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
+                                <span>{grp.icon}</span> {grp.label} ({grp.items.length})
+                                {grp.items.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 9, fontWeight: 400, color: "#DC2626" }}>· {grp.items.filter(r => r.gap > 0).length} açık</span>}
+                              </div>
+                              <DataTable items={grp.items.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
+                                columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
+                                emptyMsg="—" />
+                            </div>
+                          ))}
                         </div>
-                        <DataTable items={buyRaw.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
-                          columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
-                          emptyMsg="Hammadde ihtiyacı yok" />
-                      </div>)}
-                      {buyStd.length > 0 && (<div style={{ marginBottom: 20 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#1D4ED8", marginBottom: 8 }}>
-                          🔧 Standart Parça İhtiyaç ({buyStd.length})
-                          {buyStd.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 10, fontWeight: 400, color: "#DC2626", marginLeft: 8 }}>· {buyStd.filter(r => r.gap > 0).length} sipariş açığı</span>}
+                      )}
+                      {/* BUY alt kategoriler */}
+                      {Object.values(buyGroups).length > 0 && (
+                        <div style={{ marginBottom: 16 }}>
+                          <div style={{ fontSize: 14, fontWeight: 600, color: "#1D4ED8", marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
+                            <span style={{ padding: "2px 8px", borderRadius: 4, fontSize: 10, background: "#EFF6FF", color: "#1D4ED8" }}>BUY</span>
+                            Standart parça ({buyStd.length} kalem)
+                            {buyStd.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 10, fontWeight: 400, color: "#DC2626" }}>· {buyStd.filter(r => r.gap > 0).length} sipariş açığı</span>}
+                          </div>
+                          {Object.values(buyGroups).sort((a,b) => b.items.length - a.items.length).map(grp => (
+                            <div key={grp.cat} style={{ marginBottom: 14 }}>
+                              <div style={{ fontSize: 12, fontWeight: 500, color: grp.color, marginBottom: 6, display: "flex", alignItems: "center", gap: 5 }}>
+                                <span>{grp.icon}</span> {grp.label} ({grp.items.length})
+                                {grp.items.filter(r => r.gap > 0).length > 0 && <span style={{ fontSize: 9, fontWeight: 400, color: "#DC2626" }}>· {grp.items.filter(r => r.gap > 0).length} açık</span>}
+                              </div>
+                              <DataTable items={grp.items.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
+                                columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
+                                emptyMsg="—" />
+                            </div>
+                          ))}
                         </div>
-                        <DataTable items={buyStd.sort((a,b) => b.gap - a.gap || b.netQty - a.netQty)}
-                          columns={[C.code, C.name, C.unit, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, ...(hasPurchase?[C.po, C.gap, C.supplier]:[]), C.sources]}
-                          emptyMsg="Standart parça ihtiyacı yok" />
-                      </div>)}
+                      )}
                       {!buyParts.length && <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-success)", fontSize: 12 }}>✓ Tüm BUY/RAW parçalar stok + sipariş ile karşılanmış</div>}
                     </div>
                   )}
