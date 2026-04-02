@@ -8050,12 +8050,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         {/* Machine detail — expanded */}
                         {isExpanded && wcMachines.length > 0 && (
                           <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "8px 14px 10px" }}>
-                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))", gap: 10 }}>
                             {wcMachines.map(([mId, ms]) => {
                               const mColor = ms.utilization > 90 ? "#EF4444" : ms.utilization > 70 ? "#F59E0B" : ms.utilization > 30 ? "#3B82F6" : "#10B981";
                               const isMachBn = mId === machBn;
                               const plannedPctM = ms.totalCapMin > 0 ? Math.min(100, Math.round((ms.loadMin / ms.totalCapMin) * 100)) : 0;
                               const wipPctM = ms.totalCapMin > 0 ? Math.min(100 - plannedPctM, Math.round((ms.wipMin / ms.totalCapMin) * 100)) : 0;
+                              // MES vs varsayılan süre özeti
+                              let mesOps = 0, defOps = 0, mesMin = 0, defMin = 0;
+                              jobs.forEach(j => j.operations.forEach(op => {
+                                if (op.machineId === mId && !op.isFason) {
+                                  if (op.timeSource === "mes") { mesOps++; mesMin += op.totalMin; }
+                                  else { defOps++; defMin += op.totalMin; }
+                                }
+                              }));
                               return (
                                 <div key={mId} style={{ padding: "8px 10px", borderRadius: 6, border: "0.5px solid var(--color-border-tertiary)", background: "var(--color-background-primary)" }}>
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
@@ -8070,6 +8078,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       %{ms.utilization}
                                       <span style={{ fontSize: 9, fontWeight: 400, color: "var(--color-text-tertiary)", marginLeft: 4 }}>{ms.opCount} op</span>
                                     </span>
+                                  </div>
+                                  {/* MES / Varsayılan süre özeti */}
+                                  <div style={{ display: "flex", gap: 6, marginBottom: 3 }}>
+                                    {mesOps > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>MES: {mesOps} iş · {Math.round(mesMin)}dk</span>}
+                                    {defOps > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>Vars: {defOps} iş · {Math.round(defMin)}dk</span>}
                                   </div>
                                   <div style={{ height: 4, borderRadius: 2, background: "var(--color-background-secondary)", overflow: "hidden", display: "flex" }}>
                                     {wipPctM > 0 && <div style={{ height: "100%", width: wipPctM + "%", background: "#F59E0B", opacity: 0.6 }} />}
@@ -8141,7 +8154,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   </td>
                                                   <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--color-text-info)", whiteSpace: "nowrap" }}>{op.jobId}</td>
                                                   <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 8, whiteSpace: "nowrap" }}>{op.partCode}</td>
-                                                  <td style={{ padding: "3px 4px", fontSize: 8, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.partName}>{op.partName}</td>
+                                                  <td style={{ padding: "3px 4px", fontSize: 8, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.partName}>{op.partName}</td>
                                                   <td style={{ padding: "3px 2px", fontSize: 8, textAlign: "right", whiteSpace: "nowrap" }}>{op.qty}ad</td>
                                                   <td style={{ padding: "3px 2px", fontSize: 8, fontWeight: 500, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#065F46" : "#92400E" }}>{Math.round(op.totalMin)}dk</td>
                                                   <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 7, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>{op.startDate?.substring(5) || ""}</td>
