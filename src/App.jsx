@@ -6037,9 +6037,23 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     // "TORNA MRK.3" → anahtar kelime "TORNA" → TORNA MERKEZİ wcCode'u
     const wcEntries = Object.entries(centers).map(([code, wc]) => ({ code, name: (wc.name || code).toUpperCase() }));
 
+    // Özel eşleşme haritası: akibet op adı → WC isim anahtar kelimesi
+    const opAliases = {
+      "KAMA KANALI AÇMA": "TESTERE",
+      "MATKAP İLE DELME VE KLAVUZ AÇMA": "PRES",
+      "ÖLÇÜM VE KALİTE KONTROL": "KALİTE",
+      "HELICOILLER ATMA": "SAV"
+    };
+
     const matchWC = (opName) => {
       const upper = opName.toUpperCase().replace(/MRK\.?\s*\d+/g, "").replace(/\d+/g, "").trim();
       if (!upper) return null;
+      // 0) Özel alias eşleşme (domain-specific kurallar)
+      const aliasKey = Object.keys(opAliases).find(k => upper.includes(k) || k.includes(upper));
+      if (aliasKey) {
+        const aliasWC = wcEntries.find(w => w.name.includes(opAliases[aliasKey]));
+        if (aliasWC) return aliasWC.code;
+      }
       // 1) Tam isim eşleşme
       const exact = wcEntries.find(w => w.name === upper);
       if (exact) return exact.code;
