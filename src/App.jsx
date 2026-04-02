@@ -3523,35 +3523,45 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   // --- Aylık Plan Çıktısı ---
   const printMonthlyPlan = () => {
     const days = ms.days || {};
-    const allPlanEntries = Object.entries(days).filter(([d, day]) => ANA_IDS.some(pid => Number(day.planned?.[pid]) > 0)).sort((a,b) => a[0].localeCompare(b[0]));
+    const allPlanEntries = Object.entries(days).filter(([d, day]) => ANA_IDS.some(pid => Number(day.planned?.[pid]) > 0 || Number(day.actual?.[pid]) > 0)).sort((a,b) => a[0].localeCompare(b[0]));
     if (!allPlanEntries.length) { alert("Henüz plan verisi yok"); return; }
 
-    // Ay bazlı gruplama
+    const todayStr = today; // "YYYY-MM-DD"
+    const todayYM = todayStr.slice(0, 7); // "2026-04"
+
+    // Ay bazlı gruplama: actual + planned ayrı ayrı
     const months = {};
     allPlanEntries.forEach(([d, day]) => {
-      const ym = d.slice(0,7); // "2026-04"
-      if (!months[ym]) months[ym] = {};
+      const ym = d.slice(0, 7);
+      if (!months[ym]) months[ym] = { actual: {}, planned: {}, remaining: {} };
       ANA_IDS.forEach(pid => {
-        const v = Number(day.planned?.[pid]) || 0;
-        if (v > 0) months[ym][pid] = (months[ym][pid]||0) + v;
+        const pln = Number(day.planned?.[pid]) || 0;
+        const act = Number(day.actual?.[pid]) || 0;
+        months[ym].planned[pid] = (months[ym].planned[pid] || 0) + pln;
+        months[ym].actual[pid] = (months[ym].actual[pid] || 0) + act;
+
+        // Kalan plan: geçmiş günler → 0, bugün ve gelecek → max(0, planned - actual)
+        if (d >= todayStr) {
+          months[ym].remaining[pid] = (months[ym].remaining[pid] || 0) + Math.max(0, pln - act);
+        }
       });
     });
 
     // Sevkiyat bazlı aylık hedefler
     const shipMonths = {};
     allContainers.filter(c => !c.shipped).forEach(c => {
-      const ym = c.date.slice(0,7);
-      if (!shipMonths[ym]) shipMonths[ym] = { count:0, models:{} };
+      const ym = c.date.slice(0, 7);
+      if (!shipMonths[ym]) shipMonths[ym] = { count: 0, models: {} };
       shipMonths[ym].count++;
       const q = yearsData[selectedYear]?.quantities?.[c.id] || {};
       ANA_IDS.forEach(pid => {
         const v = Number(q[pid]) || 0;
-        if (v > 0) shipMonths[ym].models[pid] = (shipMonths[ym].models[pid]||0) + v;
+        if (v > 0) shipMonths[ym].models[pid] = (shipMonths[ym].models[pid] || 0) + v;
       });
     });
 
-    const sortedMonths = Object.keys({...months,...shipMonths}).sort();
-    const ayAdi = ym => new Date(ym+"-01T00:00:00").toLocaleDateString("tr-TR",{month:"long",year:"numeric"});
+    const sortedMonths = Object.keys({ ...months, ...shipMonths }).sort();
+    const ayAdi = ym => new Date(ym + "-01T00:00:00").toLocaleDateString("tr-TR", { month: "long", year: "numeric" });
 
     let html = `<html><head><title>Aylık Montaj Planı</title><style>
       body{font-family:Arial,sans-serif;margin:20px;color:#222}
@@ -3560,69 +3570,115 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       th,td{border:1px solid #ccc;padding:8px 12px;font-size:13px}
       th{background:#f0f0f0;font-weight:600;text-align:center}
       .model{font-weight:600} .ship{color:#1d4ed8;font-size:11px}
+      .ger{color:#16a34a;font-weight:700} .pln{color:#534AB7;font-weight:600} .kalan{color:#d97706;font-size:11px}
+      .past{background:#f9fafb} .current{background:#fffbeb} .future{background:#fff}
       .total-row td{font-weight:700;border-top:2px solid #666;background:#f8f8f8}
+      .legend{display:flex;gap:16px;margin-bottom:12px;font-size:11px;color:#666}
+      .legend span{display:flex;align-items:center;gap:4px}
+      .dot{width:10px;height:10px;border-radius:2px;display:inline-block}
       @media print{body{margin:10px} button{display:none}}
     </style></head><body>`;
     html += `<h1>🔧 Aylık Montaj Üretim Planı</h1>`;
-    html += `<h2>Planlanan üretim miktarları — ${ayAdi(sortedMonths[0])} – ${ayAdi(sortedMonths[sortedMonths.length-1])}</h2>`;
+    html += `<h2>Planlanan üretim miktarları — ${ayAdi(sortedMonths[0])} – ${ayAdi(sortedMonths[sortedMonths.length - 1])}</h2>`;
+    html += `<div class="legend">
+      <span><span class="dot" style="background:#16a34a"></span> Gerçekleşen</span>
+      <span><span class="dot" style="background:#534AB7"></span> Plan</span>
+      <span><span class="dot" style="background:#d97706"></span> Kalan</span>
+    </div>`;
 
-    // Ana tablo: aylar x modeller
+    // Ana tablo
     html += `<table><thead><tr><th style="text-align:left;min-width:140px">Ay</th>`;
     anaProducts.forEach(p => html += `<th style="color:${p.color}">● ${kisaAd(p.nameTR)}</th>`);
     html += `<th>Toplam Üretim</th><th>Sevkiyat Adedi</th></tr></thead><tbody>`;
 
-    const grandTotals = {};
-    ANA_IDS.forEach(pid => grandTotals[pid] = 0);
+    const grandActual = {}, grandPlanned = {}, grandRemaining = {};
+    ANA_IDS.forEach(pid => { grandActual[pid] = 0; grandPlanned[pid] = 0; grandRemaining[pid] = 0; });
     let grandTotal = 0, grandShipCount = 0;
 
     sortedMonths.forEach(ym => {
-      const m = months[ym] || {};
-      const sm = shipMonths[ym] || {count:0, models:{}};
+      const m = months[ym] || { actual: {}, planned: {}, remaining: {} };
+      const sm = shipMonths[ym] || { count: 0, models: {} };
+      const isPast = ym < todayYM;
+      const isCurrent = ym === todayYM;
+      const rowClass = isPast ? "past" : isCurrent ? "current" : "future";
       let rowTotal = 0;
-      html += `<tr><td style="font-weight:600">${ayAdi(ym)}</td>`;
+
+      html += `<tr class="${rowClass}"><td style="font-weight:600">${ayAdi(ym)}${isPast ? ' <span style="font-size:10px;color:#999">✓</span>' : isCurrent ? ' <span style="font-size:10px;color:#d97706">◉</span>' : ''}</td>`;
+
       anaProducts.forEach(p => {
-        const planned = m[p.id] || 0;
-        const shipTarget = sm.models?.[p.id] || 0;
-        grandTotals[p.id] += planned;
-        rowTotal += planned;
+        const pid = p.id;
+        const actual = m.actual[pid] || 0;
+        const planned = m.planned[pid] || 0;
+        const remaining = m.remaining[pid] || 0;
+        grandActual[pid] += actual;
+        grandPlanned[pid] += planned;
+        grandRemaining[pid] += remaining;
+
         html += `<td style="text-align:center">`;
-        html += planned ? `<div style="font-size:16px;font-weight:600">${planned}</div>` : `<div style="color:#ccc">—</div>`;
+        if (isPast) {
+          // Geçmiş ay: sadece gerçekleşen
+          html += actual ? `<div class="ger">${actual}</div>` : `<div style="color:#ccc">—</div>`;
+          if (planned > 0 && planned !== actual) html += `<div style="font-size:10px;color:#999">plan: ${planned}</div>`;
+        } else if (isCurrent) {
+          // İçinde bulunduğumuz ay: gerçekleşen + kalan
+          html += actual ? `<div class="ger">${actual}</div>` : `<div style="color:#ccc">0</div>`;
+          if (remaining > 0) html += `<div class="kalan">+${remaining} kalan</div>`;
+          html += `<div style="font-size:10px;color:#999">plan: ${planned}</div>`;
+        } else {
+          // Gelecek ay: sadece plan
+          html += planned ? `<div class="pln">${planned}</div>` : `<div style="color:#ccc">—</div>`;
+        }
+        const shipTarget = sm.models?.[pid] || 0;
         if (shipTarget > 0) html += `<div class="ship">sevk: ${shipTarget}</div>`;
         html += `</td>`;
+
+        rowTotal += isPast ? actual : isCurrent ? (actual + remaining) : planned;
       });
+
       grandTotal += rowTotal;
       grandShipCount += sm.count;
-      html += `<td style="text-align:center;font-weight:600;font-size:15px">${rowTotal||'—'}</td>`;
-      html += `<td style="text-align:center">${sm.count>0?sm.count+' konteyner':'—'}</td>`;
+      html += `<td style="text-align:center;font-weight:600;font-size:15px">${rowTotal || '—'}</td>`;
+      html += `<td style="text-align:center">${sm.count > 0 ? sm.count + ' konteyner' : '—'}</td>`;
       html += `</tr>`;
     });
 
     // Toplam satırı
     html += `<tr class="total-row"><td>TOPLAM</td>`;
-    anaProducts.forEach(p => html += `<td style="text-align:center;font-size:15px">${grandTotals[p.id]||'—'}</td>`);
+    anaProducts.forEach(p => {
+      const act = grandActual[p.id] || 0;
+      const rem = grandRemaining[p.id] || 0;
+      const pln = grandPlanned[p.id] || 0;
+      html += `<td style="text-align:center"><span class="ger">${act}</span>`;
+      if (rem > 0) html += ` <span class="kalan">+${rem}</span>`;
+      html += `<div style="font-size:10px;color:#999">plan: ${pln}</div></td>`;
+    });
     html += `<td style="text-align:center;font-size:15px">${grandTotal}</td>`;
     html += `<td style="text-align:center">${grandShipCount} konteyner</td></tr>`;
     html += `</tbody></table>`;
 
     // Mevcut stok durumu
     html += `<h3 style="font-size:14px;margin:16px 0 8px">Mevcut Stok Durumu</h3>`;
-    html += `<table><thead><tr><th style="text-align:left">Model</th><th>Mevcut Stok</th><th>Toplam Hedef</th><th>Üretilmesi Gereken</th><th>Planlanan Üretim</th><th>Fark</th></tr></thead><tbody>`;
-    let totStock=0,totTarget=0,totNeeded=0,totPlanned=0;
+    html += `<table><thead><tr><th style="text-align:left">Model</th><th>Mevcut Stok</th><th>Üretilen</th><th>Kalan Plan</th><th>Sevk Hedefi</th><th>Üretilmesi Gereken</th><th>Fark</th></tr></thead><tbody>`;
+    let totStock = 0, totActual = 0, totRemaining = 0, totTarget = 0, totNeeded = 0;
     anaProducts.forEach(p => {
       const stock = stockCalc[p.id] || 0;
-      const target = Object.values(shipMonths).reduce((s,sm) => s+(sm.models?.[p.id]||0), 0);
+      const actual = grandActual[p.id] || 0;
+      const remaining = grandRemaining[p.id] || 0;
+      const target = Object.values(shipMonths).reduce((s, sm) => s + (sm.models?.[p.id] || 0), 0);
       const needed = Math.max(0, target - stock);
-      const planned = grandTotals[p.id] || 0;
-      const diff = planned - needed;
-      totStock+=stock; totTarget+=target; totNeeded+=needed; totPlanned+=planned;
+      const totalProduction = actual + remaining;
+      const diff = totalProduction - needed;
+      totStock += stock; totActual += actual; totRemaining += remaining; totTarget += target; totNeeded += needed;
       html += `<tr><td style="font-weight:600;color:${p.color}">● ${kisaAd(p.nameTR)}</td>`;
       html += `<td style="text-align:center">${stock}</td>`;
+      html += `<td style="text-align:center" class="ger">${actual}</td>`;
+      html += `<td style="text-align:center;color:#d97706">${remaining}</td>`;
       html += `<td style="text-align:center">${target}</td>`;
       html += `<td style="text-align:center;font-weight:500">${needed}</td>`;
-      html += `<td style="text-align:center;font-weight:600;color:#534AB7">${planned}</td>`;
-      html += `<td style="text-align:center;font-weight:600;color:${diff>=0?'#16a34a':'#dc2626'}">${diff>=0?'+':''}${diff}</td></tr>`;
+      html += `<td style="text-align:center;font-weight:600;color:${diff >= 0 ? '#16a34a' : '#dc2626'}">${diff >= 0 ? '+' : ''}${diff}</td></tr>`;
     });
-    html += `<tr class="total-row"><td>TOPLAM</td><td style="text-align:center">${totStock}</td><td style="text-align:center">${totTarget}</td><td style="text-align:center">${totNeeded}</td><td style="text-align:center">${totPlanned}</td><td style="text-align:center;color:${totPlanned-totNeeded>=0?'#16a34a':'#dc2626'}">${totPlanned-totNeeded>=0?'+':''}${totPlanned-totNeeded}</td></tr>`;
+    const totDiff = (totActual + totRemaining) - totNeeded;
+    html += `<tr class="total-row"><td>TOPLAM</td><td style="text-align:center">${totStock}</td><td style="text-align:center">${totActual}</td><td style="text-align:center">${totRemaining}</td><td style="text-align:center">${totTarget}</td><td style="text-align:center">${totNeeded}</td><td style="text-align:center;color:${totDiff >= 0 ? '#16a34a' : '#dc2626'}">${totDiff >= 0 ? '+' : ''}${totDiff}</td></tr>`;
     html += `</tbody></table>`;
 
     html += `<div style="margin-top:20px;color:#999;font-size:11px">Oluşturulma: ${new Date().toLocaleString("tr-TR")} — Sevkiyat Pro</div>`;
