@@ -5205,12 +5205,13 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const fa = isFason ? (workCenters.fason || {})[op.opCode] : null;
           const setup = op.setupTime ?? 30;
           const cycle = op.cycleTime ?? 5;
-          const totalMin = isFason ? 0 : (setup + (cycle * req.qty)); // fason has no internal machine time
+          const totalMin = isFason ? 0 : (setup + (cycle * req.qty));
+          const timeSource = (op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def";
           return {
             opCode: op.opCode, opName: op.opName,
             wcCode: op.wcCode, wcName: op.wcName,
             setupTime: op.setupTime, cycleTime: op.cycleTime,
-            totalMin, isFason,
+            totalMin, isFason, timeSource,
             leadTimeDays: isFason ? (fa?.leadTimeDays || 14) : 0,
             supplier: isFason ? (fa?.supplier || "") : "",
             machineId: null, startDate: null, endDate: null, status: "planned"
@@ -8113,38 +8114,54 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     const machOps = [];
                                     jobs.forEach(j => j.operations.forEach((op, opIdx) => {
                                       if (op.machineId === mId && !op.isFason) {
-                                        machOps.push({ jobId: j.id, opIdx, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode });
+                                        machOps.push({ jobId: j.id, opIdx, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || "def" });
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
                                     machOps.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
-                                    // Aynı WC'deki diğer tezgahlar (taşıma hedefi)
                                     const sameWcMachines = wcMachines.filter(([id]) => id !== mId);
+                                    const mesCount = machOps.filter(o => o.timeSource === "mes").length;
+                                    const defCount = machOps.filter(o => o.timeSource === "def").length;
+                                    const mesMin = machOps.filter(o => o.timeSource === "mes").reduce((s, o) => s + o.totalMin, 0);
+                                    const defMin = machOps.filter(o => o.timeSource === "def").reduce((s, o) => s + o.totalMin, 0);
                                     return (
                                       <div style={{ marginTop: 4, borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: 4 }}>
-                                        <div style={{ fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 3 }}>Planlanan ({machOps.length})</div>
-                                        {machOps.slice(0, 8).map((op, i) => (
-                                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2, fontSize: 9, color: "var(--color-text-secondary)" }}>
-                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--color-text-info)", minWidth: 36 }}>{op.jobId}</span>
-                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8, minWidth: 58 }}>{op.partCode}</span>
-                                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 8 }}>{op.partName}</span>
-                                            <span style={{ fontSize: 8, minWidth: 28, textAlign: "right" }}>{op.qty}ad</span>
-                                            <span style={{ fontSize: 8, fontWeight: 500, minWidth: 32, textAlign: "right" }}>{Math.round(op.totalMin)}dk</span>
-                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 7, color: "var(--color-text-tertiary)", minWidth: 40 }}>{op.startDate?.substring(5) || ""}</span>
-                                            {op.capWarning && <span style={{ fontSize: 7, color: "#F97316" }}>⚡</span>}
-                                            {canEdit && sameWcMachines.length > 0 && (
-                                              <select
-                                                value=""
-                                                onChange={(e) => { if (e.target.value) reassignOp(op.jobId, op.opIdx, e.target.value); }}
-                                                style={{ fontSize: 8, padding: "1px 2px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)", minWidth: 50, color: "var(--color-text-tertiary)" }}
-                                              >
-                                                <option value="">Taşı</option>
-                                                {sameWcMachines.map(([id, m]) => <option key={id} value={id}>{m.name}</option>)}
-                                              </select>
-                                            )}
-                                          </div>
-                                        ))}
-                                        {machOps.length > 8 && <div style={{ fontSize: 8, color: "var(--color-text-tertiary)" }}>+{machOps.length - 8} daha</div>}
+                                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                                          <span style={{ fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)" }}>Planlanan ({machOps.length})</span>
+                                          {mesCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mesCount} MES ({Math.round(mesMin)}dk)</span>}
+                                          {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{defCount} vars. ({Math.round(defMin)}dk)</span>}
+                                        </div>
+                                        <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
+                                            <tbody>
+                                              {machOps.map((op, i) => (
+                                                <tr key={i} style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                                                  <td style={{ padding: "3px 2px", width: 6 }}>
+                                                    <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: 1, background: op.timeSource === "mes" ? "#10B981" : "#D97706" }} title={op.timeSource === "mes" ? "MES gerçek süre" : "Varsayılan süre"} />
+                                                  </td>
+                                                  <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--color-text-info)", whiteSpace: "nowrap" }}>{op.jobId}</td>
+                                                  <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 8, whiteSpace: "nowrap" }}>{op.partCode}</td>
+                                                  <td style={{ padding: "3px 4px", fontSize: 8, maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.partName}>{op.partName}</td>
+                                                  <td style={{ padding: "3px 2px", fontSize: 8, textAlign: "right", whiteSpace: "nowrap" }}>{op.qty}ad</td>
+                                                  <td style={{ padding: "3px 2px", fontSize: 8, fontWeight: 500, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#065F46" : "#92400E" }}>{Math.round(op.totalMin)}dk</td>
+                                                  <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 7, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>{op.startDate?.substring(5) || ""}</td>
+                                                  <td style={{ padding: "3px 0", width: 14 }}>
+                                                    {op.capWarning && <span style={{ fontSize: 7, color: "#F97316" }}>⚡</span>}
+                                                  </td>
+                                                  {canEdit && sameWcMachines.length > 0 && (
+                                                    <td style={{ padding: "3px 0" }}>
+                                                      <select value="" onChange={(e) => { if (e.target.value) reassignOp(op.jobId, op.opIdx, e.target.value); }}
+                                                        style={{ fontSize: 8, padding: "1px 2px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)", minWidth: 45, color: "var(--color-text-tertiary)" }}>
+                                                        <option value="">Taşı</option>
+                                                        {sameWcMachines.map(([id, m]) => <option key={id} value={id}>{m.name}</option>)}
+                                                      </select>
+                                                    </td>
+                                                  )}
+                                                </tr>
+                                              ))}
+                                            </tbody>
+                                          </table>
+                                        </div>
                                       </div>
                                     );
                                   })()}
