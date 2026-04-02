@@ -5987,7 +5987,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
   // WIP yükü hesaplama: akibet + BOM eşleşmesiyle iş merkezi bazlı mevcut yük
   const wipLoad = useMemo(() => {
-    if (!akibet?.parts || !bomModels) return { byWC: {}, byMachine: {}, items: [], totalMin: 0 };
+    if (!akibet?.parts || !bomModels) return { byWC: {}, byMachine: {}, items: [], totalMin: 0, debug: { reason: "no data" } };
 
     // BOM lookup (stok kodu → operasyonlar)
     const bomLookup = {};
@@ -6000,25 +6000,46 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     });
 
     const items = [];
-    const byWC = {};  // wcCode → { totalMin, count }
-    const byMachine = {}; // machineId → { totalMin, count }
+    const byWC = {};
+    const byMachine = {};
+    // Debug counters
+    let dbgTotal = 0, dbgNoWip = 0, dbgNoBom = 0, dbgNoOrders = 0, dbgNoOps = 0, dbgNoOpCode = 0, dbgNoBomOp = 0, dbgMatched = 0;
+    const dbgSamples = []; // ilk 5 eşleşmeyen örnek
 
     akibet.parts.forEach(akPart => {
-      if (akPart.internalRemaining <= 0 && akPart.fasonRemaining <= 0) return;
+      dbgTotal++;
+      if (akPart.internalRemaining <= 0 && akPart.fasonRemaining <= 0) { dbgNoWip++; return; }
       const bom = bomLookup[akPart.code];
-      if (!bom || !bom.operations || bom.operations.length === 0) return;
+      if (!bom || !bom.operations || bom.operations.length === 0) {
+        dbgNoBom++;
+        if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "BOM yok", intRem: akPart.internalRemaining });
+        return;
+      }
 
-      (akPart.orders || []).forEach(order => {
-        (order.ops || []).forEach(akOp => {
+      const orders = akPart.orders || [];
+      if (orders.length === 0) { dbgNoOrders++; if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "orders boş" }); return; }
+
+      orders.forEach(order => {
+        const ops = order.ops || [];
+        if (ops.length === 0) { dbgNoOps++; return; }
+
+        ops.forEach(akOp => {
           if (akOp.remaining <= 0) return;
-          // OpCode'u akibet op adından çıkar (ör. "100 Tornalama" → "100")
           const opMatch = akOp.name.match(/^(\d+)/);
-          if (!opMatch) return;
+          if (!opMatch) {
+            dbgNoOpCode++;
+            if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "opCode yok: " + akOp.name });
+            return;
+          }
           const akOpCode = opMatch[1];
-          // BOM'da eşleştir
           const bomOp = bom.operations.find(o => String(o.opCode) === akOpCode);
-          if (!bomOp || !bomOp.wcCode) return;
+          if (!bomOp || !bomOp.wcCode) {
+            dbgNoBomOp++;
+            if (dbgSamples.length < 5) dbgSamples.push({ code: akPart.code, reason: "BOM op " + akOpCode + " yok", bomOps: bom.operations.map(o => o.opCode).join(",") });
+            return;
+          }
 
+          dbgMatched++;
           const isFason = akOp.isFason || parseInt(akOpCode) >= 600;
           const cycleTime = bomOp.cycleTime || 5;
           const setupTime = bomOp.setupTime || 30;
@@ -6052,7 +6073,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     });
 
     const totalMin = items.reduce((s, it) => s + it.wipMin, 0);
-    return { byWC, byMachine, items, totalMin, totalItems: items.length };
+    return {
+      byWC, byMachine, items, totalMin, totalItems: items.length,
+      debug: { total: dbgTotal, noWip: dbgNoWip, noBom: dbgNoBom, noOrders: dbgNoOrders, noOps: dbgNoOps, noOpCode: dbgNoOpCode, noBomOp: dbgNoBomOp, matched: dbgMatched, bomKeys: Object.keys(bomLookup).length, samples: dbgSamples }
+    };
   }, [akibet, bomModels, wipAssignments]);
 
   // ==================== SATINALMA AÇIK SİPARİŞ PARSER ====================
@@ -7780,6 +7804,32 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   <KPI label="Yetenek Uyarısı" value={capWarnCount} sub="Uyumsuz tezgah ataması" accent="#F97316" />
                 )}
                 <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
+              </div>
+            )}
+
+            {/* ---- WIP DEBUG ---- */}
+            {wipLoad.debug && (
+              <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)", fontSize: 11 }}>
+                <div style={{ fontWeight: 500, marginBottom: 6, color: "#D97706" }}>WIP Eşleşme Raporu</div>
+                <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 10, color: "var(--color-text-secondary)" }}>
+                  <span>Akibet: <b>{wipLoad.debug.total}</b> parça</span>
+                  <span>WIP yok: {wipLoad.debug.noWip}</span>
+                  <span>BOM eşleşmedi: <b style={{ color: wipLoad.debug.noBom > 0 ? "#EF4444" : "inherit" }}>{wipLoad.debug.noBom}</b></span>
+                  <span>orders boş: <b style={{ color: wipLoad.debug.noOrders > 0 ? "#EF4444" : "inherit" }}>{wipLoad.debug.noOrders}</b></span>
+                  <span>ops boş: {wipLoad.debug.noOps}</span>
+                  <span>opCode çıkmadı: <b style={{ color: wipLoad.debug.noOpCode > 0 ? "#F59E0B" : "inherit" }}>{wipLoad.debug.noOpCode}</b></span>
+                  <span>BOM op eşleşmedi: {wipLoad.debug.noBomOp}</span>
+                  <span style={{ color: "#10B981" }}>Eşleşen: <b>{wipLoad.debug.matched}</b></span>
+                  <span>BOM stok kodu: {wipLoad.debug.bomKeys}</span>
+                  <span>WIP kalem: <b>{wipLoad.totalItems}</b></span>
+                </div>
+                {wipLoad.debug.samples?.length > 0 && (
+                  <div style={{ marginTop: 6, fontSize: 9, color: "var(--color-text-tertiary)" }}>
+                    Örnekler: {wipLoad.debug.samples.map((s, i) => (
+                      <span key={i} style={{ marginRight: 8 }}><code>{s.code}</code> → {s.reason}{s.bomOps ? ` (BOM ops: ${s.bomOps})` : ""}</span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
