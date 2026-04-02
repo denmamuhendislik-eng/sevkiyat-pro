@@ -9151,7 +9151,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         display: "flex", alignItems: "center", gap: 4
                       }}
                     >
-                      📅 Çizelgeye Aktar →
+                      📅 Çizelge Tab'ına Git →
                     </button>
                     <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
                       {new Date(exp.calculatedAt).toLocaleString("tr-TR")}
