@@ -4457,6 +4457,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [selectedJob, setSelectedJob] = useState(null);
   const [schedSource, setSchedSource] = useState("vio"); // "vio" | "mrp"
   const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
+  const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
   const [editingOpPart, setEditingOpPart] = useState(null);
 
   // Adım 5 — VIO Stok Raporu State
@@ -4513,6 +4514,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     unsubs.push(onSnapshot(montajRef, snap => {
       if (snap.exists()) setMontajState(snap.data());
     }, () => {}));
+    // WIP Manuel Atamalar
+    const wipRef = doc(db, APP_COL, "wipAssignments");
+    unsubs.push(onSnapshot(wipRef, snap => {
+      if (snap.exists()) setWipAssignments(snap.data());
+    }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
 
@@ -4540,6 +4546,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const saveStock = async (data) => {
     if (!db || !canEdit) return;
     await setDoc(doc(db, APP_COL, STOCK_DOC), data);
+  };
+  const saveWipAssignment = async (key, machineId) => {
+    if (!db || !canEdit) return;
+    const updated = { ...wipAssignments, [key]: machineId || null };
+    if (!machineId) delete updated[key];
+    await setDoc(doc(db, APP_COL, "wipAssignments"), updated);
   };
 
   // ==================== VIO STOK RAPORU PARSER ====================
@@ -5972,6 +5984,76 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     });
     return map;
   }, [akibet]);
+
+  // WIP yükü hesaplama: akibet + BOM eşleşmesiyle iş merkezi bazlı mevcut yük
+  const wipLoad = useMemo(() => {
+    if (!akibet?.parts || !bomModels) return { byWC: {}, byMachine: {}, items: [], totalMin: 0 };
+
+    // BOM lookup (stok kodu → operasyonlar)
+    const bomLookup = {};
+    Object.keys(bomModels).filter(k => k !== "undefined").forEach(mk => {
+      (bomModels[mk]?.parts || []).forEach(p => {
+        if (!bomLookup[p.stockCode] || p.operations.length > (bomLookup[p.stockCode].operations?.length || 0)) {
+          bomLookup[p.stockCode] = p;
+        }
+      });
+    });
+
+    const items = [];
+    const byWC = {};  // wcCode → { totalMin, count }
+    const byMachine = {}; // machineId → { totalMin, count }
+
+    akibet.parts.forEach(akPart => {
+      if (akPart.internalRemaining <= 0 && akPart.fasonRemaining <= 0) return;
+      const bom = bomLookup[akPart.code];
+      if (!bom || !bom.operations || bom.operations.length === 0) return;
+
+      (akPart.orders || []).forEach(order => {
+        (order.ops || []).forEach(akOp => {
+          if (akOp.remaining <= 0) return;
+          // OpCode'u akibet op adından çıkar (ör. "100 Tornalama" → "100")
+          const opMatch = akOp.name.match(/^(\d+)/);
+          if (!opMatch) return;
+          const akOpCode = opMatch[1];
+          // BOM'da eşleştir
+          const bomOp = bom.operations.find(o => String(o.opCode) === akOpCode);
+          if (!bomOp || !bomOp.wcCode) return;
+
+          const isFason = akOp.isFason || parseInt(akOpCode) >= 600;
+          const cycleTime = bomOp.cycleTime || 5;
+          const setupTime = bomOp.setupTime || 30;
+          const wipMin = isFason ? 0 : (setupTime + cycleTime * akOp.remaining);
+          if (wipMin <= 0 && !isFason) return;
+
+          const wipKey = `${akPart.code}|${akOpCode}|${order.emirNo}`;
+          const assignedMachine = wipAssignments[wipKey] || null;
+
+          items.push({
+            key: wipKey, code: akPart.code, name: akPart.name,
+            emirNo: order.emirNo, remaining: akOp.remaining,
+            opCode: akOpCode, opName: akOp.name,
+            wcCode: bomOp.wcCode, wcName: bomOp.wcName || bomOp.wcCode,
+            isFason, wipMin, machineId: assignedMachine
+          });
+
+          if (!isFason) {
+            if (assignedMachine) {
+              if (!byMachine[assignedMachine]) byMachine[assignedMachine] = { totalMin: 0, count: 0 };
+              byMachine[assignedMachine].totalMin += wipMin;
+              byMachine[assignedMachine].count++;
+            } else {
+              if (!byWC[bomOp.wcCode]) byWC[bomOp.wcCode] = { totalMin: 0, count: 0 };
+              byWC[bomOp.wcCode].totalMin += wipMin;
+              byWC[bomOp.wcCode].count++;
+            }
+          }
+        });
+      });
+    });
+
+    const totalMin = items.reduce((s, it) => s + it.wipMin, 0);
+    return { byWC, byMachine, items, totalMin, totalItems: items.length };
+  }, [akibet, bomModels, wipAssignments]);
 
   // ==================== SATINALMA AÇIK SİPARİŞ PARSER ====================
   const PURCH_DOC = "mrpPurchase";
@@ -7520,11 +7602,17 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   if (op.capWarning) mCapWarn++;
                 }
               }));
+              const wipMachine = wipLoad.byMachine[m.id];
+              const wipMin = wipMachine ? wipMachine.totalMin : 0;
+              const wipOps = wipMachine ? wipMachine.count : 0;
               result[m.id] = {
                 name: m.name, wcCode, wcName: wc.name,
-                loadMin: Math.round(mLoad), totalCapMin: Math.round(perMachineCap),
-                utilization: perMachineCap > 0 ? Math.round((mLoad / perMachineCap) * 100) : 0,
-                opCount: mOps, capWarnings: mCapWarn,
+                loadMin: Math.round(mLoad), wipMin: Math.round(wipMin),
+                totalLoadMin: Math.round(mLoad + wipMin),
+                totalCapMin: Math.round(perMachineCap),
+                utilization: perMachineCap > 0 ? Math.round(((mLoad + wipMin) / perMachineCap) * 100) : 0,
+                plannedUtil: perMachineCap > 0 ? Math.round((mLoad / perMachineCap) * 100) : 0,
+                opCount: mOps, wipOps, capWarnings: mCapWarn,
                 hasCaps: !!(m.mesOpCodes && m.mesOpCodes.length > 0)
               };
             });
@@ -7705,11 +7793,17 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
                   {Object.entries(wcSt).sort((a, b) => b[1].utilization - a[1].utilization).map(([code, st]) => {
                     const isBottleneck = code === s.bottleneck;
-                    const barColor = st.utilization > 90 ? "#EF4444" : st.utilization > 70 ? "#F59E0B" : "#10B981";
                     const isExpanded = expandedWC === code;
-                    // Bu merkezin tezgahları
+                    // Bu merkezin tezgahları ve WIP yükü
                     const wcMachines = Object.entries(mSt).filter(([, ms]) => ms.wcCode === code).sort((a, b) => b[1].utilization - a[1].utilization);
                     const hasCapWarns = wcMachines.some(([, ms]) => ms.capWarnings > 0);
+                    const wcWip = wipLoad.byWC[code];
+                    const wipMin = (wcWip?.totalMin || 0) + wcMachines.reduce((s, [mId]) => (wipLoad.byMachine[mId]?.totalMin || 0), 0);
+                    const totalLoad = st.loadMin + wipMin;
+                    const totalUtil = st.totalCapMin > 0 ? Math.round((totalLoad / st.totalCapMin) * 100) : 0;
+                    const barColor = totalUtil > 90 ? "#EF4444" : totalUtil > 70 ? "#F59E0B" : "#10B981";
+                    const plannedPct = st.totalCapMin > 0 ? Math.min(100, Math.round((st.loadMin / st.totalCapMin) * 100)) : 0;
+                    const wipPct = st.totalCapMin > 0 ? Math.min(100 - plannedPct, Math.round((wipMin / st.totalCapMin) * 100)) : 0;
                     return (
                       <div key={code} style={{
                         borderRadius: 8,
@@ -7729,14 +7823,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                               {isBottleneck && <span style={{ fontSize: 9, color: "#EF4444", marginLeft: 6 }}>⚠ DARBOĞAZ</span>}
                               {hasCapWarns && <span style={{ fontSize: 9, color: "#F97316", marginLeft: 6 }}>⚡ YETENEK</span>}
                             </span>
-                            <span style={{ fontSize: 12, fontWeight: 600, color: barColor }}>%{st.utilization}</span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: barColor }}>%{totalUtil}</span>
                           </div>
-                          <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden" }}>
-                            <div style={{ height: "100%", width: Math.min(100, st.utilization) + "%", borderRadius: 3, background: barColor, transition: "width 0.4s ease" }} />
+                          <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden", display: "flex" }}>
+                            {wipPct > 0 && <div style={{ height: "100%", width: wipPct + "%", background: "#F59E0B", opacity: 0.6, transition: "width 0.4s ease" }} />}
+                            <div style={{ height: "100%", width: plannedPct + "%", borderRadius: wipPct > 0 ? "0 3px 3px 0" : 3, background: barColor, transition: "width 0.4s ease" }} />
                           </div>
                           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "var(--color-text-tertiary)" }}>
                             <span>{st.machineCount} tezgah</span>
-                            <span>{Math.round(st.loadMin / 60)}s yük / {Math.round(st.totalCapMin / 60)}s kapasite</span>
+                            <span>
+                              {wipMin > 0 && <span style={{ color: "#D97706", marginRight: 4 }}>{Math.round(wipMin / 60)}s WIP +</span>}
+                              {Math.round(st.loadMin / 60)}s plan / {Math.round(st.totalCapMin / 60)}s kap.
+                            </span>
                           </div>
                         </div>
 
@@ -7746,6 +7844,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                             {wcMachines.map(([mId, ms]) => {
                               const mColor = ms.utilization > 90 ? "#EF4444" : ms.utilization > 70 ? "#F59E0B" : ms.utilization > 30 ? "#3B82F6" : "#10B981";
                               const isMachBn = mId === machBn;
+                              const plannedPctM = ms.totalCapMin > 0 ? Math.min(100, Math.round((ms.loadMin / ms.totalCapMin) * 100)) : 0;
+                              const wipPctM = ms.totalCapMin > 0 ? Math.min(100 - plannedPctM, Math.round((ms.wipMin / ms.totalCapMin) * 100)) : 0;
                               return (
                                 <div key={mId} style={{ marginBottom: 8 }}>
                                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
@@ -7753,23 +7853,78 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", marginRight: 4 }}>{mId}</span>
                                       <span style={{ fontSize: 10 }}>{ms.name}</span>
                                       {isMachBn && <span style={{ fontSize: 8, color: "#DC2626", marginLeft: 4, fontWeight: 500 }}>DARBOĞAZ</span>}
-                                      {ms.capWarnings > 0 && <span style={{ fontSize: 8, color: "#F97316", marginLeft: 4 }}>⚡{ms.capWarnings} uyumsuz</span>}
-                                      {!ms.hasCaps && <span style={{ fontSize: 8, color: "var(--color-text-tertiary)", marginLeft: 4 }}>MES tanımsız</span>}
+                                      {ms.capWarnings > 0 && <span style={{ fontSize: 8, color: "#F97316", marginLeft: 4 }}>⚡{ms.capWarnings}</span>}
+                                      {ms.wipOps > 0 && <span style={{ fontSize: 8, color: "#D97706", marginLeft: 4 }}>{ms.wipOps} WIP</span>}
                                     </span>
                                     <span style={{ fontSize: 11, fontWeight: 500, color: mColor }}>
                                       %{ms.utilization}
                                       <span style={{ fontSize: 9, fontWeight: 400, color: "var(--color-text-tertiary)", marginLeft: 4 }}>{ms.opCount} op</span>
                                     </span>
                                   </div>
-                                  <div style={{ height: 4, borderRadius: 2, background: "var(--color-background-secondary)", overflow: "hidden" }}>
-                                    <div style={{ height: "100%", width: Math.min(100, ms.utilization) + "%", borderRadius: 2, background: mColor, transition: "width 0.3s ease" }} />
+                                  <div style={{ height: 4, borderRadius: 2, background: "var(--color-background-secondary)", overflow: "hidden", display: "flex" }}>
+                                    {wipPctM > 0 && <div style={{ height: "100%", width: wipPctM + "%", background: "#F59E0B", opacity: 0.6 }} />}
+                                    <div style={{ height: "100%", width: plannedPctM + "%", background: mColor }} />
                                   </div>
                                   <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>
-                                    {Math.round(ms.loadMin / 60)}s yük / {Math.round(ms.totalCapMin / 60)}s kapasite
+                                    {ms.wipMin > 0 && <span style={{ color: "#D97706", marginRight: 3 }}>{Math.round(ms.wipMin / 60)}s WIP +</span>}
+                                    {Math.round(ms.loadMin / 60)}s plan / {Math.round(ms.totalCapMin / 60)}s kap.
                                   </div>
                                 </div>
                               );
                             })}
+                            {/* WIP Atama: Bu merkezin atanmamış WIP işleri */}
+                            {(() => {
+                              const unassigned = wipLoad.items.filter(it => it.wcCode === code && !it.machineId && !it.isFason);
+                              if (unassigned.length === 0) return null;
+                              const wcMachineIds = wcMachines.map(([mId]) => mId);
+                              return (
+                                <div style={{ borderTop: "0.5px dashed var(--color-border-tertiary)", marginTop: 6, paddingTop: 6 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "#D97706", marginBottom: 4 }}>Atanmamış WIP ({unassigned.length})</div>
+                                  {unassigned.slice(0, 15).map(it => (
+                                    <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10 }}>
+                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
+                                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
+                                      <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 30, textAlign: "right" }}>{it.remaining}ad</span>
+                                      <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 35, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
+                                      {canEdit && wcMachineIds.length > 0 ? (
+                                        <select
+                                          value=""
+                                          onChange={(e) => { if (e.target.value) saveWipAssignment(it.key, e.target.value); }}
+                                          style={{ fontSize: 9, padding: "1px 2px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)", minWidth: 60 }}
+                                        >
+                                          <option value="">Ata...</option>
+                                          {wcMachineIds.map(mid => <option key={mid} value={mid}>{mid}</option>)}
+                                        </select>
+                                      ) : (
+                                        <span style={{ fontSize: 8, color: "var(--color-text-tertiary)", minWidth: 60 }}>—</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                  {unassigned.length > 15 && <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>+{unassigned.length - 15} daha</div>}
+                                </div>
+                              );
+                            })()}
+                            {/* Atanmış WIP işleri (kaldırma butonu) */}
+                            {(() => {
+                              const assigned = wipLoad.items.filter(it => it.wcCode === code && it.machineId && !it.isFason);
+                              if (assigned.length === 0) return null;
+                              return (
+                                <div style={{ borderTop: "0.5px dashed var(--color-border-tertiary)", marginTop: 6, paddingTop: 6 }}>
+                                  <div style={{ fontSize: 10, fontWeight: 500, color: "#10B981", marginBottom: 4 }}>Atanmış WIP ({assigned.length})</div>
+                                  {assigned.map(it => (
+                                    <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10 }}>
+                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
+                                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
+                                      <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{it.remaining}ad</span>
+                                      <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{it.machineId}</span>
+                                      {canEdit && (
+                                        <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", fontSize: 9, color: "#EF4444" }}>✕</span>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              );
+                            })()}
                           </div>
                         )}
                         {isExpanded && wcMachines.length === 0 && (
