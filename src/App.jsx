@@ -2826,7 +2826,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   const isAdmin    = userRole === "admin";
   const isUretim   = userRole === "uretim";
   const isOperator = userRole === "operator";
-  const canPlan    = isAdmin;
+  const canPlan    = isAdmin || isUretim;
   const canActual  = isAdmin || isUretim || isOperator;
   const ANA_IDS   = [1,2,3,4,5];
 
