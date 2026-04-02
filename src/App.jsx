@@ -5156,7 +5156,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         // netQty = grossQty − stok − akibet (zaten explosion'da hesaplandı)
         // NOT: openPO (satınalma siparişi) üretim parçaları için geçersiz → netQty kullan
         explosionResult.parts.forEach(r => {
-          if (r.supplyType === "BUY" || r.supplyType === "RAW") return; // Satınalma — çizelgeye girmez
+          if (r.supplyType === "BUY" || r.supplyType === "RAW" || r.supplyType === "FASON") return; // Satınalma/fason — çizelgeye girmez
           if (r.netQty <= 0) return;
           // Level mapping: explosion level (number) → schedule level string
           const levelStr = r.level >= 0 ? "L" + r.level : "L0";
@@ -5196,8 +5196,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       for (const [code, req] of Object.entries(reqItems)) {
         const bom = bomLookup[code];
         if (!bom || bom.part.operations.length === 0) continue;
-        // Skip BUY/RAW parts — they're purchased, not produced
-        if (bom.part.supplyType === "BUY" || bom.part.supplyType === "RAW") continue;
+        // Skip BUY/RAW/FASON parts — purchased or fully outsourced (MAKE+FASON keeps internal ops)
+        if (bom.part.supplyType === "BUY" || bom.part.supplyType === "RAW" || bom.part.supplyType === "FASON") continue;
 
         // ALL operations in sequence (internal + fason together, order preserved from BOM)
         const operations = bom.part.operations.map(op => {
