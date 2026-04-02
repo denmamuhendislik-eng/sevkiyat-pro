@@ -4455,6 +4455,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [calculating, setCalculating] = useState(false);
   const [ganttZoom, setGanttZoom] = useState(1);
   const [selectedJob, setSelectedJob] = useState(null);
+  const [schedSource, setSchedSource] = useState("vio"); // "vio" | "mrp"
   const [editingOpPart, setEditingOpPart] = useState(null);
 
   // Adım 5 — VIO Stok Raporu State
@@ -5077,7 +5078,13 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const nextWorkday = (d) => { let r = new Date(d); while (isWeekend(r)) r = addDays(r, 1); return r; };
 
   const calculateSchedule = async () => {
-    if (!requirements || !workCenters || !bomModels || calculating) return;
+    const useMrp = schedSource === "mrp";
+    // Guard: gerekli veriler yüklü mü?
+    if (useMrp) {
+      if (!explosionResult?.parts || !workCenters || !bomModels || calculating) return;
+    } else {
+      if (!requirements || !workCenters || !bomModels || calculating) return;
+    }
     setCalculating(true);
     try {
       const today = nextWorkday(new Date());
@@ -5094,28 +5101,47 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         });
       });
 
-      // 2) Collect requirements with qty > 0 (subtract stock + WIP from akibet if available)
+      // 2) Collect requirements — kaynak seçimine göre
       const reqItems = {};
-      const levKeys = Object.keys(requirements.levels || {});
-      levKeys.forEach(lk => {
-        (requirements.levels[lk]?.items || []).forEach(item => {
-          if (item.requirement > 0) {
-            const ak = akibetLookup[item.code];
-            const wip = ak ? (ak.internalRemaining + ak.fasonRemaining) : 0;
-            // VIO Stok düşümü
-            const stk = stockLookup[item.code];
-            const stkAvail = stk ? (stk.ambar + (stockIncludeUretim ? stk.uretim : 0) + (stockIncludeFason ? stk.fason : 0)) : 0;
-            const netQty = Math.max(0, item.requirement - stkAvail - wip);
-            if (netQty > 0) {
-              if (reqItems[item.code]) {
-                reqItems[item.code].qty += netQty;
-              } else {
-                reqItems[item.code] = { code: item.code, name: item.name, qty: netQty, level: lk };
-              }
-            }
+
+      if (useMrp) {
+        // === KAYNAK: Kendi MRP (BOM Explosion sonucu) ===
+        // MAKE, MAKE+FASON ve FASON parçalardan net ihtiyacı > 0 olanlar
+        // netQty = grossQty − stok − akibet (zaten explosion'da hesaplandı)
+        // NOT: openPO (satınalma siparişi) üretim parçaları için geçersiz → netQty kullan
+        explosionResult.parts.forEach(r => {
+          if (r.supplyType === "BUY" || r.supplyType === "RAW") return; // Satınalma — çizelgeye girmez
+          if (r.netQty <= 0) return;
+          // Level mapping: explosion level (number) → schedule level string
+          const levelStr = r.level >= 0 ? "L" + r.level : "L0";
+          if (reqItems[r.code]) {
+            reqItems[r.code].qty += r.netQty;
+          } else {
+            reqItems[r.code] = { code: r.code, name: r.name, qty: r.netQty, level: levelStr };
           }
         });
-      });
+      } else {
+        // === KAYNAK: VIO İhtiyaç Listesi (mevcut davranış) ===
+        const levKeys = Object.keys(requirements.levels || {});
+        levKeys.forEach(lk => {
+          (requirements.levels[lk]?.items || []).forEach(item => {
+            if (item.requirement > 0) {
+              const ak = akibetLookup[item.code];
+              const wip = ak ? (ak.internalRemaining + ak.fasonRemaining) : 0;
+              const stk = stockLookup[item.code];
+              const stkAvail = stk ? (stk.ambar + (stockIncludeUretim ? stk.uretim : 0) + (stockIncludeFason ? stk.fason : 0)) : 0;
+              const netQty = Math.max(0, item.requirement - stkAvail - wip);
+              if (netQty > 0) {
+                if (reqItems[item.code]) {
+                  reqItems[item.code].qty += netQty;
+                } else {
+                  reqItems[item.code] = { code: item.code, name: item.name, qty: netQty, level: lk };
+                }
+              }
+            }
+          });
+        });
+      }
 
       // 3) Create jobs: match requirements → BOM operations (SINGLE CHAIN — fason included in sequence)
       const jobs = [];
@@ -5286,6 +5312,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         jobs, fasonOrders, wcStats, bottleneck,
         totalJobs: jobs.length,
         totalFason: fasonOrders.length,
+        source: useMrp ? "mrp" : "vio",
+        totalReqItems: Object.keys(reqItems).length,
         minDate: minDate ? dateStr(minDate) : null,
         maxDate: maxDate ? dateStr(maxDate) : null,
         lastCalculated: new Date().toISOString()
@@ -7440,7 +7468,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
       {/* ========== SCHEDULE / CAPACITY TAB ========== */}
       {activeTab === "schedule" && (() => {
-        const hasData = requirements && workCenters && Object.keys(bomModels).filter(k => k !== "undefined").length > 0;
+        const hasData = schedSource === "mrp"
+          ? (explosionResult?.parts?.length > 0 && workCenters && Object.keys(bomModels).filter(k => k !== "undefined").length > 0)
+          : (requirements && workCenters && Object.keys(bomModels).filter(k => k !== "undefined").length > 0);
+        const hasMrpResult = explosionResult?.parts?.length > 0;
+        const hasVioReq = !!requirements;
         const s = schedule;
         const jobs = s?.jobs || [];
         const fasonOrd = s?.fasonOrders || [];
@@ -7531,7 +7563,30 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
         return (
           <div>
-            {/* Controls row */}
+            {/* Source selector + Controls row */}
+            <div style={{ display: "flex", gap: 10, marginBottom: 12, alignItems: "center", flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 0, borderRadius: 8, overflow: "hidden", border: "1px solid var(--color-border-secondary)" }}>
+                {[
+                  { key: "vio", label: "📋 VIO İhtiyaç", ok: hasVioReq },
+                  { key: "mrp", label: "🔥 Kendi MRP", ok: hasMrpResult }
+                ].map(opt => (
+                  <button key={opt.key} onClick={() => setSchedSource(opt.key)} style={{
+                    padding: "6px 14px", border: "none", cursor: "pointer", fontSize: 12, fontWeight: 500,
+                    background: schedSource === opt.key ? "var(--color-background-info)" : "var(--color-background-secondary)",
+                    color: schedSource === opt.key ? "var(--color-text-info)" : "var(--color-text-tertiary)",
+                    opacity: opt.ok ? 1 : 0.5, transition: "all 0.15s"
+                  }}>
+                    {opt.label}
+                    {!opt.ok && <span style={{ fontSize: 9, marginLeft: 4 }}>⚠</span>}
+                  </button>
+                ))}
+              </div>
+              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                {schedSource === "mrp"
+                  ? (hasMrpResult ? `${explosionResult.parts.filter(r => (r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON" || r.supplyType === "FASON") && r.netQty > 0).length} üretim parçası` : "Önce 🔥 MRP Hesaplama çalıştırın")
+                  : (hasVioReq ? `${Object.values(requirements.levels || {}).reduce((s, l) => s + (l.items?.length || 0), 0)} VIO kalemi` : "Önce VIO İhtiyaç Listesi import edin")}
+              </span>
+            </div>
             <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "center", flexWrap: "wrap" }}>
               {canEdit && (
                 <button
@@ -7550,12 +7605,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               )}
               {!hasData && (
                 <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
-                  Hesaplama için BOM, ihtiyaç listesi ve iş merkezleri gerekli
+                  {schedSource === "mrp"
+                    ? "Hesaplama için BOM Explosion sonucu, BOM ve iş merkezleri gerekli"
+                    : "Hesaplama için BOM, ihtiyaç listesi ve iş merkezleri gerekli"}
                 </span>
               )}
               {s && s.lastCalculated && (
                 <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginLeft: "auto" }}>
                   Son hesaplama: {new Date(s.lastCalculated).toLocaleString("tr-TR")}
+                  {s.source && <span style={{
+                    marginLeft: 6, padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500,
+                    background: s.source === "mrp" ? "#FEF3C7" : "#DBEAFE",
+                    color: s.source === "mrp" ? "#92400E" : "#1E40AF"
+                  }}>{s.source === "mrp" ? "🔥 MRP" : "📋 VIO"}</span>}
                 </span>
               )}
             </div>
@@ -7564,6 +7626,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             {s && (
               <div style={{ display: "flex", gap: 10, marginBottom: 16, flexWrap: "wrap" }}>
                 <KPI label="İş Emri" value={s.totalJobs || 0} sub={`${opsTotal} op (${opsInternal} iç + ${opsFasonCount} fason)`} accent="#3B82F6" />
+                <KPI label="Kaynak" value={s.source === "mrp" ? "🔥 MRP" : "📋 VIO"} sub={`${s.totalReqItems || "?"} ihtiyaç kalemi`} accent={s.source === "mrp" ? "#D97706" : "#2563EB"} />
                 <KPI label="MES Süreli Op" value={opsMES} sub={`${opsInternal > 0 ? Math.round(opsMES/opsInternal*100) : 0}% iç op tanımlı`} accent="#10B981" />
                 <KPI label="Fason Sipariş" value={s.totalFason || 0} sub="Dış operasyon" accent="#F59E0B" />
                 <KPI label="Darboğaz" value={s.bottleneck ? (wcSt[s.bottleneck]?.name || s.bottleneck) : "—"} sub={s.bottleneck ? `%${wcSt[s.bottleneck]?.utilization || 0} doluluk` : ""} accent="#EF4444" />
@@ -8486,10 +8549,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     </div>
                   )}
 
-                  {/* Search bar */}
+                  {/* Search bar + Çizelgeye Aktar */}
                   <div style={{ display: "flex", gap: 8, marginBottom: 10, alignItems: "center" }}>
                     <input placeholder="Stok kodu veya adı ara..." value={expSearch} onChange={e => setExpSearch(e.target.value)}
                       style={{ flex: 1, padding: "7px 12px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12, background: "var(--color-background-primary)" }} />
+                    <button
+                      onClick={() => { setSchedSource("mrp"); setActiveTab("schedule"); }}
+                      style={{
+                        padding: "6px 14px", borderRadius: 6, border: "1px solid #D97706", cursor: "pointer",
+                        background: "#FEF3C7", color: "#92400E", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
+                        display: "flex", alignItems: "center", gap: 4
+                      }}
+                    >
+                      📅 Çizelgeye Aktar →
+                    </button>
                     <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
                       {new Date(exp.calculatedAt).toLocaleString("tr-TR")}
                     </span>
