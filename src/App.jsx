@@ -4458,6 +4458,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [schedSource, setSchedSource] = useState("vio"); // "vio" | "mrp"
   const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
+  const [schedOverrides, setSchedOverrides] = useState({}); // "partCode|opCode" → machineId
   const [editingOpPart, setEditingOpPart] = useState(null);
 
   // Adım 5 — VIO Stok Raporu State
@@ -4519,6 +4520,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     unsubs.push(onSnapshot(wipRef, snap => {
       if (snap.exists()) setWipAssignments(snap.data());
     }, () => {}));
+    // Çizelge Manuel Tezgah Taşımaları
+    const overRef = doc(db, APP_COL, "schedOverrides");
+    unsubs.push(onSnapshot(overRef, snap => {
+      if (snap.exists()) setSchedOverrides(snap.data());
+    }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
 
@@ -4554,15 +4560,26 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     await setDoc(doc(db, APP_COL, "wipAssignments"), updated);
   };
 
-  // Planlanan iş emri operasyonunun tezgahını değiştir
+  // Planlanan iş emri operasyonunun tezgahını değiştir + kalıcı override kaydet
   const reassignOp = async (jobId, opIdx, newMachineId) => {
     if (!db || !canEdit || !schedule?.jobs) return;
+    const job = schedule.jobs.find(j => j.id === jobId);
+    if (!job) return;
+    const op = job.operations[opIdx];
+    if (!op) return;
+
+    // 1) Schedule'daki atamayı güncelle
     const updatedJobs = schedule.jobs.map(j => {
       if (j.id !== jobId) return j;
-      const ops = j.operations.map((op, i) => i === opIdx ? { ...op, machineId: newMachineId } : op);
+      const ops = j.operations.map((o, i) => i === opIdx ? { ...o, machineId: newMachineId } : o);
       return { ...j, operations: ops };
     });
     await saveSchedule({ ...schedule, jobs: updatedJobs });
+
+    // 2) Kalıcı override kaydet (partCode|opCode → machineId, yeniden hesaplamada korunur)
+    const overrideKey = `${job.partCode}|${op.opCode}`;
+    const updated = { ...schedOverrides, [overrideKey]: newMachineId };
+    await setDoc(doc(db, APP_COL, "schedOverrides"), updated);
   };
 
   // ==================== VIO STOK RAPORU PARSER ====================
@@ -5109,6 +5126,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     } else {
       if (!requirements || !workCenters || !bomModels || calculating) return;
     }
+    // Manuel taşıma varsa uyar
+    const overrideCount = Object.keys(schedOverrides).length;
+    if (overrideCount > 0) {
+      if (!confirm(`${overrideCount} manuel tezgah ataması var. Yeniden hesaplandıktan sonra otomatik geri uygulanacak.\n\nDevam edilsin mi?`)) return;
+    }
     setCalculating(true);
     try {
       const today = nextWorkday(new Date());
@@ -5358,6 +5380,21 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         maxDate: maxDate ? dateStr(maxDate) : null,
         lastCalculated: new Date().toISOString()
       };
+
+      // Manuel tezgah taşımalarını geri uygula (partCode|opCode → machineId)
+      if (Object.keys(schedOverrides).length > 0) {
+        let applied = 0;
+        schedData.jobs.forEach(j => {
+          j.operations.forEach(op => {
+            const key = `${j.partCode}|${op.opCode}`;
+            if (schedOverrides[key] && !op.isFason) {
+              op.machineId = schedOverrides[key];
+              applied++;
+            }
+          });
+        });
+        if (applied > 0) schedData.overridesApplied = applied;
+      }
 
       await saveSchedule(schedData);
       setCalculating(false);
