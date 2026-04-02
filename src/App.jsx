@@ -6689,6 +6689,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     saveWC({ ...workCenters, [field]: value });
   };
 
+  const addWorkCenter = (name) => {
+    if (!workCenters || !canEdit || !name.trim()) return;
+    const code = name.trim().toUpperCase().replace(/[^A-ZÇĞİÖŞÜ0-9\s\.]/g, "").replace(/\s+/g, "_").substring(0, 20);
+    if (workCenters.centers?.[code]) return; // zaten var
+    const newWC = {
+      ...workCenters,
+      centers: { ...workCenters.centers, [code]: { name: name.trim(), machines: [], opCodes: [] } }
+    };
+    saveWC(newWC);
+  };
+
+  const removeWorkCenter = (code) => {
+    if (!workCenters || !canEdit) return;
+    const newCenters = { ...workCenters.centers };
+    delete newCenters[code];
+    saveWC({ ...workCenters, centers: newCenters });
+  };
+
   // ==================== DELETE MODEL ====================
   const deleteModel = async (key) => {
     if (!canEdit) return;
@@ -7203,9 +7221,35 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       Op: {wc.opCodes.join(", ")}
                     </div>
                   )}
+
+                  {canEdit && machines.length === 0 && (
+                    <div style={{ marginTop: 6, textAlign: "right" }}>
+                      <span onClick={() => { if (confirm(`"${wc.name || code}" iş merkezini silmek istediğinize emin misiniz?`)) removeWorkCenter(code); }}
+                        style={{ fontSize: 9, color: "var(--color-text-danger)", cursor: "pointer" }}>Merkezi sil</span>
+                    </div>
+                  )}
                 </div>
               );
             })}
+
+            {/* Yeni iş merkezi ekleme kartı */}
+            {canEdit && (
+              <div style={{
+                background: "var(--color-background-primary)", border: "1.5px dashed var(--color-border-secondary)",
+                borderRadius: 10, padding: 14, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: 100
+              }}>
+                <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginBottom: 8 }}>Yeni İş Merkezi</div>
+                <input
+                  id="new-wc-name" type="text" placeholder="Merkez adı (ör. KALİTE KONTROL)"
+                  onKeyDown={e => { if (e.key === "Enter" && e.target.value.trim()) { addWorkCenter(e.target.value); e.target.value = ""; } }}
+                  style={{ width: "100%", padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12, textAlign: "center" }}
+                />
+                <button onClick={() => { const inp = document.getElementById("new-wc-name"); if (inp?.value.trim()) { addWorkCenter(inp.value); inp.value = ""; } }}
+                  style={{ marginTop: 6, padding: "4px 16px", borderRadius: 4, border: "none", background: "var(--color-background-info)", color: "var(--color-text-info)", fontSize: 11, cursor: "pointer" }}>
+                  + Ekle
+                </button>
+              </div>
+            )}
           </div>
 
           {Object.keys(workCenters.centers || {}).length === 0 && (
