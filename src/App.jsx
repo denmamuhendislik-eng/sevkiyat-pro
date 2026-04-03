@@ -4962,6 +4962,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           }
           partQtys[i] = needed;
 
+          // Skip root-level parts (the product itself) — only child components go into grossReq
+          if (p.parentIdx === null || p.parentIdx === undefined) return;
+
           const code = p.stockCode;
           if (!grossReq[code]) {
             grossReq[code] = { code, name: p.stockName, unit: p.unit || "AD", level: p.level, supplyType: p.supplyType, grossQty: 0, sources: [] };
