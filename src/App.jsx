@@ -5529,6 +5529,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const detectedFason = {};  // opCode -> {name, count}
     let totalOps = 0;
     const partStack = {};      // level -> index of most recent part at that level
+    const orphanOps = [];      // operations parsed before any part exists
 
     for (let i = headerIdx + 1; i < rows.length; i++) {
       let col0 = String(rows[i][0] || "").trim();
@@ -5582,6 +5583,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         }
         if (ownerIdx !== undefined && parts[ownerIdx]) {
           parts[ownerIdx].operations.push(opObj);
+        } else {
+          // No parent part yet — buffer for assignment to next part
+          orphanOps.push(opObj);
         }
 
         // Detect work centers and fason
@@ -5625,6 +5629,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         unit: col3 || "AD", supplyType, parentIdx: null,
         operations: []
       });
+
+      // Assign any orphan operations (parsed before this part existed) to this part
+      if (orphanOps.length > 0) {
+        parts[partIdx].operations.push(...orphanOps);
+        orphanOps.length = 0;
+      }
 
       // Update partStack: this part is the most recent at its level
       partStack[level] = partIdx;
