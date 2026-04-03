@@ -9164,6 +9164,26 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 return Object.values(pMap).sort((a, b) => b.netOpenParts - a.netOpenParts || (b.adjustedNetDemand || b.netDemand) - (a.adjustedNetDemand || a.netDemand));
               })();
 
+              // ANA ürünler için montaj stok vs VIO stok çapraz kontrolü
+              const stockCrossCheck = (() => {
+                const checks = {};
+                ANA_IDS.forEach(pid => {
+                  const ps = productSummary.find(p => p.pid === pid);
+                  if (!ps || ps.source !== "montaj") return;
+                  const vioCode = VIO_CODES[pid];
+                  const vioStk = vioCode ? stockLookup[vioCode] : null;
+                  const vioAmbar = vioStk ? vioStk.ambar : null;
+                  const montajStok = ps.productStock;
+                  if (vioAmbar === null) {
+                    checks[pid] = { montaj: montajStok, vio: null, diff: null, status: "novio" };
+                  } else {
+                    const diff = montajStok - vioAmbar;
+                    checks[pid] = { montaj: montajStok, vio: vioAmbar, diff, status: Math.abs(diff) > 2 ? "mismatch" : "ok" };
+                  }
+                });
+                return checks;
+              })();
+
               return (
                 <div>
                   {/* Summary Cards — clickable */}
@@ -9219,6 +9239,26 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   {expFilter === "products" && (
                     <div>
                       <div style={{ fontSize: 13, fontWeight: 600, color: "#7C3AED", marginBottom: 10 }}>📦 Ürün Bazlı İhtiyaç Özeti</div>
+                      {/* Montaj vs VIO stok uyumsuzluk uyarısı */}
+                      {(() => {
+                        const mismatches = Object.entries(stockCrossCheck).filter(([, c]) => c.status === "mismatch");
+                        if (mismatches.length === 0) return null;
+                        return (
+                          <div style={{ padding: "8px 12px", marginBottom: 10, borderRadius: 8, background: "#FEF3C7", border: "1px solid #F59E0B", fontSize: 11 }}>
+                            <span style={{ fontWeight: 500, color: "#92400E" }}>⚠ Montaj stok ↔ VIO stok uyumsuzluğu ({mismatches.length} ürün):</span>
+                            <div style={{ marginTop: 4, display: "flex", gap: 12, flexWrap: "wrap", fontSize: 10, color: "#78350F" }}>
+                              {mismatches.map(([pidStr, cc]) => {
+                                const pr = products?.find(p => p.id === Number(pidStr));
+                                return (
+                                  <span key={pidStr}>
+                                    <b>{pr?.nameTR || pidStr}</b>: montaj {cc.montaj} / VIO {cc.vio} (fark: {cc.diff > 0 ? "+" : ""}{cc.diff})
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
                       <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden" }}>
                         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                           <thead><tr style={{ background: "var(--color-background-secondary)" }}>
@@ -9255,7 +9295,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     </span>
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{ps.rawDemand}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.productStock > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" }}>{ps.productStock > 0 ? ps.productStock : "—"}</td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.productStock > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" }}>
+                                    {ps.productStock > 0 ? ps.productStock : "—"}
+                                    {(() => {
+                                      const cc = stockCrossCheck[ps.pid];
+                                      if (!cc) return null;
+                                      if (cc.status === "novio") return <div style={{ fontSize: 7, color: "var(--color-text-tertiary)" }}>VIO yok</div>;
+                                      if (cc.status === "mismatch") return <div style={{ fontSize: 7, color: "#DC2626" }} title={`Montaj: ${cc.montaj}, VIO: ${cc.vio}, Fark: ${cc.diff > 0 ? "+" : ""}${cc.diff}`}>⚠ VIO: {cc.vio} ({cc.diff > 0 ? "+" : ""}{cc.diff})</div>;
+                                      return <div style={{ fontSize: 7, color: "#16A34A" }}>VIO: {cc.vio} ✓</div>;
+                                    })()}
+                                  </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.bomStockUsed > 0 ? "#7C3AED" : "var(--color-text-tertiary)", fontSize: 10 }}>
                                     {ps.bomStockUsed > 0 ? <span title={`BOM bağımlı talep için ${ps.bomStockUsed} adet stoktan ayrıldı`}>−{ps.bomStockUsed}</span> : "—"}
                                   </td>
@@ -9296,6 +9345,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#DBEAFE", color: "#1D4ED8", fontSize: 9 }}>Montaj</span> = talep montaj planından, stok montaj stoktan</span>
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#F3E8FF", color: "#7C3AED", fontSize: 9 }}>Sevkiyat</span> = talep sevkiyat planından, stok VIO raporundan</span>
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#EDE9FE", color: "#7C3AED", fontSize: 9 }}>⚡ BOM</span> = diğer ürünlerin BOM'unda kullanılan stok (öncelikli)</span>
+                        <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9 }}>⚠ VIO</span> = montaj stok vs VIO stok farkı (&gt;2 uyarı)</span>
                       </div>
                     </div>
                   )}
