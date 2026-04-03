@@ -6916,87 +6916,119 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             note: "Kendi MRP kullanılıyorsa gereksiz" }
         ];
 
-        // Otomatik dosya tanıma
+        // Dosya tipini tanı (import yapmadan)
+        const detectFileType = (wb) => {
+          try {
+            const sheet = wb.Sheets[wb.SheetNames[0]];
+            const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+            const raw = rows.slice(0, 10).flatMap(r => r.map(c => String(c || ""))).join("|");
+
+            if (raw.includes("Ürün Ağacı") || raw.includes("ürün ağacı") || raw.includes("ÜRÜN AĞACI")) return "bom";
+            if (raw.includes("Emir Akibet") || raw.includes("emir akibet") || raw.includes("EMİR AKİBET")) return "akibet";
+            const hasEmirNo = raw.includes("Emir No") || raw.includes("Emir Miktar");
+            const hasGerMiktar = raw.includes("Ger.Miktar") || raw.includes("İşlem Mik");
+            if (hasEmirNo && hasGerMiktar) return "akibet";
+            if (raw.includes("Son Stok") || raw.includes("SON STOK") || raw.includes("son stok")) return "stock";
+            const hasLoc = raw.includes("Yer Adı") || raw.includes("Merkez Ambar") || raw.includes("Hammadde ve") || raw.includes("Üretim Hattı") || raw.includes("Sevkiyat Ambar");
+            if (hasLoc && (raw.includes("Stok Kodu") || raw.includes("Miktar"))) return "stock";
+            const firstCells = rows.slice(0, 5).map(r => String(r[0] || ""));
+            const hasMesHeader = firstCells.some(c => c.includes("STOK") || c.includes("Stok"));
+            const hasMachine = raw.includes("MAKİNE") || raw.includes("Makine") || raw.includes("CNC-");
+            const hasOper = raw.includes("OPERASYON") || raw.includes("Operasyon") || raw.includes("TORNALAMA") || raw.includes("İŞLEME");
+            if (hasMesHeader && (hasMachine || hasOper) && !hasEmirNo) return "mes";
+            if (raw.includes("Müşteri") || raw.includes("MÜŞTERİ") || raw.includes("Bekleme") || raw.includes("BEKLEME")) return "purch";
+            if (rows.slice(0, 20).some(r => /^No\s+\S+\s+Tarih/.test(String(r[0] || "")))) return "purch";
+            if (raw.includes("İstenenler") || raw.includes("Ara Seviye") || raw.includes("Malzeme Tedarik") || raw.includes("Tedarik Plan")) return "req";
+            // Try-parse fallback
+            try { const r = parseBomExcel(wb); if (r && r.parts?.length > 0) return "bom"; } catch(ex){}
+            try { const r = parseAkibetExcel(wb); if (r && r.totalParts > 0) return "akibet"; } catch(ex){}
+            try { const r = parseStockReport(wb); if (r && r.totalCodes > 0) return "stock"; } catch(ex){}
+            try { const r = parsePurchaseExcel(wb); if (r && r.totalParts > 0) return "purch"; } catch(ex){}
+          } catch(ex) {}
+          return null;
+        };
+
+        const typeLabels = { bom: "Ürün Ağacı (BOM)", mes: "MES Süreleri", stock: "Stok Raporu", akibet: "Emir Akibet", purch: "Açık Sipariş", req: "İhtiyaç Listesi" };
+        const typeHandlers = { bom: handleBomImport, mes: handleMesImport, stock: handleStockImport, akibet: handleAkibetImport, purch: handlePurchaseImport, req: handleReqImport };
+
+        // Tekli dosya import
         const detectAndImport = (file) => {
           if (!file || !/\.xlsx?$/i.test(file.name)) { alert("Sadece Excel (.xlsx/.xls) dosyaları destekleniyor."); return; }
           const reader = new FileReader();
           reader.onload = (e) => {
-            try {
-              const wb = XLSX.read(e.target.result, { type: "array" });
-              const sheet = wb.Sheets[wb.SheetNames[0]];
-              const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-              // İlk 10 satırın tüm hücrelerini birleştir (case-sensitive, Türkçe uyumlu)
-              const raw = rows.slice(0, 10).flatMap(r => r.map(c => String(c || ""))).join("|");
-
-              // 1) BOM: "Ürün Ağacı" başlık alanında
-              if (raw.includes("Ürün Ağacı") || raw.includes("ürün ağacı") || raw.includes("ÜRÜN AĞACI")) {
-                handleBomImport(file); return;
-              }
-              // 2) Akibet: "Emir Akibet" başlık veya "Emir No" + "Ger.Miktar" header
-              if (raw.includes("Emir Akibet") || raw.includes("emir akibet") || raw.includes("EMİR AKİBET")) {
-                handleAkibetImport(file); return;
-              }
-              const hasEmirNo = raw.includes("Emir No") || raw.includes("Emir Miktar");
-              const hasGerMiktar = raw.includes("Ger.Miktar") || raw.includes("İşlem Mik");
-              if (hasEmirNo && hasGerMiktar) {
-                handleAkibetImport(file); return;
-              }
-              // 3) Stok: "Son Stok" başlık veya lokasyon+miktar pattern
-              if (raw.includes("Son Stok") || raw.includes("SON STOK") || raw.includes("son stok")) {
-                handleStockImport(file); return;
-              }
-              // Stok kontrolü: header satırında "Yer Adı" veya bilinen lokasyon isimleri
-              const hasLoc = raw.includes("Yer Adı") || raw.includes("Merkez Ambar") || raw.includes("Hammadde ve") || raw.includes("Üretim Hattı") || raw.includes("Sevkiyat Ambar");
-              if (hasLoc && (raw.includes("Stok Kodu") || raw.includes("Miktar"))) {
-                handleStockImport(file); return;
-              }
-              // 4) MES: "STOK" ilk sütun header + operasyon/makine sütunları
-              const firstCells = rows.slice(0, 5).map(r => String(r[0] || ""));
-              const hasMesHeader = firstCells.some(c => c.includes("STOK") || c.includes("Stok"));
-              const hasMachine = raw.includes("MAKİNE") || raw.includes("Makine") || raw.includes("CNC-");
-              const hasOper = raw.includes("OPERASYON") || raw.includes("Operasyon") || raw.includes("TORNALAMA") || raw.includes("İŞLEME");
-              if (hasMesHeader && (hasMachine || hasOper) && !hasEmirNo) {
-                handleMesImport(file); return;
-              }
-              // 5) Sipariş: "Müşteri" veya "No XXX Tarih" pattern veya "Bekleme" keyword
-              if (raw.includes("Müşteri") || raw.includes("MÜŞTERİ") || raw.includes("Bekleme") || raw.includes("BEKLEME")) {
-                handlePurchaseImport(file); return;
-              }
-              const hasNoTarih = rows.slice(0, 20).some(r => /^No\s+\S+\s+Tarih/.test(String(r[0] || "")));
-              if (hasNoTarih) {
-                handlePurchaseImport(file); return;
-              }
-              // 6) İhtiyaç: "İstenenler" veya "Ara Seviye" veya "Dönem" + "Tedarik"
-              if (raw.includes("İstenenler") || raw.includes("Ara Seviye") || raw.includes("Malzeme Tedarik") || raw.includes("Tedarik Plan")) {
-                handleReqImport(file); return;
-              }
-              // 7) Son çare: try-parse — her parser'ı dene
-              try { const r = parseBomExcel(wb); if (r && r.parts?.length > 0) { handleBomImport(file); return; } } catch(ex){}
-              try { const r = parseAkibetExcel(wb); if (r && r.totalParts > 0) { handleAkibetImport(file); return; } } catch(ex){}
-              try { const r = parseStockReport(wb); if (r && r.totalCodes > 0) { handleStockImport(file); return; } } catch(ex){}
-              try { const r = parsePurchaseExcel(wb); if (r && r.totalParts > 0) { handlePurchaseImport(file); return; } } catch(ex){}
-
-              alert("Dosya tipi tanınamadı.\n\nDosya: " + file.name + "\n\nLütfen ilgili kartın yükle butonunu kullanın.");
-            } catch (err) {
-              alert("Dosya okunamadı: " + err.message);
-            }
+            const wb = XLSX.read(e.target.result, { type: "array" });
+            const type = detectFileType(wb);
+            if (type && typeHandlers[type]) { typeHandlers[type](file); }
+            else { alert("Dosya tipi tanınamadı.\n\nDosya: " + file.name + "\n\nLütfen ilgili kartın yükle butonunu kullanın."); }
           };
           reader.readAsArrayBuffer(file);
+        };
+
+        // Toplu dosya import (çift kontrollü)
+        const importBatch = (files) => {
+          const fileArr = Array.from(files).filter(f => /\.xlsx?$/i.test(f.name));
+          if (fileArr.length === 0) return;
+          if (fileArr.length === 1) { detectAndImport(fileArr[0]); return; }
+
+          // Hepsini oku ve tipini belirle
+          let detected = [];
+          let readCount = 0;
+          fileArr.forEach(file => {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+              try {
+                const wb = XLSX.read(e.target.result, { type: "array" });
+                const type = detectFileType(wb);
+                detected.push({ file, type, name: file.name });
+              } catch (err) {
+                detected.push({ file, type: null, name: file.name });
+              }
+              readCount++;
+              if (readCount === fileArr.length) {
+                // Tüm dosyalar okundu — çift kontrolü yap
+                const byType = {};
+                const unknown = [];
+                detected.forEach(d => {
+                  if (!d.type) { unknown.push(d.name); return; }
+                  if (!byType[d.type]) byType[d.type] = [];
+                  byType[d.type].push(d);
+                });
+
+                const duplicates = Object.entries(byType).filter(([, arr]) => arr.length > 1);
+                let msg = `${fileArr.length} dosya algılandı:\n\n`;
+                Object.entries(byType).forEach(([type, arr]) => {
+                  msg += `${arr.length > 1 ? "⚠ " : "✓ "}${typeLabels[type] || type}: ${arr.map(d => d.name.substring(0, 25)).join(", ")}\n`;
+                });
+                if (unknown.length > 0) msg += `\n❌ Tanınamayan: ${unknown.join(", ")}\n`;
+                if (duplicates.length > 0) msg += `\n⚠ Aynı tipte birden fazla dosya var — her tipten sadece son dosya yüklenir.\n`;
+                msg += `\nDevam edilsin mi?`;
+
+                if (!confirm(msg)) return;
+
+                // Her tipten sadece son dosyayı import et
+                Object.entries(byType).forEach(([type, arr]) => {
+                  const last = arr[arr.length - 1];
+                  if (typeHandlers[type]) typeHandlers[type](last.file);
+                });
+              }
+            };
+            reader.readAsArrayBuffer(file);
+          });
         };
 
         return (
           <div>
             {/* Akıllı sürükle-bırak alanı */}
             <div
-              onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) detectAndImport(f); }}
+              onDrop={(e) => { e.preventDefault(); const files = e.dataTransfer?.files; if (files?.length > 0) importBatch(files); }}
               onDragOver={e => e.preventDefault()}
               style={{ padding: "16px 20px", marginBottom: 16, borderRadius: 10, border: "2px dashed var(--color-border-secondary)", background: "var(--color-background-secondary)", textAlign: "center", cursor: "pointer" }}
               onClick={() => document.getElementById("smart-import-input").click()}
             >
-              <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 4 }}>📥 Excel dosyasını buraya sürükleyin veya tıklayın</div>
-              <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Dosya içeriği otomatik tanınır ve doğru yere import edilir</div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 4 }}>📥 Excel dosyalarını buraya sürükleyin veya tıklayın</div>
+              <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Birden fazla dosya seçebilirsiniz — içerik otomatik tanınır, çift dosya varsa uyarılırsınız</div>
               <input id="smart-import-input" type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }}
-                onChange={(e) => { Array.from(e.target.files || []).forEach(f => detectAndImport(f)); e.target.value = ""; }} />
+                onChange={(e) => { if (e.target.files?.length > 0) importBatch(e.target.files); e.target.value = ""; }} />
             </div>
 
             {/* Import kartları */}
