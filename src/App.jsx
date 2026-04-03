@@ -212,12 +212,16 @@ export default function App() {
             53: { nameTR: "119054 190X5MM ST37 LZR KSM" },
             57: { nameTR: "119061 193X5MM ST37 LZR KSM" },
             64: { nameTR: "240153 90X50X10MM ST37 LZR KSM" },
+            74: { nameTR: "22*14*63 KAMA" },
             81: { nameTR: "121279 SWITCH SACI TP" },
             83: { nameTR: "121294 SWITCH SACI 4MM" },
             85: { nameTR: "36089 CE MUHAFAZA" },
             92: { nameTR: "116921-20 SAC 1,50MM GLV LZR KSM" },
             105: { nameTR: "121412-F BÜKME AYNASI P74", vioCode: "152-1161" },
+            109: { nameTR: "SPA 3 250 2517 DÖKÜM KASNAK" },
             114: { nameTR: "320631-G DAYAMA GÖNYESİ  P74", vioCode: "152-1162" },
+            121: { nameTR: "360031 ANA MİL TP32/36" },
+            124: { nameTR: "250031 ANA MİL TP25/32" },
             126: { nameTR: "119338-C42 109X94X70MM ST37 OKS.KSM" },
             129: { nameTR: "KAYNATILMIŞ 42052 MUHAFAZA KOMPLE C44" },
             131: { nameTR: "116925-03 SAC 1,50MM ST37 LZR KSM" },
@@ -225,7 +229,9 @@ export default function App() {
             133: { nameTR: "42086 CE SAC BAĞLANTI KOL KOMPLE" },
             139: { nameTR: "KRA250200S1 315X315X 8MM ST37 LZR KSM" },
             142: { nameTR: "129170 KSM Q70X85 7131 KAPLİN DİLİ C42", vioCode: "150-1915" },
-            147: { nameTR: "186008 Q85/Q55,5X2,5MM RING CAL35" }
+            147: { nameTR: "186008 Q85/Q55,5X2,5MM RING CAL35" },
+            150: { nameTR: "SPA 3 250 2517 DÖKÜM KASNAK" },
+            177: { nameTR: "22*14*63 KAMA" }
           };
           const fixed = d.products.map(p => {
             const fix = PRODUCT_FIXES[p.id];
