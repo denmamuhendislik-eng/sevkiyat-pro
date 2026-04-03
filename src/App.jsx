@@ -201,7 +201,21 @@ export default function App() {
       if (snap.exists()) {
         const d = snap.data();
         if (d.yearsData) setYearsData(d.yearsData);
-        if (d.products) setProducts(d.products);
+        if (d.products) {
+          // Ürün veri düzeltmeleri (VIO kod/isim uyumsuzlukları)
+          const PRODUCT_FIXES = {
+            6: { nameTR: "116521-O 980X817,5X20MM P54EVO SAC SEHPA", vioCode: "152-1246" }
+          };
+          const fixed = d.products.map(p => {
+            const fix = PRODUCT_FIXES[p.id];
+            if (fix) {
+              const changed = (fix.nameTR && p.nameTR !== fix.nameTR) || (fix.vioCode && p.vioCode !== fix.vioCode);
+              if (changed) return { ...p, ...fix };
+            }
+            return p;
+          });
+          setProducts(fixed);
+        }
         if (d.combRules) setCombRules(d.combRules);
         if (d.packingStandards) setPackingStandards(d.packingStandards);
         if (d.minKG) setMinKG(d.minKG);
