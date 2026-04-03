@@ -5693,7 +5693,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       modelCode, modelName,
       parts,
       partCount: parts.length,
-      levelCounts: { L0: parts.filter(p => p.level === 0).length, L1: parts.filter(p => p.level === 1).length, L2: parts.filter(p => p.level === 2).length, L3: parts.filter(p => p.level >= 3).length },
+      levelCounts: { L0: parts.filter(p => p.level === 0).length, L1: parts.filter(p => p.level === 1).length, L2: parts.filter(p => p.level === 2).length, L3: parts.filter(p => p.level === 3).length, L4: parts.filter(p => p.level >= 4).length },
       opCount: totalOps,
       detectedWCs: wcResult,
       detectedFason: faResult,
@@ -7491,7 +7491,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           )}
           {importResult && importResult.success && (
             <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
-              ✓ {importResult.modelCode} — {importResult.modelName} · {importResult.partCount} parça ({importResult.levelCounts.L0}/{importResult.levelCounts.L1}/{importResult.levelCounts.L2}/{importResult.levelCounts.L3 || 0}) · {importResult.opCount} operasyon · {importResult.wcCount} iş merkezi · {importResult.faCount} fason tipi
+              ✓ {importResult.modelCode} — {importResult.modelName} · {importResult.partCount} parça ({importResult.levelCounts.L0}/{importResult.levelCounts.L1}/{importResult.levelCounts.L2}/{importResult.levelCounts.L3 || 0}{importResult.levelCounts.L4 ? `/${importResult.levelCounts.L4}` : ""}) · {importResult.opCount} operasyon · {importResult.wcCount} iş merkezi · {importResult.faCount} fason tipi
               {(importResult.overridesKept > 0 || importResult.opTimesKept > 0) && (
                 <span style={{ display: "block", marginTop: 4, fontSize: 11 }}>
                   ↳ Korunan: {importResult.overridesKept > 0 && `${importResult.overridesKept} supply type override`}{importResult.overridesKept > 0 && importResult.opTimesKept > 0 && " · "}{importResult.opTimesKept > 0 && `${importResult.opTimesKept} operasyon süresi`}
@@ -7580,7 +7580,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
               {/* Stats bar */}
               <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 6, padding: "4px 8px", background: "var(--color-background-secondary)", borderRadius: 6 }}>
-                {md.modelCode} — {md.partCount} parça · L0: {md.levelCounts?.L0 || 0} · L1: {md.levelCounts?.L1 || 0} · L2: {md.levelCounts?.L2 || 0} · L3: {md.levelCounts?.L3 || 0} · {md.opCount} operasyon
+                {md.modelCode} — {md.partCount} parça · L0: {md.levelCounts?.L0 || 0} · L1: {md.levelCounts?.L1 || 0} · L2: {md.levelCounts?.L2 || 0} · L3: {md.levelCounts?.L3 || 0}{md.levelCounts?.L4 ? ` · L4: ${md.levelCounts.L4}` : ""} · {md.opCount} operasyon
               </div>
 
               {/* Tree or flat search results */}
