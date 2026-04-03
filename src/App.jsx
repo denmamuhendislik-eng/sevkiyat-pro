@@ -4490,7 +4490,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [bomModels, setBomModels] = useState({});
   const [workCenters, setWorkCenters] = useState(null);
   const [requirements, setRequirements] = useState(null);
-  const [activeTab, setActiveTab] = useState("bom");
+  const [activeTab, setActiveTab] = useState("data");
   const [selectedModel, setSelectedModel] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState({});
   const [bomSearch, setBomSearch] = useState("");
@@ -6853,7 +6853,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: "flex", gap: 4, marginBottom: 16 }}>
+      <div style={{ display: "flex", gap: 4, marginBottom: 16, flexWrap: "wrap" }}>
+        <button onClick={() => setActiveTab("data")} style={tabStyle("data")}>📥 Veri Yönetimi</button>
         <button onClick={() => setActiveTab("bom")} style={tabStyle("bom")}>Ürün Ağacı (BOM)</button>
         <button onClick={() => setActiveTab("stock")} style={tabStyle("stock")}>📦 Stok Raporu</button>
         <button onClick={() => setActiveTab("req")} style={tabStyle("req")}>İhtiyaç Listesi</button>
@@ -6862,6 +6863,210 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         <button onClick={() => setActiveTab("schedule")} style={tabStyle("schedule")}>Kapasite & Çizelge</button>
         <button onClick={() => setActiveTab("explosion")} style={tabStyle("explosion")}>🔥 MRP Hesaplama</button>
       </div>
+
+      {/* ========== VERİ YÖNETİMİ TAB ========== */}
+      {activeTab === "data" && (() => {
+        // Veri durumu hesapla
+        const now = Date.now();
+        const dayMs = 86400000;
+        const ageLabel = (isoStr) => {
+          if (!isoStr) return { text: "Yüklenmedi", color: "#888", age: -1 };
+          const d = new Date(isoStr);
+          const age = Math.floor((now - d.getTime()) / dayMs);
+          if (age === 0) return { text: "Bugün " + d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }), color: "#16A34A", age };
+          if (age === 1) return { text: "Dün", color: "#16A34A", age };
+          if (age <= 3) return { text: age + " gün önce", color: "#D97706", age };
+          if (age <= 7) return { text: age + " gün önce", color: "#EA580C", age };
+          return { text: age + " gün önce", color: "#DC2626", age };
+        };
+
+        const bomKeys = Object.keys(bomModels || {}).filter(k => k !== "undefined");
+        const bomPartsTotal = bomKeys.reduce((s, k) => s + (bomModels[k]?.parts?.length || 0), 0);
+        const bomLatest = bomKeys.reduce((latest, k) => { const d = bomModels[k]?.importedAt; return d && d > latest ? d : latest; }, "");
+        const mesOpsCount = bomKeys.reduce((s, k) => s + (bomModels[k]?.parts || []).reduce((ps, p) => ps + (p.operations || []).filter(o => o.cycleTime != null && o.cycleTime > 0).length, 0), 0);
+        const totalOpsCount = bomKeys.reduce((s, k) => s + (bomModels[k]?.parts || []).reduce((ps, p) => ps + (p.operations || []).length, 0), 0);
+        const stockCount = stock ? Object.keys(stock.parts || {}).length : 0;
+        const reqItems = requirements ? Object.values(requirements.levels || {}).reduce((s, l) => s + (l.items?.length || 0), 0) : 0;
+
+        const cards = [
+          { id: "bom", title: "Ürün Ağacı (BOM)", icon: "🌳", order: "1",
+            loaded: bomKeys.length > 0, date: bomLatest, dep: "İlk yüklenmeli",
+            stats: bomKeys.length > 0 ? `${bomKeys.length} model · ${bomPartsTotal} parça · ${totalOpsCount} op` : null,
+            handler: handleBomImport, accept: ".xlsx,.xls" },
+          { id: "mes", title: "MES Operasyon Süreleri", icon: "⏱", order: "2",
+            loaded: mesOpsCount > 0, date: bomLatest, dep: "BOM'dan sonra",
+            stats: mesOpsCount > 0 ? `${mesOpsCount} / ${totalOpsCount} op süreli (%${totalOpsCount > 0 ? Math.round(mesOpsCount / totalOpsCount * 100) : 0})` : null,
+            optional: true, handler: handleMesImport, accept: ".xlsx,.xls" },
+          { id: "stock", title: "VIO Son Stok Raporu", icon: "📦", order: "3",
+            loaded: !!stock, date: stock?.importedAt, dep: "Günlük güncelle",
+            stats: stock ? `${stockCount} kalem · ${stock.categories?.ambar?.count || 0} ambar` : null,
+            daily: true, handler: handleStockImport, accept: ".xlsx,.xls" },
+          { id: "akibet", title: "Emir Akibet Raporu", icon: "🔄", order: "4",
+            loaded: !!akibet, date: akibet?.importedAt, dep: "Günlük güncelle",
+            stats: akibet ? `${akibet.totalParts} parça · ${akibet.withInternal} iç · ${akibet.withFason} fason` : null,
+            daily: true, handler: handleAkibetImport, accept: ".xlsx,.xls" },
+          { id: "purch", title: "Açık Sipariş Raporu", icon: "🛒", order: "5",
+            loaded: !!purchase, date: purchase?.importedAt, dep: "Günlük güncelle",
+            stats: purchase ? `${purchase.totalParts} parça · ${purchase.supplierCount} tedarikçi` : null,
+            daily: true, handler: handlePurchaseImport, accept: ".xlsx,.xls" },
+          { id: "req", title: "VIO İhtiyaç Listesi", icon: "📋", order: "6",
+            loaded: !!requirements, date: requirements?.importedAt, dep: "Opsiyonel",
+            stats: requirements ? `${reqItems} kalem` : null,
+            optional: true, handler: handleReqImport, accept: ".xlsx,.xls",
+            note: "Kendi MRP kullanılıyorsa gereksiz" }
+        ];
+
+        // Otomatik dosya tanıma
+        const detectAndImport = (file) => {
+          if (!file || !/\.xlsx?$/i.test(file.name)) { alert("Sadece Excel (.xlsx/.xls) dosyaları destekleniyor."); return; }
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            try {
+              const wb = XLSX.read(e.target.result, { type: "array" });
+              const sheet = wb.Sheets[wb.SheetNames[0]];
+              const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+              // İlk 8 satırı tara
+              const sample = rows.slice(0, 8).map(r => r.map(c => String(c || "").toLowerCase()).join(" ")).join(" ");
+              const headers = rows.slice(0, 8).flatMap(r => r.map(c => String(c || ""))).join(" ");
+
+              if (headers.includes("Ürün Ağacı:") || (sample.includes("stok kodu") && sample.includes("oper:") || headers.includes("Ürün Ağacı"))) {
+                handleBomImport(file); return;
+              }
+              if (sample.includes("lokasyon") && sample.includes("stok kodu") && (sample.includes("ambar") || sample.includes("miktar"))) {
+                handleStockImport(file); return;
+              }
+              if (sample.includes("emir no") && (sample.includes("ger.miktar") || sample.includes("işlem mik"))) {
+                handleAkibetImport(file); return;
+              }
+              if (sample.includes("stok kodu") && sample.includes("operasyon") && (sample.includes("makine") || sample.includes("çevrim"))) {
+                handleMesImport(file); return;
+              }
+              if (sample.includes("bakiye") && sample.includes("tedarikçi")) {
+                handlePurchaseImport(file); return;
+              }
+              if (sample.includes("seviye") && (sample.includes("tedarik") || sample.includes("ihtiyaç"))) {
+                handleReqImport(file); return;
+              }
+              alert("Dosya tipi tanınamadı. Lütfen ilgili kartın yükle butonunu kullanın.\n\nDosya: " + file.name);
+            } catch (err) {
+              alert("Dosya okunamadı: " + err.message);
+            }
+          };
+          reader.readAsArrayBuffer(file);
+        };
+
+        return (
+          <div>
+            {/* Akıllı sürükle-bırak alanı */}
+            <div
+              onDrop={(e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f) detectAndImport(f); }}
+              onDragOver={e => e.preventDefault()}
+              style={{ padding: "16px 20px", marginBottom: 16, borderRadius: 10, border: "2px dashed var(--color-border-secondary)", background: "var(--color-background-secondary)", textAlign: "center", cursor: "pointer" }}
+              onClick={() => document.getElementById("smart-import-input").click()}
+            >
+              <div style={{ fontSize: 13, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 4 }}>📥 Excel dosyasını buraya sürükleyin veya tıklayın</div>
+              <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Dosya içeriği otomatik tanınır ve doğru yere import edilir</div>
+              <input id="smart-import-input" type="file" accept=".xlsx,.xls" multiple style={{ display: "none" }}
+                onChange={(e) => { Array.from(e.target.files || []).forEach(f => detectAndImport(f)); e.target.value = ""; }} />
+            </div>
+
+            {/* Import kartları */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 12 }}>
+              {cards.map(c => {
+                const age = ageLabel(c.date);
+                const needsUpdate = c.daily && age.age > 1;
+                const borderColor = !c.loaded ? "var(--color-border-tertiary)" : needsUpdate ? "#F59E0B" : "#10B981";
+                return (
+                  <div key={c.id} style={{
+                    padding: "14px 16px", borderRadius: 10,
+                    border: `1.5px solid ${borderColor}`,
+                    background: "var(--color-background-primary)",
+                    opacity: c.optional && !c.loaded ? 0.7 : 1
+                  }}>
+                    {/* Başlık */}
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 500 }}>
+                          <span style={{ marginRight: 4 }}>{c.icon}</span>{c.title}
+                        </div>
+                        <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>Sıra: {c.dep}</div>
+                      </div>
+                      <span style={{
+                        fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 6,
+                        background: c.loaded ? (needsUpdate ? "#FEF3C7" : "#DCFCE7") : "#F3F4F6",
+                        color: c.loaded ? (needsUpdate ? "#92400E" : "#065F46") : "#9CA3AF"
+                      }}>
+                        {c.loaded ? (needsUpdate ? "⚠ Eski" : "✓ Güncel") : "Boş"}
+                      </span>
+                    </div>
+
+                    {/* İstatistik */}
+                    {c.stats && <div style={{ fontSize: 10, color: "var(--color-text-secondary)", marginBottom: 6 }}>{c.stats}</div>}
+                    {c.note && !c.loaded && <div style={{ fontSize: 9, color: "#D97706", marginBottom: 6, fontStyle: "italic" }}>{c.note}</div>}
+
+                    {/* Tarih */}
+                    <div style={{ fontSize: 10, color: age.color, marginBottom: 8 }}>
+                      {c.loaded ? age.text : "Henüz yüklenmedi"}
+                    </div>
+
+                    {/* Yükle butonu */}
+                    {canEdit && (
+                      <div>
+                        <button
+                          onClick={() => document.getElementById("import-" + c.id).click()}
+                          style={{
+                            width: "100%", padding: "6px 0", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer",
+                            border: "1px solid var(--color-border-secondary)",
+                            background: c.loaded ? "var(--color-background-primary)" : "var(--color-background-info)",
+                            color: c.loaded ? "var(--color-text-secondary)" : "var(--color-text-info)"
+                          }}
+                        >
+                          {c.loaded ? "↻ Güncelle" : "📁 Yükle"}
+                        </button>
+                        <input id={"import-" + c.id} type="file" accept={c.accept} style={{ display: "none" }}
+                          onChange={(e) => { const f = e.target.files?.[0]; if (f) c.handler(f); e.target.value = ""; }} />
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* MRP Hazırlık Durumu */}
+            <div style={{ marginTop: 20, padding: "14px 18px", borderRadius: 10, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)" }}>
+              <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 10 }}>MRP Hesaplama Hazırlık Durumu</div>
+              <div style={{ display: "flex", gap: 16, flexWrap: "wrap", fontSize: 11 }}>
+                {[
+                  { label: "BOM", ok: bomKeys.length > 0, required: true },
+                  { label: "MES Süreleri", ok: mesOpsCount > 0, required: false },
+                  { label: "VIO Stok", ok: !!stock, required: true },
+                  { label: "Akibet", ok: !!akibet, required: true },
+                  { label: "Açık Sipariş", ok: !!purchase, required: true },
+                  { label: "İhtiyaç (VIO)", ok: !!requirements, required: false }
+                ].map((item, i) => (
+                  <span key={i} style={{
+                    padding: "4px 10px", borderRadius: 6, fontWeight: 500,
+                    background: item.ok ? "#DCFCE7" : item.required ? "#FEE2E2" : "#F3F4F6",
+                    color: item.ok ? "#065F46" : item.required ? "#DC2626" : "#9CA3AF"
+                  }}>
+                    {item.ok ? "✓" : item.required ? "✗" : "○"} {item.label}
+                  </span>
+                ))}
+              </div>
+              {bomKeys.length > 0 && stock && akibet && purchase && (
+                <div style={{ marginTop: 10, fontSize: 11, color: "#16A34A", fontWeight: 500 }}>
+                  ✓ Tüm zorunlu veriler yüklü — MRP Hesaplama yapılabilir
+                </div>
+              )}
+              {(!bomKeys.length || !stock || !akibet || !purchase) && (
+                <div style={{ marginTop: 10, fontSize: 11, color: "#DC2626" }}>
+                  Eksik veri var — MRP Hesaplama sonuçları eksik olacak
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ========== STOK RAPORU TAB ========== */}
       {activeTab === "stock" && (
