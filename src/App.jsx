@@ -5731,6 +5731,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const existingModel = bomModels[modelKey];
         let overrideCount = 0;
         let opTimeCount = 0;
+        let mesOpCount = 0;
+        let manualOpCount = 0;
         const existingOverrides = {}; // stockCode → { supplyType, _autoSupplyType }
         const existingOpTimes = {};   // stockCode → [ { opCode, setupTime, cycleTime } ]
 
@@ -5744,6 +5746,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             if (customOps && customOps.length > 0) {
               existingOpTimes[p.stockCode] = customOps.map(op => ({ opCode: op.opCode, setupTime: op.setupTime, cycleTime: op.cycleTime, mesRenewalTime: op.mesRenewalTime, mesSource: op.mesSource, mesImportedAt: op.mesImportedAt }));
               opTimeCount += customOps.length;
+              customOps.forEach(op => { if (op.mesSource) mesOpCount++; else manualOpCount++; });
             }
           });
         }
@@ -5751,10 +5754,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         // If overrides or op times exist, ask user
         let keepOverrides = true;
         if (overrideCount > 0 || opTimeCount > 0) {
+          const opDetail = opTimeCount > 0 ? `• ${opTimeCount} operasyonda süre tanımlı` + (mesOpCount > 0 && manualOpCount > 0 ? ` (${mesOpCount} MES + ${manualOpCount} manuel)` : mesOpCount > 0 ? ` (${mesOpCount} MES)` : ` (${manualOpCount} manuel)`) : "";
           const msg = [
             `${result.modelCode} zaten mevcut.`,
             overrideCount > 0 ? `• ${overrideCount} parçada supply type override var` : "",
-            opTimeCount > 0 ? `• ${opTimeCount} operasyonda manuel süre tanımlı` : "",
+            opDetail,
             "",
             "Bu değişiklikler korunsun mu?",
             "(İptal = sıfırla, Tamam = koru)"
