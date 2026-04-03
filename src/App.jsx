@@ -5665,7 +5665,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             }
             const customOps = p.operations?.filter(op => op.setupTime != null || op.cycleTime != null || op.mesSource);
             if (customOps && customOps.length > 0) {
-              existingOpTimes[p.stockCode] = customOps.map(op => ({ opCode: op.opCode, setupTime: op.setupTime, cycleTime: op.cycleTime, mesRenewalTime: op.mesRenewalTime, mesSource: op.mesSource }));
+              existingOpTimes[p.stockCode] = customOps.map(op => ({ opCode: op.opCode, setupTime: op.setupTime, cycleTime: op.cycleTime, mesRenewalTime: op.mesRenewalTime, mesSource: op.mesSource, mesImportedAt: op.mesImportedAt }));
               opTimeCount += customOps.length;
             }
           });
@@ -5704,6 +5704,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   if (match.cycleTime != null) op.cycleTime = match.cycleTime;
                   if (match.mesRenewalTime) op.mesRenewalTime = match.mesRenewalTime;
                   if (match.mesSource) op.mesSource = match.mesSource;
+                  if (match.mesImportedAt) op.mesImportedAt = match.mesImportedAt;
                 }
               });
             }
@@ -6512,7 +6513,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     ...updatedBom[mk].parts[pi].operations[oi],
                     cycleTime: mesOp.cycleTime,
                     mesRenewalTime: mesOp.renewalTime,
-                    mesSource: "MES Import " + new Date().toLocaleDateString("tr-TR")
+                    mesSource: "MES Import " + new Date().toLocaleDateString("tr-TR"),
+                    mesImportedAt: new Date().toISOString()
                   };
                   found = true;
                   matched++;
@@ -6875,8 +6877,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const d = new Date(isoStr);
           const dateStr = localDateStr(d); // takvim günü
           const timeStr = d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
-          if (dateStr === todayDate) return { text: "Bugün " + timeStr, color: "#16A34A", age: 0 };
-          if (dateStr === yesterdayDate) return { text: "Dün " + timeStr, color: "#16A34A", age: 1 };
+          const showTime = !(d.getHours() === 0 && d.getMinutes() === 0); // 00:00 = sadece tarih bilgisi var
+          if (dateStr === todayDate) return { text: "Bugün" + (showTime ? " " + timeStr : ""), color: "#16A34A", age: 0 };
+          if (dateStr === yesterdayDate) return { text: "Dün" + (showTime ? " " + timeStr : ""), color: "#16A34A", age: 1 };
           const age = Math.floor((now - d.getTime()) / 86400000);
           if (age <= 3) return { text: age + " gün önce", color: "#D97706", age };
           if (age <= 7) return { text: age + " gün önce", color: "#EA580C", age };
@@ -6888,11 +6891,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const bomLatest = bomKeys.reduce((latest, k) => { const d = bomModels[k]?.importedAt; return d && d > latest ? d : latest; }, "");
         const mesOpsCount = bomKeys.reduce((s, k) => s + (bomModels[k]?.parts || []).reduce((ps, p) => ps + (p.operations || []).filter(o => o.cycleTime != null && o.cycleTime > 0).length, 0), 0);
         const totalOpsCount = bomKeys.reduce((s, k) => s + (bomModels[k]?.parts || []).reduce((ps, p) => ps + (p.operations || []).length, 0), 0);
-        // MES import tarihini operasyonlardaki mesSource'tan çıkar
+        // MES import tarihini operasyonlardan çıkar
         let mesLatest = "";
         bomKeys.forEach(k => (bomModels[k]?.parts || []).forEach(p => (p.operations || []).forEach(op => {
-          if (op.mesSource) {
-            // "MES Import DD.MM.YYYY" → ISO date
+          if (op.mesImportedAt && op.mesImportedAt > mesLatest) { mesLatest = op.mesImportedAt; }
+          else if (!mesLatest && op.mesSource) {
             const m = op.mesSource.match(/(\d{2})\.(\d{2})\.(\d{4})/);
             if (m) { const iso = `${m[3]}-${m[2]}-${m[1]}T00:00:00`; if (iso > mesLatest) mesLatest = iso; }
           }
