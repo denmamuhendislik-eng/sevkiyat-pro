@@ -6925,29 +6925,58 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               const wb = XLSX.read(e.target.result, { type: "array" });
               const sheet = wb.Sheets[wb.SheetNames[0]];
               const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-              // İlk 8 satırı tara
-              const sample = rows.slice(0, 8).map(r => r.map(c => String(c || "").toLowerCase()).join(" ")).join(" ");
-              const headers = rows.slice(0, 8).flatMap(r => r.map(c => String(c || ""))).join(" ");
+              // İlk 10 satırın tüm hücrelerini birleştir (case-sensitive, Türkçe uyumlu)
+              const raw = rows.slice(0, 10).flatMap(r => r.map(c => String(c || ""))).join("|");
 
-              if (headers.includes("Ürün Ağacı:") || (sample.includes("stok kodu") && sample.includes("oper:") || headers.includes("Ürün Ağacı"))) {
+              // 1) BOM: "Ürün Ağacı" başlık alanında
+              if (raw.includes("Ürün Ağacı") || raw.includes("ürün ağacı") || raw.includes("ÜRÜN AĞACI")) {
                 handleBomImport(file); return;
               }
-              if (sample.includes("lokasyon") && sample.includes("stok kodu") && (sample.includes("ambar") || sample.includes("miktar"))) {
-                handleStockImport(file); return;
-              }
-              if (sample.includes("emir no") && (sample.includes("ger.miktar") || sample.includes("işlem mik"))) {
+              // 2) Akibet: "Emir Akibet" başlık veya "Emir No" + "Ger.Miktar" header
+              if (raw.includes("Emir Akibet") || raw.includes("emir akibet") || raw.includes("EMİR AKİBET")) {
                 handleAkibetImport(file); return;
               }
-              if (sample.includes("stok kodu") && sample.includes("operasyon") && (sample.includes("makine") || sample.includes("çevrim"))) {
+              const hasEmirNo = raw.includes("Emir No") || raw.includes("Emir Miktar");
+              const hasGerMiktar = raw.includes("Ger.Miktar") || raw.includes("İşlem Mik");
+              if (hasEmirNo && hasGerMiktar) {
+                handleAkibetImport(file); return;
+              }
+              // 3) Stok: "Son Stok" başlık veya lokasyon+miktar pattern
+              if (raw.includes("Son Stok") || raw.includes("SON STOK") || raw.includes("son stok")) {
+                handleStockImport(file); return;
+              }
+              // Stok kontrolü: header satırında "Yer Adı" veya bilinen lokasyon isimleri
+              const hasLoc = raw.includes("Yer Adı") || raw.includes("Merkez Ambar") || raw.includes("Hammadde ve") || raw.includes("Üretim Hattı") || raw.includes("Sevkiyat Ambar");
+              if (hasLoc && (raw.includes("Stok Kodu") || raw.includes("Miktar"))) {
+                handleStockImport(file); return;
+              }
+              // 4) MES: "STOK" ilk sütun header + operasyon/makine sütunları
+              const firstCells = rows.slice(0, 5).map(r => String(r[0] || ""));
+              const hasMesHeader = firstCells.some(c => c.includes("STOK") || c.includes("Stok"));
+              const hasMachine = raw.includes("MAKİNE") || raw.includes("Makine") || raw.includes("CNC-");
+              const hasOper = raw.includes("OPERASYON") || raw.includes("Operasyon") || raw.includes("TORNALAMA") || raw.includes("İŞLEME");
+              if (hasMesHeader && (hasMachine || hasOper) && !hasEmirNo) {
                 handleMesImport(file); return;
               }
-              if (sample.includes("bakiye") && sample.includes("tedarikçi")) {
+              // 5) Sipariş: "Müşteri" veya "No XXX Tarih" pattern veya "Bekleme" keyword
+              if (raw.includes("Müşteri") || raw.includes("MÜŞTERİ") || raw.includes("Bekleme") || raw.includes("BEKLEME")) {
                 handlePurchaseImport(file); return;
               }
-              if (sample.includes("seviye") && (sample.includes("tedarik") || sample.includes("ihtiyaç"))) {
+              const hasNoTarih = rows.slice(0, 20).some(r => /^No\s+\S+\s+Tarih/.test(String(r[0] || "")));
+              if (hasNoTarih) {
+                handlePurchaseImport(file); return;
+              }
+              // 6) İhtiyaç: "İstenenler" veya "Ara Seviye" veya "Dönem" + "Tedarik"
+              if (raw.includes("İstenenler") || raw.includes("Ara Seviye") || raw.includes("Malzeme Tedarik") || raw.includes("Tedarik Plan")) {
                 handleReqImport(file); return;
               }
-              alert("Dosya tipi tanınamadı. Lütfen ilgili kartın yükle butonunu kullanın.\n\nDosya: " + file.name);
+              // 7) Son çare: try-parse — her parser'ı dene
+              try { const r = parseBomExcel(wb); if (r && r.parts?.length > 0) { handleBomImport(file); return; } } catch(ex){}
+              try { const r = parseAkibetExcel(wb); if (r && r.totalParts > 0) { handleAkibetImport(file); return; } } catch(ex){}
+              try { const r = parseStockReport(wb); if (r && r.totalCodes > 0) { handleStockImport(file); return; } } catch(ex){}
+              try { const r = parsePurchaseExcel(wb); if (r && r.totalParts > 0) { handlePurchaseImport(file); return; } } catch(ex){}
+
+              alert("Dosya tipi tanınamadı.\n\nDosya: " + file.name + "\n\nLütfen ilgili kartın yükle butonunu kullanın.");
             } catch (err) {
               alert("Dosya okunamadı: " + err.message);
             }
