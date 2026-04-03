@@ -6868,16 +6868,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       {activeTab === "data" && (() => {
         // Veri durumu hesapla
         const now = Date.now();
-        const dayMs = 86400000;
+        const todayDate = localDateStr(); // "YYYY-MM-DD"
+        const yesterdayDate = (() => { const d = new Date(); d.setDate(d.getDate() - 1); return localDateStr(d); })();
         const ageLabel = (isoStr) => {
           if (!isoStr) return { text: "Yüklenmedi", color: "#888", age: -1 };
           const d = new Date(isoStr);
-          const age = Math.floor((now - d.getTime()) / dayMs);
-          if (age === 0) return { text: "Bugün " + d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" }), color: "#16A34A", age };
-          if (age === 1) return { text: "Dün", color: "#16A34A", age };
+          const dateStr = localDateStr(d); // takvim günü
+          const timeStr = d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+          if (dateStr === todayDate) return { text: "Bugün " + timeStr, color: "#16A34A", age: 0 };
+          if (dateStr === yesterdayDate) return { text: "Dün " + timeStr, color: "#16A34A", age: 1 };
+          const age = Math.floor((now - d.getTime()) / 86400000);
           if (age <= 3) return { text: age + " gün önce", color: "#D97706", age };
           if (age <= 7) return { text: age + " gün önce", color: "#EA580C", age };
-          return { text: age + " gün önce", color: "#DC2626", age };
+          return { text: d.toLocaleDateString("tr-TR"), color: "#DC2626", age };
         };
 
         const bomKeys = Object.keys(bomModels || {}).filter(k => k !== "undefined");
@@ -6885,6 +6888,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const bomLatest = bomKeys.reduce((latest, k) => { const d = bomModels[k]?.importedAt; return d && d > latest ? d : latest; }, "");
         const mesOpsCount = bomKeys.reduce((s, k) => s + (bomModels[k]?.parts || []).reduce((ps, p) => ps + (p.operations || []).filter(o => o.cycleTime != null && o.cycleTime > 0).length, 0), 0);
         const totalOpsCount = bomKeys.reduce((s, k) => s + (bomModels[k]?.parts || []).reduce((ps, p) => ps + (p.operations || []).length, 0), 0);
+        // MES import tarihini operasyonlardaki mesSource'tan çıkar
+        let mesLatest = "";
+        bomKeys.forEach(k => (bomModels[k]?.parts || []).forEach(p => (p.operations || []).forEach(op => {
+          if (op.mesSource) {
+            // "MES Import DD.MM.YYYY" → ISO date
+            const m = op.mesSource.match(/(\d{2})\.(\d{2})\.(\d{4})/);
+            if (m) { const iso = `${m[3]}-${m[2]}-${m[1]}T00:00:00`; if (iso > mesLatest) mesLatest = iso; }
+          }
+        })));
         const stockCount = stock ? Object.keys(stock.parts || {}).length : 0;
         const reqItems = requirements ? Object.values(requirements.levels || {}).reduce((s, l) => s + (l.items?.length || 0), 0) : 0;
 
@@ -6894,7 +6906,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             stats: bomKeys.length > 0 ? `${bomKeys.length} model · ${bomPartsTotal} parça · ${totalOpsCount} op` : null,
             handler: handleBomImport, accept: ".xlsx,.xls" },
           { id: "mes", title: "MES Operasyon Süreleri", icon: "⏱", order: "2",
-            loaded: mesOpsCount > 0, date: bomLatest, dep: "BOM'dan sonra",
+            loaded: mesOpsCount > 0, date: mesLatest || null, dep: "BOM'dan sonra",
             stats: mesOpsCount > 0 ? `${mesOpsCount} / ${totalOpsCount} op süreli (%${totalOpsCount > 0 ? Math.round(mesOpsCount / totalOpsCount * 100) : 0})` : null,
             optional: true, handler: handleMesImport, accept: ".xlsx,.xls" },
           { id: "stock", title: "VIO Son Stok Raporu", icon: "📦", order: "3",
