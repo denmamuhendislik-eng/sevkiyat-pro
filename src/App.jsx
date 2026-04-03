@@ -6714,7 +6714,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     "PRODUCT": { bg: "#E1F5EE", c: "#04342C" }
   };
 
-  const levelColors = ["#185FA5", "#1D9E75", "#BA7517", "#993C1D"];
+  const levelColors = ["#185FA5", "#1D9E75", "#BA7517", "#993C1D", "#7C3AED"];
 
   // Filter parts by search
   const filterParts = (parts) => {
@@ -6734,7 +6734,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       const hasKids = parts.some(pp => pp.parentIdx === p.idx);
       const isExpanded = expandedNodes[p.idx];
       const sc = supplyColors[p.supplyType] || supplyColors["MAKE"];
-      const lc = levelColors[Math.min(p.level, 3)];
+      const lc = levelColors[Math.min(p.level, 4)];
       const isEditingOps = editingOpPart && editingOpPart.modelKey === selectedModel && editingOpPart.partIdx === p.idx;
 
       return (
@@ -7574,7 +7574,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   <span key={k} style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, background: v.bg, color: v.c }}>{k}</span>
                 ))}
                 <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginLeft: 8 }}>
-                  Seviye: <span style={{ color: levelColors[0] }}>● L0</span> <span style={{ color: levelColors[1] }}>● L1</span> <span style={{ color: levelColors[2] }}>● L2</span> <span style={{ color: levelColors[3] }}>● L3</span>
+                  Seviye: <span style={{ color: levelColors[0] }}>● L0</span> <span style={{ color: levelColors[1] }}>● L1</span> <span style={{ color: levelColors[2] }}>● L2</span> <span style={{ color: levelColors[3] }}>● L3</span> <span style={{ color: levelColors[4] }}>● L4</span>
                 </span>
               </div>
 
@@ -7591,7 +7591,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     const sc = supplyColors[p.supplyType] || supplyColors["MAKE"];
                     return (
                       <div key={p.idx} style={{ display: "flex", alignItems: "center", gap: 6, padding: "5px 8px 5px 20px", fontSize: 12, borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-                        <span style={{ width: 4, height: 4, borderRadius: 2, background: levelColors[Math.min(p.level, 3)], flexShrink: 0 }} />
+                        <span style={{ width: 4, height: 4, borderRadius: 2, background: levelColors[Math.min(p.level, 4)], flexShrink: 0 }} />
                         <span style={{ fontFamily: "var(--font-mono)", fontSize: 11, color: "var(--color-text-secondary)", minWidth: 70 }}>{p.stockCode}</span>
                         <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.stockName}</span>
                         <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>L{p.level}</span>
@@ -7903,7 +7903,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               const sType = getSupplyType(it.code);
               return { ...it, _level: k, _intRem: intRem, _fasRem: fasRem, _wip: wip, _stkAmbar: stkAmbar, _stkUretim: stkUretim, _stkFason: stkFason, _stkAvail: stkAvail, _netReq: netReq, _akOrders: ak?.orderCount || 0, _supplyType: sType };
             }));
-            const levelLabels = { L0: "Ana Ürünler", L1: "Seviye 1 — Montaj", L2: "Seviye 2 — İşlenmiş", L3: "Seviye 3 — Hammadde" };
+            const levelLabels = { L0: "Ana Ürünler", L1: "Seviye 1 — Montaj", L2: "Seviye 2 — İşlenmiş", L3: "Seviye 3 — Hammadde", L4: "Seviye 4 — Alt Hammadde" };
 
             // Purchase aggregation: group BUY/RAW by stockCode, include open PO data
             const hasPurchase = Object.keys(purchaseLookup).length > 0;
@@ -8125,7 +8125,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       {filtered.map((item, idx) => {
                         const hasReq = item.requirement > 0;
                         const hasNet = item._netReq > 0;
-                        const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517" };
+                        const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517", L4: "#7C3AED" };
                         const rowBg = (hasAkibet || hasStock)
                           ? (hasNet ? "var(--color-background-danger)" : (item._wip > 0 || item._stkAvail > 0) ? "#FFFBEB" : "transparent")
                           : (hasReq ? "var(--color-background-danger)" : "transparent");
@@ -8929,7 +8929,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         const startD = j.operations[0]?.startDate;
                         const endD = j.operations[j.operations.length - 1]?.endDate;
                         const color = jobColorMap[j.id];
-                        const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517" };
+                        const lvC = { L0: "#534AB7", L1: "#185FA5", L2: "#1D9E75", L3: "#BA7517", L4: "#7C3AED" };
                         return (
                           <tr key={ji} style={{
                             borderTop: "0.5px solid var(--color-border-tertiary)",
