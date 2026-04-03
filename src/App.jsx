@@ -5526,9 +5526,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const opObj = { opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null };
         totalOps++;
 
-        // Assign to parent part: most recent part at level N-1
-        const ownerLevel = level - 1;
-        const ownerIdx = partStack[ownerLevel];
+        // Assign to parent part: most recent part at level N-1, fallback to same level N
+        let ownerLevel = level - 1;
+        let ownerIdx = partStack[ownerLevel];
+        if (ownerIdx === undefined) {
+          // Fallback: try same level (some BOMs have op at same indent as part)
+          ownerIdx = partStack[level];
+        }
+        if (ownerIdx === undefined && level > 0) {
+          // Fallback: try any lower level
+          for (let lv = level - 2; lv >= 0; lv--) {
+            if (partStack[lv] !== undefined) { ownerIdx = partStack[lv]; break; }
+          }
+        }
         if (ownerIdx !== undefined && parts[ownerIdx]) {
           parts[ownerIdx].operations.push(opObj);
         }
