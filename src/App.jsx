@@ -5630,18 +5630,30 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         operations: []
       });
 
-      // Assign any orphan operations (parsed before this part existed) to this part
-      if (orphanOps.length > 0) {
-        parts[partIdx].operations.push(...orphanOps);
-        orphanOps.length = 0;
-      }
-
       // Update partStack: this part is the most recent at its level
       partStack[level] = partIdx;
       // Clear deeper levels (they're no longer current parents)
       for (const k of Object.keys(partStack)) {
         if (parseInt(k) > level) delete partStack[k];
       }
+    }
+
+    // Orphan operations (parsed before any part) → create synthetic root part for the product
+    if (orphanOps.length > 0 && modelCode) {
+      // Bump all existing part levels by 1 so the product becomes L0
+      for (const p of parts) p.level += 1;
+      // Insert product as the first part (L0 root)
+      const prefix = modelCode.split("-")[0];
+      let rootType = "MAKE";
+      if (prefix === "150") rootType = "RAW";
+      else if (prefix === "157") rootType = "BUY";
+      else if (prefix === "152") rootType = "PRODUCT";
+      parts.unshift({
+        stockCode: modelCode, stockName: modelName, level: 0, qty: 1,
+        unit: "AD", supplyType: rootType, parentIdx: null,
+        operations: [...orphanOps]
+      });
+      orphanOps.length = 0;
     }
 
     // Assign parentIdx based on levels
