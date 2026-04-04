@@ -8625,7 +8625,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         {/* Machine detail — expanded */}
                         {isExpanded && wcMachines.length > 0 && (
                           <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "8px 14px 10px" }}>
-                            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(420px, 1fr))", gap: 10 }}>
+                            <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 12 }}>
                             {wcMachines.map(([mId, ms]) => {
                               const mColor = ms.utilization > 90 ? "#EF4444" : ms.utilization > 70 ? "#F59E0B" : ms.utilization > 30 ? "#3B82F6" : "#10B981";
                               const isMachBn = mId === machBn;
@@ -8689,18 +8689,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           {avgCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{avgCount} ort. ({Math.round(avgMin)}dk)</span>}
                                           {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--color-background-secondary)", color: "var(--color-text-tertiary)" }}>{defCount} vars.</span>}
                                         </div>
-                                        {machWip.slice(0, 5).map(it => (
-                                          <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 4, marginBottom: 2, fontSize: 9, color: "var(--color-text-secondary)" }}>
-                                            <span style={{ width: 5, height: 5, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
-                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 8 }}>{it.code}</span>
-                                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 8 }}>{it.name}</span>
-                                            <span style={{ fontSize: 7, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                            <span>{it.remaining}ad</span>
-                                            <span style={{ fontWeight: 500 }}>{Math.round(it.wipMin)}dk</span>
-                                            {canEdit && <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 8 }}>✕</span>}
+                                        {machWip.slice(0, 8).map(it => (
+                                          <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10, color: "var(--color-text-secondary)" }}>
+                                            <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
+                                            {it.emirNo && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309", flexShrink: 0 }}>E{it.emirNo}</span>}
+                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{it.code}</span>
+                                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
+                                            <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
+                                            <span style={{ fontWeight: 500 }}>{it.remaining}ad</span>
+                                            <span style={{ fontWeight: 600 }}>{Math.round(it.wipMin)}dk</span>
+                                            {canEdit && <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 10 }}>✕</span>}
                                           </div>
                                         ))}
-                                        {machWip.length > 5 && <div style={{ fontSize: 8, color: "var(--color-text-tertiary)" }}>+{machWip.length - 5} daha</div>}
+                                        {machWip.length > 8 && <div style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>+{machWip.length - 8} daha</div>}
                                       </div>
                                     );
                                   })()}
@@ -8773,8 +8774,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{defCount} vars. ({Math.round(defMin)}dk)</span>}
                                           {hasCustomOrder && <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", cursor: "pointer" }} onClick={() => saveJobOrder(mId, [])}>✎ Özel sıra · Sıfırla</span>}
                                         </div>
-                                        <div style={{ maxHeight: 300, overflowY: "auto" }}>
-                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
+                                        <div style={{ maxHeight: 600, overflowY: "auto" }}>
+                                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                             <tbody>
                                               {machOps.map((op, i) => (
                                                 <Fragment key={i}>
@@ -8784,23 +8785,23 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   onDragEnd={handleDragEnd}
                                                   onDragOver={handleDragOver}
                                                   onDrop={e => handleDrop(e, i)}
-                                                  style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none", cursor: canEdit ? "grab" : "default" }}
+                                                  style={{ borderTop: i > 0 ? "1px solid var(--color-border-tertiary)" : "none", cursor: canEdit ? "grab" : "default" }}
                                                 >
-                                                  {canEdit && <td style={{ padding: "3px 2px", width: 10, cursor: "grab", color: "var(--color-text-tertiary)", fontSize: 9, userSelect: "none" }}>⠿</td>}
-                                                  <td style={{ padding: "3px 2px", width: 6 }}>
-                                                    <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: 1, background: op.timeSource === "mes" ? "#10B981" : "#D97706" }} title={op.timeSource === "mes" ? "MES gerçek süre" : "Varsayılan süre"} />
+                                                  {canEdit && <td style={{ padding: "6px 4px", width: 14, cursor: "grab", color: "var(--color-text-tertiary)", fontSize: 11, userSelect: "none" }}>⠿</td>}
+                                                  <td style={{ padding: "6px 3px", width: 8 }}>
+                                                    <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: op.timeSource === "mes" ? "#10B981" : "#D97706" }} title={op.timeSource === "mes" ? "MES gerçek süre" : "Varsayılan süre"} />
                                                   </td>
-                                                  <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--color-text-info)", whiteSpace: "nowrap" }}>{op.jobId}</td>
-                                                  <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 8, whiteSpace: "nowrap" }}>{op.partCode}</td>
-                                                  <td style={{ padding: "3px 4px", fontSize: 8, maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.partName}>{op.partName}</td>
-                                                  <td style={{ padding: "3px 3px", fontSize: 7, fontFamily: "var(--font-mono)", color: "#7C3AED", whiteSpace: "nowrap" }} title={`${op.opName} (${op.opSeq}/${op.opTotal})`}>Op{op.opCode} <span style={{ color: "var(--color-text-tertiary)" }}>{op.opSeq}/{op.opTotal}</span></td>
-                                                  <td style={{ padding: "3px 2px", fontSize: 7, maxWidth: 100, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--color-text-tertiary)" }} title={op.opName}>{op.opName}</td>
-                                                  <td style={{ padding: "3px 2px", fontSize: 8, textAlign: "right", whiteSpace: "nowrap" }}>{op.qty}ad</td>
-                                                  <td style={{ padding: "3px 2px", fontSize: 7, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#059669" : "var(--color-text-tertiary)" }} title={op.setupTime ? `Setup: ${op.setupTime}dk + Çevrim: ${op.cycleTime || 5}dk/ad` : `Çevrim: ${op.cycleTime || 5}dk/ad`}>{op.cycleTime ? op.cycleTime : 5}dk/ad</td>
-                                                  <td style={{ padding: "3px 2px", fontSize: 8, fontWeight: 500, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#065F46" : "#92400E" }}>{Math.round(op.totalMin)}dk</td>
-                                                  <td style={{ padding: "3px 2px", fontFamily: "var(--font-mono)", fontSize: 7, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>{op.startDate?.substring(5) || ""}</td>
-                                                  <td style={{ padding: "3px 0", width: 14 }}>
-                                                    {op.capWarning && <span style={{ fontSize: 7, color: "#F97316" }}>⚡</span>}
+                                                  <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-info)", whiteSpace: "nowrap" }}>{op.jobId}</td>
+                                                  <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, whiteSpace: "nowrap" }}>{op.partCode}</td>
+                                                  <td style={{ padding: "6px 6px", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={op.partName}>{op.partName}</td>
+                                                  <td style={{ padding: "6px 4px", fontSize: 9, fontFamily: "var(--font-mono)", color: "#7C3AED", whiteSpace: "nowrap" }} title={`${op.opName} (${op.opSeq}/${op.opTotal})`}>Op{op.opCode} <span style={{ color: "var(--color-text-tertiary)" }}>{op.opSeq}/{op.opTotal}</span></td>
+                                                  <td style={{ padding: "6px 4px", fontSize: 9, maxWidth: 120, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "var(--color-text-tertiary)" }} title={op.opName}>{op.opName}</td>
+                                                  <td style={{ padding: "6px 4px", fontSize: 10, textAlign: "right", whiteSpace: "nowrap" }}>{op.qty}ad</td>
+                                                  <td style={{ padding: "6px 4px", fontSize: 9, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#059669" : "var(--color-text-tertiary)" }} title={op.setupTime ? `Setup: ${op.setupTime}dk + Çevrim: ${op.cycleTime || 5}dk/ad` : `Çevrim: ${op.cycleTime || 5}dk/ad`}>{op.cycleTime ? op.cycleTime : 5}dk/ad</td>
+                                                  <td style={{ padding: "6px 4px", fontSize: 10, fontWeight: 600, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#065F46" : "#92400E" }}>{Math.round(op.totalMin)}dk</td>
+                                                  <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>{op.startDate?.substring(5) || ""}</td>
+                                                  <td style={{ padding: "6px 0", width: 16 }}>
+                                                    {op.capWarning && <span style={{ fontSize: 9, color: "#F97316" }}>⚡</span>}
                                                   </td>
                                                   {canEdit && sameWcMachines.length > 0 && (
                                                     <td style={{ padding: "3px 0" }}>
@@ -8855,13 +8856,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   <div style={{ fontSize: 10, fontWeight: 500, color: "#D97706", marginBottom: 4 }}>Atanmamış WIP ({unassigned.length})</div>
                                   <div style={{ maxHeight: 300, overflowY: "auto" }}>
                                   {unassigned.map(it => (
-                                    <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10 }}>
-                                      <span style={{ width: 6, height: 6, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
-                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
-                                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
-                                      <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                      <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 30, textAlign: "right" }}>{it.remaining}ad</span>
-                                      <span style={{ fontSize: 9, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)", fontWeight: it.timeSource === "bom" ? 500 : 400, minWidth: 35, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
+                                    <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 11 }}>
+                                      <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
+                                      {it.emirNo && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309", flexShrink: 0 }}>E{it.emirNo}</span>}
+                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
+                                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
+                                      <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 35, textAlign: "right" }}>{it.remaining}ad</span>
+                                      <span style={{ fontSize: 10, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)", fontWeight: it.timeSource === "bom" ? 600 : 400, minWidth: 40, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
                                       {canEdit && wcMachineIds.length > 0 ? (
                                         <select
                                           value=""
@@ -8888,13 +8890,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 <div style={{ borderTop: "0.5px dashed var(--color-border-tertiary)", marginTop: 6, paddingTop: 6 }}>
                                   <div style={{ fontSize: 10, fontWeight: 500, color: "#10B981", marginBottom: 4 }}>Atanmış WIP ({assigned.length})</div>
                                   {assigned.map(it => (
-                                    <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10 }}>
-                                      <span style={{ width: 6, height: 6, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
-                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
-                                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
-                                      <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                      <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{it.remaining}ad</span>
-                                      <span style={{ fontSize: 9, fontWeight: it.timeSource === "bom" ? 500 : 400, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)" }}>{Math.round(it.wipMin)}dk</span>
+                                    <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 11 }}>
+                                      <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
+                                      {it.emirNo && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309", flexShrink: 0 }}>E{it.emirNo}</span>}
+                                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
+                                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
+                                      <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{it.remaining}ad</span>
+                                      <span style={{ fontSize: 10, fontWeight: it.timeSource === "bom" ? 600 : 400, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)" }}>{Math.round(it.wipMin)}dk</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mSt[it.machineId]?.name || it.machineId}</span>
                                       {canEdit && (
                                         <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", fontSize: 9, color: "#EF4444" }}>✕</span>
