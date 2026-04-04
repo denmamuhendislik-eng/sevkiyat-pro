@@ -8503,6 +8503,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   <span style={{ color: "#D97706" }}>WC ortalama: {wipLoad.debug.avgMatch || 0}</span>
                   <span style={{ color: "var(--color-text-tertiary)" }}>Varsayılan: {wipLoad.debug.defMatch || 0}</span>
                   <span>Fason: {wipLoad.debug.fason}</span>
+                  {wipLoad.debug.noWC > 0 && <span style={{ color: "#DC2626" }}>WC eşleşmedi: <b>{wipLoad.debug.noWC}</b></span>}
+                  {wipLoad.debug.noWip > 0 && <span style={{ color: "var(--color-text-tertiary)" }}>Kalan yok: {wipLoad.debug.noWip}</span>}
+                  {wipLoad.debug.noOps > 0 && <span style={{ color: "var(--color-text-tertiary)" }}>Op yok: {wipLoad.debug.noOps}</span>}
                   <span>Toplam WIP: <b>{Math.round(wipLoad.totalMin / 60)}s</b> ({wipLoad.totalItems} kalem)</span>
                 </div>
                 {wipLoad.debug.wcAvgCycle && Object.keys(wipLoad.debug.wcAvgCycle).length > 0 && (
