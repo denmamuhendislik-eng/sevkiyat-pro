@@ -4632,6 +4632,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
   const [schedOverrides, setSchedOverrides] = useState({}); // "partCode|opCode" → machineId
+  const [jobOrder, setJobOrder] = useState({}); // machineId → ["jobId|opIdx", ...]
   const [editingOpPart, setEditingOpPart] = useState(null);
 
   // Adım 5 — VIO Stok Raporu State
@@ -4698,6 +4699,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     unsubs.push(onSnapshot(overRef, snap => {
       if (snap.exists()) setSchedOverrides(snap.data());
     }, () => {}));
+    // Çizelge İş Sıralaması
+    const jobOrderRef = doc(db, APP_COL, "schedJobOrder");
+    unsubs.push(onSnapshot(jobOrderRef, snap => {
+      if (snap.exists()) setJobOrder(snap.data());
+    }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
 
@@ -4731,6 +4737,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const updated = { ...wipAssignments, [key]: machineId || null };
     if (!machineId) delete updated[key];
     await setDoc(doc(db, APP_COL, "wipAssignments"), updated);
+  };
+  const saveJobOrder = async (machineId, orderArr) => {
+    if (!db || !canEdit) return;
+    const updated = { ...jobOrder, [machineId]: orderArr };
+    await setDoc(doc(db, APP_COL, "schedJobOrder"), updated);
   };
 
   // Planlanan iş emri operasyonunun tezgahını değiştir + kalıcı override kaydet
@@ -8709,25 +8720,61 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
-                                    machOps.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+                                    // Apply custom order if available, fallback to startDate sort
+                                    const customOrder = jobOrder[mId];
+                                    if (customOrder && customOrder.length > 0) {
+                                      const orderMap = {};
+                                      customOrder.forEach((key, idx) => { orderMap[key] = idx; });
+                                      machOps.sort((a, b) => {
+                                        const ka = `${a.jobId}|${a.opIdx}`;
+                                        const kb = `${b.jobId}|${b.opIdx}`;
+                                        const oa = orderMap[ka] ?? 9999;
+                                        const ob = orderMap[kb] ?? 9999;
+                                        return oa - ob || (a.startDate || "").localeCompare(b.startDate || "");
+                                      });
+                                    } else {
+                                      machOps.sort((a, b) => (a.startDate || "").localeCompare(b.startDate || ""));
+                                    }
                                     const sameWcMachines = wcMachines.filter(([id]) => id !== mId);
                                     const mesCount = machOps.filter(o => o.timeSource === "mes").length;
                                     const defCount = machOps.filter(o => o.timeSource !== "mes").length;
                                     const mesMin = machOps.filter(o => o.timeSource === "mes").reduce((s, o) => s + o.totalMin, 0);
                                     const defMin = machOps.filter(o => o.timeSource !== "mes").reduce((s, o) => s + o.totalMin, 0);
+                                    const handleDragStart = (e, idx) => { e.dataTransfer.setData("text/plain", String(idx)); e.dataTransfer.effectAllowed = "move"; e.currentTarget.style.opacity = "0.4"; };
+                                    const handleDragEnd = (e) => { e.currentTarget.style.opacity = "1"; };
+                                    const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
+                                    const handleDrop = (e, dropIdx) => {
+                                      e.preventDefault();
+                                      const dragIdx = parseInt(e.dataTransfer.getData("text/plain"));
+                                      if (isNaN(dragIdx) || dragIdx === dropIdx) return;
+                                      const newOrder = machOps.map(o => `${o.jobId}|${o.opIdx}`);
+                                      const [moved] = newOrder.splice(dragIdx, 1);
+                                      newOrder.splice(dropIdx, 0, moved);
+                                      saveJobOrder(mId, newOrder);
+                                    };
+                                    const hasCustomOrder = customOrder && customOrder.length > 0;
                                     return (
                                       <div style={{ marginTop: 4, borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: 4 }}>
                                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                                           <span style={{ fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)" }}>Planlanan ({machOps.length})</span>
                                           {mesCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mesCount} MES ({Math.round(mesMin)}dk)</span>}
                                           {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{defCount} vars. ({Math.round(defMin)}dk)</span>}
+                                          {hasCustomOrder && <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", cursor: "pointer" }} onClick={() => saveJobOrder(mId, [])}>✎ Özel sıra · Sıfırla</span>}
                                         </div>
                                         <div style={{ maxHeight: 300, overflowY: "auto" }}>
                                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
                                             <tbody>
                                               {machOps.map((op, i) => (
                                                 <Fragment key={i}>
-                                                <tr style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                                                <tr
+                                                  draggable={canEdit}
+                                                  onDragStart={e => handleDragStart(e, i)}
+                                                  onDragEnd={handleDragEnd}
+                                                  onDragOver={handleDragOver}
+                                                  onDrop={e => handleDrop(e, i)}
+                                                  style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none", cursor: canEdit ? "grab" : "default" }}
+                                                >
+                                                  {canEdit && <td style={{ padding: "3px 2px", width: 10, cursor: "grab", color: "var(--color-text-tertiary)", fontSize: 9, userSelect: "none" }}>⠿</td>}
                                                   <td style={{ padding: "3px 2px", width: 6 }}>
                                                     <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: 1, background: op.timeSource === "mes" ? "#10B981" : "#D97706" }} title={op.timeSource === "mes" ? "MES gerçek süre" : "Varsayılan süre"} />
                                                   </td>
@@ -8755,7 +8802,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 </tr>
                                                 {op.opTotal > 1 && (
                                                   <tr>
-                                                    <td colSpan={canEdit && sameWcMachines.length > 0 ? 12 : 11} style={{ padding: "0 2px 3px 14px" }}>
+                                                    <td colSpan={canEdit ? (sameWcMachines.length > 0 ? 14 : 13) : 11} style={{ padding: "0 2px 3px 14px" }}>
                                                       <div style={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
                                                         {op.chain.map((c, ci) => (
                                                           <Fragment key={ci}>
