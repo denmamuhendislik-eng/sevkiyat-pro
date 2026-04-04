@@ -8611,8 +8611,13 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     const defCount = machWip.filter(w => w.timeSource === "def").length;
                                     const bomMin = machWip.filter(w => w.timeSource === "bom").reduce((s, w) => s + w.wipMin, 0);
                                     const avgMin = machWip.filter(w => w.timeSource === "avg").reduce((s, w) => s + w.wipMin, 0);
+                                    const totalWipMin = machWip.reduce((s, w) => s + w.wipMin, 0);
                                     return (
-                                      <div style={{ marginTop: 4, paddingLeft: 2 }}>
+                                      <div style={{ marginTop: 4, padding: "6px 8px", background: "#FEF3C7", borderRadius: 6, border: "1px solid #FDE68A" }}>
+                                        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                                          <span style={{ fontSize: 9, fontWeight: 600, color: "#92400E" }}>🔶 Devam Eden ({machWip.length})</span>
+                                          <span style={{ fontSize: 8, color: "#B45309" }}>{Math.round(totalWipMin)}dk</span>
+                                        </div>
                                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 3 }}>
                                           {bomCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{bomCount} BOM ({Math.round(bomMin)}dk)</span>}
                                           {avgCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{avgCount} ort. ({Math.round(avgMin)}dk)</span>}
@@ -8637,7 +8642,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     const machOps = [];
                                     jobs.forEach(j => j.operations.forEach((op, opIdx) => {
                                       if (op.machineId === mId && !op.isFason) {
-                                        machOps.push({ jobId: j.id, opIdx, opSeq: opIdx + 1, opTotal: j.operations.length, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, cycleTime: op.cycleTime, setupTime: op.setupTime, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def") });
+                                        // Build operation chain summary for this job
+                                        const chain = j.operations.map((o, oi) => ({
+                                          opCode: o.opCode, opName: o.opName, wcName: o.wcName || o.wcCode,
+                                          isFason: o.isFason, isCurrent: oi === opIdx, machineId: o.machineId
+                                        }));
+                                        const prevOp = opIdx > 0 ? j.operations[opIdx - 1] : null;
+                                        const nextOp = opIdx < j.operations.length - 1 ? j.operations[opIdx + 1] : null;
+                                        machOps.push({ jobId: j.id, opIdx, opSeq: opIdx + 1, opTotal: j.operations.length, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, cycleTime: op.cycleTime, setupTime: op.setupTime, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def"), chain, prevOp, nextOp });
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
@@ -8658,7 +8670,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
                                             <tbody>
                                               {machOps.map((op, i) => (
-                                                <tr key={i} style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                                                <Fragment key={i}>
+                                                <tr style={{ borderTop: i > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
                                                   <td style={{ padding: "3px 2px", width: 6 }}>
                                                     <span style={{ display: "inline-block", width: 5, height: 5, borderRadius: 1, background: op.timeSource === "mes" ? "#10B981" : "#D97706" }} title={op.timeSource === "mes" ? "MES gerçek süre" : "Varsayılan süre"} />
                                                   </td>
@@ -8684,6 +8697,28 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                     </td>
                                                   )}
                                                 </tr>
+                                                {op.opTotal > 1 && (
+                                                  <tr>
+                                                    <td colSpan={canEdit && sameWcMachines.length > 0 ? 12 : 11} style={{ padding: "0 2px 3px 14px" }}>
+                                                      <div style={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
+                                                        {op.chain.map((c, ci) => (
+                                                          <Fragment key={ci}>
+                                                            {ci > 0 && <span style={{ fontSize: 7, color: "var(--color-text-tertiary)" }}>→</span>}
+                                                            <span style={{
+                                                              fontSize: 7, padding: "0px 3px", borderRadius: 2, whiteSpace: "nowrap",
+                                                              background: c.isCurrent ? "#7C3AED" : c.isFason ? "#FBEAF0" : "var(--color-background-secondary)",
+                                                              color: c.isCurrent ? "#fff" : c.isFason ? "#72243E" : "var(--color-text-tertiary)",
+                                                              fontWeight: c.isCurrent ? 600 : 400
+                                                            }}>
+                                                              {c.isFason ? "⧖" : ""}{c.opName || `Op${c.opCode}`}
+                                                            </span>
+                                                          </Fragment>
+                                                        ))}
+                                                      </div>
+                                                    </td>
+                                                  </tr>
+                                                )}
+                                                </Fragment>
                                               ))}
                                             </tbody>
                                           </table>
