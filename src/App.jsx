@@ -8782,19 +8782,31 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           {avgCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{avgCount} ort. ({Math.round(avgMin)}dk)</span>}
                                           {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--color-background-secondary)", color: "var(--color-text-tertiary)" }}>{defCount} vars.</span>}
                                         </div>
-                                        {machWip.slice(0, 8).map(it => (
-                                          <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10, color: "var(--color-text-secondary)" }}>
-                                            <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "proj" ? "#2563EB" : it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
-                                            {it.emirNo && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309", flexShrink: 0 }}>E{it.emirNo}</span>}
-                                            <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{it.code}</span>
-                                            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
-                                            <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                            <span style={{ fontWeight: 500 }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</span>
-                                            <span style={{ fontWeight: 600 }}>{Math.round(it.wipMin)}dk</span>
-                                            {canEdit && <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 10 }}>✕</span>}
-                                          </div>
+                                        <div style={{ maxHeight: 600, overflowY: "auto" }}>
+                                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                          <tbody>
+                                        {machWip.map(it => (
+                                          <tr key={it.key} style={{ borderTop: "1px solid #FDE68A" }}>
+                                            <td style={{ padding: "6px 3px", width: 8 }}>
+                                              <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: it.timeSource === "proj" ? "#2563EB" : it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "proj" ? "BOM projeksiyon" : it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
+                                            </td>
+                                            <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, color: "#B45309", whiteSpace: "nowrap" }}>{it.emirNo ? `E${it.emirNo}` : "—"}</td>
+                                            <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, whiteSpace: "nowrap" }}>{it.code}</td>
+                                            <td style={{ padding: "6px 6px", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</td>
+                                            <td style={{ padding: "6px 4px", fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap" }}>{it.opName}</td>
+                                            <td style={{ padding: "6px 4px", fontSize: 10, textAlign: "right", whiteSpace: "nowrap" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</td>
+                                            <td style={{ padding: "6px 4px", fontSize: 10, fontWeight: 600, textAlign: "right", whiteSpace: "nowrap", color: "#92400E" }}>{Math.round(it.wipMin)}dk</td>
+                                            <td style={{ padding: "6px 4px" }}>
+                                              {it.isProjected && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "#DBEAFE", color: "#1D4ED8" }}>📐 PROJ</span>}
+                                            </td>
+                                            {canEdit && <td style={{ padding: "6px 0" }}>
+                                              <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 11 }}>✕</span>
+                                            </td>}
+                                          </tr>
                                         ))}
-                                        {machWip.length > 8 && <div style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>+{machWip.length - 8} daha</div>}
+                                          </tbody>
+                                        </table>
+                                        </div>
                                       </div>
                                     );
                                   })()}
