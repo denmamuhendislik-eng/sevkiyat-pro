@@ -6464,7 +6464,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             emirNo: order.emirNo, remaining: akOp.remaining,
             opCode: null, opName: akOp.name,
             wcCode, wcName: centers[wcCode]?.name || wcCode,
-            isFason: false, wipMin, timeSource, machineId: assignedMachine,
+            isFason: false, wipMin, cycleTime, setupTime, timeSource, machineId: assignedMachine,
             incomingQty, incomingOpName
           });
 
@@ -8834,7 +8834,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   }));
                                                 }
                                               }
-                                              const wipColSpan = canEdit ? 11 : 10;
+                                              const wipColSpan = canEdit ? 12 : 11;
                                               return (
                                               <Fragment key={it.key}>
                                               <tr data-wip-drop="true"
@@ -8851,6 +8851,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 <td style={{ padding: "6px 6px", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</td>
                                                 <td style={{ padding: "6px 4px", fontSize: 9, borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap" }}>{it.opName}</td>
                                                 <td style={{ padding: "6px 4px", fontSize: 10, textAlign: "right", whiteSpace: "nowrap" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</td>
+                                                <td style={{ padding: "6px 4px", fontSize: 9, textAlign: "right", whiteSpace: "nowrap", color: it.timeSource === "bom" ? "#059669" : it.timeSource === "proj" ? "#2563EB" : "var(--color-text-tertiary)" }} title={it.setupTime ? `Setup: ${it.setupTime}dk + Çevrim: ${it.cycleTime}dk/ad` : `Çevrim: ${it.cycleTime}dk/ad`}>{it.cycleTime}dk/ad</td>
                                                 <td style={{ padding: "6px 4px", fontSize: 10, fontWeight: 600, textAlign: "right", whiteSpace: "nowrap", color: "#92400E" }}>{Math.round(it.wipMin)}dk</td>
                                                 <td style={{ padding: "6px 4px" }}>
                                                   {it.isProjected && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "#DBEAFE", color: "#1D4ED8" }}>📐 PROJ</span>}
