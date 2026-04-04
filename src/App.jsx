@@ -2944,6 +2944,15 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     if (!newMs.days) newMs.days = {};
     if (!newMs.days[date]) newMs.days[date] = { planned:{}, actual:{} };
     newMs.days[date][field][String(pid)] = val;
+    // Manuel plan girişlerini işaretle (otomatik plandan ayırt etmek için)
+    if (field === "planned") {
+      if (!newMs.days[date]._manualPlan) newMs.days[date]._manualPlan = {};
+      if (val > 0) {
+        newMs.days[date]._manualPlan[String(pid)] = true;
+      } else {
+        delete newMs.days[date]._manualPlan[String(pid)];
+      }
+    }
     save(newMs);
   };
 
@@ -2966,9 +2975,48 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const newMs = deepClone(ms);
     if (!newMs.days) newMs.days = {};
 
+    // Manuel plan günlerini tespit et (bugünden itibaren)
+    const manualDays = {};
+    let manualDayCount = 0;
+    let manualCellCount = 0;
+    Object.entries(newMs.days).forEach(([date, day]) => {
+      if (date >= today && day._manualPlan && Object.keys(day._manualPlan).length > 0) {
+        // Sadece gerçekten planned değeri olan manuel hücreleri say
+        const activePids = Object.keys(day._manualPlan).filter(pid => day._manualPlan[pid] && (day.planned?.[pid] || 0) > 0);
+        if (activePids.length > 0) {
+          manualDays[date] = new Set(activePids);
+          manualDayCount++;
+          manualCellCount += activePids.length;
+        }
+      }
+    });
+
+    // Manuel plan varsa kullanıcıya sor
+    let keepManual = false;
+    if (manualDayCount > 0) {
+      keepManual = confirm(
+        `${manualDayCount} günde ${manualCellCount} adet manuel plan girişi var.\n\n` +
+        `Manuel planlar korunsun mu?\n\n` +
+        `• Tamam = Manuel planları koru, sadece kalan günleri otomatik planla\n` +
+        `• İptal = Tümünü sıfırla ve otomatik planla`
+      );
+    }
+
     // Geçmiş günlerin PLN'lerine dokunma, sadece bugünden itibaren temizle
     Object.entries(newMs.days).forEach(([date, day]) => {
-      if (date >= today) day.planned = {};
+      if (date >= today) {
+        if (keepManual && manualDays[date]) {
+          // Manuel hücreleri koru, sadece otomatik olanları temizle
+          const preserved = {};
+          manualDays[date].forEach(pid => {
+            if (day.planned?.[pid]) preserved[pid] = day.planned[pid];
+          });
+          day.planned = preserved;
+        } else {
+          day.planned = {};
+          if (day._manualPlan) delete day._manualPlan;
+        }
+      }
     });
 
     // Sevkiyat bazlı hedefler (tarihe göre sıralı)
@@ -2999,6 +3047,19 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
     const produced = {};
     ANA_IDS.forEach(pid => { produced[pid] = 0; });
 
+    // Manuel planları üretim takibine dahil et
+    if (keepManual) {
+      Object.entries(manualDays).forEach(([date, pids]) => {
+        const day = newMs.days[date];
+        if (!day?.planned) return;
+        pids.forEach(pidStr => {
+          const pid = Number(pidStr);
+          const qty = day.planned[pidStr] || 0;
+          if (qty > 0) produced[pid] += qty;
+        });
+      });
+    }
+
     // Toplam ihtiyaç = tüm sevkiyat hedefleri + emniyet stoku (son sevkiyat sonrası kalan) − mevcut stok
     const totalNeed = {};
     ANA_IDS.forEach(pid => {
@@ -3013,6 +3074,17 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
     for (const day of planDays) {
       if (!newMs.days[day]) newMs.days[day] = { planned:{}, actual:{} };
+
+      // Manuel plan korunan gün → atla (üretim zaten produced'a eklendi)
+      if (keepManual && manualDays[day]) {
+        // Streak takibini manuel güne göre güncelle
+        const manualPids = Object.entries(newMs.days[day].planned || {}).filter(([,v]) => v > 0);
+        if (manualPids.length > 0) {
+          const manualPid = Number(manualPids[0][0]);
+          if (manualPid === lastModel) { streak++; } else { lastModel = manualPid; streak = 1; }
+        }
+        continue;
+      }
 
       // En yakın eksik sevkiyatı bul, o sevkiyatın eksik modellerine odaklan
       const urgencies = [];
@@ -3094,7 +3166,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
       summary[pid] = { totalTarget: shipTotal, safety, stock, needed, planned: produced[pid], ok: produced[pid] >= needed };
     });
 
-    setAutoPlanPreview({ newMs, summary, dayCount: planDays.length, totalDays: allDays.length, shipCount: activeShips.length, skippedDays: allDays.length - planDays.length });
+    setAutoPlanPreview({ newMs, summary, dayCount: planDays.length, totalDays: allDays.length, shipCount: activeShips.length, skippedDays: allDays.length - planDays.length, manualDayCount: keepManual ? manualDayCount : 0 });
   };
 
   // --- Konteynerler (tarihi geçmiş olanlar otomatik shipped sayılır) ---
@@ -4278,14 +4350,15 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                     {calDays.map(d => {
                       const isS=shipDates.has(d), isW=isWeekend(d), isH=holidays.has(d), isT=d===today;
                       const v = ms.days?.[d]?.planned?.[pid];
+                      const isManual = ms.days?.[d]?._manualPlan?.[pid];
                       const overModel = v > modelMax;
                       const bg = isS?"rgba(56,138,221,0.06)":(isW||isH)?"rgba(250,200,50,0.04)":isT?"rgba(56,138,221,0.03)":"";
                       return (
                         <td key={d} style={{...TD,textAlign:"center",background:bg,borderLeft:isT?"2px solid var(--color-border-info)":"",verticalAlign:"middle",paddingBottom:1}}>
-                          <div style={{fontSize:"9px",color:"var(--color-text-tertiary)",lineHeight:1.2}}>pln</div>
+                          <div style={{fontSize:"9px",color: isManual ? "#F59E0B" : "var(--color-text-tertiary)",lineHeight:1.2}}>{isManual ? "✎ pln" : "pln"}</div>
                           {canPlan
                             ? <input key={d+"-p-"+pid+"-"+(v||0)} type="number" min="0" defaultValue={v||""} placeholder="—" onBlur={e=>updateCell(d,pid,"planned",e.target.value)}
-                                style={{...INP,color:overModel?"var(--color-text-warning)":v?"var(--color-text-secondary)":"var(--color-text-tertiary)"}}/>
+                                style={{...INP,color:overModel?"var(--color-text-warning)":v?"var(--color-text-secondary)":"var(--color-text-tertiary)",borderBottom: isManual ? "2px solid #F59E0B" : undefined}}/>
                             : <span style={{fontSize:"12px",color:"var(--color-text-secondary)"}}>{v||"—"}</span>
                           }
                         </td>
@@ -4471,7 +4544,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           <div style={{background:"var(--color-background-primary)",borderRadius:12,padding:"1.5rem",width:480,border:"0.5px solid var(--color-border-tertiary)"}}>
             <h3 style={{margin:"0 0 0.5rem",fontSize:15,fontWeight:500}}>🤖 Plan Güncelleme Özeti</h3>
             <p style={{margin:"0 0 1rem",fontSize:12,color:"var(--color-text-secondary)"}}>
-              {autoPlanPreview.shipCount} sevkiyat için {autoPlanPreview.dayCount} iş günü planlandı{autoPlanPreview.skippedDays>0?` (${autoPlanPreview.skippedDays} gün haftasonu/tatil atlandı)`:""}.
+              {autoPlanPreview.shipCount} sevkiyat için {autoPlanPreview.dayCount} iş günü planlandı{autoPlanPreview.skippedDays>0?` (${autoPlanPreview.skippedDays} gün haftasonu/tatil atlandı)`:""}{autoPlanPreview.manualDayCount>0?` · ${autoPlanPreview.manualDayCount} gün manuel plan korundu`:""}.
               Bugünden itibaren PLN güncellenir, geçmiş günlere ve GER'lere dokunulmaz.
             </p>
             <div style={{display:"flex",flexDirection:"column",gap:6,marginBottom:"1.25rem"}}>
