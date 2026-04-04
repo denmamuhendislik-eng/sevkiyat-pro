@@ -6376,10 +6376,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const ops = order.ops || [];
         if (ops.length === 0) { dbgNoOps++; return; }
 
-        ops.forEach(akOp => {
+        ops.forEach((akOp, opSeqIdx) => {
           if (akOp.remaining <= 0) return;
           const isFason = akOp.isFason;
           if (isFason) { dbgFason++; return; }
+
+          // Önceki operasyondan gelecek miktar: önceki iç operasyonun kalan'ı
+          let incomingQty = 0;
+          for (let pi = opSeqIdx - 1; pi >= 0; pi--) {
+            if (!ops[pi].isFason && ops[pi].remaining > 0) {
+              incomingQty = ops[pi].remaining;
+              break;
+            }
+          }
 
           const wcCode = matchWC(akOp.name);
           if (!wcCode) {
@@ -6413,7 +6422,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             emirNo: order.emirNo, remaining: akOp.remaining,
             opCode: null, opName: akOp.name,
             wcCode, wcName: centers[wcCode]?.name || wcCode,
-            isFason: false, wipMin, timeSource, machineId: assignedMachine
+            isFason: false, wipMin, timeSource, machineId: assignedMachine,
+            incomingQty
           });
 
           if (assignedMachine) {
@@ -8696,7 +8706,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{it.code}</span>
                                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
                                             <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                            <span style={{ fontWeight: 500 }}>{it.remaining}ad</span>
+                                            <span style={{ fontWeight: 500 }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`Önceki operasyondan +${it.incomingQty} adet gelecek`}>+{it.incomingQty}⏳</span>}</span>
                                             <span style={{ fontWeight: 600 }}>{Math.round(it.wipMin)}dk</span>
                                             {canEdit && <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 10 }}>✕</span>}
                                           </div>
@@ -8875,7 +8885,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 35, textAlign: "right" }}>{it.remaining}ad</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 35, textAlign: "right" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`Önceki operasyondan +${it.incomingQty} adet gelecek`}>+{it.incomingQty}⏳</span>}</span>
                                       <span style={{ fontSize: 10, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)", fontWeight: it.timeSource === "bom" ? 600 : 400, minWidth: 40, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
                                       {canEdit && wcMachineIds.length > 0 ? (
                                         <select
@@ -8909,7 +8919,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{it.remaining}ad</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`Önceki operasyondan +${it.incomingQty} adet gelecek`}>+{it.incomingQty}⏳</span>}</span>
                                       <span style={{ fontSize: 10, fontWeight: it.timeSource === "bom" ? 600 : 400, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)" }}>{Math.round(it.wipMin)}dk</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mSt[it.machineId]?.name || it.machineId}</span>
                                       {canEdit && (
