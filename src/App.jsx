@@ -6376,17 +6376,59 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const ops = order.ops || [];
         if (ops.length === 0) { dbgNoOps++; return; }
 
+        // BOM operasyon sıralaması: akibet op'larını BOM sırasına eşleştir
+        const bomPart = bomLookup[akPart.code];
+        const bomOps = bomPart?.operations || [];
+
+        // Her akibet op'u WC eşleştir ve BOM sıra indeksini bul
+        const mappedOps = ops.map((akOp, akIdx) => {
+          const wc = matchWC(akOp.name);
+          let bomSeq = -1;
+          if (wc && bomOps.length > 0) {
+            // Aynı wcCode'lu BOM op'ları sırayla eşleştir (MRK.1→ilk, MRK.2→ikinci)
+            const mrkMatch = akOp.name.match(/MRK\.?\s*(\d+)/i);
+            const mrkNum = mrkMatch ? parseInt(mrkMatch[1]) : 1;
+            let matchCount = 0;
+            for (let bi = 0; bi < bomOps.length; bi++) {
+              if (bomOps[bi].wcCode === wc) {
+                matchCount++;
+                if (matchCount === mrkNum) { bomSeq = bi; break; }
+              }
+            }
+            // Fallback: wcCode eşleşen ilk BOM op
+            if (bomSeq < 0) {
+              bomSeq = bomOps.findIndex(bo => bo.wcCode === wc);
+            }
+          }
+          return { akOp, akIdx, wcCode: wc, bomSeq, remaining: akOp.remaining };
+        });
+
+        // BOM sırasına göre sırala (eşleşmeyenler sona)
+        const sortedByBom = [...mappedOps].filter(m => !m.akOp.isFason && m.wcCode).sort((a, b) => {
+          if (a.bomSeq < 0 && b.bomSeq < 0) return a.akIdx - b.akIdx;
+          if (a.bomSeq < 0) return 1;
+          if (b.bomSeq < 0) return -1;
+          return a.bomSeq - b.bomSeq;
+        });
+
         ops.forEach((akOp, opSeqIdx) => {
           if (akOp.remaining <= 0) return;
           const isFason = akOp.isFason;
           if (isFason) { dbgFason++; return; }
 
-          // Önceki operasyondan gelecek miktar: önceki iç operasyonun kalan'ı
+          // BOM sırasına göre önceki operasyondan gelecek miktar
           let incomingQty = 0;
-          for (let pi = opSeqIdx - 1; pi >= 0; pi--) {
-            if (!ops[pi].isFason && ops[pi].remaining > 0) {
-              incomingQty = ops[pi].remaining;
-              break;
+          let incomingOpName = "";
+          const currentMapped = mappedOps[opSeqIdx];
+          if (currentMapped && currentMapped.wcCode) {
+            const myBomPos = sortedByBom.findIndex(s => s.akIdx === opSeqIdx);
+            if (myBomPos > 0) {
+              // BOM sırasında önceki iç operasyon
+              const prevInBom = sortedByBom[myBomPos - 1];
+              if (prevInBom && prevInBom.remaining > 0) {
+                incomingQty = prevInBom.remaining;
+                incomingOpName = prevInBom.akOp.name;
+              }
             }
           }
 
@@ -6423,7 +6465,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             opCode: null, opName: akOp.name,
             wcCode, wcName: centers[wcCode]?.name || wcCode,
             isFason: false, wipMin, timeSource, machineId: assignedMachine,
-            incomingQty
+            incomingQty, incomingOpName
           });
 
           if (assignedMachine) {
@@ -8706,7 +8748,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{it.code}</span>
                                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
                                             <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                            <span style={{ fontWeight: 500 }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`Önceki operasyondan +${it.incomingQty} adet gelecek`}>+{it.incomingQty}⏳</span>}</span>
+                                            <span style={{ fontWeight: 500 }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</span>
                                             <span style={{ fontWeight: 600 }}>{Math.round(it.wipMin)}dk</span>
                                             {canEdit && <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 10 }}>✕</span>}
                                           </div>
@@ -8885,7 +8927,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 35, textAlign: "right" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`Önceki operasyondan +${it.incomingQty} adet gelecek`}>+{it.incomingQty}⏳</span>}</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 35, textAlign: "right" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</span>
                                       <span style={{ fontSize: 10, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)", fontWeight: it.timeSource === "bom" ? 600 : 400, minWidth: 40, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
                                       {canEdit && wcMachineIds.length > 0 ? (
                                         <select
@@ -8919,7 +8961,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
-                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`Önceki operasyondan +${it.incomingQty} adet gelecek`}>+{it.incomingQty}⏳</span>}</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</span>
                                       <span style={{ fontSize: 10, fontWeight: it.timeSource === "bom" ? 600 : 400, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)" }}>{Math.round(it.wipMin)}dk</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mSt[it.machineId]?.name || it.machineId}</span>
                                       {canEdit && (
