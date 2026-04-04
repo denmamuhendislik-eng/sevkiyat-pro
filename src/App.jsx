@@ -8782,31 +8782,71 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           {avgCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{avgCount} ort. ({Math.round(avgMin)}dk)</span>}
                                           {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "var(--color-background-secondary)", color: "var(--color-text-tertiary)" }}>{defCount} vars.</span>}
                                         </div>
-                                        <div style={{ maxHeight: 600, overflowY: "auto" }}>
-                                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                                          <tbody>
-                                        {machWip.map(it => (
-                                          <tr key={it.key} style={{ borderTop: "1px solid #FDE68A" }}>
-                                            <td style={{ padding: "6px 3px", width: 8 }}>
-                                              <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: it.timeSource === "proj" ? "#2563EB" : it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "proj" ? "BOM projeksiyon" : it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
-                                            </td>
-                                            <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, color: "#B45309", whiteSpace: "nowrap" }}>{it.emirNo ? `E${it.emirNo}` : "—"}</td>
-                                            <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, whiteSpace: "nowrap" }}>{it.code}</td>
-                                            <td style={{ padding: "6px 6px", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</td>
-                                            <td style={{ padding: "6px 4px", fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap" }}>{it.opName}</td>
-                                            <td style={{ padding: "6px 4px", fontSize: 10, textAlign: "right", whiteSpace: "nowrap" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</td>
-                                            <td style={{ padding: "6px 4px", fontSize: 10, fontWeight: 600, textAlign: "right", whiteSpace: "nowrap", color: "#92400E" }}>{Math.round(it.wipMin)}dk</td>
-                                            <td style={{ padding: "6px 4px" }}>
-                                              {it.isProjected && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "#DBEAFE", color: "#1D4ED8" }}>📐 PROJ</span>}
-                                            </td>
-                                            {canEdit && <td style={{ padding: "6px 0" }}>
-                                              <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 11 }}>✕</span>
-                                            </td>}
-                                          </tr>
-                                        ))}
-                                          </tbody>
-                                        </table>
-                                        </div>
+                                        {(() => {
+                                          const wipOrderKey = `WIP_${mId}`;
+                                          const wipCustomOrder = jobOrder[wipOrderKey];
+                                          if (wipCustomOrder && wipCustomOrder.length > 0) {
+                                            const orderMap = {};
+                                            wipCustomOrder.forEach((key, idx) => { orderMap[key] = idx; });
+                                            machWip.sort((a, b) => (orderMap[a.key] ?? 9999) - (orderMap[b.key] ?? 9999));
+                                          }
+                                          const hasWipOrder = wipCustomOrder && wipCustomOrder.length > 0;
+                                          const wipDragStart = (e, idx) => { e.dataTransfer.setData("text/plain", String(idx)); e.dataTransfer.effectAllowed = "move"; e.currentTarget.style.opacity = "0.4"; };
+                                          const wipDragEnd = (e) => { e.currentTarget.style.opacity = "1"; document.querySelectorAll("[data-wip-drop]").forEach(el => { el.style.boxShadow = "none"; }); };
+                                          const wipDragOver = (e) => {
+                                            e.preventDefault(); e.dataTransfer.dropEffect = "move";
+                                            const tr = e.currentTarget;
+                                            const rect = tr.getBoundingClientRect();
+                                            const isAbove = e.clientY < rect.top + rect.height / 2;
+                                            tr.closest("tbody").querySelectorAll("[data-wip-drop]").forEach(el => { el.style.boxShadow = "none"; });
+                                            tr.style.boxShadow = isAbove ? "inset 0 3px 0 0 #D97706" : "inset 0 -3px 0 0 #D97706";
+                                          };
+                                          const wipDragLeave = (e) => { e.currentTarget.style.boxShadow = "none"; };
+                                          const wipDrop = (e, dropIdx) => {
+                                            e.preventDefault(); e.currentTarget.style.boxShadow = "none";
+                                            const dragIdx = parseInt(e.dataTransfer.getData("text/plain"));
+                                            if (isNaN(dragIdx) || dragIdx === dropIdx) return;
+                                            const result = [...machWip];
+                                            const [moved] = result.splice(dragIdx, 1);
+                                            result.splice(dropIdx, 0, moved);
+                                            saveJobOrder(wipOrderKey, result.map(o => o.key));
+                                          };
+                                          return (
+                                            <>
+                                            {hasWipOrder && <div style={{ textAlign: "right", marginBottom: 2 }}><span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#FEF3C7", color: "#92400E", cursor: "pointer" }} onClick={() => saveJobOrder(wipOrderKey, [])}>✎ Özel sıra · Sıfırla</span></div>}
+                                            <div style={{ maxHeight: 600, overflowY: "auto" }}>
+                                            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                                              <tbody>
+                                            {machWip.map((it, wi) => (
+                                              <tr key={it.key} data-wip-drop="true"
+                                                draggable={canEdit} onDragStart={e => wipDragStart(e, wi)} onDragEnd={wipDragEnd}
+                                                onDragOver={wipDragOver} onDragLeave={wipDragLeave}
+                                                onDrop={e => wipDrop(e, wi)}
+                                                style={{ borderTop: "1px solid #FDE68A", cursor: canEdit ? "grab" : "default", transition: "box-shadow 0.1s" }}>
+                                                {canEdit && <td style={{ padding: "6px 4px", width: 14, cursor: "grab", color: "#B45309", fontSize: 11, userSelect: "none" }}>⠿</td>}
+                                                <td style={{ padding: "6px 3px", width: 8 }}>
+                                                  <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: it.timeSource === "proj" ? "#2563EB" : it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "proj" ? "BOM projeksiyon" : it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
+                                                </td>
+                                                <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, color: "#B45309", whiteSpace: "nowrap" }}>{it.emirNo ? `E${it.emirNo}` : "—"}</td>
+                                                <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 10, whiteSpace: "nowrap" }}>{it.code}</td>
+                                                <td style={{ padding: "6px 6px", fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</td>
+                                                <td style={{ padding: "6px 4px", fontSize: 9, borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap" }}>{it.opName}</td>
+                                                <td style={{ padding: "6px 4px", fontSize: 10, textAlign: "right", whiteSpace: "nowrap" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB", marginLeft: 2 }} title={`${it.incomingOpName || 'Önceki op'} → +${it.incomingQty} adet gelecek (BOM sırası)`}>+{it.incomingQty}⏳</span>}</td>
+                                                <td style={{ padding: "6px 4px", fontSize: 10, fontWeight: 600, textAlign: "right", whiteSpace: "nowrap", color: "#92400E" }}>{Math.round(it.wipMin)}dk</td>
+                                                <td style={{ padding: "6px 4px" }}>
+                                                  {it.isProjected && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 2, background: "#DBEAFE", color: "#1D4ED8" }}>📐 PROJ</span>}
+                                                </td>
+                                                {canEdit && <td style={{ padding: "6px 0" }}>
+                                                  <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 11 }}>✕</span>
+                                                </td>}
+                                              </tr>
+                                            ))}
+                                              </tbody>
+                                            </table>
+                                            </div>
+                                            </>
+                                          );
+                                        })()}
                                       </div>
                                     );
                                   })()}
