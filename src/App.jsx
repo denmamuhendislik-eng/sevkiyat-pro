@@ -6300,20 +6300,29 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const wcEntries = Object.entries(centers).map(([code, wc]) => ({ code, name: (wc.name || code).toUpperCase() }));
 
     // Özel eşleşme haritası: akibet op adı → WC isim anahtar kelimesi
-    const opAliases = {
+    const hardcodedAliases = {
       "KAMA KANALI AÇMA": "TESTERE",
       "MATKAP İLE DELME VE KLAVUZ AÇMA": "PRES",
       "ÖLÇÜM VE KALİTE KONTROL": "KALİTE",
       "HELICOILLER ATMA": "SAV"
     };
+    // Kullanıcı tanımlı alias'lar (Firestore'da workCenters.opAliases)
+    const userAliases = workCenters.opAliases || {};
+    // Birleştir: kullanıcı tanımlı öncelikli (opName → wcCode doğrudan)
+    const opAliases = { ...hardcodedAliases, ...Object.fromEntries(
+      Object.entries(userAliases).map(([opName, wcCode]) => [opName, wcCode])
+    ) };
 
     const matchWC = (opName) => {
       const upper = opName.toUpperCase().replace(/MRK\.?\s*\d+/g, "").replace(/\d+/g, "").trim();
       if (!upper) return null;
-      // 0) Özel alias eşleşme (domain-specific kurallar)
-      const aliasKey = Object.keys(opAliases).find(k => upper.includes(k) || k.includes(upper));
+      // 0a) Kullanıcı tanımlı doğrudan eşleşme (opName → wcCode)
+      const directMatch = userAliases[upper] || userAliases[opName.toUpperCase().trim()];
+      if (directMatch && centers[directMatch]) return directMatch;
+      // 0b) Özel alias eşleşme (domain-specific kurallar)
+      const aliasKey = Object.keys(hardcodedAliases).find(k => upper.includes(k) || k.includes(upper));
       if (aliasKey) {
-        const aliasWC = wcEntries.find(w => w.name.includes(opAliases[aliasKey]));
+        const aliasWC = wcEntries.find(w => w.name.includes(hardcodedAliases[aliasKey]));
         if (aliasWC) return aliasWC.code;
       }
       // 1) Tam isim eşleşme
@@ -6342,6 +6351,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const byMachine = {};
     let dbgTotal = 0, dbgNoWip = 0, dbgNoOrders = 0, dbgNoOps = 0, dbgFason = 0, dbgNoWC = 0, dbgMatched = 0, dbgBomMatch = 0, dbgAvgMatch = 0, dbgDefaultMatch = 0;
     const dbgSamples = [];
+    const unmatchedOps = {}; // opName → { count, remaining, parts[] }
 
     akibet.parts.forEach(akPart => {
       dbgTotal++;
@@ -6361,6 +6371,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const wcCode = matchWC(akOp.name);
           if (!wcCode) {
             dbgNoWC++;
+            const opKey = akOp.name.toUpperCase().trim();
+            if (!unmatchedOps[opKey]) unmatchedOps[opKey] = { name: akOp.name, count: 0, remaining: 0, parts: [] };
+            unmatchedOps[opKey].count++;
+            unmatchedOps[opKey].remaining += akOp.remaining;
+            if (unmatchedOps[opKey].parts.length < 3) unmatchedOps[opKey].parts.push(akPart.code);
             if (dbgSamples.length < 8) dbgSamples.push({ code: akPart.code, reason: "WC eşleşmedi: " + akOp.name });
             return;
           }
@@ -6404,7 +6419,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const totalMin = items.reduce((s, it) => s + it.wipMin, 0);
     return {
       byWC, byMachine, items, totalMin, totalItems: items.length,
-      debug: { total: dbgTotal, noWip: dbgNoWip, noOrders: dbgNoOrders, noOps: dbgNoOps, fason: dbgFason, noWC: dbgNoWC, matched: dbgMatched, bomMatch: dbgBomMatch, avgMatch: dbgAvgMatch, defMatch: dbgDefaultMatch, wcCount: wcEntries.length, bomKeys: Object.keys(bomLookup).length, samples: dbgSamples, wcAvgCycle }
+      debug: { total: dbgTotal, noWip: dbgNoWip, noOrders: dbgNoOrders, noOps: dbgNoOps, fason: dbgFason, noWC: dbgNoWC, matched: dbgMatched, bomMatch: dbgBomMatch, avgMatch: dbgAvgMatch, defMatch: dbgDefaultMatch, wcCount: wcEntries.length, bomKeys: Object.keys(bomLookup).length, samples: dbgSamples, wcAvgCycle, unmatchedOps }
     };
   }, [akibet, workCenters, wipAssignments, bomModels]);
 
@@ -8495,6 +8510,41 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     Çevrim süreleri (BOM ort.): {Object.entries(wipLoad.debug.wcAvgCycle).map(([wc, t]) => (
                       <span key={wc} style={{ marginRight: 8 }}>{workCenters?.centers?.[wc]?.name || wc}: <b>{t}</b>dk</span>
                     ))}
+                  </div>
+                )}
+                {wipLoad.debug.noWC > 0 && wipLoad.debug.unmatchedOps && Object.keys(wipLoad.debug.unmatchedOps).length > 0 && (
+                  <div style={{ marginTop: 8, padding: "8px 10px", background: "#FEF2F2", borderRadius: 6, border: "1px solid #FECACA" }}>
+                    <div style={{ fontSize: 10, fontWeight: 500, color: "#DC2626", marginBottom: 6 }}>
+                      ⚠ Eşleşmeyen Operasyonlar ({wipLoad.debug.noWC} adet)
+                    </div>
+                    <div style={{ fontSize: 9, color: "#991B1B", marginBottom: 6 }}>
+                      Aşağıdaki operasyon adları hiçbir iş merkeziyle eşleşmedi. Dropdown ile iş merkezi atayabilirsiniz.
+                    </div>
+                    <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                      {Object.entries(wipLoad.debug.unmatchedOps).sort((a, b) => b[1].count - a[1].count).map(([opKey, info]) => (
+                        <div key={opKey} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 10 }}>
+                          <span style={{ flex: 1, fontWeight: 500, color: "#7F1D1D" }}>{info.name}</span>
+                          <span style={{ fontSize: 9, color: "#991B1B" }}>{info.count} op · {info.remaining}ad</span>
+                          <span style={{ fontSize: 8, color: "var(--color-text-tertiary)" }}>{info.parts.join(", ")}{info.parts.length < info.count ? "…" : ""}</span>
+                          {canEdit && workCenters?.centers && (
+                            <select
+                              value={workCenters.opAliases?.[opKey] || ""}
+                              onChange={(e) => {
+                                const newAliases = { ...(workCenters.opAliases || {}), [opKey]: e.target.value };
+                                if (!e.target.value) delete newAliases[opKey];
+                                saveWC({ ...workCenters, opAliases: newAliases });
+                              }}
+                              style={{ fontSize: 9, padding: "2px 4px", borderRadius: 4, border: "1px solid #FECACA", background: "#fff", minWidth: 100 }}
+                            >
+                              <option value="">Eşleştir...</option>
+                              {Object.entries(workCenters.centers).map(([code, wc]) => (
+                                <option key={code} value={code}>{wc.name || code}</option>
+                              ))}
+                            </select>
+                          )}
+                        </div>
+                      ))}
+                    </div>
                   </div>
                 )}
               </div>
