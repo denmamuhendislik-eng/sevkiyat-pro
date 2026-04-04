@@ -8628,6 +8628,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             <span style={{ width: 5, height: 5, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
                                             <span style={{ fontFamily: "var(--font-mono)", fontSize: 8 }}>{it.code}</span>
                                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 8 }}>{it.name}</span>
+                                            <span style={{ fontSize: 7, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
                                             <span>{it.remaining}ad</span>
                                             <span style={{ fontWeight: 500 }}>{Math.round(it.wipMin)}dk</span>
                                             {canEdit && <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 8 }}>✕</span>}
@@ -8744,6 +8745,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ width: 6, height: 6, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
+                                      <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
                                       <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 30, textAlign: "right" }}>{it.remaining}ad</span>
                                       <span style={{ fontSize: 9, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)", fontWeight: it.timeSource === "bom" ? 500 : 400, minWidth: 35, textAlign: "right" }}>{Math.round(it.wipMin)}dk</span>
                                       {canEdit && wcMachineIds.length > 0 ? (
@@ -8776,6 +8778,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       <span style={{ width: 6, height: 6, borderRadius: 1, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
+                                      <span style={{ fontSize: 8, padding: "0px 3px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", whiteSpace: "nowrap", flexShrink: 0 }}>{it.opName}</span>
                                       <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{it.remaining}ad</span>
                                       <span style={{ fontSize: 9, fontWeight: it.timeSource === "bom" ? 500 : 400, color: it.timeSource === "bom" ? "#065F46" : "var(--color-text-tertiary)" }}>{Math.round(it.wipMin)}dk</span>
                                       <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mSt[it.machineId]?.name || it.machineId}</span>
