@@ -8747,10 +8747,22 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       e.preventDefault();
                                       const dragIdx = parseInt(e.dataTransfer.getData("text/plain"));
                                       if (isNaN(dragIdx) || dragIdx === dropIdx) return;
-                                      const newOrder = machOps.map(o => `${o.jobId}|${o.opIdx}`);
-                                      const [moved] = newOrder.splice(dragIdx, 1);
-                                      newOrder.splice(dropIdx, 0, moved);
-                                      saveJobOrder(mId, newOrder);
+                                      const result = [...machOps];
+                                      const [moved] = result.splice(dragIdx, 1);
+                                      result.splice(dropIdx, 0, moved);
+                                      // Operasyon sırası koruması: aynı job'un op'ları opIdx sırasını korumalı
+                                      const jobGroups = {};
+                                      result.forEach((op, pos) => {
+                                        if (!jobGroups[op.jobId]) jobGroups[op.jobId] = [];
+                                        jobGroups[op.jobId].push({ pos, opIdx: op.opIdx, op });
+                                      });
+                                      Object.values(jobGroups).forEach(group => {
+                                        if (group.length < 2) return;
+                                        const positions = group.map(g => g.pos).sort((a, b) => a - b);
+                                        const byOpIdx = [...group].sort((a, b) => a.opIdx - b.opIdx);
+                                        byOpIdx.forEach((g, k) => { result[positions[k]] = g.op; });
+                                      });
+                                      saveJobOrder(mId, result.map(o => `${o.jobId}|${o.opIdx}`));
                                     };
                                     const hasCustomOrder = customOrder && customOrder.length > 0;
                                     return (
