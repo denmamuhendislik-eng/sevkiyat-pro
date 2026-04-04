@@ -3486,11 +3486,13 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
   // --- Plan Güncelleme Uyarısı ---
   const planAlert = useMemo(() => {
     const days = ms.days || {};
-    // Geçmiş günlerde GER < PLN olan modeller ve toplam eksik
+    const sinceDate = ms.lastPlanUpdate || "";
+    // Geçmiş günlerde GER < PLN olan modeller (son plan güncellemesinden sonra)
     const shortfall = {};
     let totalShortfall = 0;
     Object.entries(days).forEach(([d, day]) => {
       if (d >= today) return;
+      if (sinceDate && d < sinceDate) return; // Plan güncelleme öncesi eksikler sayılmaz
       ANA_IDS.forEach(pid => {
         const pln = Number(day.planned?.[pid]) || 0;
         const ger = Number(day.actual?.[pid]) || 0;
@@ -4579,7 +4581,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             );})()}
             <div style={{display:"flex",gap:8,justifyContent:"flex-end"}}>
               <button onClick={()=>setAutoPlanPreview(null)} style={{padding:"7px 16px",fontSize:13,cursor:"pointer"}}>İptal</button>
-              <button onClick={()=>{save(autoPlanPreview.newMs);setAutoPlanPreview(null);}} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Planı Uygula</button>
+              <button onClick={()=>{const applyMs = {...autoPlanPreview.newMs, lastPlanUpdate: today}; save(applyMs);setAutoPlanPreview(null);}} style={{padding:"7px 16px",fontSize:13,cursor:"pointer",background:"var(--color-background-info)",color:"var(--color-text-info)",border:"0.5px solid var(--color-border-info)",borderRadius:6,fontWeight:500}}>Planı Uygula</button>
             </div>
           </div>
         </div>
