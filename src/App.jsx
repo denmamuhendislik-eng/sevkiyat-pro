@@ -8742,8 +8742,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     const mesMin = machOps.filter(o => o.timeSource === "mes").reduce((s, o) => s + o.totalMin, 0);
                                     const defMin = machOps.filter(o => o.timeSource !== "mes").reduce((s, o) => s + o.totalMin, 0);
                                     const handleDragStart = (e, idx) => { e.dataTransfer.setData("text/plain", String(idx)); e.dataTransfer.effectAllowed = "move"; e.currentTarget.style.opacity = "0.4"; };
-                                    const handleDragEnd = (e) => { e.currentTarget.style.opacity = "1"; };
-                                    const handleDragOver = (e) => { e.preventDefault(); e.dataTransfer.dropEffect = "move"; };
+                                    const handleDragEnd = (e) => { e.currentTarget.style.opacity = "1"; document.querySelectorAll("[data-drop-target]").forEach(el => { el.style.boxShadow = "none"; el.style.borderTop = ""; }); };
+                                    const handleDragOver = (e, idx) => {
+                                      e.preventDefault(); e.dataTransfer.dropEffect = "move";
+                                      const tr = e.currentTarget;
+                                      const rect = tr.getBoundingClientRect();
+                                      const midY = rect.top + rect.height / 2;
+                                      const isAbove = e.clientY < midY;
+                                      // Clear all indicators
+                                      tr.closest("tbody").querySelectorAll("[data-drop-target]").forEach(el => { el.style.boxShadow = "none"; });
+                                      // Show indicator
+                                      tr.style.boxShadow = isAbove ? "inset 0 3px 0 0 #7C3AED" : "inset 0 -3px 0 0 #7C3AED";
+                                    };
+                                    const handleDragLeave = (e) => { e.currentTarget.style.boxShadow = "none"; };
                                     const handleDrop = (e, dropIdx) => {
                                       e.preventDefault();
                                       const dragIdx = parseInt(e.dataTransfer.getData("text/plain"));
@@ -8780,12 +8791,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                               {machOps.map((op, i) => (
                                                 <Fragment key={i}>
                                                 <tr
+                                                  data-drop-target="true"
                                                   draggable={canEdit}
                                                   onDragStart={e => handleDragStart(e, i)}
                                                   onDragEnd={handleDragEnd}
-                                                  onDragOver={handleDragOver}
-                                                  onDrop={e => handleDrop(e, i)}
-                                                  style={{ borderTop: i > 0 ? "1px solid var(--color-border-tertiary)" : "none", cursor: canEdit ? "grab" : "default" }}
+                                                  onDragOver={e => handleDragOver(e, i)}
+                                                  onDragLeave={handleDragLeave}
+                                                  onDrop={e => { e.currentTarget.style.boxShadow = "none"; handleDrop(e, i); }}
+                                                  style={{ borderTop: i > 0 ? "1px solid var(--color-border-tertiary)" : "none", cursor: canEdit ? "grab" : "default", transition: "box-shadow 0.1s" }}
                                                 >
                                                   {canEdit && <td style={{ padding: "6px 4px", width: 14, cursor: "grab", color: "var(--color-text-tertiary)", fontSize: 11, userSelect: "none" }}>⠿</td>}
                                                   <td style={{ padding: "6px 3px", width: 8 }}>
