@@ -6164,9 +6164,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const ger = pNum(r[op.gerCol]);
         const isl = pNum(r[op.islCol]);
         if (ger === 0 && isl === 0) continue;
-        const remaining = Math.max(0, ger - isl);
-        const completed = Math.max(0, isl);
-        orderOps.push({ name: op.name, isFason: op.isFason, ger, isl: completed, remaining });
+        // Ger.Miktar = gerçekleşen (tamamlanan), İşlem Mik. = işlenebilir (bekleyen)
+        // Kalan = işlenebilir - gerçekleşen
+        const remaining = Math.max(0, isl - ger);
+        const completed = ger;
+        orderOps.push({ name: op.name, isFason: op.isFason, ger, isl, remaining });
         if (op.isFason) {
           orderFasRem = Math.max(orderFasRem, remaining);
         } else {
