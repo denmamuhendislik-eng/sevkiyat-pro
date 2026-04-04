@@ -6478,12 +6478,52 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             byWC[wcCode].count++;
           }
         });
+
+        // BOM Projeksiyon: akibet'te görünmeyen sonraki operasyonları projekte et
+        if (bomOps.length > 0) {
+          const activeBomIndices = new Set();
+          let maxActiveBomIdx = -1;
+          mappedOps.forEach(m => {
+            if (m.bomSeq >= 0 && m.remaining > 0 && !m.akOp.isFason) {
+              activeBomIndices.add(m.bomSeq);
+              if (m.bomSeq > maxActiveBomIdx) maxActiveBomIdx = m.bomSeq;
+            }
+          });
+          const flowQty = Math.max(...mappedOps.filter(m => m.remaining > 0 && !m.akOp.isFason).map(m => m.remaining), 0);
+          if (flowQty > 0 && maxActiveBomIdx >= 0) {
+            for (let bi = maxActiveBomIdx + 1; bi < bomOps.length; bi++) {
+              const bOp = bomOps[bi];
+              if (!bOp.wcCode || !centers[bOp.wcCode]) continue;
+              if (parseInt(bOp.opCode) >= 600) continue;
+              if (activeBomIndices.has(bi)) continue;
+              const projCycle = bOp.cycleTime || wcAvgCycle[bOp.wcCode] || defaultCycle;
+              const projSetup = bOp.setupTime || 0;
+              const projMin = projSetup + projCycle * flowQty;
+              const projKey = `PROJ|${akPart.code}|Op${bOp.opCode}|${order.emirNo}`;
+              items.push({
+                key: projKey, code: akPart.code, name: akPart.name,
+                emirNo: order.emirNo, remaining: flowQty,
+                opCode: bOp.opCode, opName: bOp.opName || `Op${bOp.opCode}`,
+                wcCode: bOp.wcCode, wcName: centers[bOp.wcCode]?.name || bOp.wcCode,
+                isFason: false, wipMin: projMin, timeSource: "proj", machineId: null,
+                incomingQty: flowQty, incomingOpName: bomOps[bi - 1]?.opName || "önceki op",
+                isProjected: true
+              });
+              if (!byWC[bOp.wcCode]) byWC[bOp.wcCode] = { totalMin: 0, count: 0 };
+              byWC[bOp.wcCode].totalMin += projMin;
+              byWC[bOp.wcCode].count++;
+            }
+          }
+        }
       });
     });
 
     const totalMin = items.reduce((s, it) => s + it.wipMin, 0);
+    const projectedItems = items.filter(it => it.isProjected);
     return {
       byWC, byMachine, items, totalMin, totalItems: items.length,
+      projectedCount: projectedItems.length,
+      projectedMin: projectedItems.reduce((s, it) => s + it.wipMin, 0),
       debug: { total: dbgTotal, noWip: dbgNoWip, noOrders: dbgNoOrders, noOps: dbgNoOps, fason: dbgFason, noWC: dbgNoWC, matched: dbgMatched, bomMatch: dbgBomMatch, avgMatch: dbgAvgMatch, defMatch: dbgDefaultMatch, wcCount: wcEntries.length, bomKeys: Object.keys(bomLookup).length, samples: dbgSamples, wcAvgCycle, unmatchedOps }
     };
   }, [akibet, workCenters, wipAssignments, bomModels]);
@@ -8572,6 +8612,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   {wipLoad.debug.noWip > 0 && <span style={{ color: "var(--color-text-tertiary)" }}>Kalan yok: {wipLoad.debug.noWip}</span>}
                   {wipLoad.debug.noOps > 0 && <span style={{ color: "var(--color-text-tertiary)" }}>Op yok: {wipLoad.debug.noOps}</span>}
                   <span>Toplam WIP: <b>{Math.round(wipLoad.totalMin / 60)}s</b> ({wipLoad.totalItems} kalem)</span>
+                  {wipLoad.projectedCount > 0 && <span style={{ color: "#2563EB" }}>Projeksiyon: <b>{wipLoad.projectedCount}</b> op · {Math.round(wipLoad.projectedMin / 60)}s</span>}
                 </div>
                 {wipLoad.debug.wcAvgCycle && Object.keys(wipLoad.debug.wcAvgCycle).length > 0 && (
                   <div style={{ marginTop: 4, fontSize: 9, color: "var(--color-text-tertiary)" }}>
@@ -8743,7 +8784,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                         </div>
                                         {machWip.slice(0, 8).map(it => (
                                           <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3, fontSize: 10, color: "var(--color-text-secondary)" }}>
-                                            <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
+                                            <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "proj" ? "#2563EB" : it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
                                             {it.emirNo && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309", flexShrink: 0 }}>E{it.emirNo}</span>}
                                             <span style={{ fontFamily: "var(--font-mono)", fontSize: 9 }}>{it.code}</span>
                                             <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 9 }}>{it.name}</span>
@@ -8922,7 +8963,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   <div style={{ maxHeight: 300, overflowY: "auto" }}>
                                   {unassigned.map(it => (
                                     <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 11 }}>
-                                      <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
+                                      <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "proj" ? "#2563EB" : it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} title={it.timeSource === "proj" ? "BOM projeksiyon" : it.timeSource === "bom" ? "BOM birebir" : it.timeSource === "avg" ? "WC ortalama" : "Varsayılan"} />
                                       {it.emirNo && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309", flexShrink: 0 }}>E{it.emirNo}</span>}
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
@@ -8956,7 +8997,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   <div style={{ fontSize: 10, fontWeight: 500, color: "#10B981", marginBottom: 4 }}>Atanmış WIP ({assigned.length})</div>
                                   {assigned.map(it => (
                                     <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4, fontSize: 11 }}>
-                                      <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
+                                      <span style={{ width: 7, height: 7, borderRadius: 2, flexShrink: 0, background: it.timeSource === "proj" ? "#2563EB" : it.timeSource === "bom" ? "#10B981" : it.timeSource === "avg" ? "#F59E0B" : "#9CA3AF" }} />
                                       {it.emirNo && <span style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309", flexShrink: 0 }}>E{it.emirNo}</span>}
                                       <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 70 }}>{it.code}</span>
                                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 10 }}>{it.name}</span>
