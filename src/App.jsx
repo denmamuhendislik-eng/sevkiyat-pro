@@ -8817,8 +8817,27 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             <div style={{ maxHeight: 600, overflowY: "auto" }}>
                                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                               <tbody>
-                                            {machWip.map((it, wi) => (
-                                              <tr key={it.key} data-wip-drop="true"
+                                            {machWip.map((it, wi) => {
+                                              // BOM operasyon zinciri oluştur
+                                              let wipChain = [];
+                                              if (bomModels) {
+                                                let bomPart = null;
+                                                for (const mk of Object.keys(bomModels).filter(k => k !== "undefined")) {
+                                                  const found = (bomModels[mk]?.parts || []).find(p => p.stockCode === it.code && p.operations?.length > 0);
+                                                  if (found && (!bomPart || found.operations.length > bomPart.operations.length)) bomPart = found;
+                                                }
+                                                if (bomPart) {
+                                                  wipChain = bomPart.operations.map(o => ({
+                                                    opCode: o.opCode, opName: o.opName, wcName: o.wcName || o.wcCode,
+                                                    isFason: parseInt(o.opCode) >= 600,
+                                                    isCurrent: o.wcCode === it.wcCode
+                                                  }));
+                                                }
+                                              }
+                                              const wipColSpan = canEdit ? 11 : 10;
+                                              return (
+                                              <Fragment key={it.key}>
+                                              <tr data-wip-drop="true"
                                                 draggable={canEdit} onDragStart={e => wipDragStart(e, wi)} onDragEnd={wipDragEnd}
                                                 onDragOver={wipDragOver} onDragLeave={wipDragLeave}
                                                 onDrop={e => wipDrop(e, wi)}
@@ -8840,7 +8859,30 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   <span onClick={() => saveWipAssignment(it.key, null)} style={{ cursor: "pointer", color: "#EF4444", fontSize: 11 }}>✕</span>
                                                 </td>}
                                               </tr>
-                                            ))}
+                                              {wipChain.length > 1 && (
+                                                <tr>
+                                                  <td colSpan={wipColSpan} style={{ padding: "0 2px 3px 14px" }}>
+                                                    <div style={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
+                                                      {wipChain.map((c, ci) => (
+                                                        <Fragment key={ci}>
+                                                          {ci > 0 && <span style={{ fontSize: 7, color: "var(--color-text-tertiary)" }}>→</span>}
+                                                          <span style={{
+                                                            fontSize: 7, padding: "0px 3px", borderRadius: 2, whiteSpace: "nowrap",
+                                                            background: c.isCurrent ? "#D97706" : c.isFason ? "#FBEAF0" : "var(--color-background-secondary)",
+                                                            color: c.isCurrent ? "#fff" : c.isFason ? "#72243E" : "var(--color-text-tertiary)",
+                                                            fontWeight: c.isCurrent ? 600 : 400
+                                                          }}>
+                                                            {c.isFason ? "⧖" : ""}{c.opName || `Op${c.opCode}`}
+                                                          </span>
+                                                        </Fragment>
+                                                      ))}
+                                                    </div>
+                                                  </td>
+                                                </tr>
+                                              )}
+                                              </Fragment>
+                                              );
+                                            })}
                                               </tbody>
                                             </table>
                                             </div>
