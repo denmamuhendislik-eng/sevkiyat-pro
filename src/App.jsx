@@ -8827,11 +8827,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   if (found && (!bomPart || found.operations.length > bomPart.operations.length)) bomPart = found;
                                                 }
                                                 if (bomPart) {
-                                                  wipChain = bomPart.operations.map(o => ({
-                                                    opCode: o.opCode, opName: o.opName, wcName: o.wcName || o.wcCode,
-                                                    isFason: parseInt(o.opCode) >= 600,
-                                                    isCurrent: o.wcCode === it.wcCode
-                                                  }));
+                                                  // Akibet op adından MRK numarasını çıkar (ör. "TORNA MRK.2" → 2)
+                                                  const mrkMatch = it.opName.match(/MRK\.?\s*(\d+)/i);
+                                                  const mrkNum = mrkMatch ? parseInt(mrkMatch[1]) : 1;
+                                                  // Aynı wcCode'lu BOM op'ları sayarak doğru olanı bul
+                                                  let sameWcCount = 0;
+                                                  wipChain = bomPart.operations.map(o => {
+                                                    const isSameWc = o.wcCode === it.wcCode;
+                                                    if (isSameWc) sameWcCount++;
+                                                    return {
+                                                      opCode: o.opCode, opName: o.opName, wcName: o.wcName || o.wcCode,
+                                                      isFason: parseInt(o.opCode) >= 600,
+                                                      isCurrent: isSameWc && sameWcCount === mrkNum
+                                                    };
+                                                  });
                                                 }
                                               }
                                               const wipColSpan = canEdit ? 12 : 11;
