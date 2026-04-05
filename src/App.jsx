@@ -5552,6 +5552,83 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       });
 
       // 7) Calculate utilization stats per work center
+
+      // 6.5) Geriye çizelgeleme — her iş için en geç başlama tarihi ve sevkiyat riski
+      // partCode → explosion sources → pid → earliest container deadline
+      const partDeadlines = {}; // partCode → { dueDate, duePid, dueContainerId }
+      if (useMrp && explosionResult?.parts) {
+        // Container tarihlerini pid bazlı hazırla
+        const pidEarliestShip = {}; // pid → earliest container date
+        (unshippedDemand.containers || []).forEach(c => {
+          Object.keys(c.products || {}).forEach(pidStr => {
+            const pid = Number(pidStr);
+            if (!pidEarliestShip[pid] || c.date < pidEarliestShip[pid].date) {
+              pidEarliestShip[pid] = { date: c.date, containerId: c.id };
+            }
+          });
+        });
+        // Explosion sonuçlarından partCode → en erken sevkiyat tarihi
+        explosionResult.parts.forEach(r => {
+          if (!r.sources || r.sources.length === 0) return;
+          r.sources.forEach(src => {
+            const ship = pidEarliestShip[src.pid];
+            if (!ship) return;
+            if (!partDeadlines[r.code] || ship.date < partDeadlines[r.code].dueDate) {
+              partDeadlines[r.code] = { dueDate: ship.date, duePid: src.pid, dueContainerId: ship.containerId };
+            }
+          });
+        });
+      }
+
+      // Her iş için geriye çizelgeleme hesabı
+      jobs.forEach(j => {
+        const deadline = partDeadlines[j.partCode];
+        if (!deadline) { j.dueDate = null; j.slackDays = null; return; }
+        j.dueDate = deadline.dueDate;
+        j.duePid = deadline.duePid;
+
+        // Toplam üretim süresi: tüm operasyonların iş günü karşılığı
+        let totalProductionDays = 0;
+        j.operations.forEach(op => {
+          if (op.isFason) {
+            totalProductionDays += (op.leadTimeDays || 14);
+          } else {
+            totalProductionDays += Math.max(1, Math.ceil(op.totalMin / shiftMin));
+          }
+        });
+
+        // En geç başlama tarihi = dueDate - totalProductionDays (iş günü)
+        let latestStart = new Date(deadline.dueDate);
+        let daysBack = totalProductionDays;
+        while (daysBack > 0) {
+          latestStart = addDays(latestStart, -1);
+          if (!isWeekend(latestStart)) daysBack--;
+        }
+        j.latestStart = dateStr(latestStart);
+        j.totalProductionDays = totalProductionDays;
+
+        // İleri çizelgeledeki başlangıç tarihi
+        const forwardStart = j.operations[0]?.startDate;
+        if (forwardStart) {
+          // Slack = latestStart - forwardStart (iş günü)
+          let slack = 0;
+          let d = new Date(forwardStart);
+          const ls = new Date(j.latestStart);
+          if (d <= ls) {
+            while (d < ls) { d = addDays(d, 1); if (!isWeekend(d)) slack++; }
+          } else {
+            while (d > ls) { d = addDays(d, -1); if (!isWeekend(d)) slack--; }
+          }
+          j.slackDays = slack;
+        } else {
+          j.slackDays = null;
+        }
+      });
+
+      // Risk istatistikleri
+      const lateJobs = jobs.filter(j => j.slackDays !== null && j.slackDays < 0);
+      const atRiskJobs = jobs.filter(j => j.slackDays !== null && j.slackDays >= 0 && j.slackDays <= 5);
+
       const wcStats = {};
       let minDate = null, maxDate = null;
       jobs.forEach(j => j.operations.forEach(op => {
@@ -5600,6 +5677,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         materialIssueJobs: materialIssues.length,
         totalMaterialWarnings,
         missingMaterials,
+        lateJobCount: lateJobs.length,
+        atRiskJobCount: atRiskJobs.length,
         source: useMrp ? "mrp" : "vio",
         totalReqItems: Object.keys(reqItems).length,
         minDate: minDate ? dateStr(minDate) : null,
@@ -8664,6 +8743,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 {(s.materialIssueJobs || 0) > 0 && (
                   <KPI label="Malzeme Eksik" value={s.materialIssueJobs} sub={`${s.totalMaterialWarnings} kalem · ${s.missingMaterials} stoksuz`} accent="#DC2626" />
                 )}
+                {(s.lateJobCount || 0) > 0 && (
+                  <KPI label="Geciken İş" value={s.lateJobCount} sub="Sevkiyata yetişmeyebilir" accent="#DC2626" />
+                )}
+                {(s.atRiskJobCount || 0) > 0 && (
+                  <KPI label="Risk Altında" value={s.atRiskJobCount} sub="≤5 gün slack" accent="#F59E0B" />
+                )}
                 <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
               </div>
             )}
@@ -8986,7 +9071,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                         }));
                                         const prevOp = opIdx > 0 ? j.operations[opIdx - 1] : null;
                                         const nextOp = opIdx < j.operations.length - 1 ? j.operations[opIdx + 1] : null;
-                                        machOps.push({ jobId: j.id, opIdx, opSeq: opIdx + 1, opTotal: j.operations.length, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, cycleTime: op.cycleTime, setupTime: op.setupTime, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def"), chain, prevOp, nextOp, materialWarnings: j.materialWarnings });
+                                        machOps.push({ jobId: j.id, opIdx, opSeq: opIdx + 1, opTotal: j.operations.length, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, cycleTime: op.cycleTime, setupTime: op.setupTime, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def"), chain, prevOp, nextOp, materialWarnings: j.materialWarnings, dueDate: j.dueDate, slackDays: j.slackDays, latestStart: j.latestStart, totalProductionDays: j.totalProductionDays });
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
@@ -9082,9 +9167,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   <td style={{ padding: "6px 4px", fontSize: 9, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#059669" : "var(--color-text-tertiary)" }} title={op.setupTime ? `Setup: ${op.setupTime}dk + Çevrim: ${op.cycleTime || 5}dk/ad` : `Çevrim: ${op.cycleTime || 5}dk/ad`}>{op.cycleTime ? op.cycleTime : 5}dk/ad</td>
                                                   <td style={{ padding: "6px 4px", fontSize: 10, fontWeight: 600, textAlign: "right", whiteSpace: "nowrap", color: op.timeSource === "mes" ? "#065F46" : "#92400E" }}>{Math.round(op.totalMin)}dk</td>
                                                   <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>{op.startDate?.substring(5) || ""}</td>
-                                                  <td style={{ padding: "6px 0", width: 16 }}>
+                                                  <td style={{ padding: "6px 2px", width: 16 }}>
                                                     {op.capWarning && <span style={{ fontSize: 9, color: "#F97316" }}>⚡</span>}
-                                                    {op.materialWarnings && op.materialWarnings.length > 0 && <span style={{ fontSize: 8, color: op.materialWarnings.some(w => w.status === "missing") ? "#DC2626" : "#D97706" }} title={`${op.materialWarnings.length} malzeme eksik`}>📦{op.materialWarnings.length}</span>}
+                                                    {op.materialWarnings && op.materialWarnings.length > 0 && <span style={{ fontSize: 8, color: op.materialWarnings.some(w => w.status === "missing") ? "#DC2626" : "#D97706" }} title={`${op.materialWarnings.length} malzeme eksik`}>📦</span>}
+                                                  </td>
+                                                  {op.dueDate && (
+                                                    <td style={{ padding: "6px 4px", fontSize: 8, whiteSpace: "nowrap", color: op.slackDays < 0 ? "#DC2626" : op.slackDays <= 5 ? "#D97706" : "#16A34A", fontWeight: op.slackDays < 0 ? 700 : 400 }}
+                                                      title={`Sevkiyat: ${op.dueDate} · En geç başlama: ${op.latestStart} · Toplam üretim: ${op.totalProductionDays} iş günü`}>
+                                                      {op.slackDays < 0 ? `❌ ${op.slackDays}g` : op.slackDays <= 5 ? `⚠ ${op.slackDays}g` : `✓ ${op.slackDays}g`}
+                                                    </td>
+                                                  )}
                                                   </td>
                                                   {canEdit && sameWcMachines.length > 0 && (
                                                     <td style={{ padding: "3px 0" }}>
@@ -9098,7 +9190,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 </tr>
                                                 {op.opTotal > 1 && (
                                                   <tr>
-                                                    <td colSpan={canEdit ? (sameWcMachines.length > 0 ? 14 : 13) : 11} style={{ padding: "0 2px 3px 14px" }}>
+                                                    <td colSpan={canEdit ? (sameWcMachines.length > 0 ? 15 : 14) : 12} style={{ padding: "0 2px 3px 14px" }}>
                                                       <div style={{ display: "flex", gap: 2, alignItems: "center", flexWrap: "wrap" }}>
                                                         {op.chain.map((c, ci) => (
                                                           <Fragment key={ci}>
@@ -9119,7 +9211,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 )}
                                                 {op.materialWarnings && op.materialWarnings.length > 0 && (
                                                   <tr>
-                                                    <td colSpan={canEdit ? (sameWcMachines.length > 0 ? 14 : 13) : 11} style={{ padding: "0 2px 4px 14px" }}>
+                                                    <td colSpan={canEdit ? (sameWcMachines.length > 0 ? 15 : 14) : 12} style={{ padding: "0 2px 4px 14px" }}>
                                                       {op.materialWarnings.map((mw, mwi) => (
                                                         <div key={mwi} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 8, color: mw.status === "missing" ? "#DC2626" : mw.status === "partial" ? "#D97706" : "#2563EB" }}>
                                                           <span>{mw.status === "missing" ? "🔴" : mw.status === "partial" ? "🟡" : "🔵"}</span>
