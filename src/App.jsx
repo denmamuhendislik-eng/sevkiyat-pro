@@ -9177,7 +9177,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                       {op.slackDays < 0 ? `❌ ${op.slackDays}g` : op.slackDays <= 5 ? `⚠ ${op.slackDays}g` : `✓ ${op.slackDays}g`}
                                                     </td>
                                                   )}
-                                                  </td>
                                                   {canEdit && sameWcMachines.length > 0 && (
                                                     <td style={{ padding: "3px 0" }}>
                                                       <select value="" onChange={(e) => { if (e.target.value) reassignOp(op.jobId, op.opIdx, e.target.value); }}
