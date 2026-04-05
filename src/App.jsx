@@ -5428,10 +5428,33 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             if (stkAvail >= neededQty) return; // Stok yeterli
             const shortage = neededQty - stkAvail;
             const poCovers = poRemaining >= shortage;
+            // Tahmini geliş tarihi: satınalma siparişinden teslim tarihi
+            let eta = null;
+            let etaSupplier = "";
+            if (po?.orders) {
+              // Kalan miktarı olan en erken teslim tarihli siparişi bul
+              const activeOrders = po.orders.filter(o => o.remaining > 0 && o.teslim);
+              if (activeOrders.length > 0) {
+                // Teslim tarihini parse et (DD.MM.YYYY veya YYYY-MM-DD)
+                const parseDate = (s) => {
+                  if (!s) return null;
+                  const dot = s.match(/(\d{1,2})\.(\d{1,2})\.(\d{4})/);
+                  if (dot) return `${dot[3]}-${dot[2].padStart(2,"0")}-${dot[1].padStart(2,"0")}`;
+                  const iso = s.match(/(\d{4})-(\d{2})-(\d{2})/);
+                  if (iso) return s.substring(0, 10);
+                  return null;
+                };
+                const sorted = activeOrders.map(o => ({ ...o, _d: parseDate(o.teslim) })).filter(o => o._d).sort((a, b) => a._d.localeCompare(b._d));
+                if (sorted.length > 0) {
+                  eta = sorted[0]._d;
+                  etaSupplier = sorted[0].supplier || "";
+                }
+              }
+            }
             materialWarnings.push({
               code: child.stockCode, name: child.stockName,
               supplyType: child.supplyType, neededQty, stkAvail,
-              shortage, poRemaining, poCovers, leadDays,
+              shortage, poRemaining, poCovers, leadDays, eta, etaSupplier,
               status: poCovers ? "po" : stkAvail > 0 ? "partial" : "missing"
             });
           });
@@ -9151,14 +9174,21 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       let score = 0;
                                       // 1. Slack: en düşük (geciken) en önce
                                       if (op.slackDays !== null && op.slackDays !== undefined) {
-                                        score += (100 - op.slackDays) * 100; // slack -5 → 10500, slack 20 → 8000
+                                        score += (100 - op.slackDays) * 100;
                                       }
-                                      // 2. Malzeme hazır olan önce (eksik olan beklesin)
-                                      const hasMissing = op.materialWarnings?.some(w => w.status === "missing");
-                                      const hasPartial = op.materialWarnings?.some(w => w.status === "partial" || w.status === "po");
-                                      if (!op.materialWarnings || op.materialWarnings.length === 0) score += 500; // malzeme tamam
-                                      else if (!hasMissing) score += 200; // sipariş var
-                                      else score -= 1000; // stoksuz, üretilemiyor
+                                      // 2. Malzeme hazırlık durumu
+                                      const warnings = op.materialWarnings || [];
+                                      if (warnings.length === 0) {
+                                        score += 500; // malzeme tamam
+                                      } else {
+                                        const hasMissing = warnings.some(w => w.status === "missing");
+                                        const allHaveEta = warnings.every(w => w.eta || w.status !== "missing");
+                                        const anyEtaLate = warnings.some(w => w.eta && op.startDate && w.eta > op.startDate);
+                                        if (!hasMissing) score += 200; // sipariş karşılıyor
+                                        else if (allHaveEta && !anyEtaLate) score += 100; // ETA başlangıç tarihinden önce
+                                        else if (allHaveEta && anyEtaLate) score -= 300; // ETA geç, malzeme beklemeli
+                                        else score -= 1000; // stoksuz, sipariş yok
+                                      }
                                       // 3. Uzun üretim süreli önce
                                       score += (op.totalProductionDays || 0) * 10;
                                       // 4. Çok operasyonlu önce
@@ -9267,12 +9297,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                         <div key={mwi} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 8, color: mw.status === "missing" ? "#DC2626" : mw.status === "partial" ? "#D97706" : "#2563EB" }}>
                                                           <span>{mw.status === "missing" ? "🔴" : mw.status === "partial" ? "🟡" : "🔵"}</span>
                                                           <span style={{ fontFamily: "var(--font-mono)" }}>{mw.code}</span>
-                                                          <span style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mw.name}</span>
+                                                          <span style={{ maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mw.name}</span>
                                                           <span>İhtiyaç: {mw.neededQty}</span>
                                                           <span>Stok: {mw.stkAvail}</span>
                                                           {mw.poRemaining > 0 && <span>Sipariş: {mw.poRemaining}</span>}
                                                           <span style={{ fontWeight: 500 }}>Eksik: {mw.shortage}</span>
-                                                          {!mw.poCovers && <span style={{ padding: "0 3px", borderRadius: 2, background: "#FEE2E2", color: "#991B1B", fontWeight: 600 }}>⚠ TEDARİK GEREKLİ ~{mw.leadDays} gün</span>}
+                                                          {mw.eta && <span style={{ padding: "0 3px", borderRadius: 2, background: "#DBEAFE", color: "#1D4ED8", fontWeight: 500 }}>ETA: {mw.eta.substring(5)}{mw.etaSupplier ? ` · ${mw.etaSupplier}` : ""}</span>}
+                                                          {!mw.poCovers && !mw.eta && <span style={{ padding: "0 3px", borderRadius: 2, background: "#FEE2E2", color: "#991B1B", fontWeight: 600 }}>⚠ TEDARİK GEREKLİ ~{mw.leadDays} gün</span>}
+                                                          {!mw.poCovers && mw.eta && <span style={{ padding: "0 3px", borderRadius: 2, background: "#FEF3C7", color: "#92400E", fontWeight: 500 }}>⚠ Sipariş yetersiz · Eksik: {mw.shortage - mw.poRemaining}</span>}
                                                         </div>
                                                       ))}
                                                     </td>
