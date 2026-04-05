@@ -5406,11 +5406,42 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         });
 
         const totalMin = operations.reduce((s, o) => s + o.totalMin, 0);
+
+        // Malzeme hazırlık kontrolü: Bu parçanın BOM'daki BUY/RAW alt malzemelerini kontrol et
+        const materialWarnings = [];
+        const model = bomModels[bom.modelKey];
+        if (model?.parts) {
+          const buyLeadDefaults = workCenters.buyLeadDefaults || {};
+          const defaultLead = buyLeadDefaults.default?.days || 10;
+          // Bu parçanın BOM'daki çocuklarını bul (parentIdx = partIdx)
+          const children = model.parts.filter(p => p.parentIdx === bom.partIdx);
+          children.forEach(child => {
+            if (child.supplyType !== "BUY" && child.supplyType !== "RAW") return;
+            const neededQty = Math.ceil((child.qty || 1) * req.qty);
+            const stk = stockLookup[child.stockCode];
+            const stkAvail = stk ? (stk.ambar + stk.uretim) : 0;
+            const po = purchaseLookup[child.stockCode];
+            const poRemaining = po?.totalRemaining || 0;
+            const prefix = child.stockCode.split("-")[0];
+            const leadDays = buyLeadDefaults[prefix]?.days || defaultLead;
+
+            if (stkAvail >= neededQty) return; // Stok yeterli
+            const shortage = neededQty - stkAvail;
+            const poCovers = poRemaining >= shortage;
+            materialWarnings.push({
+              code: child.stockCode, name: child.stockName,
+              supplyType: child.supplyType, neededQty, stkAvail,
+              shortage, poRemaining, poCovers, leadDays,
+              status: poCovers ? "po" : stkAvail > 0 ? "partial" : "missing"
+            });
+          });
+        }
+
         jobs.push({
           id: "J" + String(++jobId).padStart(4, "0"),
           partCode: code, partName: req.name, qty: req.qty,
           level: req.level, supplyType: bom.part.supplyType,
-          operations, totalMin
+          operations, totalMin, materialWarnings
         });
       }
 
@@ -5558,10 +5589,17 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         if (st.utilization > maxUtil) { maxUtil = st.utilization; bottleneck = code; }
       }
 
+      const materialIssues = jobs.filter(j => j.materialWarnings && j.materialWarnings.length > 0);
+      const totalMaterialWarnings = materialIssues.reduce((s, j) => s + j.materialWarnings.length, 0);
+      const missingMaterials = materialIssues.reduce((s, j) => s + j.materialWarnings.filter(w => w.status === "missing").length, 0);
+
       const schedData = {
         jobs, fasonOrders, wcStats, bottleneck,
         totalJobs: jobs.length,
         totalFason: fasonOrders.length,
+        materialIssueJobs: materialIssues.length,
+        totalMaterialWarnings,
+        missingMaterials,
         source: useMrp ? "mrp" : "vio",
         totalReqItems: Object.keys(reqItems).length,
         minDate: minDate ? dateStr(minDate) : null,
@@ -7855,6 +7893,37 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             </span>
           </div>
 
+          {/* BUY/RAW Tedarik Süreleri */}
+          <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 8, color: "var(--color-text-secondary)" }}>📦 Malzeme Tedarik Süreleri (BUY/RAW)</div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
+              {[
+                { key: "150", label: "Ham Malzeme (150-)", defaultDays: 15 },
+                { key: "157", label: "Standart Alım (157-)", defaultDays: 5 },
+                { key: "152", label: "Ürün (152-)", defaultDays: 10 },
+                { key: "default", label: "Diğer", defaultDays: 10 }
+              ].map(cat => {
+                const val = (workCenters.buyLeadDefaults || {})[cat.key]?.days ?? cat.defaultDays;
+                return (
+                  <div key={cat.key} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                    <label style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{cat.label}:</label>
+                    <input type="number" min="1" value={val}
+                      onChange={e => {
+                        const d = parseInt(e.target.value) || cat.defaultDays;
+                        const cur = workCenters.buyLeadDefaults || {};
+                        saveWC({ ...workCenters, buyLeadDefaults: { ...cur, [cat.key]: { label: cat.label, days: d } } });
+                      }}
+                      style={{ width: 40, padding: "3px 4px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 11, textAlign: "center" }}
+                      disabled={!canEdit}
+                    />
+                    <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>gün</span>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 4 }}>Çizelgede malzeme hazırlık kontrolünde kullanılır — stokta yoksa ve sipariş verilmemişse bu süre kadar bekleme uyarısı gösterilir</div>
+          </div>
+
           {/* Work center cards */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 12 }}>
             {Object.entries(workCenters.centers || {}).sort((a, b) => a[0].localeCompare(b[0])).map(([code, wc]) => {
@@ -8592,6 +8661,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 {capWarnCount > 0 && (
                   <KPI label="Yetenek Uyarısı" value={capWarnCount} sub="Uyumsuz tezgah ataması" accent="#F97316" />
                 )}
+                {(s.materialIssueJobs || 0) > 0 && (
+                  <KPI label="Malzeme Eksik" value={s.materialIssueJobs} sub={`${s.totalMaterialWarnings} kalem · ${s.missingMaterials} stoksuz`} accent="#DC2626" />
+                )}
                 <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
               </div>
             )}
@@ -8914,7 +8986,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                         }));
                                         const prevOp = opIdx > 0 ? j.operations[opIdx - 1] : null;
                                         const nextOp = opIdx < j.operations.length - 1 ? j.operations[opIdx + 1] : null;
-                                        machOps.push({ jobId: j.id, opIdx, opSeq: opIdx + 1, opTotal: j.operations.length, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, cycleTime: op.cycleTime, setupTime: op.setupTime, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def"), chain, prevOp, nextOp });
+                                        machOps.push({ jobId: j.id, opIdx, opSeq: opIdx + 1, opTotal: j.operations.length, partCode: j.partCode, partName: j.partName, qty: j.qty, opCode: op.opCode, opName: op.opName, totalMin: op.totalMin, cycleTime: op.cycleTime, setupTime: op.setupTime, startDate: op.startDate, endDate: op.endDate, capWarning: op.capWarning, wcCode: op.wcCode, timeSource: op.timeSource || ((op.cycleTime != null && op.cycleTime > 0) ? "mes" : "def"), chain, prevOp, nextOp, materialWarnings: j.materialWarnings });
                                       }
                                     }));
                                     if (machOps.length === 0) return null;
@@ -9012,6 +9084,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   <td style={{ padding: "6px 4px", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>{op.startDate?.substring(5) || ""}</td>
                                                   <td style={{ padding: "6px 0", width: 16 }}>
                                                     {op.capWarning && <span style={{ fontSize: 9, color: "#F97316" }}>⚡</span>}
+                                                    {op.materialWarnings && op.materialWarnings.length > 0 && <span style={{ fontSize: 8, color: op.materialWarnings.some(w => w.status === "missing") ? "#DC2626" : "#D97706" }} title={`${op.materialWarnings.length} malzeme eksik`}>📦{op.materialWarnings.length}</span>}
                                                   </td>
                                                   {canEdit && sameWcMachines.length > 0 && (
                                                     <td style={{ padding: "3px 0" }}>
@@ -9041,6 +9114,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                           </Fragment>
                                                         ))}
                                                       </div>
+                                                    </td>
+                                                  </tr>
+                                                )}
+                                                {op.materialWarnings && op.materialWarnings.length > 0 && (
+                                                  <tr>
+                                                    <td colSpan={canEdit ? (sameWcMachines.length > 0 ? 14 : 13) : 11} style={{ padding: "0 2px 4px 14px" }}>
+                                                      {op.materialWarnings.map((mw, mwi) => (
+                                                        <div key={mwi} style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 8, color: mw.status === "missing" ? "#DC2626" : mw.status === "partial" ? "#D97706" : "#2563EB" }}>
+                                                          <span>{mw.status === "missing" ? "🔴" : mw.status === "partial" ? "🟡" : "🔵"}</span>
+                                                          <span style={{ fontFamily: "var(--font-mono)" }}>{mw.code}</span>
+                                                          <span style={{ maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mw.name}</span>
+                                                          <span>İhtiyaç: {mw.neededQty}</span>
+                                                          <span>Stok: {mw.stkAvail}</span>
+                                                          {mw.poRemaining > 0 && <span>Sipariş: {mw.poRemaining}</span>}
+                                                          <span style={{ fontWeight: 500 }}>Eksik: {mw.shortage}</span>
+                                                          {!mw.poCovers && <span style={{ padding: "0 3px", borderRadius: 2, background: "#FEE2E2", color: "#991B1B", fontWeight: 600 }}>⚠ TEDARİK GEREKLİ ~{mw.leadDays} gün</span>}
+                                                        </div>
+                                                      ))}
                                                     </td>
                                                   </tr>
                                                 )}
