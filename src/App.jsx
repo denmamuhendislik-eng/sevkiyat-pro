@@ -8537,6 +8537,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const jobs = s?.jobs || [];
         const fasonOrd = s?.fasonOrders || [];
         const wcSt = s?.wcStats || {};
+        const shiftMin = (workCenters?.shiftHours || 9) * 60 * (workCenters?.efficiency || 0.85);
 
         // machineStats: client-side hesaplama (jobs + workCenters'tan türetilir)
         const mSt = (() => {
@@ -9471,11 +9472,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 const color = jobColorMap[op.jobId] || "#888";
                                 const isSelected = selectedJob === op.jobId;
                                 const isFasonOp = op.isFason;
+                                // Slack-based border
+                                const job = jobs.find(j => j.id === op.jobId);
+                                const isLate = job?.slackDays != null && job.slackDays < 0;
+                                const isAtRisk = job?.slackDays != null && job.slackDays >= 0 && job.slackDays <= 5;
                                 return (
                                   <div
-                                    key={oi}
+                                    key={"op" + oi}
                                     onClick={() => setSelectedJob(isSelected ? null : op.jobId)}
-                                    title={`${op.jobId} · ${op.partCode} · Op${op.opCode}${isFasonOp ? " (FASON)" : ""}${op.capWarning ? " ⚡YETENEK UYARISI" : ""} · ${isFasonOp ? op.leadTimeDays + " gün" : Math.round(op.totalMin) + "dk"}`}
+                                    title={`${op.jobId} · ${op.partCode} · Op${op.opCode}${isFasonOp ? " (FASON)" : ""}${op.capWarning ? " ⚡YETENEK UYARISI" : ""} · ${isFasonOp ? op.leadTimeDays + " gün" : Math.round(op.totalMin) + "dk"}${job?.slackDays != null ? ` · Slack: ${job.slackDays}g` : ""}`}
                                     style={{
                                       position: "absolute", top: 3, left, width,
                                       height: rowH - 6, borderRadius: 4,
@@ -9485,17 +9490,49 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       opacity: isSelected ? 1 : 0.8,
                                       cursor: "pointer", overflow: "hidden",
                                       display: "flex", alignItems: "center", padding: "0 4px",
-                                      border: op.capWarning ? "2px solid #F97316" : isFasonOp ? "1.5px dashed rgba(255,255,255,0.5)" : "none",
-                                      boxShadow: isSelected ? "0 0 0 2px " + color + ", 0 2px 6px rgba(0,0,0,0.15)" : op.capWarning ? "0 0 0 1px #F97316" : "none",
+                                      border: isLate ? "2px solid #DC2626" : isAtRisk ? "2px solid #F59E0B" : op.capWarning ? "2px solid #F97316" : isFasonOp ? "1.5px dashed rgba(255,255,255,0.5)" : "none",
+                                      boxShadow: isSelected ? "0 0 0 2px " + color + ", 0 2px 6px rgba(0,0,0,0.15)" : isLate ? "0 0 0 1px #DC2626, 0 0 4px rgba(220,38,38,0.3)" : isAtRisk ? "0 0 0 1px #F59E0B" : op.capWarning ? "0 0 0 1px #F97316" : "none",
                                       transition: "opacity 0.15s, box-shadow 0.15s"
                                     }}
                                   >
                                     <span style={{ fontSize: 8, color: "#fff", fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                                      {op.capWarning ? "⚡" : ""}{isFasonOp ? "⧖ " : ""}{op.partCode} <span style={{ opacity: 0.7, fontSize: 7 }}>Op{op.opCode}</span>
+                                      {isLate ? "❌ " : isAtRisk ? "⚠ " : ""}{op.capWarning ? "⚡" : ""}{isFasonOp ? "⧖ " : ""}{op.partCode} <span style={{ opacity: 0.7, fontSize: 7 }}>Op{op.opCode}</span>
                                     </span>
                                   </div>
                                 );
                               })}
+                              {/* WIP blocks */}
+                              {(() => {
+                                const machWipItems = wipLoad.items.filter(it => it.machineId === mr.id && !it.isFason && !it.isProjected);
+                                if (machWipItems.length === 0) return null;
+                                // WIP'i bugünden başlat, süresine göre uzat
+                                const todayIdx = dayIdx(dateStr(new Date()));
+                                if (todayIdx < 0) return null;
+                                let wipOffset = 0;
+                                return machWipItems.map((wit, wi) => {
+                                  const wipDays = Math.max(1, Math.ceil(wit.wipMin / shiftMin));
+                                  const left = (todayIdx + wipOffset) * cellW + 1;
+                                  const width = Math.max(cellW - 2, wipDays * cellW - 2);
+                                  wipOffset += wipDays;
+                                  return (
+                                    <div key={"wip" + wi}
+                                      title={`WIP: ${wit.code} · ${wit.name} · ${wit.opName} · ${wit.remaining}ad · ${Math.round(wit.wipMin)}dk`}
+                                      style={{
+                                        position: "absolute", top: 3, left, width,
+                                        height: rowH - 6, borderRadius: 4,
+                                        background: `repeating-linear-gradient(90deg, #F59E0B, #F59E0B 4px, #FBBF24 4px, #FBBF24 8px)`,
+                                        opacity: 0.7, overflow: "hidden",
+                                        display: "flex", alignItems: "center", padding: "0 4px",
+                                        border: "1.5px solid #D97706"
+                                      }}
+                                    >
+                                      <span style={{ fontSize: 7, color: "#78350F", fontWeight: 600, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                        🔶 {wit.code}
+                                      </span>
+                                    </div>
+                                  );
+                                });
+                              })()}
                             </div>
                           );
                         })}
@@ -9530,6 +9567,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     <span style={{ marginLeft: 8, fontSize: 9, color: "var(--color-text-tertiary)", display: "flex", alignItems: "center", gap: 4 }}>
                       <span style={{ width: 16, height: 8, borderRadius: 2, background: "#3B82F6", border: "2px solid #F97316" }} />
                       = Yetenek uyarısı (tezgah uyumsuz)
+                    </span>
+                    <span style={{ marginLeft: 8, fontSize: 9, color: "var(--color-text-tertiary)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ width: 16, height: 8, borderRadius: 2, background: "repeating-linear-gradient(90deg, #F59E0B, #F59E0B 3px, #FBBF24 3px, #FBBF24 6px)", border: "1.5px solid #D97706" }} />
+                      = WIP (devam eden)
+                    </span>
+                    <span style={{ marginLeft: 8, fontSize: 9, color: "var(--color-text-tertiary)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ width: 16, height: 8, borderRadius: 2, background: "#3B82F6", border: "2px solid #DC2626", boxShadow: "0 0 3px rgba(220,38,38,0.4)" }} />
+                      = Geciken (slack &lt; 0)
+                    </span>
+                    <span style={{ marginLeft: 8, fontSize: 9, color: "var(--color-text-tertiary)", display: "flex", alignItems: "center", gap: 4 }}>
+                      <span style={{ width: 16, height: 8, borderRadius: 2, background: "#3B82F6", border: "2px solid #F59E0B" }} />
+                      = Risk altında (slack ≤ 5g)
                     </span>
                   </div>
                 )}
