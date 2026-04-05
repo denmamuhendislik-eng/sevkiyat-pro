@@ -8968,9 +8968,23 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             result.splice(dropIdx, 0, moved);
                                             saveJobOrder(wipOrderKey, result.map(o => o.key));
                                           };
+                                          const applyWipRecommended = () => {
+                                            const scored = machWip.map((it, i) => {
+                                              let score = 0;
+                                              if (!it.isProjected) score += 1000; // gerçek WIP önce
+                                              score += it.wipMin; // uzun süren önce
+                                              if (it.incomingQty <= 0) score += 500; // hazır olan önce
+                                              return { ...it, _score: score };
+                                            });
+                                            scored.sort((a, b) => b._score - a._score);
+                                            saveJobOrder(wipOrderKey, scored.map(o => o.key));
+                                          };
                                           return (
                                             <>
-                                            {hasWipOrder && <div style={{ textAlign: "right", marginBottom: 2 }}><span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#FEF3C7", color: "#92400E", cursor: "pointer" }} onClick={() => saveJobOrder(wipOrderKey, [])}>✎ Özel sıra · Sıfırla</span></div>}
+                                            <div style={{ display: "flex", gap: 4, justifyContent: "flex-end", marginBottom: 2 }}>
+                                              {canEdit && <span style={{ fontSize: 8, padding: "2px 6px", borderRadius: 4, background: "#FEF3C7", color: "#92400E", cursor: "pointer", fontWeight: 500, border: "1px solid #FDE68A" }} onClick={applyWipRecommended}>🤖 Önerilen Sıra</span>}
+                                              {hasWipOrder && <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#FEF3C7", color: "#92400E", cursor: "pointer" }} onClick={() => saveJobOrder(wipOrderKey, [])}>✎ Sıfırla</span>}
+                                            </div>
                                             <div style={{ maxHeight: 600, overflowY: "auto" }}>
                                             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
                                               <tbody>
@@ -9131,13 +9145,50 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       saveJobOrder(mId, result.map(o => `${o.jobId}|${o.opIdx}`));
                                     };
                                     const hasCustomOrder = customOrder && customOrder.length > 0;
+                                    // Öncelik skoru hesapla
+                                    const calcPriority = (op) => {
+                                      let score = 0;
+                                      // 1. Slack: en düşük (geciken) en önce
+                                      if (op.slackDays !== null && op.slackDays !== undefined) {
+                                        score += (100 - op.slackDays) * 100; // slack -5 → 10500, slack 20 → 8000
+                                      }
+                                      // 2. Malzeme hazır olan önce (eksik olan beklesin)
+                                      const hasMissing = op.materialWarnings?.some(w => w.status === "missing");
+                                      const hasPartial = op.materialWarnings?.some(w => w.status === "partial" || w.status === "po");
+                                      if (!op.materialWarnings || op.materialWarnings.length === 0) score += 500; // malzeme tamam
+                                      else if (!hasMissing) score += 200; // sipariş var
+                                      else score -= 1000; // stoksuz, üretilemiyor
+                                      // 3. Uzun üretim süreli önce
+                                      score += (op.totalProductionDays || 0) * 10;
+                                      // 4. Çok operasyonlu önce
+                                      score += (op.opTotal || 1) * 5;
+                                      return score;
+                                    };
+                                    const applyRecommendedOrder = () => {
+                                      const scored = machOps.map((op, i) => ({ ...op, _origIdx: i, _score: calcPriority(op) }));
+                                      scored.sort((a, b) => b._score - a._score);
+                                      // Operasyon sırası koruması
+                                      const jobGroups = {};
+                                      scored.forEach((op, pos) => {
+                                        if (!jobGroups[op.jobId]) jobGroups[op.jobId] = [];
+                                        jobGroups[op.jobId].push({ pos, opIdx: op.opIdx, op });
+                                      });
+                                      Object.values(jobGroups).forEach(group => {
+                                        if (group.length < 2) return;
+                                        const positions = group.map(g => g.pos).sort((a, b) => a - b);
+                                        const byOpIdx = [...group].sort((a, b) => a.opIdx - b.opIdx);
+                                        byOpIdx.forEach((g, k) => { scored[positions[k]] = g.op; scored[positions[k]]._score = g.op._score; });
+                                      });
+                                      saveJobOrder(mId, scored.map(o => `${o.jobId}|${o.opIdx}`));
+                                    };
                                     return (
                                       <div style={{ marginTop: 4, borderTop: "0.5px dashed var(--color-border-tertiary)", paddingTop: 4 }}>
                                         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                                           <span style={{ fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)" }}>Planlanan ({machOps.length})</span>
                                           {mesCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#ECFDF5", color: "#065F46" }}>{mesCount} MES ({Math.round(mesMin)}dk)</span>}
                                           {defCount > 0 && <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>{defCount} vars. ({Math.round(defMin)}dk)</span>}
-                                          {hasCustomOrder && <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", cursor: "pointer" }} onClick={() => saveJobOrder(mId, [])}>✎ Özel sıra · Sıfırla</span>}
+                                          {canEdit && <span style={{ fontSize: 8, padding: "2px 6px", borderRadius: 4, background: "#EEF2FF", color: "#4338CA", cursor: "pointer", fontWeight: 500, border: "1px solid #C7D2FE" }} onClick={applyRecommendedOrder}>🤖 Önerilen Sıra</span>}
+                                          {hasCustomOrder && <span style={{ fontSize: 7, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED", cursor: "pointer" }} onClick={() => saveJobOrder(mId, [])}>✎ Sıfırla</span>}
                                         </div>
                                         <div style={{ maxHeight: 600, overflowY: "auto" }}>
                                           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
