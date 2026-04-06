@@ -6708,18 +6708,25 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               const projSetup = bOp.setupTime || 0;
               const projMin = projSetup + projCycle * flowQty;
               const projKey = `PROJ|${akPart.code}|Op${bOp.opCode}|${order.emirNo}`;
+              const projAssigned = wipAssignments[projKey] || null;
               items.push({
                 key: projKey, code: akPart.code, name: akPart.name,
                 emirNo: order.emirNo, remaining: flowQty,
                 opCode: bOp.opCode, opName: bOp.opName || `Op${bOp.opCode}`,
                 wcCode: bOp.wcCode, wcName: centers[bOp.wcCode]?.name || bOp.wcCode,
-                isFason: false, wipMin: projMin, timeSource: "proj", machineId: null,
+                isFason: false, wipMin: projMin, timeSource: "proj", machineId: projAssigned,
                 incomingQty: flowQty, incomingOpName: bomOps[bi - 1]?.opName || "önceki op",
                 isProjected: true
               });
-              if (!byWC[bOp.wcCode]) byWC[bOp.wcCode] = { totalMin: 0, count: 0 };
-              byWC[bOp.wcCode].totalMin += projMin;
-              byWC[bOp.wcCode].count++;
+              if (projAssigned) {
+                if (!byMachine[projAssigned]) byMachine[projAssigned] = { totalMin: 0, count: 0 };
+                byMachine[projAssigned].totalMin += projMin;
+                byMachine[projAssigned].count++;
+              } else {
+                if (!byWC[bOp.wcCode]) byWC[bOp.wcCode] = { totalMin: 0, count: 0 };
+                byWC[bOp.wcCode].totalMin += projMin;
+                byWC[bOp.wcCode].count++;
+              }
             }
           }
         }
@@ -9163,6 +9170,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     const isExpanded = expandedWC === code;
                     // Bu merkezin tezgahları ve WIP yükü
                     const wcMachines = Object.entries(mSt).filter(([, ms]) => ms.wcCode === code).sort((a, b) => b[1].utilization - a[1].utilization);
+                    // Tüm tezgahlar (çizelgede işi olmasa da dropdown'da görünmeli)
+                    const allWcMachines = (workCenters?.centers?.[code]?.machines || []).map(m => [m.id, { ...m, wcCode: code, name: m.name || m.id }]);
+                    const wcMachineIds = [...new Set([...wcMachines.map(([id]) => id), ...allWcMachines.map(([id]) => id)])];
                     const hasCapWarns = wcMachines.some(([, ms]) => ms.capWarnings > 0);
                     const wcWip = wipLoad.byWC[code];
                     const wipMin = (wcWip?.totalMin || 0) + wcMachines.reduce((s, [mId]) => (wipLoad.byMachine[mId]?.totalMin || 0), 0);
