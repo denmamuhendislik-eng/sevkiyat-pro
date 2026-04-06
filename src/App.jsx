@@ -9220,15 +9220,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           {/* Ürün parçaları — seviye bazlı */}
                                           {isProductOpen && prodParts.length > 0 && (
                                             <div style={{ marginLeft: 16, marginTop: 2 }}>
-                                              {/* L0/L1 parçalar (doğrudan ürün bileşenleri) */}
+                                              {/* L0/L1 parçalar — sadece eksik olanlar */}
                                               {(() => {
-                                                const l1Parts = prodParts.filter(p => p.level <= 1);
-                                                const deepParts = prodParts.filter(p => p.level > 1);
+                                                const l1Parts = prodParts.filter(p => p.level <= 1 && p.short > 0);
+                                                const l1Ready = prodParts.filter(p => p.level <= 1 && p.short <= 0).length;
+                                                const deepParts = prodParts.filter(p => p.level > 1 && p.short > 0);
                                                 return (
                                                   <>
                                                   {l1Parts.length > 0 && (
                                                     <div style={{ marginBottom: 4 }}>
-                                                      <div style={{ fontSize: 9, fontWeight: 500, color: "#065F46", marginBottom: 2 }}>🔧 Seviye 1 — Doğrudan Bileşenler ({l1Parts.length})</div>
+                                                      <div style={{ fontSize: 9, fontWeight: 500, color: "#DC2626", marginBottom: 2 }}>🔧 Eksik Bileşenler ({l1Parts.length}){l1Ready > 0 && <span style={{ color: "#16A34A", fontWeight: 400 }}> · ✓ {l1Ready} hazır</span>}</div>
                                                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
                                                         <tbody>{l1Parts.sort((a, b) => b.short - a.short).map(p => {
                                                           const partKey = `${pKey}|${p.code}`;
