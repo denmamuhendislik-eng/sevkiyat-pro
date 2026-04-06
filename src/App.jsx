@@ -9158,7 +9158,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   <span style={{ fontSize: 12, fontWeight: 700 }}>📦 {cs.date}</span>
                                   <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{cs.bizDays}g</span>
                                   <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", flex: 1 }}>
-                                    {cs.cProducts.map(cp => `${cp.product?.name?.substring(0, 18) || cp.pid}: ${cp.qty}`).join(" · ")}
+                                    {cs.cProducts.map(cp => `${cp.product?.nameTR?.substring(0, 18) || cp.pid}: ${cp.qty}`).join(" · ")}
                                   </span>
                                   <span style={{ fontSize: 9, color: "#16A34A" }}>✓{cs.totalParts - cs.shortParts}</span>
                                   {cs.shortParts > 0 && <span style={{ fontSize: 9, color: "#DC2626", fontWeight: 600 }}>❌{cs.shortParts}</span>}
@@ -9166,29 +9166,37 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 {/* Konteyner içeriği — ürün bazlı */}
                                 {isContainerOpen && (
                                   <div style={{ marginLeft: 16, marginTop: 4 }}>
-                                    {cs.cProducts.map(cp => {
-                                      const pKey = `${cKey}|${cp.pid}`;
-                                      const isProductOpen = shipReqOpen[pKey];
-                                      // Bu ürünün L1 parçaları
-                                      const prodParts = [];
-                                      (explosionResult.parts || []).forEach(r => {
-                                        const src = (r.sources || []).find(s => s.pid === cp.pid);
-                                        if (!src) return;
-                                        const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
-                                        const needed = Math.ceil(src.qty * (cp.qty / totalDemand));
-                                        if (needed <= 0) return;
-                                        const pool = stockPool[r.code];
-                                        const avail = pool ? pool.avail + pool.wip : 0;
-                                        const covered = Math.min(needed, avail);
-                                        const short = needed - covered;
-                                        prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
+                                    {(() => {
+                                      const readyProducts = [];
+                                      const shortProducts = [];
+                                      cs.cProducts.forEach(cp => {
+                                        const prodParts = [];
+                                        (explosionResult.parts || []).forEach(r => {
+                                          const src = (r.sources || []).find(s => s.pid === cp.pid);
+                                          if (!src) return;
+                                          const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
+                                          const needed = Math.ceil(src.qty * (cp.qty / totalDemand));
+                                          if (needed <= 0) return;
+                                          const pool = stockPool[r.code];
+                                          const avail = pool ? pool.avail + pool.wip : 0;
+                                          const covered = Math.min(needed, avail);
+                                          const short = needed - covered;
+                                          prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
+                                        });
+                                        const prodShort = prodParts.filter(p => p.short > 0).length;
+                                        const item = { cp, prodParts, prodShort };
+                                        if (prodShort > 0) shortProducts.push(item); else readyProducts.push(item);
                                       });
-                                      const prodShort = prodParts.filter(p => p.short > 0).length;
                                       return (
+                                        <>
+                                        {shortProducts.map(({ cp, prodParts, prodShort }) => {
+                                          const pKey = `${cKey}|${cp.pid}`;
+                                          const isProductOpen = shipReqOpen[pKey];
+                                          return (
                                         <div key={cp.pid} style={{ marginBottom: 4 }}>
                                           <div onClick={() => toggleShipReq(pKey)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 4, cursor: "pointer", background: prodShort > 0 ? "#FFFBEB" : "#ECFDF5", border: `0.5px solid ${prodShort > 0 ? "#FDE68A" : "#A7F3D0"}` }}>
                                             <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{isProductOpen ? "▼" : "▶"}</span>
-                                            <span style={{ fontSize: 11, fontWeight: 600 }}>{cp.product?.name || `Ürün ${cp.pid}`}</span>
+                                            <span style={{ fontSize: 11, fontWeight: 600 }}>{cp.product?.nameTR || `Ürün ${cp.pid}`}</span>
                                             <span style={{ fontSize: 10 }}>{cp.qty} adet</span>
                                             <span style={{ marginLeft: "auto", fontSize: 9 }}>
                                               {prodShort > 0 ? <span style={{ color: "#DC2626" }}>❌ {prodShort} eksik</span> : <span style={{ color: "#16A34A" }}>✓ Hazır</span>}
@@ -9262,6 +9270,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                         </div>
                                       );
                                     })}
+                                    {readyProducts.length > 0 && (
+                                      <div style={{ fontSize: 9, color: "#16A34A", padding: "4px 8px", marginTop: 2 }}>
+                                        ✓ {readyProducts.length} ürün hazır: {readyProducts.map(({ cp }) => cp.product?.nameTR || `Ürün ${cp.pid}`).join(", ")}
+                                      </div>
+                                    )}
+                                    </>
+                                      );
+                                    })()}
                                   </div>
                                 )}
                               </div>
