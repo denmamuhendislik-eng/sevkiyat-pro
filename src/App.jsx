@@ -4630,6 +4630,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [selectedJob, setSelectedJob] = useState(null);
   const [schedSource, setSchedSource] = useState("vio"); // "vio" | "mrp"
   const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
+  const [actionPanel, setActionPanel] = useState(null); // aksiyon paneli açık id
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
   const [schedOverrides, setSchedOverrides] = useState({}); // "partCode|opCode" → machineId
   const [jobOrder, setJobOrder] = useState({}); // machineId → ["jobId|opIdx", ...]
@@ -8876,6 +8877,215 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 <KPI label="Süre" value={s.minDate && s.maxDate ? (Math.round((new Date(s.maxDate) - new Date(s.minDate))/86400000)) + " gün" : "—"} sub={s.minDate ? `${s.minDate} → ${s.maxDate}` : ""} accent="#8B5CF6" />
               </div>
             )}
+
+            {/* ---- AKSİYON PANELLERİ ---- */}
+            {s && jobs.length > 0 && (() => {
+              const lateJobs = jobs.filter(j => j.slackDays != null && j.slackDays < 0).sort((a, b) => a.slackDays - b.slackDays);
+              const riskJobs = jobs.filter(j => j.slackDays != null && j.slackDays >= 0 && j.slackDays <= 5).sort((a, b) => a.slackDays - b.slackDays);
+              const matIssueJobs = jobs.filter(j => j.materialWarnings?.length > 0);
+              const missingMats = {};
+              matIssueJobs.forEach(j => j.materialWarnings.forEach(mw => {
+                if (!missingMats[mw.code]) missingMats[mw.code] = { ...mw, jobs: [] };
+                missingMats[mw.code].jobs.push({ jobId: j.id, partCode: j.partCode, partName: j.partName });
+              }));
+              const matList = Object.values(missingMats).sort((a, b) => (a.status === "missing" ? 0 : 1) - (b.status === "missing" ? 0 : 1) || b.shortage - a.shortage);
+              // Sevkiyat hazırlık
+              const shipReadiness = (unshippedDemand.containers || []).slice(0, 6).map(c => {
+                const product = products?.find(p => c.products?.[p.id]);
+                const jobsForShip = jobs.filter(j => j.dueDate === c.date);
+                const lateForShip = jobsForShip.filter(j => j.slackDays != null && j.slackDays < 0);
+                const riskForShip = jobsForShip.filter(j => j.slackDays != null && j.slackDays >= 0 && j.slackDays <= 5);
+                const today = new Date(); const sd = new Date(c.date);
+                let bizDays = 0; const d = new Date(today); while (d < sd) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) bizDays++; }
+                return { ...c, bizDays, totalJobs: jobsForShip.length, lateCount: lateForShip.length, riskCount: riskForShip.length, lateJobs: lateForShip.slice(0, 5), riskJobs: riskForShip.slice(0, 5) };
+              });
+
+              const PanelHeader = ({ icon, title, count, color, isOpen, onClick, badge }) => (
+                <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", borderRadius: 8, background: isOpen ? color + "11" : "transparent", border: `1px solid ${count > 0 ? color : "var(--color-border-tertiary)"}`, marginBottom: 6, transition: "all 0.15s" }}>
+                  <span style={{ fontSize: 14 }}>{icon}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: count > 0 ? color : "var(--color-text-tertiary)" }}>{title}</span>
+                  <span style={{ fontSize: 11, fontWeight: 700, color, background: color + "18", padding: "1px 8px", borderRadius: 10 }}>{count}</span>
+                  {badge && <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginLeft: "auto" }}>{badge}</span>}
+                  <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--color-text-tertiary)" }}>{isOpen ? "▼" : "▶"}</span>
+                </div>
+              );
+
+              return (
+                <div style={{ marginBottom: 16 }}>
+                  {/* 1. Geciken İşler */}
+                  <PanelHeader icon="🚨" title="Geciken İşler" count={lateJobs.length} color="#DC2626" isOpen={actionPanel === "panel_late"} onClick={() => setActionPanel(actionPanel === "panel_late" ? null : "panel_late")} badge="Sevkiyata yetişmeyecek" />
+                  {actionPanel === "panel_late" && lateJobs.length > 0 && (
+                    <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#FEF2F2", borderRadius: 8, border: "1px solid #FECACA" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <thead><tr style={{ borderBottom: "1px solid #FECACA" }}>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>#</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>İş</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>Parça</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>Ürün Adı</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#991B1B" }}>Adet</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#991B1B" }}>Op</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#991B1B" }}>Üretim</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500, color: "#991B1B" }}>Sevkiyat</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#991B1B" }}>Slack</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500, color: "#991B1B" }}>Malzeme</th>
+                        </tr></thead>
+                        <tbody>{lateJobs.map((j, i) => (
+                          <tr key={j.id} style={{ borderTop: "0.5px solid #FECACA" }}>
+                            <td style={{ padding: "5px 6px", color: "#991B1B" }}>{i + 1}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: "#DC2626", fontWeight: 500 }}>{j.id}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>{j.partCode}</td>
+                            <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.operations.length}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.totalProductionDays}g</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)" }}>{j.dueDate?.substring(5)}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700, color: "#DC2626" }}>❌ {j.slackDays}g</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center" }}>{j.materialWarnings?.length > 0 ? `📦${j.materialWarnings.length}` : "✓"}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* 2. Risk Altında */}
+                  <PanelHeader icon="⚠️" title="Risk Altında" count={riskJobs.length} color="#D97706" isOpen={actionPanel === "panel_risk"} onClick={() => setActionPanel(actionPanel === "panel_risk" ? null : "panel_risk")} badge="≤5 gün yedek" />
+                  {actionPanel === "panel_risk" && riskJobs.length > 0 && (
+                    <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#FFFBEB", borderRadius: 8, border: "1px solid #FDE68A" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <thead><tr style={{ borderBottom: "1px solid #FDE68A" }}>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500 }}>İş</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500 }}>Parça</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500 }}>Ürün Adı</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500 }}>Adet</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500 }}>Sevkiyat</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500 }}>Slack</th>
+                        </tr></thead>
+                        <tbody>{riskJobs.map(j => (
+                          <tr key={j.id} style={{ borderTop: "0.5px solid #FDE68A" }}>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: "#D97706", fontWeight: 500 }}>{j.id}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>{j.partCode}</td>
+                            <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)" }}>{j.dueDate?.substring(5)}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 600, color: "#D97706" }}>⚠ {j.slackDays}g</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* 3. Satınalma Aksiyonları */}
+                  <PanelHeader icon="🛒" title="Satınalma Aksiyonları" count={matList.length} color="#7C3AED" isOpen={actionPanel === "panel_mat"} onClick={() => setActionPanel(actionPanel === "panel_mat" ? null : "panel_mat")} badge={`${matList.filter(m => m.status === "missing").length} stoksuz`} />
+                  {actionPanel === "panel_mat" && matList.length > 0 && (
+                    <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#FAF5FF", borderRadius: 8, border: "1px solid #E9D5FF" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <thead><tr style={{ borderBottom: "1px solid #E9D5FF" }}>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#6B21A8" }}>Durum</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#6B21A8" }}>Stok Kodu</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#6B21A8" }}>Malzeme Adı</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#6B21A8" }}>İhtiyaç</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#6B21A8" }}>Stok</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#6B21A8" }}>Sipariş</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#6B21A8" }}>Eksik</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500, color: "#6B21A8" }}>ETA</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500, color: "#6B21A8" }}>Aksiyon</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#6B21A8" }}>Kullanıldığı İşler</th>
+                        </tr></thead>
+                        <tbody>{matList.map((mw, i) => (
+                          <tr key={mw.code + i} style={{ borderTop: "0.5px solid #E9D5FF" }}>
+                            <td style={{ padding: "5px 6px" }}>{mw.status === "missing" ? "🔴" : mw.status === "partial" ? "🟡" : "🔵"}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{mw.code}</td>
+                            <td style={{ padding: "5px 6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mw.name}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{mw.neededQty}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{mw.stkAvail}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{mw.poRemaining || "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 600, color: "#DC2626" }}>{mw.shortage}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center", fontSize: 9, color: "#1D4ED8" }}>{mw.eta ? mw.eta.substring(5) : "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center" }}>
+                              {mw.status === "missing" ? <span style={{ padding: "1px 6px", borderRadius: 3, background: "#FEE2E2", color: "#991B1B", fontWeight: 600, fontSize: 9 }}>SİPARİŞ VER</span> : mw.poCovers ? <span style={{ fontSize: 9, color: "#16A34A" }}>Bekleniyor</span> : <span style={{ padding: "1px 6px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9 }}>Yetersiz</span>}
+                            </td>
+                            <td style={{ padding: "5px 6px", fontSize: 8, color: "var(--color-text-tertiary)", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mw.jobs.map(j => j.partCode).join(", ")}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  )}
+
+                  {/* 4. Sevkiyat Hazırlık */}
+                  <PanelHeader icon="🚛" title="Sevkiyat Hazırlık" count={shipReadiness.length} color="#2563EB" isOpen={actionPanel === "panel_ship"} onClick={() => setActionPanel(actionPanel === "panel_ship" ? null : "panel_ship")} badge={`${shipReadiness.filter(s => s.lateCount > 0).length} riskli sevkiyat`} />
+                  {actionPanel === "panel_ship" && shipReadiness.length > 0 && (
+                    <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#EFF6FF", borderRadius: 8, border: "1px solid #BFDBFE" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 8 }}>
+                        {shipReadiness.map(sr => (
+                          <div key={sr.id} style={{ padding: "8px 12px", borderRadius: 6, background: sr.lateCount > 0 ? "#FEF2F2" : sr.riskCount > 0 ? "#FFFBEB" : "#F0FDF4", border: `1px solid ${sr.lateCount > 0 ? "#FECACA" : sr.riskCount > 0 ? "#FDE68A" : "#BBF7D0"}` }}>
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                              <span style={{ fontSize: 12, fontWeight: 600 }}>{sr.date}</span>
+                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{sr.bizDays} iş günü</span>
+                            </div>
+                            <div style={{ display: "flex", gap: 8, fontSize: 10, marginBottom: 4 }}>
+                              <span>Toplam: <b>{sr.totalJobs}</b> iş</span>
+                              {sr.lateCount > 0 && <span style={{ color: "#DC2626", fontWeight: 600 }}>❌ {sr.lateCount} geciken</span>}
+                              {sr.riskCount > 0 && <span style={{ color: "#D97706", fontWeight: 600 }}>⚠ {sr.riskCount} riskli</span>}
+                              {sr.lateCount === 0 && sr.riskCount === 0 && <span style={{ color: "#16A34A" }}>✓ Yolunda</span>}
+                            </div>
+                            {sr.lateJobs.length > 0 && (
+                              <div style={{ fontSize: 9, color: "#991B1B" }}>
+                                {sr.lateJobs.map(j => <div key={j.id}>{j.id} {j.partCode} {j.partName?.substring(0, 25)} ({j.slackDays}g)</div>)}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 5. İş Emri Listesi (öncelik sırasına göre) */}
+                  <PanelHeader icon="📋" title="İş Emri Öncelik Listesi" count={jobs.length} color="#3B82F6" isOpen={actionPanel === "panel_jobs"} onClick={() => setActionPanel(actionPanel === "panel_jobs" ? null : "panel_jobs")} badge="Tüm işler öncelik sırasına göre" />
+                  {actionPanel === "panel_jobs" && (
+                    <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "var(--color-background-secondary)", borderRadius: 8, border: "1px solid var(--color-border-tertiary)" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <thead><tr style={{ borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500 }}>#</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500 }}>İş</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500 }}>Parça</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500 }}>Ürün Adı</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500 }}>Adet</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500 }}>Op</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500 }}>Üretim</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500 }}>Sevkiyat</th>
+                          <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500 }}>Slack</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500 }}>Malzeme</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500 }}>Başlangıç</th>
+                        </tr></thead>
+                        <tbody>{[...jobs].sort((a, b) => {
+                          // Öncelik: slack en düşük → malzeme hazır → uzun süre
+                          const sa = a.slackDays ?? 999, sb = b.slackDays ?? 999;
+                          if (sa !== sb) return sa - sb;
+                          const ma = a.materialWarnings?.some(w => w.status === "missing") ? 1 : 0;
+                          const mb = b.materialWarnings?.some(w => w.status === "missing") ? 1 : 0;
+                          if (ma !== mb) return ma - mb;
+                          return (b.totalProductionDays || 0) - (a.totalProductionDays || 0);
+                        }).map((j, i) => (
+                          <tr key={j.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: j.slackDays < 0 ? "#FEF2F2" : j.slackDays <= 5 ? "#FFFBEB" : "transparent" }}>
+                            <td style={{ padding: "5px 6px", color: "var(--color-text-tertiary)" }}>{i + 1}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", fontWeight: 500, color: j.slackDays < 0 ? "#DC2626" : j.slackDays <= 5 ? "#D97706" : "var(--color-text-info)" }}>{j.id}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>{j.partCode}</td>
+                            <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.operations.length}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.totalProductionDays || "—"}g</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{j.dueDate?.substring(5) || "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 600, color: j.slackDays < 0 ? "#DC2626" : j.slackDays <= 5 ? "#D97706" : "#16A34A" }}>{j.slackDays != null ? (j.slackDays < 0 ? `❌${j.slackDays}g` : j.slackDays <= 5 ? `⚠${j.slackDays}g` : `✓${j.slackDays}g`) : "—"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center" }}>{j.materialWarnings?.length > 0 ? <span style={{ color: j.materialWarnings.some(w => w.status === "missing") ? "#DC2626" : "#D97706" }}>📦{j.materialWarnings.length}</span> : "✓"}</td>
+                            <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-tertiary)" }}>{j.operations[0]?.startDate?.substring(5) || "—"}</td>
+                          </tr>
+                        ))}</tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
 
             {/* ---- WIP RAPORU ---- */}
