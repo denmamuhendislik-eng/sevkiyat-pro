@@ -5043,7 +5043,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           if (p.parentIdx === null || p.parentIdx === undefined) {
             needed = (p.qty || 1) * demandQty;
           } else {
+            // Üst seviye BUY veya RAW ise alt bileşenler patlatılmaz
+            const parent = parts[p.parentIdx];
+            if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) {
+              partQtys[i] = 0;
+              return; // Bu parça ve tüm alt ağacı atla
+            }
             const parentNeeded = partQtys[p.parentIdx] || 0;
+            if (parentNeeded === 0) { partQtys[i] = 0; return; } // Üst zaten atlanmış
             needed = (p.qty || 1) * parentNeeded;
           }
           partQtys[i] = needed;
@@ -5260,6 +5267,66 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const part = { ...parts[partIdx] };
     const ops = [...part.operations];
     ops[opIdx] = { ...ops[opIdx], [field]: value === "" ? null : parseFloat(value) || null };
+    part.operations = ops;
+    parts[partIdx] = part;
+    model.parts = parts;
+    await saveBom({ ...bomModels, [modelKey]: model });
+  };
+
+  const updateOpField = async (modelKey, partIdx, opIdx, field, value) => {
+    if (!canEdit || !bomModels[modelKey]) return;
+    const model = { ...bomModels[modelKey] };
+    const parts = [...model.parts];
+    const part = { ...parts[partIdx] };
+    const ops = [...part.operations];
+    ops[opIdx] = { ...ops[opIdx], [field]: value };
+    part.operations = ops;
+    parts[partIdx] = part;
+    model.parts = parts;
+    await saveBom({ ...bomModels, [modelKey]: model });
+  };
+
+  const addOperation = async (modelKey, partIdx) => {
+    if (!canEdit || !bomModels[modelKey]) return;
+    const model = { ...bomModels[modelKey] };
+    const parts = [...model.parts];
+    const part = { ...parts[partIdx] };
+    const ops = [...part.operations];
+    // Varsayılan yeni operasyon
+    const lastOp = ops.length > 0 ? ops[ops.length - 1] : null;
+    const newOpCode = lastOp ? String(parseInt(lastOp.opCode || "100") + 1).padStart(3, "0") : "101";
+    ops.push({ opCode: newOpCode, opName: "", wcCode: "", wcName: "", setupTime: null, cycleTime: null });
+    part.operations = ops;
+    parts[partIdx] = part;
+    model.parts = parts;
+    // opCount güncelle
+    model.opCount = parts.reduce((s, p) => s + (p.operations?.length || 0), 0);
+    await saveBom({ ...bomModels, [modelKey]: model });
+  };
+
+  const removeOperation = async (modelKey, partIdx, opIdx) => {
+    if (!canEdit || !bomModels[modelKey]) return;
+    const model = { ...bomModels[modelKey] };
+    const parts = [...model.parts];
+    const part = { ...parts[partIdx] };
+    const ops = [...part.operations];
+    ops.splice(opIdx, 1);
+    part.operations = ops;
+    parts[partIdx] = part;
+    model.parts = parts;
+    model.opCount = parts.reduce((s, p) => s + (p.operations?.length || 0), 0);
+    await saveBom({ ...bomModels, [modelKey]: model });
+  };
+
+  const moveOperation = async (modelKey, partIdx, opIdx, direction) => {
+    if (!canEdit || !bomModels[modelKey]) return;
+    const newIdx = opIdx + direction;
+    const model = { ...bomModels[modelKey] };
+    const parts = [...model.parts];
+    const part = { ...parts[partIdx] };
+    const ops = [...part.operations];
+    if (newIdx < 0 || newIdx >= ops.length) return;
+    [ops[opIdx], ops[newIdx]] = [ops[newIdx], ops[opIdx]];
     part.operations = ops;
     parts[partIdx] = part;
     model.parts = parts;
@@ -7113,58 +7180,91 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               <span style={{ padding: "1px 6px", borderRadius: 4, fontSize: 9, fontWeight: 500, background: sc.bg, color: sc.c, flexShrink: 0 }}>{p.supplyType}</span>
             )}
             {stockCodeBomCount[p.stockCode] > 1 && <span title={`${stockCodeBomCount[p.stockCode]} BOM'da geçiyor — tip değişikliği hepsine uygulanır`} style={{ fontSize: 8, color: "#7C3AED", flexShrink: 0, cursor: "help" }}>🌐{stockCodeBomCount[p.stockCode]}</span>}
-            {p.operations.length > 0 && (
-              <span
-                onClick={(e) => { e.stopPropagation(); setEditingOpPart(isEditingOps ? null : { modelKey: selectedModel, partIdx: p.idx }); }}
-                style={{
-                  fontSize: 9, flexShrink: 0, cursor: "pointer",
-                  padding: "1px 6px", borderRadius: 4,
-                  background: isEditingOps ? "var(--color-background-info)" : "transparent",
-                  color: isEditingOps ? "var(--color-text-info)" : "var(--color-text-tertiary)",
-                  transition: "all 0.15s"
-                }}
-              >⏱ {p.operations.length} op</span>
-            )}
+            <span
+              onClick={(e) => { e.stopPropagation(); setEditingOpPart(isEditingOps ? null : { modelKey: selectedModel, partIdx: p.idx }); }}
+              style={{
+                fontSize: 9, flexShrink: 0, cursor: "pointer",
+                padding: "1px 6px", borderRadius: 4,
+                background: isEditingOps ? "var(--color-background-info)" : "transparent",
+                color: isEditingOps ? "var(--color-text-info)" : p.operations.length > 0 ? "var(--color-text-tertiary)" : "#D97706",
+                transition: "all 0.15s"
+              }}
+            >{p.operations.length > 0 ? `⏱ ${p.operations.length} op` : canEdit ? "＋ op" : ""}</span>
           </div>
-          {/* Inline operation time editor */}
-          {isEditingOps && p.operations.length > 0 && (
+          {/* Inline operation editor */}
+          {isEditingOps && (
             <div style={{ padding: "6px 12px 8px " + (44 + depth * 24) + "px", background: "var(--color-background-info)", borderBottom: "0.5px solid var(--color-border-tertiary)" }}>
-              <div style={{ fontSize: 10, fontWeight: 500, color: "var(--color-text-info)", marginBottom: 4 }}>Operasyon Süreleri — {p.stockCode}</div>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+                <div style={{ fontSize: 10, fontWeight: 500, color: "var(--color-text-info)" }}>Operasyonlar — {p.stockCode}</div>
+                {canEdit && <span onClick={() => addOperation(selectedModel, p.idx)} style={{ fontSize: 9, padding: "2px 8px", borderRadius: 4, background: "#DBEAFE", color: "#1D4ED8", cursor: "pointer", fontWeight: 500 }}>＋ Operasyon Ekle</span>}
+              </div>
+              {p.operations.length === 0 && (
+                <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", padding: "8px 0" }}>Operasyon tanımlı değil — yukarıdaki butona tıklayarak ekleyebilirsiniz</div>
+              )}
               {p.operations.map((op, oi) => {
                 const isFason = parseInt(op.opCode) >= 600;
                 const hasMes = !!op.mesSource;
+                const wcOptions = workCenters?.centers ? Object.entries(workCenters.centers) : [];
                 return (
-                  <div key={oi} style={{ display: "flex", gap: 8, alignItems: "center", padding: "3px 0", fontSize: 11 }}>
-                    <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)", minWidth: 32 }}>{op.opCode}</span>
-                    <span style={{ flex: 1, fontSize: 10, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{op.opName}</span>
+                  <div key={oi} style={{ display: "flex", gap: 6, alignItems: "center", padding: "4px 0", fontSize: 11, borderTop: oi > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
+                    {/* Sıra değiştirme */}
+                    {canEdit && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 0, flexShrink: 0 }}>
+                        <span onClick={() => moveOperation(selectedModel, p.idx, oi, -1)} style={{ cursor: oi > 0 ? "pointer" : "default", fontSize: 8, color: oi > 0 ? "var(--color-text-info)" : "var(--color-text-tertiary)", lineHeight: 1, userSelect: "none" }}>▲</span>
+                        <span onClick={() => moveOperation(selectedModel, p.idx, oi, 1)} style={{ cursor: oi < p.operations.length - 1 ? "pointer" : "default", fontSize: 8, color: oi < p.operations.length - 1 ? "var(--color-text-info)" : "var(--color-text-tertiary)", lineHeight: 1, userSelect: "none" }}>▼</span>
+                      </div>
+                    )}
+                    {/* Op Kodu */}
+                    <input type="text" value={op.opCode || ""} placeholder="Kod"
+                      onChange={e => updateOpField(selectedModel, p.idx, oi, "opCode", e.target.value)}
+                      style={{ width: 40, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center", fontFamily: "var(--font-mono)" }}
+                      disabled={!canEdit}
+                    />
+                    {/* Op Adı */}
+                    <input type="text" value={op.opName || ""} placeholder="Operasyon adı"
+                      onChange={e => updateOpField(selectedModel, p.idx, oi, "opName", e.target.value)}
+                      style={{ flex: 1, minWidth: 80, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", fontSize: 10 }}
+                      disabled={!canEdit}
+                    />
+                    {/* İş Merkezi */}
+                    {canEdit && wcOptions.length > 0 ? (
+                      <select value={op.wcCode || ""} onChange={e => { updateOpField(selectedModel, p.idx, oi, "wcCode", e.target.value); const wc = wcOptions.find(([c]) => c === e.target.value); if (wc) updateOpField(selectedModel, p.idx, oi, "wcName", wc[1].name); }}
+                        style={{ fontSize: 9, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", minWidth: 80 }}>
+                        <option value="">İş Merkezi...</option>
+                        {wcOptions.map(([code, wc]) => <option key={code} value={code}>{wc.name || code}</option>)}
+                      </select>
+                    ) : (
+                      <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 40 }}>İM:{op.wcCode || "?"}</span>
+                    )}
                     {!isFason ? (
                       <>
                         <label style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Ayar:</label>
                         <input type="number" min="0" step="1" value={op.setupTime ?? ""} placeholder="dk"
                           onChange={e => updateOpTime(selectedModel, p.idx, oi, "setupTime", e.target.value)}
-                          style={{ width: 48, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center" }}
+                          style={{ width: 44, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center" }}
                           disabled={!canEdit}
                         />
-                        <label style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Çevrim:</label>
+                        <label style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Çvr:</label>
                         <input type="number" min="0" step="0.1" value={op.cycleTime ?? ""} placeholder="dk/ad"
                           onChange={e => updateOpTime(selectedModel, p.idx, oi, "cycleTime", e.target.value)}
-                          style={{ width: 48, padding: "2px 4px", borderRadius: 3, border: hasMes ? "1.5px solid #10B981" : "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center", background: hasMes ? "#ECFDF5" : "var(--color-background-primary)" }}
+                          style={{ width: 44, padding: "2px 4px", borderRadius: 3, border: hasMes ? "1.5px solid #10B981" : "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center", background: hasMes ? "#ECFDF5" : "var(--color-background-primary)" }}
                           disabled={!canEdit}
                         />
-                        {op.mesRenewalTime > 0 && <span style={{ fontSize: 8, color: "#10B981" }} title="MES yenileme süresi">+{op.mesRenewalTime}dk</span>}
                         {hasMes && <span style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#ECFDF5", color: "#10B981" }}>MES</span>}
-                        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", minWidth: 40 }}>
-                          İM:{op.wcCode || "?"}
-                        </span>
                       </>
                     ) : (
                       <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#FBEAF0", color: "#72243E" }}>FASON</span>
+                    )}
+                    {/* Silme butonu */}
+                    {canEdit && (
+                      <span onClick={() => { if (confirm(`Op${op.opCode} ${op.opName} silinsin mi?`)) removeOperation(selectedModel, p.idx, oi); }}
+                        style={{ cursor: "pointer", color: "#EF4444", fontSize: 11, flexShrink: 0 }}>✕</span>
                     )}
                   </div>
                 );
               })}
               <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 4, borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 3 }}>
-                Boş alanlar varsayılan kullanır (Ayar: 30dk, Çevrim: 5dk/ad) · <span style={{ color: "#10B981" }}>Yeşil çerçeve = MES kaynağı</span>
+                Boş süre alanları varsayılan kullanır (Ayar: 30dk, Çevrim: 5dk/ad) · <span style={{ color: "#10B981" }}>Yeşil çerçeve = MES</span> · Op kodu ≥600 = FASON
               </div>
             </div>
           )}
