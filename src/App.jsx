@@ -4631,6 +4631,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [schedSource, setSchedSource] = useState("vio"); // "vio" | "mrp"
   const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
   const [actionPanel, setActionPanel] = useState(null); // aksiyon paneli açık id
+  const [partSearch, setPartSearch] = useState(""); // parça arama
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
   const [schedOverrides, setSchedOverrides] = useState({}); // "partCode|opCode" → machineId
   const [jobOrder, setJobOrder] = useState({}); // machineId → ["jobId|opIdx", ...]
@@ -9094,6 +9095,142 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               );
             })()}
 
+
+            {/* ---- PARÇA ARAMA PANELİ ---- */}
+            {s && (
+              <div style={{ marginBottom: 12, padding: "10px 14px", borderRadius: 8, background: "var(--color-background-secondary)", border: "0.5px solid var(--color-border-tertiary)" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: partSearch.length >= 2 ? 8 : 0 }}>
+                  <span style={{ fontSize: 14 }}>🔍</span>
+                  <input type="text" value={partSearch} onChange={e => setPartSearch(e.target.value)} placeholder="Parça kodu veya adı ara..." style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12, background: "var(--color-background-primary)" }} />
+                  {partSearch && <span onClick={() => setPartSearch("")} style={{ cursor: "pointer", fontSize: 12, color: "var(--color-text-tertiary)" }}>✕</span>}
+                </div>
+                {partSearch.length >= 2 && (() => {
+                  const q = partSearch.toLowerCase();
+                  // 1. Planlanan işler
+                  const matchedJobs = jobs.filter(j => j.partCode.toLowerCase().includes(q) || j.partName.toLowerCase().includes(q));
+                  // 2. WIP (devam eden)
+                  const matchedWip = wipLoad.items.filter(it => it.code.toLowerCase().includes(q) || it.name.toLowerCase().includes(q));
+                  // 3. Explosion verisi
+                  const matchedExp = (explosionResult?.parts || []).filter(r => r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q));
+                  const hasResults = matchedJobs.length > 0 || matchedWip.length > 0 || matchedExp.length > 0;
+                  if (!hasResults) return <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", padding: "8px 0" }}>"{partSearch}" için sonuç bulunamadı</div>;
+                  return (
+                    <div>
+                      {/* MRP sonuçları */}
+                      {matchedExp.length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>📊 MRP Durumu ({matchedExp.length})</div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                            <thead><tr style={{ borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Stok Kodu</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Ürün Adı</th>
+                              <th style={{ padding: "3px 6px", textAlign: "center" }}>Tip</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Brüt İhtiyaç</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Stok</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>WIP</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Net İhtiyaç</th>
+                            </tr></thead>
+                            <tbody>{matchedExp.slice(0, 15).map((r, i) => (
+                              <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                                <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{r.code}</td>
+                                <td style={{ padding: "4px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                                  <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: r.supplyType === "MAKE" ? "#ECFDF5" : r.supplyType === "BUY" ? "#DBEAFE" : "#FEF3C7", color: r.supplyType === "MAKE" ? "#065F46" : r.supplyType === "BUY" ? "#1D4ED8" : "#92400E" }}>{r.supplyType}</span>
+                                </td>
+                                <td style={{ padding: "4px 6px", textAlign: "right" }}>{Math.round(r.grossQty)}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right" }}>{r.stkAvail || 0}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right" }}>{r.wipTotal || 0}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 600, color: r.netQty > 0 ? "#DC2626" : "#16A34A" }}>{Math.round(r.netQty)}</td>
+                              </tr>
+                            ))}</tbody>
+                          </table>
+                        </div>
+                      )}
+                      {/* Planlanan işler */}
+                      {matchedJobs.length > 0 && (
+                        <div style={{ marginBottom: 8 }}>
+                          <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>📋 Planlanan İşler ({matchedJobs.length})</div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                            <thead><tr style={{ borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>İş</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Parça</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Ürün Adı</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Adet</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Op</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Üretim</th>
+                              <th style={{ padding: "3px 6px", textAlign: "center" }}>Başlangıç</th>
+                              <th style={{ padding: "3px 6px", textAlign: "center" }}>Sevkiyat</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Slack</th>
+                              <th style={{ padding: "3px 6px", textAlign: "center" }}>Malzeme</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Operasyonlar</th>
+                            </tr></thead>
+                            <tbody>{matchedJobs.map(j => (
+                              <tr key={j.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: j.slackDays < 0 ? "#FEF2F2" : j.slackDays != null && j.slackDays <= 5 ? "#FFFBEB" : "transparent" }}>
+                                <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontWeight: 500, color: j.slackDays < 0 ? "#DC2626" : "var(--color-text-info)" }}>{j.id}</td>
+                                <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{j.partCode}</td>
+                                <td style={{ padding: "4px 6px", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right" }}>{j.qty}ad</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right" }}>{j.operations.length}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right" }}>{j.totalProductionDays || "—"}g</td>
+                                <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{j.operations[0]?.startDate?.substring(5) || "—"}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{j.dueDate?.substring(5) || "—"}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 600, color: j.slackDays < 0 ? "#DC2626" : j.slackDays != null && j.slackDays <= 5 ? "#D97706" : "#16A34A" }}>{j.slackDays != null ? `${j.slackDays}g` : "—"}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "center" }}>{j.materialWarnings?.length > 0 ? <span style={{ color: "#DC2626" }}>📦{j.materialWarnings.length}</span> : "✓"}</td>
+                                <td style={{ padding: "4px 6px", fontSize: 8 }}>
+                                  <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                                    {j.operations.map((op, oi) => (
+                                      <span key={oi} style={{ padding: "0 3px", borderRadius: 2, background: op.isFason ? "#FBEAF0" : op.machineId ? "#ECFDF5" : "#F3E8FF", color: op.isFason ? "#72243E" : op.machineId ? "#065F46" : "#7C3AED", whiteSpace: "nowrap" }}>
+                                        {op.isFason ? "⧖" : ""}{op.opName?.substring(0, 12) || `Op${op.opCode}`}{op.machineId ? ` → ${op.machineId}` : ""}
+                                      </span>
+                                    ))}
+                                  </div>
+                                </td>
+                              </tr>
+                            ))}</tbody>
+                          </table>
+                        </div>
+                      )}
+                      {/* WIP detayları */}
+                      {matchedWip.length > 0 && (
+                        <div>
+                          <div style={{ fontSize: 10, fontWeight: 600, color: "#D97706", marginBottom: 4 }}>🔶 Devam Eden İşler ({matchedWip.length})</div>
+                          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                            <thead><tr style={{ borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Tip</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Emir</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Stok Kodu</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Ürün Adı</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Operasyon</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>İş Merkezi</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Kalan</th>
+                              <th style={{ padding: "3px 6px", textAlign: "right" }}>Süre</th>
+                              <th style={{ padding: "3px 6px", textAlign: "left" }}>Tezgah</th>
+                            </tr></thead>
+                            <tbody>{matchedWip.map((it, i) => (
+                              <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                                <td style={{ padding: "4px 6px" }}>
+                                  <span style={{ display: "inline-block", width: 7, height: 7, borderRadius: 2, background: it.isProjected ? "#2563EB" : "#F59E0B" }} title={it.isProjected ? "Projeksiyon" : "Aktif WIP"} />
+                                </td>
+                                <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9, color: "#B45309" }}>{it.emirNo ? `E${it.emirNo}` : "—"}</td>
+                                <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{it.code}</td>
+                                <td style={{ padding: "4px 6px", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.name}</td>
+                                <td style={{ padding: "4px 6px" }}>
+                                  <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 2, background: "#F3E8FF", color: "#7C3AED" }}>{it.opName}</span>
+                                </td>
+                                <td style={{ padding: "4px 6px", fontSize: 9 }}>{it.wcName}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right" }}>{it.remaining}ad{it.incomingQty > 0 && <span style={{ fontSize: 8, color: "#2563EB" }}> +{it.incomingQty}⏳</span>}</td>
+                                <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500 }}>{Math.round(it.wipMin)}dk</td>
+                                <td style={{ padding: "4px 6px", fontSize: 9, color: it.machineId ? "#065F46" : "#DC2626" }}>{it.machineId || "Atanmamış"}</td>
+                              </tr>
+                            ))}</tbody>
+                          </table>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
 
             {/* ---- WIP RAPORU ---- */}
             {wipLoad.debug && wipLoad.debug.matched > 0 && (
