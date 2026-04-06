@@ -5050,11 +5050,26 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             const parent = parts[p.parentIdx];
             if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) {
               partQtys[i] = 0;
-              return; // Bu parça ve tüm alt ağacı atla
+              return;
             }
             const parentNeeded = partQtys[p.parentIdx] || 0;
-            if (parentNeeded === 0) { partQtys[i] = 0; return; } // Üst zaten atlanmış
-            needed = (p.qty || 1) * parentNeeded;
+            if (parentNeeded === 0) { partQtys[i] = 0; return; }
+            // Üst MAKE parça stokla karşılanıyorsa alt bileşenler gereksiz
+            if (parent && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+              const parentStk = stockLookup[parent.stockCode];
+              const parentStkAvail = parentStk ? (parentStk.ambar + (stockIncludeUretim ? parentStk.uretim : 0)) : 0;
+              const parentAk = akibetLookup[parent.stockCode];
+              const parentWip = parentAk ? (parentAk.internalRemaining + parentAk.fasonRemaining) : 0;
+              if (parentStkAvail + parentWip >= parentNeeded) {
+                partQtys[i] = 0;
+                return; // Üst parça stoktan karşılanıyor, üretmeye gerek yok
+              }
+              // Stoktan karşılanan kısmı düş — sadece net ihtiyaç kadar alt parça lazım
+              const parentNet = Math.max(0, parentNeeded - parentStkAvail - parentWip);
+              needed = (p.qty || 1) * parentNet;
+            } else {
+              needed = (p.qty || 1) * parentNeeded;
+            }
           }
           partQtys[i] = needed;
 
