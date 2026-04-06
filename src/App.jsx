@@ -4632,6 +4632,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
   const [actionPanel, setActionPanel] = useState(null); // aksiyon paneli açık id
   const [partSearch, setPartSearch] = useState(""); // parça arama
+  const [shipReqOpen, setShipReqOpen] = useState({}); // sevkiyat ihtiyaç açılır-kapanır
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
   const [schedOverrides, setSchedOverrides] = useState({}); // "partCode|opCode" → machineId
   const [jobOrder, setJobOrder] = useState({}); // machineId → ["jobId|opIdx", ...]
@@ -9094,110 +9095,178 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
                   {/* 6. Sevkiyat Bazlı İhtiyaç Dökümü */}
                   {explosionResult?.parts && (() => {
-                    const containers = (unshippedDemand.containers || []).slice(0, 10);
+                    const containers = (unshippedDemand.containers || []).slice(0, 12);
+                    const pidToProduct = {};
+                    (products || []).forEach(p => { pidToProduct[p.id] = p; });
+                    const toggleShipReq = (key) => setShipReqOpen(prev => ({ ...prev, [key]: !prev[key] }));
+                    // Stok havuzu — konteynerler sırayla tüketir
+                    const stockPool = {};
+                    (explosionResult.parts || []).forEach(r => {
+                      stockPool[r.code] = { avail: r.stkAvail || 0, wip: r.wipTotal || 0, name: r.name, supplyType: r.supplyType, level: r.level };
+                    });
+                    // BOM ağacı lookup: stockCode → children
+                    const bomChildrenOf = (modelKey, parentCode) => {
+                      if (!bomModels?.[modelKey]) return [];
+                      const parts = bomModels[modelKey].parts || [];
+                      const parentIdx = parts.findIndex(p => p.stockCode === parentCode);
+                      if (parentIdx < 0) return [];
+                      return parts.filter(p => p.parentIdx === parentIdx).map(p => ({
+                        code: p.stockCode, name: p.stockName, supplyType: p.supplyType, qty: p.qty, level: p.level,
+                        hasChildren: parts.some(ch => ch.parentIdx === parts.indexOf(p))
+                      }));
+                    };
+                    // Pre-calculate container stats
+                    const containerStats = containers.map(c => {
+                      const cProducts = Object.entries(c.products || {}).map(([pid, qty]) => ({
+                        pid: Number(pid), qty, product: pidToProduct[Number(pid)]
+                      })).filter(cp => cp.product);
+                      let totalParts = 0, shortParts = 0;
+                      cProducts.forEach(cp => {
+                        (explosionResult.parts || []).forEach(r => {
+                          const src = (r.sources || []).find(s => s.pid === cp.pid);
+                          if (!src) return;
+                          const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
+                          const needed = Math.ceil(src.qty * (cp.qty / totalDemand));
+                          if (needed <= 0) return;
+                          totalParts++;
+                          const pool = stockPool[r.code];
+                          if (!pool || (pool.avail + pool.wip) < needed) shortParts++;
+                        });
+                      });
+                      const today = new Date(); const sd = new Date(c.date);
+                      let bizDays = 0; const dd = new Date(today);
+                      while (dd < sd) { dd.setDate(dd.getDate() + 1); if (dd.getDay() !== 0 && dd.getDay() !== 6) bizDays++; }
+                      return { ...c, cProducts, totalParts, shortParts, bizDays };
+                    });
+                    // Reset stockPool for actual per-container calculation
+                    (explosionResult.parts || []).forEach(r => {
+                      stockPool[r.code] = { avail: r.stkAvail || 0, wip: r.wipTotal || 0, name: r.name, supplyType: r.supplyType, level: r.level };
+                    });
                     return (
                       <>
-                      <PanelHeader icon="📦" title="Sevkiyat Bazlı İhtiyaç" count={containers.length} color="#059669" isOpen={actionPanel === "panel_shipReq"} onClick={() => setActionPanel(actionPanel === "panel_shipReq" ? null : "panel_shipReq")} badge="Konteyner × parça detayı" />
+                      <PanelHeader icon="📦" title="Sevkiyat Bazlı İhtiyaç" count={containers.length} color="#059669" isOpen={actionPanel === "panel_shipReq"} onClick={() => setActionPanel(actionPanel === "panel_shipReq" ? null : "panel_shipReq")} badge={`${containerStats.filter(c => c.shortParts > 0).length} eksikli sevkiyat`} />
                       {actionPanel === "panel_shipReq" && containers.length > 0 && (
                         <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#F0FDF4", borderRadius: 8, border: "1px solid #BBF7D0" }}>
-                          {(() => {
-                            const stockPool = {};
-                            (explosionResult.parts || []).forEach(r => {
-                              stockPool[r.code] = { avail: r.stkAvail || 0, wip: r.wipTotal || 0, name: r.name, supplyType: r.supplyType };
-                            });
-                            const pidToProduct = {};
-                            (products || []).forEach(p => { pidToProduct[p.id] = p; });
-
-                            return containers.map(c => {
-                              const cProducts = Object.entries(c.products || {}).map(([pid, qty]) => ({
-                                pid: Number(pid), qty, product: pidToProduct[Number(pid)]
-                              })).filter(cp => cp.product);
-                              if (cProducts.length === 0) return null;
-
-                              const partsNeeded = {};
-                              (explosionResult.parts || []).forEach(r => {
-                                (r.sources || []).forEach(src => {
-                                  const cp = cProducts.find(cp => cp.pid === src.pid);
-                                  if (!cp) return;
-                                  const totalDemand = unshippedDemand.byProduct[src.pid]?.qty || 1;
-                                  const ratio = cp.qty / totalDemand;
-                                  const needed = Math.ceil(src.qty * ratio);
-                                  if (needed <= 0) return;
-                                  if (!partsNeeded[r.code]) partsNeeded[r.code] = { code: r.code, name: r.name, supplyType: r.supplyType, needed: 0 };
-                                  partsNeeded[r.code].needed += needed;
-                                });
-                              });
-
-                              const partList = Object.values(partsNeeded).sort((a, b) => b.needed - a.needed);
-                              let readyCount = 0, shortCount = 0;
-                              partList.forEach(p => {
-                                const pool = stockPool[p.code];
-                                const avail = pool ? pool.avail + pool.wip : 0;
-                                const covered = Math.min(p.needed, avail);
-                                p.covered = covered;
-                                p.short = p.needed - covered;
-                                if (pool) {
-                                  const fromAvail = Math.min(covered, pool.avail);
-                                  pool.avail -= fromAvail;
-                                  pool.wip -= (covered - fromAvail);
-                                }
-                                if (p.short <= 0) readyCount++; else shortCount++;
-                              });
-
-                              const today = new Date();
-                              const sd = new Date(c.date);
-                              let bizDays = 0;
-                              const dd = new Date(today);
-                              while (dd < sd) { dd.setDate(dd.getDate() + 1); if (dd.getDay() !== 0 && dd.getDay() !== 6) bizDays++; }
-
-                              return (
-                                <div key={c.id} style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 6, background: "var(--color-background-primary)", border: shortCount > 0 ? "1px solid #FECACA" : "1px solid #BBF7D0" }}>
-                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                                      <span style={{ fontSize: 13, fontWeight: 700 }}>📦 {c.date}</span>
-                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{bizDays} iş günü</span>
-                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
-                                        {cProducts.map(cp => `${cp.product?.name?.substring(0, 15) || cp.pid}: ${cp.qty}ad`).join(" · ")}
-                                      </span>
-                                    </div>
-                                    <div style={{ display: "flex", gap: 6 }}>
-                                      <span style={{ fontSize: 10, color: "#16A34A", fontWeight: 500 }}>✓ {readyCount} hazır</span>
-                                      {shortCount > 0 && <span style={{ fontSize: 10, color: "#DC2626", fontWeight: 600 }}>❌ {shortCount} eksik</span>}
-                                    </div>
-                                  </div>
-                                  {partList.length > 0 && (
-                                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
-                                      <thead><tr style={{ borderBottom: "1px solid var(--color-border-tertiary)" }}>
-                                        <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500 }}>Stok Kodu</th>
-                                        <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500 }}>Parça Adı</th>
-                                        <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500 }}>Tip</th>
-                                        <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500 }}>İhtiyaç</th>
-                                        <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500 }}>Karşılanan</th>
-                                        <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500 }}>Eksik</th>
-                                        <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500 }}>Durum</th>
-                                      </tr></thead>
-                                      <tbody>{partList.filter(p => p.short > 0).concat(partList.filter(p => p.short <= 0).slice(0, 3)).map((p, i) => (
-                                        <tr key={p.code + i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: p.short > 0 ? "#FEF2F2" : "transparent" }}>
-                                          <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.code}</td>
-                                          <td style={{ padding: "4px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
-                                          <td style={{ padding: "4px 6px", textAlign: "center" }}>
-                                            <span style={{ fontSize: 8, padding: "1px 3px", borderRadius: 2, background: p.supplyType === "MAKE" ? "#ECFDF5" : p.supplyType === "BUY" ? "#DBEAFE" : "#FEF3C7", color: p.supplyType === "MAKE" ? "#065F46" : p.supplyType === "BUY" ? "#1D4ED8" : "#92400E" }}>{p.supplyType}</span>
-                                          </td>
-                                          <td style={{ padding: "4px 6px", textAlign: "right" }}>{p.needed}</td>
-                                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#16A34A" }}>{p.covered}</td>
-                                          <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: p.short > 0 ? 700 : 400, color: p.short > 0 ? "#DC2626" : "#16A34A" }}>{p.short > 0 ? p.short : "—"}</td>
-                                          <td style={{ padding: "4px 6px", textAlign: "center" }}>{p.short > 0 ? "🔴" : "✅"}</td>
-                                        </tr>
-                                      ))}</tbody>
-                                      {partList.filter(p => p.short <= 0).length > 3 && (
-                                        <tfoot><tr><td colSpan={7} style={{ padding: "4px 6px", fontSize: 9, color: "var(--color-text-tertiary)" }}>+{partList.filter(p => p.short <= 0).length - 3} hazır parça daha</td></tr></tfoot>
-                                      )}
-                                    </table>
-                                  )}
+                          {containerStats.map(cs => {
+                            const cKey = `c_${cs.id}`;
+                            const isContainerOpen = shipReqOpen[cKey];
+                            return (
+                              <div key={cs.id} style={{ marginBottom: 4 }}>
+                                {/* Konteyner başlığı */}
+                                <div onClick={() => toggleShipReq(cKey)} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 6, cursor: "pointer", background: cs.shortParts > 0 ? "#FEF2F2" : "#F0FDF4", border: `1px solid ${cs.shortParts > 0 ? "#FECACA" : "#BBF7D0"}`, transition: "all 0.15s" }}>
+                                  <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isContainerOpen ? "▼" : "▶"}</span>
+                                  <span style={{ fontSize: 12, fontWeight: 700 }}>📦 {cs.date}</span>
+                                  <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{cs.bizDays}g</span>
+                                  <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", flex: 1 }}>
+                                    {cs.cProducts.map(cp => `${cp.product?.name?.substring(0, 18) || cp.pid}: ${cp.qty}`).join(" · ")}
+                                  </span>
+                                  <span style={{ fontSize: 9, color: "#16A34A" }}>✓{cs.totalParts - cs.shortParts}</span>
+                                  {cs.shortParts > 0 && <span style={{ fontSize: 9, color: "#DC2626", fontWeight: 600 }}>❌{cs.shortParts}</span>}
                                 </div>
-                              );
-                            });
-                          })()}
+                                {/* Konteyner içeriği — ürün bazlı */}
+                                {isContainerOpen && (
+                                  <div style={{ marginLeft: 16, marginTop: 4 }}>
+                                    {cs.cProducts.map(cp => {
+                                      const pKey = `${cKey}|${cp.pid}`;
+                                      const isProductOpen = shipReqOpen[pKey];
+                                      // Bu ürünün L1 parçaları
+                                      const prodParts = [];
+                                      (explosionResult.parts || []).forEach(r => {
+                                        const src = (r.sources || []).find(s => s.pid === cp.pid);
+                                        if (!src) return;
+                                        const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
+                                        const needed = Math.ceil(src.qty * (cp.qty / totalDemand));
+                                        if (needed <= 0) return;
+                                        const pool = stockPool[r.code];
+                                        const avail = pool ? pool.avail + pool.wip : 0;
+                                        const covered = Math.min(needed, avail);
+                                        const short = needed - covered;
+                                        prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
+                                      });
+                                      const prodShort = prodParts.filter(p => p.short > 0).length;
+                                      return (
+                                        <div key={cp.pid} style={{ marginBottom: 4 }}>
+                                          <div onClick={() => toggleShipReq(pKey)} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", borderRadius: 4, cursor: "pointer", background: prodShort > 0 ? "#FFFBEB" : "#ECFDF5", border: `0.5px solid ${prodShort > 0 ? "#FDE68A" : "#A7F3D0"}` }}>
+                                            <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{isProductOpen ? "▼" : "▶"}</span>
+                                            <span style={{ fontSize: 11, fontWeight: 600 }}>{cp.product?.name || `Ürün ${cp.pid}`}</span>
+                                            <span style={{ fontSize: 10 }}>{cp.qty} adet</span>
+                                            <span style={{ marginLeft: "auto", fontSize: 9 }}>
+                                              {prodShort > 0 ? <span style={{ color: "#DC2626" }}>❌ {prodShort} eksik</span> : <span style={{ color: "#16A34A" }}>✓ Hazır</span>}
+                                            </span>
+                                          </div>
+                                          {/* Ürün parçaları — seviye bazlı */}
+                                          {isProductOpen && prodParts.length > 0 && (
+                                            <div style={{ marginLeft: 16, marginTop: 2 }}>
+                                              {/* L0/L1 parçalar (doğrudan ürün bileşenleri) */}
+                                              {(() => {
+                                                const l1Parts = prodParts.filter(p => p.level <= 1);
+                                                const deepParts = prodParts.filter(p => p.level > 1);
+                                                return (
+                                                  <>
+                                                  {l1Parts.length > 0 && (
+                                                    <div style={{ marginBottom: 4 }}>
+                                                      <div style={{ fontSize: 9, fontWeight: 500, color: "#065F46", marginBottom: 2 }}>🔧 Seviye 1 — Doğrudan Bileşenler ({l1Parts.length})</div>
+                                                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 9 }}>
+                                                        <tbody>{l1Parts.sort((a, b) => b.short - a.short).map(p => {
+                                                          const partKey = `${pKey}|${p.code}`;
+                                                          const isPartOpen = shipReqOpen[partKey];
+                                                          // Bu parçanın alt bileşenleri
+                                                          const subParts = deepParts.filter(dp => {
+                                                            // BOM'da bu parçanın altında mı kontrol et
+                                                            const model = cs.cProducts.length > 0 ? Object.keys(bomModels || {}).find(mk => (bomModels[mk]?.parts || []).some(bp => bp.stockCode === p.code)) : null;
+                                                            if (!model) return false;
+                                                            const children = bomChildrenOf(model, p.code);
+                                                            return children.some(ch => ch.code === dp.code);
+                                                          });
+                                                          return (
+                                                            <Fragment key={p.code}>
+                                                            <tr style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: p.short > 0 ? "#FEF2F2" : "transparent" }}>
+                                                              <td style={{ padding: "3px 4px", width: 14 }}>
+                                                                {subParts.length > 0 ? <span onClick={() => toggleShipReq(partKey)} style={{ cursor: "pointer", fontSize: 8, color: "var(--color-text-tertiary)" }}>{isPartOpen ? "▼" : "▶"}</span> : ""}
+                                                              </td>
+                                                              <td style={{ padding: "3px 6px", fontFamily: "var(--font-mono)", fontSize: 8 }}>{p.code}</td>
+                                                              <td style={{ padding: "3px 6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                                                              <td style={{ padding: "3px 4px", textAlign: "center" }}><span style={{ fontSize: 7, padding: "0 3px", borderRadius: 2, background: p.supplyType === "MAKE" ? "#ECFDF5" : p.supplyType === "BUY" ? "#DBEAFE" : "#FEF3C7", color: p.supplyType === "MAKE" ? "#065F46" : p.supplyType === "BUY" ? "#1D4ED8" : "#92400E" }}>{p.supplyType}</span></td>
+                                                              <td style={{ padding: "3px 6px", textAlign: "right" }}>{p.needed}</td>
+                                                              <td style={{ padding: "3px 6px", textAlign: "right", color: "#16A34A" }}>{p.covered}</td>
+                                                              <td style={{ padding: "3px 6px", textAlign: "right", fontWeight: p.short > 0 ? 600 : 400, color: p.short > 0 ? "#DC2626" : "#16A34A" }}>{p.short > 0 ? p.short : "—"}</td>
+                                                              <td style={{ padding: "3px 4px", textAlign: "center" }}>{p.short > 0 ? "🔴" : "✅"}</td>
+                                                            </tr>
+                                                            {/* Alt seviye parçalar */}
+                                                            {isPartOpen && subParts.length > 0 && subParts.sort((a, b) => b.short - a.short).map(sp => (
+                                                              <tr key={sp.code} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: sp.short > 0 ? "#FEF2F2" : "#FAFAFA" }}>
+                                                                <td style={{ padding: "2px 4px" }}></td>
+                                                                <td style={{ padding: "2px 6px 2px 20px", fontFamily: "var(--font-mono)", fontSize: 8, color: "var(--color-text-tertiary)" }}>↳ {sp.code}</td>
+                                                                <td style={{ padding: "2px 6px", fontSize: 8, color: "var(--color-text-tertiary)" }}>{sp.name}</td>
+                                                                <td style={{ padding: "2px 4px", textAlign: "center" }}><span style={{ fontSize: 7, padding: "0 3px", borderRadius: 2, background: sp.supplyType === "BUY" ? "#DBEAFE" : "#FEF3C7", color: sp.supplyType === "BUY" ? "#1D4ED8" : "#92400E" }}>{sp.supplyType}</span></td>
+                                                                <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8 }}>{sp.needed}</td>
+                                                                <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8, color: "#16A34A" }}>{sp.covered}</td>
+                                                                <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8, fontWeight: sp.short > 0 ? 600 : 400, color: sp.short > 0 ? "#DC2626" : "#16A34A" }}>{sp.short > 0 ? sp.short : "—"}</td>
+                                                                <td style={{ padding: "2px 4px", textAlign: "center", fontSize: 8 }}>{sp.short > 0 ? "🔴" : "✅"}</td>
+                                                              </tr>
+                                                            ))}
+                                                            </Fragment>
+                                                          );
+                                                        })}</tbody>
+                                                      </table>
+                                                    </div>
+                                                  )}
+                                                  {deepParts.length > 0 && l1Parts.length === 0 && (
+                                                    <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", padding: 4 }}>Alt seviye parçalar: {deepParts.length}</div>
+                                                  )}
+                                                  </>
+                                                );
+                                              })()}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
                         </div>
                       )}
                       </>
