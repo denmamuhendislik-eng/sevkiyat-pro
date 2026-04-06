@@ -9091,6 +9091,119 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       </table>
                     </div>
                   )}
+
+                  {/* 6. Sevkiyat Bazlı İhtiyaç Dökümü */}
+                  {explosionResult?.parts && (() => {
+                    const containers = (unshippedDemand.containers || []).slice(0, 10);
+                    return (
+                      <>
+                      <PanelHeader icon="📦" title="Sevkiyat Bazlı İhtiyaç" count={containers.length} color="#059669" isOpen={actionPanel === "panel_shipReq"} onClick={() => setActionPanel(actionPanel === "panel_shipReq" ? null : "panel_shipReq")} badge="Konteyner × parça detayı" />
+                      {actionPanel === "panel_shipReq" && containers.length > 0 && (
+                        <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#F0FDF4", borderRadius: 8, border: "1px solid #BBF7D0" }}>
+                          {(() => {
+                            const stockPool = {};
+                            (explosionResult.parts || []).forEach(r => {
+                              stockPool[r.code] = { avail: r.stkAvail || 0, wip: r.wipTotal || 0, name: r.name, supplyType: r.supplyType };
+                            });
+                            const pidToProduct = {};
+                            (products || []).forEach(p => { pidToProduct[p.id] = p; });
+
+                            return containers.map(c => {
+                              const cProducts = Object.entries(c.products || {}).map(([pid, qty]) => ({
+                                pid: Number(pid), qty, product: pidToProduct[Number(pid)]
+                              })).filter(cp => cp.product);
+                              if (cProducts.length === 0) return null;
+
+                              const partsNeeded = {};
+                              (explosionResult.parts || []).forEach(r => {
+                                (r.sources || []).forEach(src => {
+                                  const cp = cProducts.find(cp => cp.pid === src.pid);
+                                  if (!cp) return;
+                                  const totalDemand = unshippedDemand.byProduct[src.pid]?.qty || 1;
+                                  const ratio = cp.qty / totalDemand;
+                                  const needed = Math.ceil(src.qty * ratio);
+                                  if (needed <= 0) return;
+                                  if (!partsNeeded[r.code]) partsNeeded[r.code] = { code: r.code, name: r.name, supplyType: r.supplyType, needed: 0 };
+                                  partsNeeded[r.code].needed += needed;
+                                });
+                              });
+
+                              const partList = Object.values(partsNeeded).sort((a, b) => b.needed - a.needed);
+                              let readyCount = 0, shortCount = 0;
+                              partList.forEach(p => {
+                                const pool = stockPool[p.code];
+                                const avail = pool ? pool.avail + pool.wip : 0;
+                                const covered = Math.min(p.needed, avail);
+                                p.covered = covered;
+                                p.short = p.needed - covered;
+                                if (pool) {
+                                  const fromAvail = Math.min(covered, pool.avail);
+                                  pool.avail -= fromAvail;
+                                  pool.wip -= (covered - fromAvail);
+                                }
+                                if (p.short <= 0) readyCount++; else shortCount++;
+                              });
+
+                              const today = new Date();
+                              const sd = new Date(c.date);
+                              let bizDays = 0;
+                              const dd = new Date(today);
+                              while (dd < sd) { dd.setDate(dd.getDate() + 1); if (dd.getDay() !== 0 && dd.getDay() !== 6) bizDays++; }
+
+                              return (
+                                <div key={c.id} style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 6, background: "var(--color-background-primary)", border: shortCount > 0 ? "1px solid #FECACA" : "1px solid #BBF7D0" }}>
+                                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                                      <span style={{ fontSize: 13, fontWeight: 700 }}>📦 {c.date}</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{bizDays} iş günü</span>
+                                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                                        {cProducts.map(cp => `${cp.product?.name?.substring(0, 15) || cp.pid}: ${cp.qty}ad`).join(" · ")}
+                                      </span>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 6 }}>
+                                      <span style={{ fontSize: 10, color: "#16A34A", fontWeight: 500 }}>✓ {readyCount} hazır</span>
+                                      {shortCount > 0 && <span style={{ fontSize: 10, color: "#DC2626", fontWeight: 600 }}>❌ {shortCount} eksik</span>}
+                                    </div>
+                                  </div>
+                                  {partList.length > 0 && (
+                                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                                      <thead><tr style={{ borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                                        <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500 }}>Stok Kodu</th>
+                                        <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500 }}>Parça Adı</th>
+                                        <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500 }}>Tip</th>
+                                        <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500 }}>İhtiyaç</th>
+                                        <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500 }}>Karşılanan</th>
+                                        <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500 }}>Eksik</th>
+                                        <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500 }}>Durum</th>
+                                      </tr></thead>
+                                      <tbody>{partList.filter(p => p.short > 0).concat(partList.filter(p => p.short <= 0).slice(0, 3)).map((p, i) => (
+                                        <tr key={p.code + i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: p.short > 0 ? "#FEF2F2" : "transparent" }}>
+                                          <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.code}</td>
+                                          <td style={{ padding: "4px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                                          <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                                            <span style={{ fontSize: 8, padding: "1px 3px", borderRadius: 2, background: p.supplyType === "MAKE" ? "#ECFDF5" : p.supplyType === "BUY" ? "#DBEAFE" : "#FEF3C7", color: p.supplyType === "MAKE" ? "#065F46" : p.supplyType === "BUY" ? "#1D4ED8" : "#92400E" }}>{p.supplyType}</span>
+                                          </td>
+                                          <td style={{ padding: "4px 6px", textAlign: "right" }}>{p.needed}</td>
+                                          <td style={{ padding: "4px 6px", textAlign: "right", color: "#16A34A" }}>{p.covered}</td>
+                                          <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: p.short > 0 ? 700 : 400, color: p.short > 0 ? "#DC2626" : "#16A34A" }}>{p.short > 0 ? p.short : "—"}</td>
+                                          <td style={{ padding: "4px 6px", textAlign: "center" }}>{p.short > 0 ? "🔴" : "✅"}</td>
+                                        </tr>
+                                      ))}</tbody>
+                                      {partList.filter(p => p.short <= 0).length > 3 && (
+                                        <tfoot><tr><td colSpan={7} style={{ padding: "4px 6px", fontSize: 9, color: "var(--color-text-tertiary)" }}>+{partList.filter(p => p.short <= 0).length - 3} hazır parça daha</td></tr></tfoot>
+                                      )}
+                                    </table>
+                                  )}
+                                </div>
+                              );
+                            });
+                          })()}
+                        </div>
+                      )}
+                      </>
+                    );
+                  })()}
+
                 </div>
               );
             })()}
