@@ -9138,6 +9138,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       let totalParts = 0, shortParts = 0;
                       cProducts.forEach(cp => {
                         (explosionResult.parts || []).forEach(r => {
+                          if (r.level > 1) return; // Sadece doğrudan bileşenler
                           const src = (r.sources || []).find(s => s.pid === cp.pid);
                           if (!src) return;
                           const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
@@ -9198,7 +9199,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           const short = needed - covered;
                                           prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
                                         });
-                                        const prodShort = prodParts.filter(p => p.short > 0).length;
+                                        const prodShort = prodParts.filter(p => p.short > 0 && p.level <= 1).length;
                                         const item = { cp, prodParts, prodShort };
                                         if (prodShort > 0) shortProducts.push(item); else readyProducts.push(item);
                                       });
