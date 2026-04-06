@@ -9138,7 +9138,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       let totalParts = 0, shortParts = 0;
                       cProducts.forEach(cp => {
                         (explosionResult.parts || []).forEach(r => {
-                          if (r.level > 1) return; // Sadece doğrudan bileşenler
+                          if (r.level > 1) return;
                           const src = (r.sources || []).find(s => s.pid === cp.pid);
                           if (!src) return;
                           const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
@@ -9146,7 +9146,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           if (needed <= 0) return;
                           totalParts++;
                           const pool = stockPool[r.code];
-                          if (!pool || (pool.avail + pool.wip) < needed) shortParts++;
+                          const avail = pool ? pool.avail + pool.wip : 0;
+                          const covered = Math.min(needed, avail);
+                          if (covered < needed) shortParts++;
+                          // Stok düş — sonraki konteyner azalmış stoğu görecek
+                          if (pool && covered > 0) {
+                            const fromAvail = Math.min(covered, pool.avail);
+                            pool.avail -= fromAvail;
+                            pool.wip -= (covered - fromAvail);
+                          }
                         });
                       });
                       const today = new Date(); const sd = new Date(c.date);
@@ -9197,6 +9205,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           const avail = pool ? pool.avail + pool.wip : 0;
                                           const covered = Math.min(needed, avail);
                                           const short = needed - covered;
+                                          // Stok havuzundan düş — sonraki konteynerler azalmış stoğu görecek
+                                          if (pool && covered > 0) {
+                                            const fromAvail = Math.min(covered, pool.avail);
+                                            pool.avail -= fromAvail;
+                                            pool.wip -= (covered - fromAvail);
+                                          }
                                           prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
                                         });
                                         const prodShort = prodParts.filter(p => p.short > 0 && p.level <= 1).length;
