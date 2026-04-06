@@ -9195,24 +9195,69 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       const shortProducts = [];
                                       cs.cProducts.forEach(cp => {
                                         const prodParts = [];
-                                        (explosionResult.parts || []).forEach(r => {
-                                          const src = (r.sources || []).find(s => s.pid === cp.pid);
-                                          if (!src) return;
-                                          const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
-                                          const needed = Math.ceil(src.qty * (cp.qty / totalDemand));
-                                          if (needed <= 0) return;
-                                          const pool = stockPool[r.code];
-                                          const avail = pool ? pool.avail + pool.wip : 0;
-                                          const covered = Math.min(needed, avail);
-                                          const short = needed - covered;
-                                          // Stok havuzundan düş — sonraki konteynerler azalmış stoğu görecek
-                                          if (pool && covered > 0) {
-                                            const fromAvail = Math.min(covered, pool.avail);
-                                            pool.avail -= fromAvail;
-                                            pool.wip -= (covered - fromAvail);
-                                          }
-                                          prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
-                                        });
+                                        // Doğrudan BOM'dan per-unit hesapla — oransal dağıtım yerine
+                                        const modelKey = bomMapping[cp.pid];
+                                        const model = modelKey && bomModels ? bomModels[modelKey] : null;
+                                        if (model?.parts) {
+                                          // BOM ağacını yürü, her parça için birim miktar × konteyner adedi
+                                          const bomParts = model.parts;
+                                          const bomQtys = {};
+                                          bomParts.forEach((bp, bi) => {
+                                            if (bp.parentIdx === null || bp.parentIdx === undefined) {
+                                              bomQtys[bi] = (bp.qty || 1) * cp.qty;
+                                            } else {
+                                              const parentQ = bomQtys[bp.parentIdx] || 0;
+                                              if (parentQ === 0) { bomQtys[bi] = 0; return; }
+                                              // Üst BUY/RAW → atla
+                                              const parent = bomParts[bp.parentIdx];
+                                              if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) { bomQtys[bi] = 0; return; }
+                                              // Üst MAKE ambar stokla karşılanıyorsa alt atla
+                                              if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+                                                const pStk = stockLookup[parent.stockCode];
+                                                const pAmbar = pStk ? pStk.ambar : 0;
+                                                if (pAmbar >= parentQ) { bomQtys[bi] = 0; return; }
+                                                bomQtys[bi] = (bp.qty || 1) * Math.max(0, parentQ - pAmbar);
+                                                return;
+                                              }
+                                              bomQtys[bi] = (bp.qty || 1) * parentQ;
+                                            }
+                                          });
+                                          // BOM parçalarını explosion sonuçlarıyla eşleştir (stok bilgisi için)
+                                          bomParts.forEach((bp, bi) => {
+                                            if (bp.parentIdx === null || bp.parentIdx === undefined) return; // root atla
+                                            const needed = Math.ceil(bomQtys[bi] || 0);
+                                            if (needed <= 0) return;
+                                            const pool = stockPool[bp.stockCode];
+                                            const avail = pool ? pool.avail + pool.wip : 0;
+                                            const covered = Math.min(needed, avail);
+                                            const short = needed - covered;
+                                            if (pool && covered > 0) {
+                                              const fromAvail = Math.min(covered, pool.avail);
+                                              pool.avail -= fromAvail;
+                                              pool.wip -= (covered - fromAvail);
+                                            }
+                                            prodParts.push({ code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType, level: bp.level, needed, covered, short });
+                                          });
+                                        } else {
+                                          // BOM yoksa eski ratio yöntemine fallback
+                                          (explosionResult.parts || []).forEach(r => {
+                                            const src = (r.sources || []).find(s => s.pid === cp.pid);
+                                            if (!src) return;
+                                            const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
+                                            const needed = Math.ceil(src.qty / totalDemand * cp.qty);
+                                            if (needed <= 0) return;
+                                            const pool = stockPool[r.code];
+                                            const avail = pool ? pool.avail + pool.wip : 0;
+                                            const covered = Math.min(needed, avail);
+                                            const short = needed - covered;
+                                            if (pool && covered > 0) {
+                                              const fromAvail = Math.min(covered, pool.avail);
+                                              pool.avail -= fromAvail;
+                                              pool.wip -= (covered - fromAvail);
+                                            }
+                                            prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
+                                          });
+                                        }
                                         const prodShort = prodParts.filter(p => p.short > 0 && p.level <= 1).length;
                                         const item = { cp, prodParts, prodShort };
                                         if (prodShort > 0) shortProducts.push(item); else readyProducts.push(item);
