@@ -6725,8 +6725,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       });
     });
 
-    // Deadline ascending — en yakın deadline üstte
-    items.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    // Önce deadline ascending, sonra aynı tarih içinde slack ascending (en kötüsü üstte)
+    items.sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.slackDays - b.slackDays);
     return items;
   }, [explosionResult, shipReqAnalysis, bomModels, workCenters]);
 
