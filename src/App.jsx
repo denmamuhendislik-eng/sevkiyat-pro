@@ -9119,6 +9119,21 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     (explosionResult.parts || []).forEach(r => {
                       stockPool[r.code] = { avail: r.stkAmbar || 0, wipInt: r.wipInt || 0, wipFas: r.wipFas || 0, stkUretim: r.stkUretim || 0, name: r.name, supplyType: r.supplyType, level: r.level };
                     });
+                    // Explosion'da olmayan ama BOM'da olan parçaları da stockLookup'tan ekle
+                    Object.values(bomModels || {}).forEach(model => {
+                      (model?.parts || []).forEach(bp => {
+                        if (!bp.stockCode || stockPool[bp.stockCode]) return;
+                        const stk = stockLookup[bp.stockCode];
+                        const ak = akibetLookup[bp.stockCode];
+                        stockPool[bp.stockCode] = {
+                          avail: stk?.ambar || 0,
+                          wipInt: ak?.internalRemaining || 0,
+                          wipFas: ak?.fasonRemaining || 0,
+                          stkUretim: stk?.uretim || 0,
+                          name: bp.stockName, supplyType: bp.supplyType, level: bp.level
+                        };
+                      });
+                    });
                     // BOM ağacı lookup: stockCode → children
                     const bomChildrenOf = (modelKey, parentCode) => {
                       if (!bomModels?.[modelKey]) return [];
@@ -9190,6 +9205,23 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     // Reset stockPool for actual per-container calculation
                     (explosionResult.parts || []).forEach(r => {
                       stockPool[r.code] = { avail: r.stkAmbar || 0, wipInt: r.wipInt || 0, wipFas: r.wipFas || 0, stkUretim: r.stkUretim || 0, name: r.name, supplyType: r.supplyType, level: r.level };
+                    });
+                    Object.values(bomModels || {}).forEach(model => {
+                      (model?.parts || []).forEach(bp => {
+                        if (!bp.stockCode) return;
+                        // Eğer explosion'da varsa yukarıda zaten reset edildi, yoksa sıfırdan kur
+                        const fromExp = (explosionResult.parts || []).find(r => r.code === bp.stockCode);
+                        if (fromExp) return;
+                        const stk = stockLookup[bp.stockCode];
+                        const ak = akibetLookup[bp.stockCode];
+                        stockPool[bp.stockCode] = {
+                          avail: stk?.ambar || 0,
+                          wipInt: ak?.internalRemaining || 0,
+                          wipFas: ak?.fasonRemaining || 0,
+                          stkUretim: stk?.uretim || 0,
+                          name: bp.stockName, supplyType: bp.supplyType, level: bp.level
+                        };
+                      });
                     });
                     return (
                       <>
