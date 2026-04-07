@@ -9215,12 +9215,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                               bomQtys[bi] = (bp.qty || 1) * parentQ;
                                             }
                                           });
-                                          // BOM parçalarını seviye sırasıyla işle: önce üst (L1), sonra alt (L2+)
-                                          // Üst MAKE parçalar stockPool'dan tüketir, kalan eksik kısım alt seviyeye iner
-                                          const sortedByLevel = bomParts.map((bp, bi) => ({ bp, bi })).sort((a, b) => (a.bp.level || 0) - (b.bp.level || 0));
+                                          // BOM parçalarını seviye sırasıyla işle: parent depth'ten hesapla (bp.level olmayabilir)
+                                          const calcDepth = (idx, memo = {}) => {
+                                            if (memo[idx] !== undefined) return memo[idx];
+                                            const part = bomParts[idx];
+                                            if (!part || part.parentIdx === null || part.parentIdx === undefined) { memo[idx] = 0; return 0; }
+                                            const d = calcDepth(part.parentIdx, memo) + 1;
+                                            memo[idx] = d;
+                                            return d;
+                                          };
+                                          const depthMemo = {};
+                                          const sortedByLevel = bomParts.map((bp, bi) => ({ bp, bi, depth: calcDepth(bi, depthMemo) })).sort((a, b) => a.depth - b.depth);
                                           const partCovered = {}; // bi → ne kadar karşılandı
-                                          sortedByLevel.forEach(({ bp, bi }) => {
-                                            if (bp.parentIdx === null || bp.parentIdx === undefined) return; // root atla
+                                          sortedByLevel.forEach(({ bp, bi, depth }) => {
+                                            if (depth === 0) return; // root atla
                                             const needed = Math.ceil(bomQtys[bi] || 0);
                                             if (needed <= 0) return;
                                             // Üst MAKE'in karşılanan kısmı varsa alt seviyede o kadar iptal
