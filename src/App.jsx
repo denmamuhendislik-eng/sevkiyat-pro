@@ -9209,28 +9209,52 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                               // Üst BUY/RAW → atla
                                               const parent = bomParts[bp.parentIdx];
                                               if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) { bomQtys[bi] = 0; return; }
-                                              // Üst MAKE ambar stokla karşılanıyorsa alt atla
-                                              if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
-                                                const pStk = stockLookup[parent.stockCode];
-                                                const pAmbar = pStk ? pStk.ambar : 0;
-                                                if (pAmbar >= parentQ) { bomQtys[bi] = 0; return; }
-                                                bomQtys[bi] = (bp.qty || 1) * Math.max(0, parentQ - pAmbar);
-                                                return;
-                                              }
+                                              // Üst MAKE — alt patlatma ama stok düşümü kümülatif (stockPool kullan)
+                                              // ÖNEMLI: Bu kontrol pre-calculate aşamasında yapılır, BOM yürüme sırasında
+                                              // burada basitçe alt seviyeyi her zaman yürütüp gerçek stok kontrolünü yan tarafta yaparız
                                               bomQtys[bi] = (bp.qty || 1) * parentQ;
                                             }
                                           });
-                                          // BOM parçalarını explosion sonuçlarıyla eşleştir (stok bilgisi için)
-                                          bomParts.forEach((bp, bi) => {
+                                          // BOM parçalarını seviye sırasıyla işle: önce üst (L1), sonra alt (L2+)
+                                          // Üst MAKE parçalar stockPool'dan tüketir, kalan eksik kısım alt seviyeye iner
+                                          const sortedByLevel = bomParts.map((bp, bi) => ({ bp, bi })).sort((a, b) => (a.bp.level || 0) - (b.bp.level || 0));
+                                          const partCovered = {}; // bi → ne kadar karşılandı
+                                          sortedByLevel.forEach(({ bp, bi }) => {
                                             if (bp.parentIdx === null || bp.parentIdx === undefined) return; // root atla
                                             const needed = Math.ceil(bomQtys[bi] || 0);
                                             if (needed <= 0) return;
+                                            // Üst MAKE'in karşılanan kısmı varsa alt seviyede o kadar iptal
+                                            const parent = bomParts[bp.parentIdx];
+                                            if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+                                              const parentBi = bp.parentIdx;
+                                              const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
+                                              const parentCov = partCovered[parentBi] || 0;
+                                              // Üst tamamen karşılandıysa bu parça gerekmez
+                                              if (parentCov >= parentNeeded) {
+                                                bomQtys[bi] = 0;
+                                                return;
+                                              }
+                                              // Üst kısmen karşılandıysa, kalan oran kadar bu parça lazım
+                                              const parentNet = parentNeeded - parentCov;
+                                              const newNeeded = Math.ceil((bp.qty || 1) * parentNet);
+                                              bomQtys[bi] = newNeeded;
+                                            }
+                                            const finalNeeded = Math.ceil(bomQtys[bi] || 0);
+                                            if (finalNeeded <= 0) return;
                                             const pool = stockPool[bp.stockCode];
-                                            const avail = pool ? pool.avail : 0; // Sadece ambar
-                                            const covered = Math.min(needed, avail);
-                                            const short = needed - covered;
+                                            const avail = pool ? pool.avail : 0;
+                                            const covered = Math.min(finalNeeded, avail);
+                                            partCovered[bi] = covered;
                                             if (pool && covered > 0) pool.avail -= covered;
-                                            // WIP/üretim bilgisi (not amaçlı)
+                                          });
+                                          // Şimdi gösterim için prodParts oluştur — sıfırlanmamış olanlar
+                                          bomParts.forEach((bp, bi) => {
+                                            if (bp.parentIdx === null || bp.parentIdx === undefined) return;
+                                            const needed = Math.ceil(bomQtys[bi] || 0);
+                                            if (needed <= 0) return;
+                                            const covered = partCovered[bi] || 0;
+                                            const short = needed - covered;
+                                            const pool = stockPool[bp.stockCode];
                                             const wipInt = pool?.wipInt || 0;
                                             const wipFas = pool?.wipFas || 0;
                                             const stkUretim = pool?.stkUretim || 0;
