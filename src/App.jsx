@@ -9068,16 +9068,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 missingMats[mw.code].jobs.push({ jobId: j.id, partCode: j.partCode, partName: j.partName });
               }));
               const matList = Object.values(missingMats).sort((a, b) => (a.status === "missing" ? 0 : 1) - (b.status === "missing" ? 0 : 1) || b.shortage - a.shortage);
-              // Sevkiyat hazırlık
-              const shipReadiness = (unshippedDemand.containers || []).slice(0, 6).map(c => {
-                const product = products?.find(p => c.products?.[p.id]);
-                const jobsForShip = jobs.filter(j => j.dueDate === c.date);
-                const lateForShip = jobsForShip.filter(j => j.slackDays != null && j.slackDays < 0);
-                const riskForShip = jobsForShip.filter(j => j.slackDays != null && j.slackDays >= 0 && j.slackDays <= 5);
-                const today = new Date(); const sd = new Date(c.date);
-                let bizDays = 0; const d = new Date(today); while (d < sd) { d.setDate(d.getDate() + 1); if (d.getDay() !== 0 && d.getDay() !== 6) bizDays++; }
-                return { ...c, bizDays, totalJobs: jobsForShip.length, lateCount: lateForShip.length, riskCount: riskForShip.length, lateJobs: lateForShip.slice(0, 5), riskJobs: riskForShip.slice(0, 5) };
-              });
 
               const PanelHeader = ({ icon, title, count, color, isOpen, onClick, badge }) => (
                 <div onClick={onClick} style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", cursor: "pointer", borderRadius: 8, background: isOpen ? color + "11" : "transparent", border: `1px solid ${count > 0 ? color : "var(--color-border-tertiary)"}`, marginBottom: 6, transition: "all 0.15s" }}>
@@ -9190,34 +9180,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     </div>
                   )}
 
-                  {/* 4. Sevkiyat Hazırlık */}
-                  <PanelHeader icon="🚛" title="Sevkiyat Hazırlık" count={shipReadiness.length} color="#2563EB" isOpen={actionPanel === "panel_ship"} onClick={() => setActionPanel(actionPanel === "panel_ship" ? null : "panel_ship")} badge={`${shipReadiness.filter(s => s.lateCount > 0).length} riskli sevkiyat`} />
-                  {actionPanel === "panel_ship" && shipReadiness.length > 0 && (
-                    <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#EFF6FF", borderRadius: 8, border: "1px solid #BFDBFE" }}>
-                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(350px, 1fr))", gap: 8 }}>
-                        {shipReadiness.map(sr => (
-                          <div key={sr.id} style={{ padding: "8px 12px", borderRadius: 6, background: sr.lateCount > 0 ? "#FEF2F2" : sr.riskCount > 0 ? "#FFFBEB" : "#F0FDF4", border: `1px solid ${sr.lateCount > 0 ? "#FECACA" : sr.riskCount > 0 ? "#FDE68A" : "#BBF7D0"}` }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
-                              <span style={{ fontSize: 12, fontWeight: 600 }}>{sr.date}</span>
-                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{sr.bizDays} iş günü</span>
-                            </div>
-                            <div style={{ display: "flex", gap: 8, fontSize: 10, marginBottom: 4 }}>
-                              <span>Toplam: <b>{sr.totalJobs}</b> iş</span>
-                              {sr.lateCount > 0 && <span style={{ color: "#DC2626", fontWeight: 600 }}>❌ {sr.lateCount} geciken</span>}
-                              {sr.riskCount > 0 && <span style={{ color: "#D97706", fontWeight: 600 }}>⚠ {sr.riskCount} riskli</span>}
-                              {sr.lateCount === 0 && sr.riskCount === 0 && <span style={{ color: "#16A34A" }}>✓ Yolunda</span>}
-                            </div>
-                            {sr.lateJobs.length > 0 && (
-                              <div style={{ fontSize: 9, color: "#991B1B" }}>
-                                {sr.lateJobs.map(j => <div key={j.id}>{j.id} {j.partCode} {j.partName?.substring(0, 25)} ({j.slackDays}g)</div>)}
-                              </div>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
                   {/* 5. İş Emri Listesi (öncelik sırasına göre) */}
                   <PanelHeader icon="📋" title="İş Emri Öncelik Listesi" count={jobs.length} color="#3B82F6" isOpen={actionPanel === "panel_jobs"} onClick={() => setActionPanel(actionPanel === "panel_jobs" ? null : "panel_jobs")} badge="Tüm işler öncelik sırasına göre" />
                   {actionPanel === "panel_jobs" && (
@@ -9289,6 +9251,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           {containerStats.map(cs => {
                             const cKey = `c_${cs.id}`;
                             const isContainerOpen = shipReqOpen[cKey];
+                            // Bu konteynere deadline'ı bağlı job'ların slack durumu
+                            const cJobs = jobs.filter(j => j.dueDate === cs.date && j.slackDays != null);
+                            const lateJobCount = cJobs.filter(j => j.slackDays < 0).length;
+                            const tightJobCount = cJobs.filter(j => j.slackDays >= 0 && j.slackDays <= 5).length;
                             return (
                               <div key={cs.id} style={{ marginBottom: 4 }}>
                                 {/* Konteyner başlığı */}
@@ -9301,6 +9267,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   </span>
                                   <span style={{ fontSize: 9, color: "#16A34A" }}>✓{cs.totalParts - cs.shortParts}</span>
                                   {cs.shortParts > 0 && <span style={{ fontSize: 9, color: "#DC2626", fontWeight: 600 }}>❌{cs.shortParts}</span>}
+                                  {lateJobCount > 0 && <span style={{ fontSize: 9, color: "#DC2626", fontWeight: 600 }} title="Geciken iş (slack < 0)">⏰{lateJobCount}</span>}
+                                  {tightJobCount > 0 && <span style={{ fontSize: 9, color: "#D97706", fontWeight: 600 }} title="Dar zamanlı iş (slack 0-5 gün)">⏳{tightJobCount}</span>}
                                 </div>
                                 {/* Konteyner içeriği — ürün bazlı */}
                                 {isContainerOpen && (
