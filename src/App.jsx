@@ -9117,7 +9117,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     // Stok havuzu — konteynerler sırayla tüketir
                     const stockPool = {};
                     (explosionResult.parts || []).forEach(r => {
-                      stockPool[r.code] = { avail: r.stkAvail || 0, wip: r.wipTotal || 0, name: r.name, supplyType: r.supplyType, level: r.level };
+                      stockPool[r.code] = { avail: r.stkAmbar || 0, wipInt: r.wipInt || 0, wipFas: r.wipFas || 0, stkUretim: r.stkUretim || 0, name: r.name, supplyType: r.supplyType, level: r.level };
                     });
                     // BOM ağacı lookup: stockCode → children
                     const bomChildrenOf = (modelKey, parentCode) => {
@@ -9146,14 +9146,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           if (needed <= 0) return;
                           totalParts++;
                           const pool = stockPool[r.code];
-                          const avail = pool ? pool.avail + pool.wip : 0;
+                          const avail = pool ? pool.avail : 0;
                           const covered = Math.min(needed, avail);
                           if (covered < needed) shortParts++;
                           // Stok düş — sonraki konteyner azalmış stoğu görecek
                           if (pool && covered > 0) {
-                            const fromAvail = Math.min(covered, pool.avail);
-                            pool.avail -= fromAvail;
-                            pool.wip -= (covered - fromAvail);
+                            pool.avail -= covered;
                           }
                         });
                       });
@@ -9164,7 +9162,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     });
                     // Reset stockPool for actual per-container calculation
                     (explosionResult.parts || []).forEach(r => {
-                      stockPool[r.code] = { avail: r.stkAvail || 0, wip: r.wipTotal || 0, name: r.name, supplyType: r.supplyType, level: r.level };
+                      stockPool[r.code] = { avail: r.stkAmbar || 0, wipInt: r.wipInt || 0, wipFas: r.wipFas || 0, stkUretim: r.stkUretim || 0, name: r.name, supplyType: r.supplyType, level: r.level };
                     });
                     return (
                       <>
@@ -9228,15 +9226,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             const needed = Math.ceil(bomQtys[bi] || 0);
                                             if (needed <= 0) return;
                                             const pool = stockPool[bp.stockCode];
-                                            const avail = pool ? pool.avail + pool.wip : 0;
+                                            const avail = pool ? pool.avail : 0; // Sadece ambar
                                             const covered = Math.min(needed, avail);
                                             const short = needed - covered;
-                                            if (pool && covered > 0) {
-                                              const fromAvail = Math.min(covered, pool.avail);
-                                              pool.avail -= fromAvail;
-                                              pool.wip -= (covered - fromAvail);
-                                            }
-                                            prodParts.push({ code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType, level: bp.level, needed, covered, short });
+                                            if (pool && covered > 0) pool.avail -= covered;
+                                            // WIP/üretim bilgisi (not amaçlı)
+                                            const wipInt = pool?.wipInt || 0;
+                                            const wipFas = pool?.wipFas || 0;
+                                            const stkUretim = pool?.stkUretim || 0;
+                                            prodParts.push({ code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType, level: bp.level, needed, covered, short, wipInt, wipFas, stkUretim });
                                           });
                                         } else {
                                           // BOM yoksa eski ratio yöntemine fallback
@@ -9247,15 +9245,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             const needed = Math.ceil(src.qty / totalDemand * cp.qty);
                                             if (needed <= 0) return;
                                             const pool = stockPool[r.code];
-                                            const avail = pool ? pool.avail + pool.wip : 0;
+                                            const avail = pool ? pool.avail : 0;
                                             const covered = Math.min(needed, avail);
                                             const short = needed - covered;
-                                            if (pool && covered > 0) {
-                                              const fromAvail = Math.min(covered, pool.avail);
-                                              pool.avail -= fromAvail;
-                                              pool.wip -= (covered - fromAvail);
-                                            }
-                                            prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short });
+                                            if (pool && covered > 0) pool.avail -= covered;
+                                            const wipInt = pool?.wipInt || 0;
+                                            const wipFas = pool?.wipFas || 0;
+                                            const stkUretim = pool?.stkUretim || 0;
+                                            prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short, wipInt, wipFas, stkUretim });
                                           });
                                         }
                                         const prodShort = prodParts.filter(p => p.short > 0 && p.level <= 1).length;
@@ -9314,6 +9311,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                               <td style={{ padding: "3px 6px", textAlign: "right" }}>{p.needed}</td>
                                                               <td style={{ padding: "3px 6px", textAlign: "right", color: "#16A34A" }}>{p.covered}</td>
                                                               <td style={{ padding: "3px 6px", textAlign: "right", fontWeight: p.short > 0 ? 600 : 400, color: p.short > 0 ? "#DC2626" : "#16A34A" }}>{p.short > 0 ? p.short : "—"}</td>
+                                                              <td style={{ padding: "3px 4px", textAlign: "left", fontSize: 8 }}>
+                                                                {(p.wipInt > 0 || p.wipFas > 0 || p.stkUretim > 0) && (
+                                                                  <span style={{ color: "#D97706" }} title="Devam eden / üretimde olan miktarlar — henüz ambarda değil">
+                                                                    {p.wipInt > 0 && <>🔶{p.wipInt} </>}
+                                                                    {p.wipFas > 0 && <>⧖{p.wipFas} </>}
+                                                                    {p.stkUretim > 0 && <>🏭{p.stkUretim}</>}
+                                                                  </span>
+                                                                )}
+                                                              </td>
                                                               <td style={{ padding: "3px 4px", textAlign: "center" }}>{p.short > 0 ? "🔴" : "✅"}</td>
                                                             </tr>
                                                             {/* Alt seviye parçalar */}
