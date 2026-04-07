@@ -9223,6 +9223,81 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         };
                       });
                     });
+
+                    // TEK SEFERLİK hesap: stockPool kümülatif tükenecek şekilde tüm containerlar+ürünler için prodParts hesapla
+                    const allProdData = {}; // containerId|pid → prodParts[]
+                    containers.forEach(c => {
+                      const cProductsLocal = Object.entries(c.products || {}).map(([pid, qty]) => ({
+                        pid: Number(pid), qty, product: pidToProduct[Number(pid)]
+                      })).filter(cp => cp.product);
+                      cProductsLocal.forEach(cp => {
+                        const key = `${c.id}|${cp.pid}`;
+                        const prodParts = [];
+                        const modelKey = bomMapping[cp.pid];
+                        const model = modelKey && bomModels ? bomModels[modelKey] : null;
+                        if (model?.parts) {
+                          const bomParts = model.parts;
+                          const calcDepth = (idx, memo) => {
+                            if (memo[idx] !== undefined) return memo[idx];
+                            const part = bomParts[idx];
+                            if (!part || part.parentIdx === null || part.parentIdx === undefined) { memo[idx] = 0; return 0; }
+                            const d = calcDepth(part.parentIdx, memo) + 1;
+                            memo[idx] = d;
+                            return d;
+                          };
+                          const depthMemo = {};
+                          bomParts.forEach((_, bi) => calcDepth(bi, depthMemo));
+                          const bomQtys = {};
+                          bomParts.forEach((bp, bi) => {
+                            if (bp.parentIdx === null || bp.parentIdx === undefined) {
+                              bomQtys[bi] = (bp.qty || 1) * cp.qty;
+                            } else {
+                              const parentQ = bomQtys[bp.parentIdx] || 0;
+                              if (parentQ === 0) { bomQtys[bi] = 0; return; }
+                              const parent = bomParts[bp.parentIdx];
+                              if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) { bomQtys[bi] = 0; return; }
+                              bomQtys[bi] = (bp.qty || 1) * parentQ;
+                            }
+                          });
+                          const sorted = bomParts.map((bp, bi) => ({ bp, bi, depth: depthMemo[bi] || 0 })).sort((a, b) => a.depth - b.depth);
+                          const partCovered = {};
+                          sorted.forEach(({ bp, bi, depth }) => {
+                            if (depth === 0) return;
+                            let needed = Math.ceil(bomQtys[bi] || 0);
+                            if (needed <= 0) return;
+                            const parent = bomParts[bp.parentIdx];
+                            if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+                              const parentBi = bp.parentIdx;
+                              const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
+                              const parentCov = partCovered[parentBi] || 0;
+                              if (parentCov >= parentNeeded) { bomQtys[bi] = 0; return; }
+                              const parentNet = parentNeeded - parentCov;
+                              bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
+                            }
+                            const finalNeeded = Math.ceil(bomQtys[bi] || 0);
+                            if (finalNeeded <= 0) return;
+                            const pool = stockPool[bp.stockCode];
+                            const avail = pool ? pool.avail : 0;
+                            const covered = Math.min(finalNeeded, avail);
+                            partCovered[bi] = covered;
+                            if (pool && covered > 0) pool.avail -= covered;
+                          });
+                          bomParts.forEach((bp, bi) => {
+                            if (bp.parentIdx === null || bp.parentIdx === undefined) return;
+                            const needed = Math.ceil(bomQtys[bi] || 0);
+                            if (needed <= 0) return;
+                            const covered = partCovered[bi] || 0;
+                            const short = needed - covered;
+                            const pool = stockPool[bp.stockCode];
+                            const wipInt = pool?.wipInt || 0;
+                            const wipFas = pool?.wipFas || 0;
+                            const stkUretim = pool?.stkUretim || 0;
+                            prodParts.push({ code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType, level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim });
+                          });
+                        }
+                        allProdData[key] = prodParts;
+                      });
+                    });
                     return (
                       <>
                       <PanelHeader icon="📦" title="Sevkiyat Bazlı İhtiyaç" count={containers.length} color="#059669" isOpen={actionPanel === "panel_shipReq"} onClick={() => setActionPanel(actionPanel === "panel_shipReq" ? null : "panel_shipReq")} badge={`${containerStats.filter(c => c.shortParts > 0).length} eksikli sevkiyat`} />
@@ -9251,101 +9326,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       const readyProducts = [];
                                       const shortProducts = [];
                                       cs.cProducts.forEach(cp => {
-                                        const prodParts = [];
-                                        // Doğrudan BOM'dan per-unit hesapla — oransal dağıtım yerine
-                                        const modelKey = bomMapping[cp.pid];
-                                        const model = modelKey && bomModels ? bomModels[modelKey] : null;
-                                        if (model?.parts) {
-                                          // BOM ağacını yürü, her parça için birim miktar × konteyner adedi
-                                          const bomParts = model.parts;
-                                          const bomQtys = {};
-                                          bomParts.forEach((bp, bi) => {
-                                            if (bp.parentIdx === null || bp.parentIdx === undefined) {
-                                              bomQtys[bi] = (bp.qty || 1) * cp.qty;
-                                            } else {
-                                              const parentQ = bomQtys[bp.parentIdx] || 0;
-                                              if (parentQ === 0) { bomQtys[bi] = 0; return; }
-                                              // Üst BUY/RAW → atla
-                                              const parent = bomParts[bp.parentIdx];
-                                              if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) { bomQtys[bi] = 0; return; }
-                                              // Üst MAKE — alt patlatma ama stok düşümü kümülatif (stockPool kullan)
-                                              // ÖNEMLI: Bu kontrol pre-calculate aşamasında yapılır, BOM yürüme sırasında
-                                              // burada basitçe alt seviyeyi her zaman yürütüp gerçek stok kontrolünü yan tarafta yaparız
-                                              bomQtys[bi] = (bp.qty || 1) * parentQ;
-                                            }
-                                          });
-                                          // BOM parçalarını seviye sırasıyla işle: parent depth'ten hesapla (bp.level olmayabilir)
-                                          const calcDepth = (idx, memo = {}) => {
-                                            if (memo[idx] !== undefined) return memo[idx];
-                                            const part = bomParts[idx];
-                                            if (!part || part.parentIdx === null || part.parentIdx === undefined) { memo[idx] = 0; return 0; }
-                                            const d = calcDepth(part.parentIdx, memo) + 1;
-                                            memo[idx] = d;
-                                            return d;
-                                          };
-                                          const depthMemo = {};
-                                          const sortedByLevel = bomParts.map((bp, bi) => ({ bp, bi, depth: calcDepth(bi, depthMemo) })).sort((a, b) => a.depth - b.depth);
-                                          const partCovered = {}; // bi → ne kadar karşılandı
-                                          sortedByLevel.forEach(({ bp, bi, depth }) => {
-                                            if (depth === 0) return; // root atla
-                                            const needed = Math.ceil(bomQtys[bi] || 0);
-                                            if (needed <= 0) return;
-                                            // Üst MAKE'in karşılanan kısmı varsa alt seviyede o kadar iptal
-                                            const parent = bomParts[bp.parentIdx];
-                                            if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
-                                              const parentBi = bp.parentIdx;
-                                              const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
-                                              const parentCov = partCovered[parentBi] || 0;
-                                              // Üst tamamen karşılandıysa bu parça gerekmez
-                                              if (parentCov >= parentNeeded) {
-                                                bomQtys[bi] = 0;
-                                                return;
-                                              }
-                                              // Üst kısmen karşılandıysa, kalan oran kadar bu parça lazım
-                                              const parentNet = parentNeeded - parentCov;
-                                              const newNeeded = Math.ceil((bp.qty || 1) * parentNet);
-                                              bomQtys[bi] = newNeeded;
-                                            }
-                                            const finalNeeded = Math.ceil(bomQtys[bi] || 0);
-                                            if (finalNeeded <= 0) return;
-                                            const pool = stockPool[bp.stockCode];
-                                            const avail = pool ? pool.avail : 0;
-                                            const covered = Math.min(finalNeeded, avail);
-                                            partCovered[bi] = covered;
-                                            if (pool && covered > 0) pool.avail -= covered;
-                                          });
-                                          // Şimdi gösterim için prodParts oluştur — sıfırlanmamış olanlar
-                                          bomParts.forEach((bp, bi) => {
-                                            if (bp.parentIdx === null || bp.parentIdx === undefined) return;
-                                            const needed = Math.ceil(bomQtys[bi] || 0);
-                                            if (needed <= 0) return;
-                                            const covered = partCovered[bi] || 0;
-                                            const short = needed - covered;
-                                            const pool = stockPool[bp.stockCode];
-                                            const wipInt = pool?.wipInt || 0;
-                                            const wipFas = pool?.wipFas || 0;
-                                            const stkUretim = pool?.stkUretim || 0;
-                                            prodParts.push({ code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType, level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim });
-                                          });
-                                        } else {
-                                          // BOM yoksa eski ratio yöntemine fallback
-                                          (explosionResult.parts || []).forEach(r => {
-                                            const src = (r.sources || []).find(s => s.pid === cp.pid);
-                                            if (!src) return;
-                                            const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
-                                            const needed = Math.ceil(src.qty / totalDemand * cp.qty);
-                                            if (needed <= 0) return;
-                                            const pool = stockPool[r.code];
-                                            const avail = pool ? pool.avail : 0;
-                                            const covered = Math.min(needed, avail);
-                                            const short = needed - covered;
-                                            if (pool && covered > 0) pool.avail -= covered;
-                                            const wipInt = pool?.wipInt || 0;
-                                            const wipFas = pool?.wipFas || 0;
-                                            const stkUretim = pool?.stkUretim || 0;
-                                            prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short, wipInt, wipFas, stkUretim });
-                                          });
-                                        }
+                                        const prodParts = allProdData[`${cs.id}|${cp.pid}`] || [];
                                         const prodShort = prodParts.filter(p => p.short > 0 && p.level === 1).length;
                                         const item = { cp, prodParts, prodShort };
                                         if (prodShort > 0) shortProducts.push(item); else readyProducts.push(item);
