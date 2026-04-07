@@ -9130,29 +9130,56 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         hasChildren: parts.some(ch => ch.parentIdx === parts.indexOf(p))
                       }));
                     };
-                    // Pre-calculate container stats
+                    // Pre-calculate container stats using BOM-direct (same logic as detail rendering)
                     const containerStats = containers.map(c => {
                       const cProducts = Object.entries(c.products || {}).map(([pid, qty]) => ({
                         pid: Number(pid), qty, product: pidToProduct[Number(pid)]
                       })).filter(cp => cp.product);
                       let totalParts = 0, shortParts = 0;
                       cProducts.forEach(cp => {
-                        (explosionResult.parts || []).forEach(r => {
-                          if (r.level > 1) return;
-                          const src = (r.sources || []).find(s => s.pid === cp.pid);
-                          if (!src) return;
-                          const totalDemand = unshippedDemand.byProduct[cp.pid]?.qty || 1;
-                          const needed = Math.ceil(src.qty * (cp.qty / totalDemand));
+                        const modelKey = bomMapping[cp.pid];
+                        const model = modelKey && bomModels ? bomModels[modelKey] : null;
+                        if (!model?.parts) return;
+                        const bomParts = model.parts;
+                        // Depth hesapla
+                        const calcDepth = (idx, memo) => {
+                          if (memo[idx] !== undefined) return memo[idx];
+                          const part = bomParts[idx];
+                          if (!part || part.parentIdx === null || part.parentIdx === undefined) { memo[idx] = 0; return 0; }
+                          const d = calcDepth(part.parentIdx, memo) + 1;
+                          memo[idx] = d;
+                          return d;
+                        };
+                        const depthMemo = {};
+                        bomParts.forEach((_, bi) => calcDepth(bi, depthMemo));
+                        // BomQtys hesapla
+                        const bomQtys = {};
+                        bomParts.forEach((bp, bi) => {
+                          if (bp.parentIdx === null || bp.parentIdx === undefined) {
+                            bomQtys[bi] = (bp.qty || 1) * cp.qty;
+                          } else {
+                            const parentQ = bomQtys[bp.parentIdx] || 0;
+                            if (parentQ === 0) { bomQtys[bi] = 0; return; }
+                            const parent = bomParts[bp.parentIdx];
+                            if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) { bomQtys[bi] = 0; return; }
+                            bomQtys[bi] = (bp.qty || 1) * parentQ;
+                          }
+                        });
+                        // Seviye sırasıyla işle
+                        const sorted = bomParts.map((bp, bi) => ({ bp, bi, depth: depthMemo[bi] || 0 })).sort((a, b) => a.depth - b.depth);
+                        const partCovered = {};
+                        sorted.forEach(({ bp, bi, depth }) => {
+                          if (depth === 0) return;
+                          if (depth !== 1) return; // sadece L1 say
+                          let needed = Math.ceil(bomQtys[bi] || 0);
                           if (needed <= 0) return;
                           totalParts++;
-                          const pool = stockPool[r.code];
+                          const pool = stockPool[bp.stockCode];
                           const avail = pool ? pool.avail : 0;
                           const covered = Math.min(needed, avail);
                           if (covered < needed) shortParts++;
-                          // Stok düş — sonraki konteyner azalmış stoğu görecek
-                          if (pool && covered > 0) {
-                            pool.avail -= covered;
-                          }
+                          partCovered[bi] = covered;
+                          if (pool && covered > 0) pool.avail -= covered;
                         });
                       });
                       const today = new Date(); const sd = new Date(c.date);
@@ -9266,7 +9293,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             const wipInt = pool?.wipInt || 0;
                                             const wipFas = pool?.wipFas || 0;
                                             const stkUretim = pool?.stkUretim || 0;
-                                            prodParts.push({ code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType, level: bp.level, needed, covered, short, wipInt, wipFas, stkUretim });
+                                            prodParts.push({ code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType, level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim });
                                           });
                                         } else {
                                           // BOM yoksa eski ratio yöntemine fallback
@@ -9287,7 +9314,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             prodParts.push({ code: r.code, name: r.name, supplyType: r.supplyType, level: r.level, needed, covered, short, wipInt, wipFas, stkUretim });
                                           });
                                         }
-                                        const prodShort = prodParts.filter(p => p.short > 0 && p.level <= 1).length;
+                                        const prodShort = prodParts.filter(p => p.short > 0 && p.level === 1).length;
                                         const item = { cp, prodParts, prodShort };
                                         if (prodShort > 0) shortProducts.push(item); else readyProducts.push(item);
                                       });
@@ -9311,8 +9338,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                             <div style={{ marginLeft: 16, marginTop: 2 }}>
                                               {/* L0/L1 parçalar — sadece eksik olanlar */}
                                               {(() => {
-                                                const l1Parts = prodParts.filter(p => p.level <= 1 && p.short > 0);
-                                                const l1Ready = prodParts.filter(p => p.level <= 1 && p.short <= 0).length;
+                                                const l1Parts = prodParts.filter(p => p.level === 1 && p.short > 0);
+                                                const l1Ready = prodParts.filter(p => p.level === 1 && p.short <= 0).length;
                                                 const deepParts = prodParts.filter(p => p.level > 1 && p.short > 0);
                                                 return (
                                                   <>
