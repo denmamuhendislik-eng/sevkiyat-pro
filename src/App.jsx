@@ -6640,6 +6640,96 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     return { allProdData, containerStats, partRealDeadlines };
   }, [explosionResult, unshippedDemand, bomModels, bomMapping, stockLookup, akibetLookup, products]);
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // BEKLEYEN FASON İŞLER — sade FASON parçalar için ayrı liste
+  // Bu memo `jobs` array'inden BAĞIMSIZ çalışır — calculateSchedule pure-fason
+  // parçaları skip ediyor (satır 5472), bu yüzden onları görmek için ayrı bir
+  // hesap gerekiyor. Hiçbir mevcut state/memo'ya dokunmaz, sadece okur.
+  // Çıktı: Geciken İşler panelinin altındaki "🔧 Bekleyen Fason İşler" panelini besler.
+  // ─────────────────────────────────────────────────────────────────────────
+  const bekleyenFasonIsler = useMemo(() => {
+    if (!explosionResult?.parts || !shipReqAnalysis?.partRealDeadlines || !bomModels || !workCenters) return [];
+    const partRealDeadlines = shipReqAnalysis.partRealDeadlines;
+    if (Object.keys(partRealDeadlines).length === 0) return [];
+
+    // Inline yardımcılar (calculateSchedule içindekilerle aynı semantik — render scope'unda yok)
+    const _dateStr = (d) => d.toISOString().split("T")[0];
+    const _addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+    const _isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+
+    // Inline bomLookup (calculateSchedule ve wipLoad içindekiler local scope, burada yok)
+    const bomLookup = {};
+    Object.entries(bomModels).forEach(([modelKey, model]) => {
+      (model?.parts || []).forEach(p => {
+        if (p.stockCode && !bomLookup[p.stockCode]) {
+          bomLookup[p.stockCode] = { part: p, modelKey };
+        }
+      });
+    });
+
+    const fasonDefs = workCenters.fason || {};
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const items = [];
+    explosionResult.parts.forEach(r => {
+      // Sadece pure FASON + net açık ihtiyacı olanlar
+      if (r.supplyType !== "FASON") return;
+      if (!(r.netQty > 0)) return;
+
+      const deadline = partRealDeadlines[r.code];
+      if (!deadline) return; // Deadline yoksa bu parça için sevkiyat baskısı yok
+
+      const bom = bomLookup[r.code];
+      if (!bom || !bom.part.operations || bom.part.operations.length === 0) return;
+
+      // Tüm fason op'larını topla (pure FASON parçada hepsi opCode >= 600 olmalı)
+      const fasonOps = bom.part.operations.map(op => {
+        const fa = fasonDefs[op.opCode] || {};
+        return {
+          opCode: op.opCode,
+          opName: op.opName,
+          leadTimeDays: fa.leadTimeDays || 14, // calculateSchedule satır 5487 ile aynı default
+          supplier: fa.supplier || ""
+        };
+      });
+      const totalLead = fasonOps.reduce((s, o) => s + o.leadTimeDays, 0);
+
+      // En geç başlama = deadline - totalLead (iş günü geri sayım)
+      let latestStart = new Date(deadline.dueDate);
+      let daysBack = totalLead;
+      while (daysBack > 0) {
+        latestStart = _addDays(latestStart, -1);
+        if (!_isWeekend(latestStart)) daysBack--;
+      }
+
+      // Slack = latestStart - today (iş günü)
+      let slack = 0;
+      let d = new Date(today);
+      if (d <= latestStart) {
+        while (d < latestStart) { d = _addDays(d, 1); if (!_isWeekend(d)) slack++; }
+      } else {
+        while (d > latestStart) { d = _addDays(d, -1); if (!_isWeekend(d)) slack--; }
+      }
+
+      items.push({
+        code: r.code,
+        name: r.name,
+        qty: r.netQty,
+        dueDate: deadline.dueDate,
+        duePid: deadline.duePid,
+        fasonOps,
+        totalLead,
+        latestStart: _dateStr(latestStart),
+        slackDays: slack
+      });
+    });
+
+    // Deadline ascending — en yakın deadline üstte
+    items.sort((a, b) => a.dueDate.localeCompare(b.dueDate));
+    return items;
+  }, [explosionResult, shipReqAnalysis, bomModels, workCenters]);
+
   // WIP yükü hesaplama: akibet operasyon adları → iş merkezi eşleşmesi (BOM bağımsız)
   const wipLoad = useMemo(() => {
     if (!akibet?.parts || !workCenters?.centers) return { byWC: {}, byMachine: {}, items: [], totalMin: 0, debug: { reason: "no data" } };
@@ -9113,6 +9203,56 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           </tr>
                         ))}</tbody>
                       </table>
+                    </div>
+                  )}
+
+                  {/* 1.5 Bekleyen Fason İşler — pure FASON parçalar (jobs array'inden bağımsız) */}
+                  <PanelHeader icon="🔧" title="Bekleyen Fason İşler" count={bekleyenFasonIsler.length} color="#0891B2" isOpen={actionPanel === "panel_fason"} onClick={() => setActionPanel(actionPanel === "panel_fason" ? null : "panel_fason")} badge="Sevkiyata kritik fason takibi" />
+                  {actionPanel === "panel_fason" && (
+                    <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#ECFEFF", borderRadius: 8, border: "1px solid #A5F3FC" }}>
+                      {bekleyenFasonIsler.length === 0 ? (
+                        <div style={{ padding: "12px 6px", fontSize: 11, color: "var(--color-text-tertiary)", textAlign: "center" }}>
+                          Bekleyen sade-fason iş yok. {!s ? "(Önce 🔥 MRP Hesaplama çalıştırın)" : ""}
+                        </div>
+                      ) : (
+                        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                          <thead><tr style={{ borderBottom: "1px solid #A5F3FC" }}>
+                            <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#0E7490" }}>#</th>
+                            <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#0E7490" }}>Parça</th>
+                            <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#0E7490" }}>Ürün Adı</th>
+                            <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#0E7490" }}>Adet</th>
+                            <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#0E7490" }}>Fason Op(lar)</th>
+                            <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#0E7490" }}>Toplam Lead</th>
+                            <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500, color: "#0E7490" }}>Sevkiyat</th>
+                            <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#0E7490" }}>Slack</th>
+                          </tr></thead>
+                          <tbody>{bekleyenFasonIsler.map((f, i) => {
+                            const isLate = f.slackDays != null && f.slackDays < 0;
+                            const isTight = f.slackDays != null && f.slackDays >= 0 && f.slackDays <= 5;
+                            const opTooltip = f.fasonOps.map(op => `${op.opCode} ${op.opName}${op.supplier ? ` → ${op.supplier}` : ""} (${op.leadTimeDays}g)`).join("\n");
+                            return (
+                              <tr key={f.code} style={{ borderTop: "0.5px solid #A5F3FC", background: isLate ? "#FEF2F2" : "transparent" }}>
+                                <td style={{ padding: "5px 6px", color: isLate ? "#991B1B" : "#0E7490" }}>{i + 1}</td>
+                                <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: isLate ? "#DC2626" : "#0891B2", fontWeight: 500 }}>{f.code}</td>
+                                <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</td>
+                                <td style={{ padding: "5px 6px", textAlign: "right" }}>{f.qty}ad</td>
+                                <td style={{ padding: "5px 6px", maxWidth: 220, fontSize: 9, lineHeight: 1.4 }} title={opTooltip}>
+                                  {f.fasonOps.map((op, k) => (
+                                    <div key={k} style={{ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                                      {op.opName} <span style={{ color: "var(--color-text-tertiary)" }}>({op.leadTimeDays}g)</span>
+                                    </div>
+                                  ))}
+                                </td>
+                                <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 500 }}>{f.totalLead}g</td>
+                                <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)" }}>{f.dueDate?.substring(5)}</td>
+                                <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700, color: isLate ? "#DC2626" : isTight ? "#D97706" : "#059669" }}>
+                                  {isLate ? "❌" : isTight ? "⚠" : "✓"} {f.slackDays}g
+                                </td>
+                              </tr>
+                            );
+                          })}</tbody>
+                        </table>
+                      )}
                     </div>
                   )}
 
