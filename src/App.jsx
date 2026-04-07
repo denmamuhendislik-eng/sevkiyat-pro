@@ -9368,6 +9368,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                           {/* Ürün parçaları — seviye bazlı */}
                                           {isProductOpen && prodParts.length > 0 && (
                                             <div style={{ marginLeft: 16, marginTop: 2 }}>
+                                              {/* DEBUG: tüm prodParts */}
+                                              <details style={{ fontSize: 8, color: "var(--color-text-tertiary)", marginBottom: 4 }}>
+                                                <summary style={{ cursor: "pointer" }}>🐞 Debug: tüm parçalar ({prodParts.length})</summary>
+                                                <div style={{ maxHeight: 200, overflowY: "auto", padding: 4, background: "#F3F4F6", fontFamily: "var(--font-mono)" }}>
+                                                  {prodParts.map((p, i) => (
+                                                    <div key={i}>L{p.level} | {p.code} | {p.supplyType} | İht:{p.needed} | Krş:{p.covered} | Ek:{p.short}</div>
+                                                  ))}
+                                                </div>
+                                              </details>
                                               {/* L0/L1 parçalar — sadece eksik olanlar */}
                                               {(() => {
                                                 const l1Parts = prodParts.filter(p => p.level === 1 && p.short > 0);
