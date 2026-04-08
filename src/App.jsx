@@ -167,6 +167,7 @@ export default function App() {
   const isAdmin = userRole === "admin";
   const isPacker = userRole === "packer";
   const isUretim = userRole === "uretim";
+  const isViewer = userRole === "viewer";
   const canPack = isAdmin || isPacker;
 
   // Auth listener
@@ -193,6 +194,13 @@ export default function App() {
   useEffect(() => {
     if (userRole === "operator") setPage("montaj");
   }, [userRole]);
+
+  // Görüntüleyici yalnız planning/dashboard/shipment görebilir — başka sayfadaysa planning'e yönlendir
+  useEffect(() => {
+    if (userRole === "viewer" && !["planning", "dashboard", "shipment"].includes(page)) {
+      setPage("planning");
+    }
+  }, [userRole, page]);
 
   // Listen to Firestore data changes
   useEffect(() => {
@@ -1749,7 +1757,11 @@ ${el.innerHTML}
           {sidebar&&<span style={{fontWeight:600,fontSize:14,whiteSpace:"nowrap"}}>Sevkiyat Pro</span>}
         </div>
         <div style={{flex:1,padding:"6px 0"}}>
-          {nav.filter(n=>n.id!=="mrp"||canSeeMRP).map(n=>(
+          {nav.filter(n => {
+            if (n.id === "mrp" && !canSeeMRP) return false;
+            if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
+            return true;
+          }).map(n=>(
             <div key={n.id} onClick={()=>setPage(n.id)} style={{display:"flex",alignItems:"center",gap:10,padding:sidebar?"9px 14px":"9px 14px",cursor:"pointer",background:page===n.id?"var(--color-background-info)":"transparent",fontSize:13,fontWeight:page===n.id?500:400,color:page===n.id?"var(--color-text-info)":"var(--color-text-secondary)",transition:"all 0.15s"}}>
               <span style={{fontSize:15,flexShrink:0}}>{n.icon}</span>
               {sidebar&&<span style={{whiteSpace:"nowrap"}}>{n.l}</span>}
