@@ -4796,43 +4796,88 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const parseStockReport = (workbook) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
-    const pNum = (v) => { if (v === "" || v === undefined || v === null) return 0; const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
+    const pNum = (v) => {
+      if (v === "" || v === undefined || v === null) return 0;
+      const s = String(v).trim(); if (!s) return 0;
+      const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
+      return isNaN(n) ? 0 : n;
+    };
+    const norm = (s) => String(s || "").replace(/[\n\r]/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
+
+    // Dinamik sütun tespiti — header satırını ilk 15 satırda ara
+    let cols = null;
+    let headerIdx = -1;
+    for (let i = 0; i < Math.min(15, rows.length); i++) {
+      const row = rows[i];
+      let codeCi = -1;
+      for (let ci = 0; ci < row.length; ci++) {
+        if (norm(row[ci]) === "stok kodu") { codeCi = ci; break; }
+      }
+      if (codeCi >= 0) {
+        headerIdx = i;
+        cols = { code: codeCi };
+        row.forEach((cell, ci) => {
+          const h = norm(cell);
+          if (!h) return;
+          if (h === "stok adı" || h === "stok adi") cols.name = ci;
+          else if (h === "yer adı" || h === "yer adi") cols.loc = ci;
+          else if (h === "miktar") cols.qty = ci;
+          else if (h === "br") cols.unit = ci;
+          else if (h === "lot no") cols.lot = ci;
+          else if (h === "operasyon adı" || h === "operasyon adi") cols.opName = ci;
+          else if (h === "oper.no" || h === "oper no") cols.opNo = ci;
+        });
+        break;
+      }
+    }
+    // Header bulunamadıysa veya kritik kolonlar eksikse boş döndür
+    if (!cols || cols.loc == null || cols.qty == null) {
+      return {
+        parts: [], totalCodes: 0, totalRows: 0,
+        categories: {
+          ambar: { count: 0, total: 0 }, uretim: { count: 0, total: 0 },
+          fason: { count: 0, total: 0 }, haric: { count: 0, total: 0 }
+        },
+        locations: [], fasonCompanies: []
+      };
+    }
+
     let currentGroup = "";
     const partsMap = {};
     const locSet = new Set();
     const fasonSet = new Set();
     let dataRows = 0;
 
-    for (let i = 0; i < rows.length; i++) {
-      const c0 = String(rows[i][0] || "").trim();
-      if (!c0) continue;
-      // Group header: "001        KESİCİ UÇ VE TAKIM"
-      if (/^\d{3}\s{2,}/.test(c0)) { currentGroup = c0.replace(/\s{2,}/g, " ").trim(); continue; }
-      // Skip non-data
-      if (c0 === "Stok Kodu" || c0.startsWith("DENMA") || c0.startsWith("Miktar") || c0.startsWith("Son Stok")) continue;
-      // Must look like a stock code
-      if (!c0.match(/^[\w\d]/)) continue;
+    for (let i = headerIdx + 1; i < rows.length; i++) {
+      const r = rows[i];
+      const code = String(r[cols.code] || "").trim();
+      if (!code) continue;
+      // Eski format grup başlığı: "001        KESİCİ UÇ VE TAKIM" — yeni mail formatında bu yok, korunsa da zarar yok
+      if (/^\d{3}\s{2,}/.test(code)) { currentGroup = code.replace(/\s{2,}/g, " ").trim(); continue; }
+      // Sayfalar arası tekrarlanan başlıklar ve footer atla
+      const codeNorm = norm(code);
+      if (codeNorm === "stok kodu" || codeNorm.startsWith("denma") || codeNorm.startsWith("son stok") || codeNorm.startsWith("miktar")) continue;
+      if (!code.match(/^[\w\d]/)) continue;
 
-      const name = String(rows[i][1] || "").trim();
-      const loc = String(rows[i][2] || "").trim();
-      const qty = pNum(rows[i][3]);
-      const unit = String(rows[i][4] || "").trim() || "AD";
-      const opName = String(rows[i][8] || "").trim() || null;
-      const opNo = String(rows[i][9] || "").trim() || null;
+      const name = cols.name != null ? String(r[cols.name] || "").trim() : "";
+      const loc = String(r[cols.loc] || "").trim();
+      const qty = pNum(r[cols.qty]);
+      const unit = (cols.unit != null ? String(r[cols.unit] || "").trim() : "") || "AD";
+      const opName = (cols.opName != null ? String(r[cols.opName] || "").trim() : "") || null;
+      const opNo = (cols.opNo != null ? String(r[cols.opNo] || "").trim() : "") || null;
 
-      if (!loc) continue; // skip if no location
+      if (!loc) continue;
       const cat = classifyLoc(loc);
       locSet.add(loc);
       if (cat === "fason") fasonSet.add(loc);
       dataRows++;
 
-      if (!partsMap[c0]) {
-        partsMap[c0] = { code: c0, name, unit, group: currentGroup, ambar: 0, uretim: 0, fason: 0, haric: 0, total: 0, locs: [] };
+      if (!partsMap[code]) {
+        partsMap[code] = { code, name, unit, group: currentGroup, ambar: 0, uretim: 0, fason: 0, haric: 0, total: 0, locs: [] };
       }
-      const p = partsMap[c0];
+      const p = partsMap[code];
       p[cat] += qty;
       p.total += qty;
-      // Keep location details (compact)
       p.locs.push({ l: loc, q: qty, ...(opName ? { o: opName } : {}), ...(opNo ? { n: opNo } : {}), c: cat });
     }
 
@@ -4860,7 +4905,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const wb = XLSX.read(new Uint8Array(e.target.result), { type: "array" });
         const result = parseStockReport(wb);
         if (result.totalCodes === 0) {
-          setStockImportResult({ error: "Stok verisi bulunamadı. Dosya formatını kontrol edin.\nBeklenen format: VIO Son Stok Raporu (Stok Kodu, Stok Adı, Yer Adı, Miktar sütunları)" });
+          setStockImportResult({ error: "Stok verisi bulunamadı. Beklenen format: VIO 'Son Stok Raporu Operasyon (Stok)' raporu — Stok Kodu, Stok Adı, Yer Adı, Miktar sütunlarını içeren başlık satırı bulunamadı." });
           setStockImporting(false);
           return;
         }
@@ -6357,101 +6402,194 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const onReqDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleReqImport(f); };
   const onReqFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleReqImport(f); };
 
-  // ==================== AKİBET (İŞ EMRİ DURUM) EXCEL PARSER ====================
+  // ==================== AKİBET (BEKLEYEN OPERASYONLAR ÜRÜNLÜ) EXCEL PARSER ====================
+  // VIO yeni rapor: "Bekleyen Operasyonlar (Ürünlü)" — blok bazlı yapı:
+  //   [Ürün] [stokKodu] [stokAdı] ...        ← ürün başlığı
+  //   [Emir No] [Emir Tarihi] [...] ...      ← sütun başlığı (her ürün için tekrar)
+  //   <data row> <data row> ...              ← sayacı sırasına göre op satırları
+  //   <subtotal row>                          ← atlanır
+  // Cancelled-op detect: üretilen=0 ve sonraki bir op'un üretilen>0 ise → iptal kabul.
   const parseAkibetExcel = (workbook) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-    // Find header row (Stok Kodu + Emir No)
-    let headerIdx = -1;
-    for (let i = 0; i < Math.min(10, rows.length); i++) {
-      const c0 = String(rows[i][0] || "").trim();
-      if (c0 === "Stok Kodu" || c0.includes("Stok Kod")) { headerIdx = i; break; }
-    }
-    if (headerIdx < 0) return null;
-
-    const headerCells = rows[headerIdx].map(c => String(c || "").trim());
-
-    // Detect fixed columns
-    const colCode = 0, colName = 1, colUnit = 2, colEmirNo = 3, colEmirQty = 4;
-
-    // Detect operation column pairs: "XXX Ger.Miktar" + "XXX İşlem Mik."
-    const opCols = [];
-    for (let ci = 5; ci < headerCells.length; ci++) {
-      const h = headerCells[ci];
-      if (h.includes("Ger.Miktar")) {
-        const opName = h.replace("Ger.Miktar", "").trim();
-        const isFason = opName.toUpperCase().includes("FASON");
-        opCols.push({ name: opName, isFason, gerCol: ci, islCol: ci + 1 });
-      }
-    }
-
     const pNum = (v) => {
       if (v === "" || v === undefined || v === null) return 0;
-      const n = parseFloat(String(v).replace(",", "."));
+      const s = String(v).trim();
+      if (!s) return 0;
+      // Türkçe sayı formatı: "1.234,56" → "1234.56". Veri satırlarında genelde tamsayı.
+      const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
       return isNaN(n) ? 0 : n;
     };
 
-    // Parse rows → aggregate per stockCode
-    const partsMap = {}; // stockCode → { name, unit, orders[], internalRemaining, fasonRemaining, totalQty, opDetails[] }
+    const norm = (s) => String(s || "").replace(/[\n\r]/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
 
-    for (let i = headerIdx + 1; i < rows.length; i++) {
+    // Sütun isimlerinden indeks haritası çıkar — başlıklar `\n` içerebilir, varyantlar olabilir.
+    const findHeaderColumns = (row) => {
+      const cols = {};
+      row.forEach((cell, ci) => {
+        const h = norm(cell);
+        if (!h) return;
+        if (h === "emir no") cols.emirNo = ci;
+        else if (h.includes("emir tarihi")) cols.emirTarihi = ci;
+        else if (h === "emir miktarı" || h === "emir miktari") cols.emirMiktari = ci;
+        else if (h.includes("operasyon emir sayacı") || h.includes("operasyon emir sayaci")) cols.sayaci = ci;
+        else if (h.includes("üretilen miktar") || h.includes("uretilen miktar")) cols.uretilen = ci;
+        else if (h.includes("emir kalan miktarı") || h.includes("emir kalan miktari")) cols.kalan = ci;
+        else if (h === "oper.no" || h === "oper no") cols.opNo = ci;
+        else if (h === "operasyon adı" || h === "operasyon adi") cols.opName = ci;
+        else if (h.includes("oper.baş") || h.includes("oper bas")) cols.opBasTarihi = ci;
+        else if (h === "iş mrk" || h === "is mrk") cols.isMrk = ci;
+      });
+      return cols;
+    };
+
+    // Walk blokları — state: current product + current column map
+    const partsMap = {};
+    let currentCode = "", currentName = "", currentUnit = "AD";
+    let currentCols = null;
+
+    for (let i = 0; i < rows.length; i++) {
       const r = rows[i];
-      const code = String(r[colCode] || "").trim();
-      if (!code || code === "Stok Kodu") continue;
+      const c0 = String(r[0] || "").trim();
 
-      const name = String(r[colName] || "").trim();
-      const unit = String(r[colUnit] || "").trim() || "AD";
-      const emirNo = String(r[colEmirNo] || "").trim();
-      const emirQty = pNum(r[colEmirQty]);
-
-      if (!partsMap[code]) {
-        partsMap[code] = { name, unit, orders: [], totalQty: 0, internalRemaining: 0, fasonRemaining: 0, opDetails: [] };
-      }
-      const p = partsMap[code];
-      p.totalQty += emirQty;
-
-      let orderIntRem = 0, orderFasRem = 0;
-      const orderOps = [];
-
-      for (const op of opCols) {
-        const ger = pNum(r[op.gerCol]);
-        const isl = pNum(r[op.islCol]);
-        if (ger === 0 && isl === 0) continue;
-        // Ger.Miktar = gerçekleşen (tamamlanan), İşlem Mik. = işlenebilir (bekleyen)
-        // Kalan = işlenebilir - gerçekleşen
-        const remaining = Math.max(0, isl - ger);
-        const completed = ger;
-        orderOps.push({ name: op.name, isFason: op.isFason, ger, isl, remaining });
-        if (op.isFason) {
-          orderFasRem = Math.max(orderFasRem, remaining);
-        } else {
-          orderIntRem = Math.max(orderIntRem, remaining);
-        }
+      // Ürün başlığı: [Ürün] [kod] _ _ [ad] _ _ _ _ _ [birim]
+      if (c0 === "Ürün" || c0 === "Urun") {
+        currentCode = String(r[1] || "").trim();
+        currentName = String(r[4] || "").trim();
+        currentUnit = String(r[10] || "").trim() || "AD";
+        currentCols = null; // sonraki "Emir No" satırıyla yenilenecek
+        continue;
       }
 
-      p.orders.push({ emirNo, qty: emirQty, intRem: orderIntRem, fasRem: orderFasRem, ops: orderOps });
-      p.internalRemaining += orderIntRem;
-      p.fasonRemaining += orderFasRem;
+      // Sütun başlığı satırı (her ürün bloğunda tekrarlanıyor)
+      if (c0 === "Emir No") {
+        currentCols = findHeaderColumns(r);
+        continue;
+      }
+
+      // Henüz ürün bağlamı yoksa atla
+      if (!currentCode || !currentCols) continue;
+
+      // Veri satırı: c0 sayısal Emir No olmalı. Alt-toplam ve rapor footer'larında c0 boş.
+      if (!c0 || !/^\d+$/.test(c0)) continue;
+
+      const cols = currentCols;
+      const emirNo = c0;
+      const emirQty = pNum(r[cols.emirMiktari]);
+      const sayaci = pNum(r[cols.sayaci]);
+      const uretilen = pNum(r[cols.uretilen]);
+      const kalan = pNum(r[cols.kalan]);
+      const opNo = String(r[cols.opNo] || "").trim();
+      const opName = String(r[cols.opName] || "").trim();
+      const isMrk = cols.isMrk != null ? String(r[cols.isMrk] || "").trim() : "";
+      if (!opName) continue;
+      const isFason = opName.toUpperCase().includes("FASON");
+
+      if (!partsMap[currentCode]) {
+        partsMap[currentCode] = {
+          code: currentCode, name: currentName, unit: currentUnit,
+          ordersMap: {}
+        };
+      }
+      const part = partsMap[currentCode];
+      if (!part.ordersMap[emirNo]) {
+        part.ordersMap[emirNo] = { emirNo, qty: emirQty, opsRaw: [] };
+      }
+      part.ordersMap[emirNo].opsRaw.push({
+        sayaci, uretilen, kalan, opNo, opName, isMrk, isFason
+      });
     }
 
-    // Build summary
-    const parts = Object.entries(partsMap).map(([code, p]) => ({
-      code, name: p.name, unit: p.unit,
-      totalQty: p.totalQty,
-      internalRemaining: p.internalRemaining,
-      fasonRemaining: p.fasonRemaining,
-      orderCount: p.orders.length,
-      orders: p.orders
-    }));
+    // İkinci geçiş: cancelled op tespiti + agregasyon
+    const anomalies = [];
+    const parts = [];
+
+    Object.values(partsMap).forEach(part => {
+      const orders = [];
+      let internalRemaining = 0, fasonRemaining = 0, totalQty = 0;
+
+      Object.values(part.ordersMap).forEach(order => {
+        // Sayacıya göre sırala (zaten sıralı geliyor olmalı, garanti olsun)
+        const opsSorted = [...order.opsRaw].sort((a, b) => a.sayaci - b.sayaci);
+
+        // Cancelled op tespiti: üretilen=0 VE sonraki bir op'un üretilen>0
+        // (üretim sıralı: bir op tamamlanmadan sonraki op üretemez. İhlali iptal işareti.)
+        const cancelledIdxs = new Set();
+        for (let i2 = 0; i2 < opsSorted.length; i2++) {
+          if (opsSorted[i2].uretilen === 0) {
+            for (let j = i2 + 1; j < opsSorted.length; j++) {
+              if (opsSorted[j].uretilen > 0) {
+                cancelledIdxs.add(i2);
+                break;
+              }
+            }
+          }
+        }
+
+        if (cancelledIdxs.size > 0) {
+          anomalies.push({
+            code: part.code, name: part.name, emirNo: order.emirNo,
+            cancelledOps: [...cancelledIdxs].sort((a, b) => a - b).map(idx => opsSorted[idx].opName)
+          });
+        }
+
+        // Final ops listesi — cancelled op'ların remaining'i 0'lanır → wipLoad otomatik atlar
+        const ops = opsSorted.map((op, idx) => {
+          const cancelled = cancelledIdxs.has(idx);
+          return {
+            name: op.opName,
+            isFason: op.isFason,
+            remaining: cancelled ? 0 : op.kalan,
+            opCode: op.opNo, wcCode: op.isMrk,
+            sayaci: op.sayaci, uretilen: op.uretilen,
+            cancelled
+          };
+        });
+
+        // Order-level intRem/fasRem — sadece geçerli (cancelled olmayan) op'lardan
+        let orderIntRem = 0, orderFasRem = 0;
+        ops.forEach(op => {
+          if (op.cancelled) return;
+          if (op.isFason) orderFasRem = Math.max(orderFasRem, op.remaining);
+          else orderIntRem = Math.max(orderIntRem, op.remaining);
+        });
+
+        orders.push({
+          emirNo: order.emirNo, qty: order.qty,
+          intRem: orderIntRem, fasRem: orderFasRem,
+          ops
+        });
+        totalQty += order.qty;
+        internalRemaining += orderIntRem;
+        fasonRemaining += orderFasRem;
+      });
+
+      parts.push({
+        code: part.code, name: part.name, unit: part.unit,
+        totalQty, internalRemaining, fasonRemaining,
+        orderCount: orders.length,
+        orders
+      });
+    });
 
     const totalParts = parts.length;
     const withInternal = parts.filter(p => p.internalRemaining > 0).length;
     const withFason = parts.filter(p => p.fasonRemaining > 0).length;
 
+    // Eski API uyumu: opColumns array'i (length toast'ta gösteriliyor)
+    const uniqueOpNames = new Set();
+    parts.forEach(p => p.orders.forEach(o => o.ops.forEach(op => {
+      if (!op.cancelled) uniqueOpNames.add(op.name);
+    })));
+    const opColumns = [...uniqueOpNames].map(name => ({
+      name, isFason: name.toUpperCase().includes("FASON")
+    }));
+
     return {
       parts, totalParts, withInternal, withFason,
-      opColumns: opCols.map(o => ({ name: o.name, isFason: o.isFason })),
+      opColumns,
+      anomalies,
       importedAt: new Date().toISOString()
     };
   };
@@ -6466,7 +6604,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const wb = XLSX.read(e.target.result, { type: "array" });
         result = parseAkibetExcel(wb);
         if (!result || result.totalParts === 0) {
-          setAkibetImportResult({ error: "İş emri verisi bulunamadı. VIO Emir Akibet Raporu formatını kontrol edin." });
+          setAkibetImportResult({ error: "İş emri verisi bulunamadı. Beklenen format: VIO 'Bekleyen Operasyonlar (Ürünlü)' raporu (Ürün/Emir No bloklu yapı)." });
           setAkibetImporting(false);
           return;
         }
@@ -6480,7 +6618,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         setAkibetImportResult({
           success: true, totalParts: result.totalParts,
           withInternal: result.withInternal, withFason: result.withFason,
-          opColumns: result.opColumns.length
+          opColumns: result.opColumns.length,
+          anomalies: result.anomalies || []
         });
       } catch (err) {
         setAkibetImportResult({ error: "Firestore kayıt hatası: " + err.message });
@@ -7036,41 +7175,82 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-    const pNum = (v) => { if (v === "" || v === undefined || v === null) return 0; const n = parseFloat(String(v).replace(",", ".")); return isNaN(n) ? 0 : n; };
+    const pNum = (v) => {
+      if (v === "" || v === undefined || v === null) return 0;
+      const s = String(v).trim(); if (!s) return 0;
+      const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
+      return isNaN(n) ? 0 : n;
+    };
+    const norm = (s) => String(s || "").replace(/[\n\r]/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
+    // VIO mail format tarih: noktasız "DDMMYYYY" veya "DMMYYYY" → "DD.MM.YYYY"
+    const fmtVioDate = (v) => {
+      const s = String(v || "").trim();
+      if (!/^\d{7,8}$/.test(s)) return s;
+      const year = s.slice(-4);
+      const month = s.slice(-6, -4);
+      const day = s.slice(0, -6).padStart(2, "0");
+      return `${day}.${month}.${year}`;
+    };
+
+    // Sütun başlığı satırından sütun map'i çıkar (her sipariş bloğunda tekrarlanabilir)
+    const findCols = (row) => {
+      const cols = {};
+      row.forEach((cell, ci) => {
+        const h = norm(cell);
+        if (!h) return;
+        if (h === "stok kodu") cols.code = ci;
+        else if (h === "stok adı" || h === "stok adi") cols.name = ci;
+        else if (h === "teslim tarihi") cols.teslim = ci;
+        else if (h === "br") cols.unit = ci;
+        else if (h === "orijinal miktar" || h === "orjinal miktar") cols.original = ci;
+        else if (h === "sevk edilen miktar" || h === "sevkedilen miktar") cols.shipped = ci;
+        else if (h === "kalan miktar") cols.remaining = ci;
+      });
+      return cols;
+    };
 
     let currentOrder = "", currentSupplier = "", currentDate = "";
+    let currentCols = null;
     const items = [];
 
     for (let i = 0; i < rows.length; i++) {
-      const c0 = String(rows[i][0] || "").trim();
-
-      // Order header: "No  XXX  Tarih  DD.MM.YYYY"
-      const orderMatch = c0.match(/^No\s+(\S+)\s+Tarih\s+(.+)/);
-      if (orderMatch) {
-        currentOrder = orderMatch[1].trim();
-        currentDate = orderMatch[2].trim();
-        continue;
-      }
-      // Supplier: "Müşteri  CODE  NAME"
-      const supMatch = c0.match(/^Müşteri\s+\S+\s+(.*)/);
-      if (supMatch) {
-        currentSupplier = supMatch[1].trim().replace(/\s{2,}/g, " ");
-        continue;
-      }
-      // Skip non-data rows
-      if (c0 === "Stok Kodu" || c0 === "Nakliye" || !c0 || c0.startsWith("DENMA") || c0.startsWith("Bekleme") || c0.startsWith("Stok/") || c0.startsWith("Onay") || c0.startsWith("Rapor") || /^\s/.test(c0)) continue;
-
-      // Data row
       const r = rows[i];
-      const code = c0;
-      const name = String(r[1] || "").trim();
-      const teslim = String(r[2] || "").trim().substring(0, 10);
-      const unit = String(r[3] || "").trim() || "AD";
-      const original = pNum(r[4]);
-      const shipped = pNum(r[5]);
-      const remaining = pNum(r[6]);
+      const c0 = String(r[0] || "").trim();
 
-      if ((original > 0 || remaining > 0) && code.match(/^[\d\w]/)) {
+      // Sipariş başlık satırı: c0 = "No"
+      // Yapı: [No, siparişNo, Tarih, _, tarih, Müşteri, müşteriKodu, müşteriAdı, ...]
+      if (c0 === "No") {
+        currentOrder = String(r[1] || "").trim();
+        currentDate = fmtVioDate(r[4]);
+        currentSupplier = String(r[7] || "").trim().replace(/\s{2,}/g, " ");
+        currentCols = null; // sonraki "Stok Kodu" satırıyla yenilenir
+        continue;
+      }
+
+      // Sütun başlığı satırı (her sipariş bloğunda tekrarlanır)
+      if (norm(c0) === "stok kodu") {
+        currentCols = findCols(r);
+        continue;
+      }
+
+      if (!currentCols) continue;
+
+      // Veri satırı kontrolü
+      if (!c0 || !c0.match(/^[\w\d]/)) continue;
+      const cn = norm(c0);
+      if (cn === "no" || cn === "müşteri" || cn === "musteri" || cn === "stok kodu" || cn === "nakliye") continue;
+      if (cn.startsWith("denma") || cn.startsWith("bekleme") || cn.startsWith("rapor") || cn.startsWith("onay") || cn.startsWith("stok/")) continue;
+
+      const cols = currentCols;
+      const code = c0;
+      const name = cols.name != null ? String(r[cols.name] || "").trim() : "";
+      const teslim = cols.teslim != null ? fmtVioDate(r[cols.teslim]) : "";
+      const unit = (cols.unit != null ? String(r[cols.unit] || "").trim() : "") || "AD";
+      const original = pNum(r[cols.original]);
+      const shipped = pNum(r[cols.shipped]);
+      const remaining = pNum(r[cols.remaining]);
+
+      if (original > 0 || remaining > 0) {
         items.push({ code, name, unit, order: currentOrder, supplier: currentSupplier, date: currentDate, teslim, original, shipped, remaining });
       }
     }
@@ -7089,7 +7269,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     });
 
     const parts = Object.values(partsMap);
-    const supplierSet = new Set(items.map(i => i.supplier));
+    const supplierSet = new Set(items.map(i => i.supplier).filter(Boolean));
 
     return {
       parts, totalParts: parts.length, totalItems: items.length,
@@ -7109,7 +7289,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const wb = XLSX.read(e.target.result, { type: "array" });
         result = parsePurchaseExcel(wb);
         if (!result || result.totalParts === 0) {
-          setPurchImportResult({ error: "Sipariş verisi bulunamadı. VIO Sipariş Kontrol Listesi formatını kontrol edin." });
+          setPurchImportResult({ error: "Sipariş verisi bulunamadı. Beklenen format: VIO 'Sipariş Kontrol Listesi (Belge No)' raporu (No/Müşteri/Stok Kodu bloklu yapı)." });
           setPurchImporting(false);
           return;
         }
@@ -7714,11 +7894,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             loaded: !!stock, date: stock?.importedAt, dep: "Günlük güncelle",
             stats: stock ? `${stockCount} kalem · ${stock.categories?.ambar?.count || 0} ambar` : null,
             daily: true, handler: handleStockImport, accept: ".xlsx,.xls" },
-          { id: "akibet", title: "Emir Akibet Raporu", icon: "🔄", order: "4",
+          { id: "akibet", title: "Bekleyen Operasyonlar (Ürünlü)", icon: "🔄", order: "4",
             loaded: !!akibet, date: akibet?.importedAt, dep: "Günlük güncelle",
             stats: akibet ? `${akibet.totalParts} parça · ${akibet.withInternal} iç · ${akibet.withFason} fason` : null,
             daily: true, handler: handleAkibetImport, accept: ".xlsx,.xls" },
-          { id: "purch", title: "Açık Sipariş Raporu", icon: "🛒", order: "5",
+          { id: "purch", title: "Sipariş Kontrol Listesi (Belge No)", icon: "🛒", order: "5",
             loaded: !!purchase, date: purchase?.importedAt, dep: "Günlük güncelle",
             stats: purchase ? `${purchase.totalParts} parça · ${purchase.supplierCount} tedarikçi` : null,
             daily: true, handler: handlePurchaseImport, accept: ".xlsx,.xls" },
@@ -8580,6 +8760,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           {akibetImportResult && akibetImportResult.success && (
             <div style={{ padding: 10, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
               ✓ Akibet: {akibetImportResult.totalParts} parça · {akibetImportResult.withInternal} üretimde · {akibetImportResult.withFason} fasonda · {akibetImportResult.opColumns} operasyon tipi
+            </div>
+          )}
+          {akibetImportResult && akibetImportResult.success && akibetImportResult.anomalies && akibetImportResult.anomalies.length > 0 && (
+            <div style={{ padding: 10, background: "#FEF3C7", border: "1px solid #F59E0B", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "#92400E" }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>
+                🔄 {akibetImportResult.anomalies.length} emirde manuel rota değişikliği tespit edildi
+              </div>
+              <div style={{ fontSize: 11, marginBottom: 6, color: "#78350F" }}>
+                Bu emirlerde üretilen=0 olan ama sonradan başka bir op'un üretildiği operasyonlar iptal kabul edildi ve kalan hesabına dahil edilmedi. Detayları VIO'da doğrulamanız önerilir.
+              </div>
+              <div style={{ maxHeight: 120, overflowY: "auto", fontSize: 11, fontFamily: "var(--font-mono)" }}>
+                {akibetImportResult.anomalies.map((a, i) => (
+                  <div key={i} style={{ padding: "3px 0", borderTop: i > 0 ? "0.5px solid #FCD34D" : "none" }}>
+                    <b>{a.code}</b> {a.name?.substring(0, 35)} · emir {a.emirNo} →{" "}
+                    <span style={{ color: "#B91C1C" }}>iptal: {a.cancelledOps.join(", ")}</span>
+                  </div>
+                ))}
+              </div>
             </div>
           )}
 
