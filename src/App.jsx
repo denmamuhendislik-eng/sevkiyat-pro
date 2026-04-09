@@ -637,7 +637,30 @@ export default function App() {
           }
         }
       }
-      setImportData({matched,unmatched});
+      // combRules cascade preview — her matched item için bağlı child ürünleri topla.
+      // executeImport zaten bunları otomatik ekler; burada UI'da görünür hale getiriyoruz.
+      // Aynı child birden çok parent'tan tetiklenebilir → miktarları topla, parent listesini birleştir.
+      const cascadeMap = {}; // childPid → { pid, qty, parents: [{pid, name, qty}] }
+      matched.forEach(m => {
+        combRules.filter(r => r.parent === m.pid).forEach(rule => {
+          rule.children.forEach(childId => {
+            if (!cascadeMap[childId]) {
+              const childP = products.find(pr => pr.id === childId);
+              cascadeMap[childId] = {
+                pid: childId,
+                name: childP?.nameTR || `#${childId}`,
+                code: childP?.vioCode || VIO_CODES[childId] || "—",
+                qty: 0,
+                parents: []
+              };
+            }
+            cascadeMap[childId].qty += m.qty;
+            cascadeMap[childId].parents.push({ pid: m.pid, name: m.name, qty: m.qty });
+          });
+        });
+      });
+      const cascadeItems = Object.values(cascadeMap);
+      setImportData({matched,unmatched,cascadeItems});
       setImportNewProducts(unmatched.map(u=>({...u})));
     };
     reader.readAsArrayBuffer(file);
@@ -2134,6 +2157,43 @@ ${el.innerHTML}
                 </table>:<div style={{color:"var(--color-text-tertiary)",fontSize:11}}>Eşleşen ürün yok</div>}
               </div>
 
+              {/* Cascade (combRules) Preview — otomatik bağlı ürünler */}
+              {importData.cascadeItems && importData.cascadeItems.length > 0 && <div style={{marginBottom:16}}>
+                <h4 style={{fontSize:14,fontWeight:600,marginBottom:6,color:"#2563EB"}}>
+                  🔗 Otomatik Eklenecek Bağlı Ürünler ({importData.cascadeItems.length})
+                </h4>
+                <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:8}}>
+                  Aşağıdaki ürünler combRules tanımına göre yukarıdaki ürünlere bağlı; "Aktar" dediğinde otomatik aynı miktarda eklenecek.
+                </div>
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                  <thead><tr style={{borderBottom:"2px solid var(--color-border-tertiary)"}}>
+                    <th style={{textAlign:"left",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>VIO Kodu</th>
+                    <th style={{textAlign:"left",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Bağlı Ürün</th>
+                    <th style={{textAlign:"left",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Tetikleyen</th>
+                    <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Eklenecek</th>
+                    <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Mevcut</th>
+                    <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Toplam</th>
+                  </tr></thead>
+                  <tbody>
+                    {importData.cascadeItems.map((c,i)=>{
+                      const existing = (yearsData[importYear]?.orders||{})[c.pid] || 0;
+                      return <tr key={i} style={{borderBottom:"1px solid var(--color-border-tertiary)",background:"rgba(37,99,235,0.04)"}}>
+                        <td style={{padding:"5px 8px",fontFamily:"monospace",fontSize:10}}>{c.code}</td>
+                        <td style={{padding:"5px 8px"}}>{c.name}</td>
+                        <td style={{padding:"5px 8px",fontSize:10,color:"var(--color-text-secondary)"}}>
+                          {c.parents.map((pp,pi) => (
+                            <div key={pi}>↳ {pp.name} ({pp.qty}ad)</div>
+                          ))}
+                        </td>
+                        <td style={{textAlign:"right",padding:"5px 8px",fontWeight:600,color:"#2563EB"}}>+{c.qty}</td>
+                        <td style={{textAlign:"right",padding:"5px 8px",color:"var(--color-text-tertiary)"}}>{existing}</td>
+                        <td style={{textAlign:"right",padding:"5px 8px",fontWeight:600,color:"#1D9E75"}}>{existing+c.qty}</td>
+                      </tr>;
+                    })}
+                  </tbody>
+                </table>
+              </div>}
+
               {/* Unmatched Products */}
               {importData.unmatched.length>0&&<div style={{marginBottom:16}}>
                 <h4 style={{fontSize:14,fontWeight:600,marginBottom:8,color:"#BA7517"}}>⚠ Tanınmayan ürünler ({importData.unmatched.length})</h4>
@@ -2168,7 +2228,9 @@ ${el.innerHTML}
               {/* Import Button */}
               <div style={{display:"flex",gap:10,alignItems:"center",padding:14,borderRadius:10,background:"var(--color-background-secondary)",marginTop:16}}>
                 <div style={{flex:1,fontSize:12}}>
-                  <b>{importData.matched.length}</b> eşleşen ürün{importNewProducts.filter(np=>np.approved).length>0&&` + ${importNewProducts.filter(np=>np.approved).length} yeni ürün`} <b>{importYear}</b> yılına eklenecek.
+                  <b>{importData.matched.length}</b> eşleşen ürün
+                  {importData.cascadeItems && importData.cascadeItems.length > 0 && <> + <b style={{color:"#2563EB"}}>{importData.cascadeItems.length}</b> bağlı ürün</>}
+                  {importNewProducts.filter(np=>np.approved).length>0&&` + ${importNewProducts.filter(np=>np.approved).length} yeni ürün`} <b>{importYear}</b> yılına eklenecek.
                 </div>
                 <button onClick={()=>{setImportData(null);setImportNewProducts([]);}} style={{...bS,padding:"8px 16px",fontSize:12}}>İptal</button>
                 <button onClick={executeImport} style={{...bP,padding:"8px 20px",fontSize:12}}>Siparişleri Aktar</button>
