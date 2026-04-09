@@ -672,6 +672,78 @@ export default function App() {
     e.target.value="";
   };
 
+  const exportImportPreview = () => {
+    if (!importData) return;
+    const today = new Date().toLocaleDateString("tr-TR");
+    const yearOrders = yearsData[importYear]?.orders || {};
+
+    // Header bilgi satırları
+    const headerRows = [
+      ["VIO Import Önizleme — Birleştirilmiş Liste"],
+      [`Tarih: ${today}`],
+      [`Hedef yıl: ${importYear}`],
+      [`Doğrudan eşleşen: ${importData.matched.length} ürün`],
+      [`Otomatik bağlı (combRules): ${importData.cascadeItems?.length || 0} ürün`],
+      [`Toplam aktarılacak: ${importData.matched.length + (importData.cascadeItems?.length || 0)} ürün`],
+      []
+    ];
+
+    // Sütun başlıkları
+    const colHeaders = ["VIO Kodu", "Ürün Adı", "Eşleşme Tipi", "Tetikleyen / Not", "Eklenecek Adet", "Mevcut", "Toplam"];
+
+    // Doğrudan eşleşen satırlar
+    const matchedRows = importData.matched.map(m => {
+      const existing = yearOrders[m.pid] || 0;
+      const isNameMatch = m.matchType === "name";
+      return [
+        m.code,
+        m.name,
+        isNameMatch ? "Doğrudan (İsim eşleşmesi)" : "Doğrudan (Kod eşleşmesi)",
+        isNameMatch ? `⚠ Beklenen kod: ${m.expectedCode || "?"}` : "",
+        m.qty,
+        existing,
+        existing + m.qty
+      ];
+    });
+
+    // Bağlı (cascade) satırlar
+    const cascadeRows = (importData.cascadeItems || []).map(c => {
+      const existing = yearOrders[c.pid] || 0;
+      const parentList = c.parents.map(p => `${p.name} (${p.qty}ad)`).join(" + ");
+      return [
+        c.code,
+        c.name,
+        "Bağlı (combRules)",
+        `↳ ${parentList}`,
+        c.qty,
+        existing,
+        existing + c.qty
+      ];
+    });
+
+    // Toplam satırı
+    const totalQty = importData.matched.reduce((s, m) => s + m.qty, 0)
+      + (importData.cascadeItems || []).reduce((s, c) => s + c.qty, 0);
+    const totalRow = ["", "TOPLAM", "", `${importData.matched.length + (importData.cascadeItems?.length || 0)} ürün`, totalQty, "", ""];
+
+    const allRows = [
+      ...headerRows,
+      colHeaders,
+      ...matchedRows,
+      ...(cascadeRows.length > 0 ? [["— Otomatik Bağlı Ürünler (combRules) —"]] : []),
+      ...cascadeRows,
+      [],
+      totalRow
+    ];
+
+    const ws = XLSX.utils.aoa_to_sheet(allRows);
+    ws["!cols"] = [{wch:14}, {wch:45}, {wch:26}, {wch:40}, {wch:14}, {wch:10}, {wch:10}];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "VIO Import");
+    const dateStr = today.replace(/\./g, "");
+    XLSX.writeFile(wb, `VIO_Import_Onizleme_${importYear}_${dateStr}.xlsx`);
+  };
+
   const executeImport = () => {
     if(!importData||!allowedYears.includes(importYear)) return;
     setYearsData(prev=>{
@@ -2232,6 +2304,7 @@ ${el.innerHTML}
                   {importData.cascadeItems && importData.cascadeItems.length > 0 && <> + <b style={{color:"#2563EB"}}>{importData.cascadeItems.length}</b> bağlı ürün</>}
                   {importNewProducts.filter(np=>np.approved).length>0&&` + ${importNewProducts.filter(np=>np.approved).length} yeni ürün`} <b>{importYear}</b> yılına eklenecek.
                 </div>
+                <button onClick={exportImportPreview} style={{...bS,padding:"8px 16px",fontSize:12,background:"#1D9E75",color:"#fff",border:"none"}}>📊 Excel İndir</button>
                 <button onClick={()=>{setImportData(null);setImportNewProducts([]);}} style={{...bS,padding:"8px 16px",fontSize:12}}>İptal</button>
                 <button onClick={executeImport} style={{...bP,padding:"8px 20px",fontSize:12}}>Siparişleri Aktar</button>
               </div>
