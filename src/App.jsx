@@ -4799,6 +4799,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const ANA_IDS = [1, 2, 3, 4, 5];
   const [montajState, setMontajState] = useState(null);
 
+  // Cloud Function otomasyon log'u (VIO mail otomasyonu)
+  const [automationLog, setAutomationLog] = useState(null);
+
   // Firestore listeners
   useEffect(() => {
     if (!db) return;
@@ -4853,6 +4856,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const jobOrderRef = doc(db, APP_COL, "schedJobOrder");
     unsubs.push(onSnapshot(jobOrderRef, snap => {
       if (snap.exists()) setJobOrder(snap.data());
+    }, () => {}));
+    // Cloud Function otomasyon log'u
+    const autoLogRef = doc(db, APP_COL, "automationLog");
+    unsubs.push(onSnapshot(autoLogRef, snap => {
+      if (snap.exists()) setAutomationLog(snap.data());
     }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
@@ -7966,6 +7974,50 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         <KPI label="Çizelge" value={schedule ? (schedule.totalJobs || 0) + " iş" : "—"} sub={schedule ? `${schedule.lastCalculated ? new Date(schedule.lastCalculated).toLocaleDateString("tr-TR") : ""} · ${schedule.bottleneck ? "Darboğaz: " + (schedule.wcStats?.[schedule.bottleneck]?.name || schedule.bottleneck) : ""}` : "Hesaplanmadı"} accent="#3B82F6" />
         <KPI label="VIO Stok" value={stock ? stock.totalCodes || 0 : "—"} sub={stock ? `${stock.categories?.ambar?.count || 0} ambar · ${stock.categories?.uretim?.count || 0} üretim · ${new Date(stock.importedAt).toLocaleDateString("tr-TR")}` : "Stok yüklenmedi"} accent="#8B5CF6" />
       </div>
+
+      {/* Otomasyon Durum Badge'i — Cloud Function VIO Mail Otomasyonu */}
+      {(() => {
+        const entries = automationLog?.entries || [];
+        const last = entries.length > 0 ? entries[entries.length - 1] : null;
+        if (!last) {
+          return (
+            <div style={{ marginBottom: 16, padding: "8px 12px", background: "var(--color-background-secondary)", borderRadius: 6, fontSize: 12, color: "var(--color-text-secondary)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <span>🤖</span>
+              <span>VIO Mail Otomasyonu: Henüz çalıştırma kaydı yok</span>
+            </div>
+          );
+        }
+        const runAt = new Date(last.runAt);
+        const ageMin = Math.floor((Date.now() - runAt.getTime()) / 60000);
+        const ageStr = ageMin < 1 ? "az önce" : ageMin < 60 ? `${ageMin} dk önce` : ageMin < 1440 ? `${Math.floor(ageMin / 60)} sa önce` : `${Math.floor(ageMin / 1440)} gün önce`;
+        const timeStr = runAt.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" });
+        const dateStr = runAt.toLocaleDateString("tr-TR");
+        const isToday = runAt.toDateString() === new Date().toDateString();
+        const sourceLbl = last.source?.includes("morning") ? "Sabah" : last.source?.includes("midday") ? "Öğle" : last.source === "http" ? "Manuel" : "Otomatik";
+        // Status: success + 6 saatten yeni → yeşil; success + eski → sarı; fail → kırmızı
+        let bg, border, color, icon, label;
+        if (!last.success) {
+          bg = "var(--color-background-error, #FEF2F2)"; border = "#FCA5A5"; color = "#B91C1C"; icon = "❌";
+          const failed = (last.results || []).filter(r => r.status !== "ok").map(r => r.label).join(", ");
+          label = `Otomasyon hatası · ${isToday ? timeStr : dateStr} · ${failed || "Bilinmeyen hata"}`;
+        } else if (ageMin > 360) {
+          bg = "var(--color-background-warning, #FFFBEB)"; border = "#FCD34D"; color = "#92400E"; icon = "⚠️";
+          label = `VIO Mail Otomasyonu: Son güncelleme ${ageStr} (${isToday ? timeStr : dateStr})`;
+        } else {
+          bg = "var(--color-background-success, #F0FDF4)"; border = "#86EFAC"; color = "#166534"; icon = "🤖";
+          const okCount = (last.results || []).filter(r => r.status === "ok").length;
+          label = `VIO Mail Otomasyonu · ${sourceLbl} ${isToday ? timeStr : dateStr} · ${okCount}/3 rapor başarılı`;
+        }
+        return (
+          <div
+            title={`Çalıştırma: ${runAt.toLocaleString("tr-TR")}\nKaynak: ${last.source || "—"}\n` + (last.results || []).map(r => `${r.status === "ok" ? "✓" : "✗"} ${r.label}${r.error ? ": " + r.error : ""}`).join("\n")}
+            style={{ marginBottom: 16, padding: "8px 12px", background: bg, border: `1px solid ${border}`, borderRadius: 6, fontSize: 12, color, display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 500 }}
+          >
+            <span>{icon}</span>
+            <span>{label}</span>
+          </div>
+        );
+      })()}
 
       {/* Tab bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 16, flexWrap: "wrap" }}>

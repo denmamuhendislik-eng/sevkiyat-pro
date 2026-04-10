@@ -1,0 +1,4 @@
+node_modules/
+*.localoauth-client.json
+refresh-token.json
+.env
