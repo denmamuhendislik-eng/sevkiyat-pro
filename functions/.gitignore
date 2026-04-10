@@ -2,3 +2,7 @@ node_modules/
 *.localoauth-client.json
 refresh-token.json
 .env
+
+oauth-client.json
+refresh-token.json
+.env
