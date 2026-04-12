@@ -6890,7 +6890,30 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const prodParts = [];
         const modelKey = bomMapping[cp.pid];
         const model = modelKey && bomModels ? bomModels[modelKey] : null;
-        if (model?.parts) {
+
+        // BOM'u olmayan (veya model bulunamayan) ürünler için basit mamul stok kontrolü:
+        // talep karşılığında VIO mamul stoğu yeterli mi? Değilse header'da eksikli say.
+        // Bu, TP32/36 gibi ANA ürün olup BOM mapping'i olmayan kalemleri yakalar.
+        if (!model?.parts) {
+          const vioCode = VIO_CODES[cp.pid] || cp.product?.vioCode;
+          const stk = (vioCode && stockLookup[vioCode]) || null;
+          // Stok havuzunu bu ürün için lookup tablosuyla paylaşılan anahtar üzerinden tüket
+          const poolKey = `__product_${cp.pid}`;
+          if (!stockPool[poolKey]) {
+            stockPool[poolKey] = { avail: stk?.ambar || 0, wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
+              name: cp.product?.nameTR, supplyType: "PRODUCT", level: 0 };
+          }
+          const needed = cp.qty;
+          const pool = stockPool[poolKey];
+          const covered = Math.min(needed, pool.avail);
+          pool.avail -= covered;
+          totalParts++;
+          if (covered < needed) shortParts++;
+          allProdData[key] = prodParts; // boş bırakılır, L0 sayım yeterli
+          return;
+        }
+
+        {
           const bomParts = model.parts;
           const calcDepth = (idx, memo) => {
             if (memo[idx] !== undefined) return memo[idx];
@@ -6929,6 +6952,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               const covered = Math.min(needed, avail);
               partCovered[bi] = covered;
               if (pool && covered > 0) pool.avail -= covered;
+              // ANA ürünün kendi mamul stoğu eksikse de header'da sayılsın —
+              // aksi halde alt parçaların tümü karşılansa bile ürün eksiği görünmez.
+              totalParts++;
+              if (covered < needed) shortParts++;
               return;
             }
             let needed = Math.ceil(bomQtys[bi] || 0);
