@@ -5305,10 +5305,23 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const product = products?.find(p => p.id === pid);
         let rawDemand, productStock, netDemand, source;
 
+        let montajStockRaw = null, vioStockRaw = null;
         if (isAna && montajCalc.hasMontaj) {
-          // ANA ürün — montaj planından talep ve stok
+          // ANA ürün — montaj planından talep
           rawDemand = montajCalc.remainingPlan[pid] || 0;
-          productStock = Math.max(0, montajCalc.stock[pid] || 0);
+          // Stok: montaj sayacı VE VIO ambar stoğunun MİNİMUMU
+          // Montaj sayacı şişkin olabilir (henüz VIO'ya işlenmemiş üretim ya da fason farkı),
+          // bu durumda gerçek elde olan VIO stoğudur. Aksi durumda montaj sayacına güveniriz.
+          const montajStk = Math.max(0, montajCalc.stock[pid] || 0);
+          montajStockRaw = montajStk;
+          const vioStk2 = stockLookup[VIO_CODES[pid] || product?.vioCode] || stockLookup[product?.vioCode] || null;
+          if (vioStk2 && vioStk2.ambar !== undefined) {
+            const vioAmbar = Math.max(0, vioStk2.ambar || 0);
+            vioStockRaw = vioAmbar;
+            productStock = Math.min(montajStk, vioAmbar);
+          } else {
+            productStock = montajStk;
+          }
           source = "montaj";
         } else {
           // Diğer ürünler — sevkiyat planından talep, VIO stoktan mamul stok
@@ -5321,7 +5334,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         // Net talep = ham talep − mamul stok (negatif olamaz)
         netDemand = Math.max(0, rawDemand - productStock);
 
-        demandSummary[pid] = { source, rawDemand, productStock, netDemand, name: product?.nameTR || `PID ${pid}` };
+        demandSummary[pid] = { source, rawDemand, productStock, netDemand, montajStockRaw, vioStockRaw, name: product?.nameTR || `PID ${pid}` };
 
         // "direct:STOK_KODU" formatı → BOM'u olmayan ürün, doğrudan talep
         // BOM ÖNCELİKLİ: rawDemand ile ekle — stok düşümü net hesapta tek seferde yapılır
@@ -5361,11 +5374,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       });
 
       let pass2Count = 0;
+      const productNoBom = []; // PRODUCT ama alt BOM bulunamadı → kendisi satın alınmalı
       Object.entries(productDemand).forEach(([stockCode, totalQty]) => {
         const mk = modelByStockCode[stockCode];
         if (mk && bomModels[mk]) {
           explodeProduct(stockCode, totalQty, mk, 2);
           pass2Count++;
+        } else {
+          productNoBom.push(stockCode);
+        }
+      });
+
+      // PRODUCT olarak işaretlenmiş ama alt BOM'u olmayan parçalar →
+      // grossReq'te supplyType'ı BUY'a çevir ki satınalma listesinde görünsün.
+      // (Sadece bu lokal MRP hesap görünümü için; global parts tipini değiştirmez.)
+      productNoBom.forEach(stockCode => {
+        if (grossReq[stockCode] && grossReq[stockCode].supplyType === "PRODUCT") {
+          grossReq[stockCode].supplyType = "BUY";
+          grossReq[stockCode]._reclassifiedFromProduct = true;
         }
       });
 
@@ -6822,6 +6848,31 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       });
     });
 
+    // Ana ürünler (root) için mamul stok havuzuna ekle — VIO ambar stoğundan oku.
+    // BOM root parçanın stockCode'u ürünün model/VIO koduyla uyuşmayabileceği için
+    // hem VIO_CODES hem product.vioCode deneriz. Bu sayede ana ürün stoğu,
+    // alt parçaların ihtiyacından önce tüketilir (kümülatif konteyner sırası ile).
+    (products || []).forEach(p => {
+      const mk = bomMapping?.[p.id];
+      const model = mk && bomModels ? bomModels[mk] : null;
+      const rootPart = model?.parts?.find(pp => pp.parentIdx === null || pp.parentIdx === undefined);
+      if (!rootPart?.stockCode) return;
+      const vioCode = VIO_CODES[p.id] || p.vioCode;
+      const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
+      // Var olan havuzu ezme (BOM döngüsü zaten set etmiş olabilir), ama availini VIO stoğuyla güncelle
+      if (stockPool[rootPart.stockCode]) {
+        if (stk && stk.ambar !== undefined) {
+          stockPool[rootPart.stockCode].avail = stk.ambar || 0;
+        }
+      } else {
+        stockPool[rootPart.stockCode] = {
+          avail: stk?.ambar || 0,
+          wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
+          name: rootPart.stockName, supplyType: rootPart.supplyType, level: 0
+        };
+      }
+    });
+
     const allProdData = {}; // `${containerId}|${pid}` → prodParts[]
     const containerStats = [];
     const partRealDeadlines = {}; // partCode → { dueDate, duePid, dueContainerId }
@@ -6868,11 +6919,32 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const sorted = bomParts.map((bp, bi) => ({ bp, bi, depth: depthMemo[bi] || 0 })).sort((a, b) => a.depth - b.depth);
           const partCovered = {};
           sorted.forEach(({ bp, bi, depth }) => {
-            if (depth === 0) return;
+            if (depth === 0) {
+              // ROOT (ana ürün): kendi mamul stoğundan tüket.
+              // Kapsanan miktar, depth 1 alt parçaların ihtiyacını azaltır.
+              const needed = Math.ceil(bomQtys[bi] || 0);
+              if (needed <= 0) return;
+              const pool = stockPool[bp.stockCode];
+              const avail = pool ? pool.avail : 0;
+              const covered = Math.min(needed, avail);
+              partCovered[bi] = covered;
+              if (pool && covered > 0) pool.avail -= covered;
+              return;
+            }
             let needed = Math.ceil(bomQtys[bi] || 0);
             if (needed <= 0) return;
             const parent = bomParts[bp.parentIdx];
-            if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+            // Parent ROOT ise (depth 1 parçalar) — ana ürün mamul stoğundan kapsanan kısmı düş
+            if (parent && (parent.parentIdx === null || parent.parentIdx === undefined)) {
+              const parentBi = bp.parentIdx;
+              const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
+              const parentCov = partCovered[parentBi] || 0;
+              if (parentCov >= parentNeeded) { bomQtys[bi] = 0; return; }
+              const parentNet = parentNeeded - parentCov;
+              bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
+              needed = Math.ceil(bomQtys[bi] || 0);
+              if (needed <= 0) return;
+            } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
               const parentBi = bp.parentIdx;
               const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
               const parentCov = partCovered[parentBi] || 0;
@@ -11597,6 +11669,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`,
                         source: d.source || "sevkiyat", rawDemand: d.rawDemand || 0,
                         productStock: d.productStock || 0, netDemand: d.netDemand || 0,
+                        montajStockRaw: d.montajStockRaw ?? null, vioStockRaw: d.vioStockRaw ?? null,
                         bomStockUsed: d.bomStockUsed || 0, effectiveStock: d.effectiveStock ?? d.productStock ?? 0,
                         adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
                         totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
@@ -11617,6 +11690,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                     const pr = products?.find(p => p.id === pid);
                     pMap[pid] = { pid, name: pr?.nameTR || `PID ${pid}`,
                       source: d.source, rawDemand: d.rawDemand, productStock: d.productStock, netDemand: d.netDemand,
+                      montajStockRaw: d.montajStockRaw ?? null, vioStockRaw: d.vioStockRaw ?? null,
                       bomStockUsed: d.bomStockUsed || 0, effectiveStock: d.effectiveStock ?? d.productStock ?? 0,
                       adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
                       totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
@@ -11631,11 +11705,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 ANA_IDS.forEach(pid => {
                   const ps = productSummary.find(p => p.pid === pid);
                   if (!ps || ps.source !== "montaj") return;
-                  const vioCode = VIO_CODES[pid];
-                  const vioStk = vioCode ? stockLookup[vioCode] : null;
-                  const vioAmbar = vioStk ? vioStk.ambar : null;
-                  const montajStok = ps.productStock;
-                  if (vioAmbar === null) {
+                  // Ham montaj sayacı (min'den önceki) — yoksa görünen değere düş
+                  const montajStok = ps.montajStockRaw ?? ps.productStock;
+                  // VIO ham (kayıtlıysa demandSummary'den, değilse stockLookup'tan dene)
+                  let vioAmbar = ps.vioStockRaw;
+                  if (vioAmbar === null || vioAmbar === undefined) {
+                    const vioCode = VIO_CODES[pid];
+                    const vioStk = vioCode ? stockLookup[vioCode] : null;
+                    vioAmbar = vioStk ? vioStk.ambar : null;
+                  }
+                  if (vioAmbar === null || vioAmbar === undefined) {
                     checks[pid] = { montaj: montajStok, vio: null, diff: null, status: "novio" };
                   } else {
                     const diff = montajStok - vioAmbar;
