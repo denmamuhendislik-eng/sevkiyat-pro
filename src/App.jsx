@@ -6897,7 +6897,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         if (!model?.parts) {
           const vioCode = VIO_CODES[cp.pid] || cp.product?.vioCode;
           const stk = (vioCode && stockLookup[vioCode]) || null;
-          // Stok havuzunu bu ürün için lookup tablosuyla paylaşılan anahtar üzerinden tüket
           const poolKey = `__product_${cp.pid}`;
           if (!stockPool[poolKey]) {
             stockPool[poolKey] = { avail: stk?.ambar || 0, wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
@@ -6906,10 +6905,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const needed = cp.qty;
           const pool = stockPool[poolKey];
           const covered = Math.min(needed, pool.avail);
+          const short = needed - covered;
           pool.avail -= covered;
           totalParts++;
-          if (covered < needed) shortParts++;
-          allProdData[key] = prodParts; // boş bırakılır, L0 sayım yeterli
+          if (short > 0) shortParts++;
+          // UI render'ı için level=1 L1 kalemi olarak push — kod mevcut filtrelerle uyumlu
+          prodParts.push({
+            code: vioCode || `PID-${cp.pid}`,
+            name: cp.product?.nameTR || `Ürün ${cp.pid}`,
+            supplyType: "PRODUCT",
+            level: 1, needed, covered, short,
+            wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
+            _isProductRoot: true, // gösterimde ayırt etmek için ileride kullanılabilir
+          });
+          allProdData[key] = prodParts;
           return;
         }
 
@@ -6943,19 +6952,29 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const partCovered = {};
           sorted.forEach(({ bp, bi, depth }) => {
             if (depth === 0) {
-              // ROOT (ana ürün): kendi mamul stoğundan tüket.
-              // Kapsanan miktar, depth 1 alt parçaların ihtiyacını azaltır.
               const needed = Math.ceil(bomQtys[bi] || 0);
               if (needed <= 0) return;
               const pool = stockPool[bp.stockCode];
               const avail = pool ? pool.avail : 0;
               const covered = Math.min(needed, avail);
+              const short = needed - covered;
               partCovered[bi] = covered;
               if (pool && covered > 0) pool.avail -= covered;
-              // ANA ürünün kendi mamul stoğu eksikse de header'da sayılsın —
-              // aksi halde alt parçaların tümü karşılansa bile ürün eksiği görünmez.
               totalParts++;
-              if (covered < needed) shortParts++;
+              if (short > 0) {
+                shortParts++;
+                // Root mamul eksikse UI'da görünebilmesi için L1 kalemi olarak push.
+                // Alt BOM zaten depth 1'den itibaren patlayacak; bu sadece "ürünün
+                // kendi mamul stoğu yetersiz" mesajını iletir.
+                prodParts.push({
+                  code: bp.stockCode,
+                  name: `${bp.stockName || cp.product?.nameTR} (mamul)`,
+                  supplyType: "PRODUCT",
+                  level: 1, needed, covered, short,
+                  wipInt: pool?.wipInt || 0, wipFas: pool?.wipFas || 0, stkUretim: pool?.stkUretim || 0,
+                  _isProductRoot: true,
+                });
+              }
               return;
             }
             let needed = Math.ceil(bomQtys[bi] || 0);
