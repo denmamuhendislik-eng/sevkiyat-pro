@@ -6966,8 +6966,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     // Stok havuzunu kur — explosion parts + BOM'daki ek parçalar
     const stockPool = {};
     explosionResult.parts.forEach(r => {
+      // Non-bulk WIP'i akibetLookup'tan al (toplu montaj/pres iş emirleri sayılmaz)
+      const ak = akibetLookup[r.code];
+      const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
       stockPool[r.code] = {
-        avail: r.stkAmbar || 0,
+        avail: (r.stkAmbar || 0) + nonBulkWip,
         wipInt: r.wipInt || 0,
         wipFas: r.wipFas || 0,
         stkUretim: r.stkUretim || 0,
@@ -6979,8 +6982,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         if (!bp.stockCode || stockPool[bp.stockCode]) return;
         const stk = stockLookup[bp.stockCode];
         const ak = akibetLookup[bp.stockCode];
+        const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
         stockPool[bp.stockCode] = {
-          avail: stk?.ambar || 0,
+          avail: (stk?.ambar || 0) + nonBulkWip,
           wipInt: ak?.internalRemaining || 0,
           wipFas: ak?.fasonRemaining || 0,
           stkUretim: stk?.uretim || 0,
@@ -6993,6 +6997,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     // BOM root parçanın stockCode'u ürünün model/VIO koduyla uyuşmayabileceği için
     // hem VIO_CODES hem product.vioCode deneriz. Bu sayede ana ürün stoğu,
     // alt parçaların ihtiyacından önce tüketilir (kümülatif konteyner sırası ile).
+    // Root mamul WIP toplu olabileceği için sadece nonBulk WIP eklenir.
     (products || []).forEach(p => {
       const mk = bomMapping?.[p.id];
       const model = mk && bomModels ? bomModels[mk] : null;
@@ -7000,14 +7005,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       if (!rootPart?.stockCode) return;
       const vioCode = VIO_CODES[p.id] || p.vioCode;
       const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
+      const ak = akibetLookup[rootPart.stockCode];
+      const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
       // Var olan havuzu ezme (BOM döngüsü zaten set etmiş olabilir), ama availini VIO stoğuyla güncelle
       if (stockPool[rootPart.stockCode]) {
         if (stk && stk.ambar !== undefined) {
-          stockPool[rootPart.stockCode].avail = stk.ambar || 0;
+          stockPool[rootPart.stockCode].avail = (stk.ambar || 0) + nonBulkWip;
         }
       } else {
         stockPool[rootPart.stockCode] = {
-          avail: stk?.ambar || 0,
+          avail: (stk?.ambar || 0) + nonBulkWip,
           wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
           name: rootPart.stockName, supplyType: rootPart.supplyType, level: 0
         };
@@ -7058,7 +7065,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             level: 1, needed, covered, short,
             wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
             _isProductRoot: true, // v13: "mamul" ayrımı artık supplyType ile değil, bu flag ile yapılır
-            pid: cp.pid, productName: cp.product?.nameTR || null
+            pid: cp.pid, productName: cp.product?.nameTR || null,
+            unit: stk?.unit || "AD"
           });
           allProdData[key] = prodParts;
           return;
@@ -7115,7 +7123,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   level: 1, needed, covered, short,
                   wipInt: pool?.wipInt || 0, wipFas: pool?.wipFas || 0, stkUretim: pool?.stkUretim || 0,
                   _isProductRoot: true,
-                  pid: cp.pid, productName: cp.product?.nameTR || null
+                  pid: cp.pid, productName: cp.product?.nameTR || null,
+                  unit: bp.unit || "AD"
                 });
               }
               return;
@@ -7183,7 +7192,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType,
               level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim,
               parentCode: parent?.stockCode || null, parentName: parent?.stockName || null,
-              pid: cp.pid, productName: cp.product?.nameTR || null
+              pid: cp.pid, productName: cp.product?.nameTR || null,
+              unit: bp.unit || "AD"
             });
           });
         }
@@ -10402,6 +10412,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   if (!partMap[p.code]) {
                                     partMap[p.code] = {
                                       code: p.code, name: p.name, supplyType: p.supplyType,
+                                      unit: p.unit || "AD",
                                       totalShort: 0, containers: [], firstDate: cs.date,
                                       wipInt: p.wipInt || 0, wipFas: p.wipFas || 0,
                                       parentsMap: {}, // parentCode → { code, name, totalShort }
@@ -10556,17 +10567,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 ? p.containers.map(c => `${c.date.substring(5)}(${c.short})`).join(" · ")
                                                 : p.containers.slice(0, 3).map(c => `${c.date.substring(5)}(${c.short})`).join(" · ") + ` +${p.containers.length - 3}`;
                                               // Bağlı olduğu parça: tek parent ise direkt göster, çok parent varsa en yüksek + N daha
+                                              const u = (p.unit || "AD").toLowerCase();
                                               const parents = p.parents || [];
                                               let parentSummary = "—";
                                               let parentTooltip = "";
                                               if (parents.length === 1) {
                                                 const pr = parents[0];
                                                 parentSummary = `${pr.code}`;
-                                                parentTooltip = `${pr.code} — ${pr.name || ""}\n(${pr.totalShort} ad bu parça için)`;
+                                                parentTooltip = `${pr.code} — ${pr.name || ""}\n(${pr.totalShort} ${u} bu parça için)`;
                                               } else if (parents.length > 1) {
                                                 const top = parents[0];
                                                 parentSummary = `${top.code} +${parents.length - 1} daha`;
-                                                parentTooltip = parents.map(pr => `${pr.code} — ${pr.name || ""} (${pr.totalShort} ad)`).join("\n");
+                                                parentTooltip = parents.map(pr => `${pr.code} — ${pr.name || ""} (${pr.totalShort} ${u})`).join("\n");
                                               }
                                               // Hangi ürün için: sevkiyat ürün listesi
                                               const productList = p.products || [];
@@ -10576,12 +10588,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 const pr = productList[0];
                                                 const shortName = (pr.name || "").length > 20 ? (pr.name || "").substring(0, 18) + "…" : (pr.name || "");
                                                 productSummary = shortName;
-                                                productTooltip = `${pr.name}\n${pr.containers.map(c => `  • ${c.date}: ${c.short} ad`).join("\n")}`;
+                                                productTooltip = `${pr.name}\n${pr.containers.map(c => `  • ${c.date}: ${c.short} ${u}`).join("\n")}`;
                                               } else if (productList.length > 1) {
                                                 const top = productList[0];
                                                 const shortName = (top.name || "").length > 18 ? (top.name || "").substring(0, 16) + "…" : (top.name || "");
                                                 productSummary = `${shortName} +${productList.length - 1}`;
-                                                productTooltip = productList.map(pr => `${pr.name} (${pr.totalShort} ad)\n${pr.containers.map(c => `  • ${c.date}: ${c.short}`).join("\n")}`).join("\n\n");
+                                                productTooltip = productList.map(pr => `${pr.name} (${pr.totalShort} ${u})\n${pr.containers.map(c => `  • ${c.date}: ${c.short}`).join("\n")}`).join("\n\n");
                                               }
                                               return (
                                                 <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22` }}>
@@ -10590,8 +10602,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   <td style={{ padding: "4px 6px", textAlign: "center" }}>
                                                     <span style={{ fontSize: 8, padding: "0 4px", borderRadius: 2, background: p.supplyType === "MAKE" ? "#ECFDF5" : p.supplyType === "BUY" ? "#DBEAFE" : p.supplyType === "RAW" ? "#DBEAFE" : "#FEF3C7", color: p.supplyType === "MAKE" ? "#065F46" : (p.supplyType === "BUY" || p.supplyType === "RAW") ? "#1D4ED8" : "#92400E" }}>{p.supplyType}</span>
                                                   </td>
-                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color }}>{p.totalShort}</td>
-                                                  <td style={{ padding: "4px 6px", fontSize: 9, color: "var(--color-text-secondary)" }} title={p.containers.map(c => `${c.date}: ${c.short} ad`).join("\n")}>{containerSummary}</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color }}>{p.totalShort} <span style={{ fontSize: 8, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{(p.unit || "AD").toLowerCase()}</span></td>
+                                                  <td style={{ padding: "4px 6px", fontSize: 9, color: "var(--color-text-secondary)" }} title={p.containers.map(c => `${c.date}: ${c.short} ${(p.unit || "AD").toLowerCase()}`).join("\n")}>{containerSummary}</td>
                                                   <td style={{ padding: "4px 6px", fontSize: 9, fontFamily: "var(--font-mono)", color: parents.length > 0 ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: parentTooltip ? "help" : "default" }} title={parentTooltip}>{parentSummary}</td>
                                                   <td style={{ padding: "4px 6px", fontSize: 9, color: productList.length > 0 ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: productTooltip ? "help" : "default" }} title={productTooltip}>{productSummary}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.firstDate.substring(5)}</td>
