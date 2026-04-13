@@ -10113,6 +10113,21 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
                                   return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
                                 })()}
+                                {!isWip && (() => {
+                                  // YENİ satırlarda: aynı parça için mevcut WIP varsa bilgi rozeti
+                                  const ak = akibetLookup[j.partCode];
+                                  if (!ak) return null;
+                                  const totalRem = (ak.internalRemaining || 0) + (ak.fasonRemaining || 0);
+                                  if (totalRem <= 0) return null;
+                                  // Emir detayları için akibet.parts'tan tam kayıt
+                                  const akPart = akibet?.parts?.find(p => p.code === j.partCode);
+                                  const orderLines = akPart?.orders
+                                    ?.filter(o => (o.intRem || 0) + (o.fasRem || 0) > 0)
+                                    ?.map(o => `  • Emir ${o.emirNo} (qty ${o.qty}) — iç:${o.intRem} fason:${o.fasRem}`)
+                                    ?.join("\n") || "";
+                                  const tip = `Bu parça için mevcut açık iş emri var\n─────────────────────────────\nToplam kalan: ${totalRem} ad (iç:${ak.internalRemaining}, fason:${ak.fasonRemaining})\nEmir sayısı: ${ak.orderCount || 0}\n${orderLines ? "\n" + orderLines : ""}\n\nNot: Bu WIP'ler net hesaba zaten dahil — ${j.qty}ad yeni iş, WIP'ten SONRAKİ ek talebi karşılamak için.`;
+                                  return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>⚙{totalRem}/{ak.orderCount || 0}eo</span>;
+                                })()}
                               </td>
                               <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
                               <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
