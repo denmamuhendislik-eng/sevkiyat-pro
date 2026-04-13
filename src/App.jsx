@@ -10444,6 +10444,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                                     </span>
                                                                   );
                                                                 })()}
+                                                                {/* PO rozeti — BUY/RAW parçalar için açık sipariş bilgisi */}
+                                                                {p.short > 0 && (p.supplyType === "BUY" || p.supplyType === "RAW") && (() => {
+                                                                  const po = purchaseLookup[p.code];
+                                                                  const poRem = po?.totalRemaining || 0;
+                                                                  const covers = poRem >= p.short;
+                                                                  const partial = poRem > 0 && poRem < p.short;
+                                                                  const bg = covers ? "#DCFCE7" : partial ? "#FEF3C7" : "#FEE2E2";
+                                                                  const col = covers ? "#166534" : partial ? "#92400E" : "#991B1B";
+                                                                  const suppliers = po?.suppliers?.length ? po.suppliers.join(", ") : "—";
+                                                                  const tip = poRem > 0
+                                                                    ? `Açık satınalma siparişi: ${poRem} ad\nTedarikçi: ${suppliers}\nDurum: ${covers ? "✓ eksiği tamamen kapatıyor" : "⚠ kısmi (kalan " + (p.short - poRem) + " ad hâlâ açık)"}`
+                                                                    : "Açık satınalma siparişi yok — bu eksik için sipariş verilmesi gerekiyor";
+                                                                  return (
+                                                                    <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: bg, color: col, fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>
+                                                                      {poRem > 0 ? `📦${poRem}${covers ? "✓" : ""}` : "📭 PO yok"}
+                                                                    </span>
+                                                                  );
+                                                                })()}
                                                               </td>
                                                               <td style={{ padding: "3px 4px", textAlign: "center" }}>{p.short > 0 ? "🔴" : "✅"}</td>
                                                             </tr>
@@ -10469,6 +10487,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                                     return (
                                                                       <span style={{ padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 7, fontWeight: 600, cursor: "help" }} title={tip}>
                                                                         🔍{pls.total}
+                                                                      </span>
+                                                                    );
+                                                                  })()}
+                                                                  {/* PO rozeti — alt seviye BUY/RAW parçalar */}
+                                                                  {sp.short > 0 && (sp.supplyType === "BUY" || sp.supplyType === "RAW") && (() => {
+                                                                    const po = purchaseLookup[sp.code];
+                                                                    const poRem = po?.totalRemaining || 0;
+                                                                    const covers = poRem >= sp.short;
+                                                                    const partial = poRem > 0 && poRem < sp.short;
+                                                                    const bg = covers ? "#DCFCE7" : partial ? "#FEF3C7" : "#FEE2E2";
+                                                                    const col = covers ? "#166534" : partial ? "#92400E" : "#991B1B";
+                                                                    const suppliers = po?.suppliers?.length ? po.suppliers.join(", ") : "—";
+                                                                    const tip = poRem > 0
+                                                                      ? `Açık satınalma siparişi: ${poRem} ad\nTedarikçi: ${suppliers}\nDurum: ${covers ? "✓ eksiği tamamen kapatıyor" : "⚠ kısmi (kalan " + (sp.short - poRem) + " ad hâlâ açık)"}`
+                                                                      : "Açık satınalma siparişi yok — bu eksik için sipariş verilmesi gerekiyor";
+                                                                    return (
+                                                                      <span style={{ marginLeft: 3, padding: "0 3px", borderRadius: 3, background: bg, color: col, fontSize: 7, fontWeight: 600, cursor: "help" }} title={tip}>
+                                                                        {poRem > 0 ? `📦${poRem}${covers ? "✓" : ""}` : "📭"}
                                                                       </span>
                                                                     );
                                                                   })()}
