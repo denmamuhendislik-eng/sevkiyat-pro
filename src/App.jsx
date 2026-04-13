@@ -5308,14 +5308,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const parentNeeded = partQtys[p.parentIdx] || 0;
           if (parentNeeded === 0) { partQtys[i] = 0; return; }
 
-          // Parent MAKE/MAKE+FASON ambar stoğuyla karşılanıyorsa alt bileşenler gereksiz.
+          // Parent MAKE/MAKE+FASON/FASON ambar stoğuyla karşılanıyorsa alt bileşenler gereksiz.
+          // FASON: parent fason yapılıyor olsa da, kendi mamul/yarımamul stoğu varsa
+          // alt RAW/BUY ihtiyacı doğmaz — parent karşılanmıştır, alt patlatma anlamsız.
           // ANCAK atlanır:
           //   (a) Parent root ise — root mamul stoku bağımsız talep hesabında zaten düşülüyor (rawDemand - productStock)
           //   (b) Parent bir sevkiyat ürünü root'u ise — bu parçanın grossReq net hesabında stok düşecek, burada düşersek çift düşüm olur
           const parentIsRoot = (parent.parentIdx === null || parent.parentIdx === undefined);
           const parentIsSevkiyatRoot = sevkiyatProductCodes.has(parent.stockCode);
           if (!parentIsRoot && !parentIsSevkiyatRoot &&
-              (parentType === "MAKE" || parentType === "MAKE+FASON")) {
+              (parentType === "MAKE" || parentType === "MAKE+FASON" || parentType === "FASON")) {
             const parentStk = stockLookup[parent.stockCode];
             const parentStkAvail = parentStk ? parentStk.ambar : 0;
             if (parentStkAvail >= parentNeeded) {
@@ -7101,7 +7103,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
               needed = Math.ceil(bomQtys[bi] || 0);
               if (needed <= 0) return;
-            } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+            } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON" || parent.supplyType === "FASON")) {
               const parentBi = bp.parentIdx;
               const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
               const parentCov = partCovered[parentBi] || 0;
@@ -7146,33 +7148,6 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             const stkUretim = pool?.stkUretim || 0;
             // Parent bilgisi — RAW/BUY parçaların hangi MAKE'in altında olduğunu görmek için
             const parent = bomParts[bp.parentIdx];
-
-            // 🔍 DEBUG — Q70 7131'in 17/04 sevkiyatında neden ortaya çıktığını izlemek için
-            if (bp.stockCode === "150-0046" && c.date === "2026-04-17" && short > 0) {
-              const rootPart = bomParts.find(pp => pp.parentIdx === null || pp.parentIdx === undefined);
-              const ancestors = [];
-              let curIdx = bp.parentIdx;
-              while (curIdx !== null && curIdx !== undefined) {
-                const a = bomParts[curIdx];
-                if (!a) break;
-                ancestors.push({
-                  code: a.stockCode, name: a.stockName, supplyType: a.supplyType,
-                  bomQty: bomQtys[curIdx], covered: partCovered[curIdx] || 0,
-                  poolAvail: stockPool[a.stockCode]?.avail
-                });
-                curIdx = a.parentIdx;
-              }
-              console.log("🔍 [DEBUG Q70-7131 @ 17/04]", {
-                product: { pid: cp.pid, name: cp.product?.nameTR, qty: cp.qty, modelKey },
-                Q70: { needed, covered, short, bomQty: bomQtys[bi], pool: stockPool[bp.stockCode] },
-                root: rootPart ? {
-                  code: rootPart.stockCode, name: rootPart.stockName,
-                  bomQty: bomQtys[0], covered: partCovered[0],
-                  poolAvail: stockPool[rootPart.stockCode]?.avail
-                } : null,
-                ancestors_root_to_parent: ancestors.reverse() // root'tan parent'a sıralı
-              });
-            }
 
             prodParts.push({
               code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType,
@@ -7317,7 +7292,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
             needed = Math.ceil(bomQtys[bi] || 0);
             if (needed <= 0) return;
-          } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+          } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON" || parent.supplyType === "FASON")) {
             const parentBi = bp.parentIdx;
             const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
             const parentCov = partCovered[parentBi] || 0;
