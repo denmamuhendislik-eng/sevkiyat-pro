@@ -22,11 +22,18 @@ const AUTOMATION_LOG_DOC = "automationLog";
 
 /**
  * Stock parser çıktısını Sevkiyat Pro'nun beklediği compact formata çevir.
- * App.jsx satır 5048-5056 ile birebir aynı dönüşüm.
+ * App.jsx satır 5057-5060 ile birebir aynı dönüşüm.
+ *
+ * v13: pl[] = sadece üretim hattı (PRES/KAYNAK/TALAŞ/Üretim Hattı/Lazer Mamül Ambarı)
+ * lokasyon detayı — Sevkiyat Bazlı İhtiyaç ekranındaki "🔍 Kontrol Önerilir" rozeti için.
+ * Diğer lokasyonlar (ambar/fason/haric) kompakt total'larda zaten var, detay tutmaya gerek yok.
  */
 function transformStockForFirestore(parserResult, fileName) {
   const partsObj = {};
   parserResult.parts.forEach((p) => {
+    const pl = (p.locs || [])
+      .filter((l) => l.c === "uretim")
+      .map((l) => ({ l: l.l, q: l.q, o: l.o || null, n: l.n || null }));
     partsObj[p.code] = {
       n: p.name,
       u: p.unit,
@@ -37,6 +44,7 @@ function transformStockForFirestore(parserResult, fileName) {
       h: p.haric,
       t: p.total,
       lc: p.locs.length,
+      ...(pl.length > 0 ? { pl } : {}),
     };
   });
   return {

@@ -5995,8 +5995,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       // Eski mantık (explosion sources → en erken konteyner) fallback olarak kalır — gerçek deadline bulunamazsa
       const partDeadlines = {}; // partCode → { dueDate, duePid, dueContainerId }
       if (useMrp && explosionResult?.parts) {
-        // 1. ÖNCELİK: Sevkiyat bazlı ihtiyaç analizinden gerçek deadline'lar
-        const realDeadlines = shipReqAnalysis?.partRealDeadlines || {};
+        // 1. ÖNCELİK: WIP-dahil deadline — net yeni iş emirleri için.
+        // shipReqAnalysis.partRealDeadlines WIP'siz (o versiyonu WIP risk izlemesinde
+        // kullanıyoruz). Yeni jobs zaten WIP düşülmüş net miktar → deadline da WIP dahil
+        // havuzla hesaplanmalı, aksi halde 250065 gibi parçalar haksız yere geciken
+        // listesine düşer.
+        const realDeadlines = partRealDeadlinesWithWip || {};
         Object.entries(realDeadlines).forEach(([code, dl]) => {
           partDeadlines[code] = { ...dl };
         });
@@ -7156,6 +7160,152 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   }, [explosionResult, unshippedDemand, bomModels, bomMapping, stockLookup, akibetLookup, products]);
 
   // ─────────────────────────────────────────────────────────────────────────
+  // WIP-DAHİL DEADLINE hesabı — net yeni iş emirlerini schedule ederken kullanılır.
+  // shipReqAnalysis'teki partRealDeadlines WIP'i sayMAZ (pool = yalnızca ambar),
+  // bu yüzden o tarih "WIP yoksa ilk eksik gün" → WIP risk takibi için doğru.
+  // Fakat net yeni jobs (WIP zaten düşülmüş) için deadline olarak WIP-dahil havuzla
+  // yeniden simülasyon yapılır. Aynı BOM cascade mantığı, pool.avail = ambar + WIP.
+  // Çıktı: sadece partCode → {dueDate, duePid, dueContainerId}
+  // ─────────────────────────────────────────────────────────────────────────
+  const partRealDeadlinesWithWip = useMemo(() => {
+    if (!explosionResult?.parts || !unshippedDemand?.containers || !bomModels || !bomMapping) return {};
+    const allContainers = unshippedDemand.containers;
+    const pidToProduct = {};
+    (products || []).forEach(p => { pidToProduct[p.id] = p; });
+
+    // WIP-dahil havuz: avail = ambar + wipInt + wipFas
+    const stockPool = {};
+    explosionResult.parts.forEach(r => {
+      const wipTotal = (r.wipInt || 0) + (r.wipFas || 0);
+      stockPool[r.code] = { avail: (r.stkAmbar || 0) + wipTotal };
+    });
+    Object.values(bomModels || {}).forEach(model => {
+      (model?.parts || []).forEach(bp => {
+        if (!bp.stockCode || stockPool[bp.stockCode]) return;
+        const stk = stockLookup[bp.stockCode];
+        const ak = akibetLookup[bp.stockCode];
+        const wipTotal = (ak?.internalRemaining || 0) + (ak?.fasonRemaining || 0);
+        stockPool[bp.stockCode] = { avail: (stk?.ambar || 0) + wipTotal };
+      });
+    });
+    (products || []).forEach(p => {
+      const mk = bomMapping?.[p.id];
+      const model = mk && bomModels ? bomModels[mk] : null;
+      const rootPart = model?.parts?.find(pp => pp.parentIdx === null || pp.parentIdx === undefined);
+      if (!rootPart?.stockCode) return;
+      const vioCode = VIO_CODES[p.id] || p.vioCode;
+      const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
+      const ak = akibetLookup[rootPart.stockCode];
+      const wipTotal = (ak?.internalRemaining || 0) + (ak?.fasonRemaining || 0);
+      if (stockPool[rootPart.stockCode]) {
+        stockPool[rootPart.stockCode].avail = (stk?.ambar || 0) + wipTotal;
+      } else {
+        stockPool[rootPart.stockCode] = { avail: (stk?.ambar || 0) + wipTotal };
+      }
+    });
+
+    const partRealDeadlines = {};
+    allContainers.forEach(c => {
+      const cProducts = Object.entries(c.products || {}).map(([pid, qty]) => ({
+        pid: Number(pid), qty, product: pidToProduct[Number(pid)]
+      })).filter(cp => cp.product);
+
+      cProducts.forEach(cp => {
+        const modelKey = bomMapping[cp.pid];
+        const model = modelKey && bomModels ? bomModels[modelKey] : null;
+
+        if (!model?.parts) {
+          const vioCode = VIO_CODES[cp.pid] || cp.product?.vioCode;
+          const poolKey = `__product_${cp.pid}`;
+          if (!stockPool[poolKey]) {
+            const stk = (vioCode && stockLookup[vioCode]) || null;
+            stockPool[poolKey] = { avail: stk?.ambar || 0 };
+          }
+          const needed = cp.qty;
+          const pool = stockPool[poolKey];
+          const covered = Math.min(needed, pool.avail);
+          pool.avail -= covered;
+          if (covered < needed && vioCode && !partRealDeadlines[vioCode]) {
+            partRealDeadlines[vioCode] = { dueDate: c.date, duePid: cp.pid, dueContainerId: c.id };
+          }
+          return;
+        }
+
+        const bomParts = model.parts;
+        const calcDepth = (idx, memo) => {
+          if (memo[idx] !== undefined) return memo[idx];
+          const part = bomParts[idx];
+          if (!part || part.parentIdx === null || part.parentIdx === undefined) { memo[idx] = 0; return 0; }
+          const d = calcDepth(part.parentIdx, memo) + 1;
+          memo[idx] = d;
+          return d;
+        };
+        const depthMemo = {};
+        bomParts.forEach((_, bi) => calcDepth(bi, depthMemo));
+
+        const bomQtys = {};
+        bomParts.forEach((bp, bi) => {
+          if (bp.parentIdx === null || bp.parentIdx === undefined) {
+            bomQtys[bi] = (bp.qty || 1) * cp.qty;
+          } else {
+            const parentQ = bomQtys[bp.parentIdx] || 0;
+            if (parentQ === 0) { bomQtys[bi] = 0; return; }
+            const parent = bomParts[bp.parentIdx];
+            if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) { bomQtys[bi] = 0; return; }
+            bomQtys[bi] = (bp.qty || 1) * parentQ;
+          }
+        });
+
+        const sorted = bomParts.map((bp, bi) => ({ bp, bi, depth: depthMemo[bi] || 0 })).sort((a, b) => a.depth - b.depth);
+        const partCovered = {};
+        sorted.forEach(({ bp, bi, depth }) => {
+          if (depth === 0) {
+            const needed = Math.ceil(bomQtys[bi] || 0);
+            if (needed <= 0) return;
+            const pool = stockPool[bp.stockCode];
+            const avail = pool ? pool.avail : 0;
+            const covered = Math.min(needed, avail);
+            partCovered[bi] = covered;
+            if (pool && covered > 0) pool.avail -= covered;
+            return;
+          }
+          let needed = Math.ceil(bomQtys[bi] || 0);
+          if (needed <= 0) return;
+          const parent = bomParts[bp.parentIdx];
+          if (parent && (parent.parentIdx === null || parent.parentIdx === undefined)) {
+            const parentBi = bp.parentIdx;
+            const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
+            const parentCov = partCovered[parentBi] || 0;
+            if (parentCov >= parentNeeded) { bomQtys[bi] = 0; return; }
+            const parentNet = parentNeeded - parentCov;
+            bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
+            needed = Math.ceil(bomQtys[bi] || 0);
+            if (needed <= 0) return;
+          } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
+            const parentBi = bp.parentIdx;
+            const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
+            const parentCov = partCovered[parentBi] || 0;
+            if (parentCov >= parentNeeded) { bomQtys[bi] = 0; return; }
+            const parentNet = parentNeeded - parentCov;
+            bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
+          }
+          const finalNeeded = Math.ceil(bomQtys[bi] || 0);
+          if (finalNeeded <= 0) return;
+          const pool = stockPool[bp.stockCode];
+          const avail = pool ? pool.avail : 0;
+          const covered = Math.min(finalNeeded, avail);
+          partCovered[bi] = covered;
+          if (pool && covered > 0) pool.avail -= covered;
+          if (covered < finalNeeded && !partRealDeadlines[bp.stockCode]) {
+            partRealDeadlines[bp.stockCode] = { dueDate: c.date, duePid: cp.pid, dueContainerId: c.id };
+          }
+        });
+      });
+    });
+    return partRealDeadlines;
+  }, [explosionResult, unshippedDemand, bomModels, bomMapping, stockLookup, akibetLookup, products]);
+
+  // ─────────────────────────────────────────────────────────────────────────
   // BEKLEYEN FASON İŞLER — sade FASON parçalar için ayrı liste
   // Bu memo `jobs` array'inden BAĞIMSIZ çalışır — calculateSchedule pure-fason
   // parçaları skip ediyor (satır 5472), bu yüzden onları görmek için ayrı bir
@@ -7244,6 +7394,122 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     items.sort((a, b) => a.dueDate.localeCompare(b.dueDate) || a.slackDays - b.slackDays);
     return items;
   }, [explosionResult, shipReqAnalysis, bomModels, workCenters]);
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // WIP JOBS — Akibet (devam eden) iş emirlerini job formatına çevirir, slack
+  // hesaplar. Yeni açılacak jobs'tan AYRI bir liste; Geciken İşler panelinde
+  // birleştirilerek gösterilir. Deadline olarak shipReqAnalysis.partRealDeadlines
+  // (WIP-hariç, yani "WIP yoksa ilk eksik tarih") kullanılır → WIP'in yetişmesi
+  // gereken tarih budur, bu yüzden slack bu tarihe göre hesaplanır.
+  // ─────────────────────────────────────────────────────────────────────────
+  const wipJobs = useMemo(() => {
+    if (!akibet?.parts || !shipReqAnalysis?.partRealDeadlines || !workCenters) return [];
+    const realDeadlines = shipReqAnalysis.partRealDeadlines; // WIP-hariç
+    if (Object.keys(realDeadlines).length === 0) return [];
+
+    const _dateStr = (d) => d.toISOString().split("T")[0];
+    const _addDays = (d, n) => { const r = new Date(d); r.setDate(r.getDate() + n); return r; };
+    const _isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
+    const _nextWorkday = (d) => { let r = new Date(d); while (_isWeekend(r)) r = _addDays(r, 1); return r; };
+
+    const today = _nextWorkday(new Date());
+    const shiftMin = (workCenters.shiftHours || 9) * 60 * (workCenters.efficiency || 0.85);
+
+    // BOM lookup — cycle/setup time kaynağı
+    const bomLookup = {};
+    Object.keys(bomModels || {}).filter(k => k !== "undefined").forEach(mk => {
+      (bomModels[mk]?.parts || []).forEach((p) => {
+        if (!p.stockCode) return;
+        if (!bomLookup[p.stockCode] || (p.operations?.length || 0) > (bomLookup[p.stockCode].part.operations?.length || 0)) {
+          bomLookup[p.stockCode] = { part: p, modelKey: mk };
+        }
+      });
+    });
+
+    const items = [];
+    akibet.parts.forEach(akPart => {
+      if (akPart.internalRemaining <= 0 && akPart.fasonRemaining <= 0) return;
+      const deadline = realDeadlines[akPart.code];
+      if (!deadline) return; // Sevkiyatta hiç ihtiyaç yoksa gecikme riski yok
+
+      const bom = bomLookup[akPart.code];
+
+      akPart.orders.forEach(order => {
+        if (order.intRem <= 0 && order.fasRem <= 0) return;
+
+        // Bu iş emrinin kalan üretim süresi
+        let totalMin = 0;
+        let totalProductionDays = 0;
+        let activeOpCount = 0;
+        const activeOps = [];
+
+        order.ops.forEach(op => {
+          if (op.cancelled || op.remaining <= 0) return;
+          activeOpCount++;
+          activeOps.push({ opCode: op.opCode, opName: op.name, remaining: op.remaining, isFason: op.isFason, wcCode: op.wcCode });
+
+          if (op.isFason) {
+            const fa = (workCenters.fason || {})[op.opCode];
+            const leadDays = fa?.leadTimeDays || 14;
+            totalProductionDays += leadDays;
+          } else {
+            // BOM'dan cycle/setup çek — yoksa default
+            let cycleTime = 5, setupTime = 30;
+            if (bom) {
+              const bomOp = bom.part.operations?.find(bo => bo.opCode === op.opCode || bo.opName === op.name);
+              if (bomOp) {
+                if (bomOp.cycleTime != null && bomOp.cycleTime > 0) cycleTime = bomOp.cycleTime;
+                if (bomOp.setupTime != null) setupTime = bomOp.setupTime;
+              }
+            }
+            const opMin = setupTime + cycleTime * op.remaining;
+            totalMin += opMin;
+            totalProductionDays += Math.max(1, Math.ceil(opMin / shiftMin));
+          }
+        });
+
+        if (activeOpCount === 0) return;
+
+        // Geriye çizelge → en geç başlama tarihi
+        let latestStart = new Date(deadline.dueDate);
+        let daysBack = totalProductionDays;
+        while (daysBack > 0) {
+          latestStart = _addDays(latestStart, -1);
+          if (!_isWeekend(latestStart)) daysBack--;
+        }
+
+        // Slack: latestStart − today (iş günü)
+        let slack = 0;
+        let d = new Date(today);
+        const ls = new Date(_dateStr(latestStart));
+        if (d <= ls) {
+          while (d < ls) { d = _addDays(d, 1); if (!_isWeekend(d)) slack++; }
+        } else {
+          while (d > ls) { d = _addDays(d, -1); if (!_isWeekend(d)) slack--; }
+        }
+
+        items.push({
+          id: `W-${order.emirNo}`,
+          emirNo: order.emirNo,
+          partCode: akPart.code,
+          partName: akPart.name,
+          qty: order.qty,
+          intRem: order.intRem,
+          fasRem: order.fasRem,
+          opsCount: activeOpCount,
+          activeOps,
+          totalProductionDays,
+          dueDate: deadline.dueDate,
+          latestStart: _dateStr(latestStart),
+          slackDays: slack,
+          isWip: true
+        });
+      });
+    });
+
+    items.sort((a, b) => a.slackDays - b.slackDays);
+    return items;
+  }, [akibet, shipReqAnalysis, bomModels, workCenters]);
 
   // WIP yükü hesaplama: akibet operasyon adları → iş merkezi eşleşmesi (BOM bağımsız)
   const wipLoad = useMemo(() => {
@@ -9755,9 +10021,13 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 {(s.materialIssueJobs || 0) > 0 && (
                   <KPI label="Malzeme Eksik" value={s.materialIssueJobs} sub={`${s.totalMaterialWarnings} kalem · ${s.missingMaterials} stoksuz`} accent="#DC2626" />
                 )}
-                {(s.lateJobCount || 0) > 0 && (
-                  <KPI label="Geciken İş" value={s.lateJobCount} sub="Sevkiyata yetişmeyebilir" accent="#DC2626" />
-                )}
+                {((s.lateJobCount || 0) > 0 || (wipJobs || []).some(w => w.slackDays != null && w.slackDays < 0)) && (() => {
+                  const lateWipCount = (wipJobs || []).filter(w => w.slackDays != null && w.slackDays < 0).length;
+                  const totalLate = (s.lateJobCount || 0) + lateWipCount;
+                  return (
+                    <KPI label="Geciken İş" value={totalLate} sub={lateWipCount > 0 ? `${s.lateJobCount || 0} yeni · ${lateWipCount} WIP` : "Sevkiyata yetişmeyebilir"} accent="#DC2626" />
+                  );
+                })()}
                 {(s.atRiskJobCount || 0) > 0 && (
                   <KPI label="Risk Altında" value={s.atRiskJobCount} sub="≤5 gün slack" accent="#F59E0B" />
                 )}
@@ -9767,7 +10037,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
             {/* ---- AKSİYON PANELLERİ ---- */}
             {s && jobs.length > 0 && (() => {
-              const lateJobs = jobs.filter(j => j.slackDays != null && j.slackDays < 0).sort((a, b) => a.slackDays - b.slackDays);
+              // Yeni açılacak geciken jobs (slack < 0)
+              const lateNewJobs = jobs.filter(j => j.slackDays != null && j.slackDays < 0);
+              // Mevcut WIP iş emirlerinden gecikenler
+              const lateWipJobs = (wipJobs || []).filter(w => w.slackDays != null && w.slackDays < 0);
+              // Birleştir + slack'e göre sırala (en kötü önce)
+              const lateJobs = [
+                ...lateNewJobs.map(j => ({ ...j, _type: "new" })),
+                ...lateWipJobs.map(w => ({ ...w, _type: "wip" }))
+              ].sort((a, b) => a.slackDays - b.slackDays);
+
               const riskJobs = jobs.filter(j => j.slackDays != null && j.slackDays >= 0 && j.slackDays <= 5).sort((a, b) => a.slackDays - b.slackDays);
               const matIssueJobs = jobs.filter(j => j.materialWarnings?.length > 0);
               const missingMats = {};
@@ -9789,14 +10068,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
               return (
                 <div style={{ marginBottom: 16 }}>
-                  {/* 1. Geciken İşler */}
-                  <PanelHeader icon="🚨" title="Geciken İşler" count={lateJobs.length} color="#DC2626" isOpen={actionPanel === "panel_late"} onClick={() => setActionPanel(actionPanel === "panel_late" ? null : "panel_late")} badge="Sevkiyata yetişmeyecek" />
+                  {/* 1. Geciken İşler (yeni açılacak + devam eden WIP birleşik) */}
+                  <PanelHeader icon="🚨" title="Geciken İşler" count={lateJobs.length} color="#DC2626" isOpen={actionPanel === "panel_late"} onClick={() => setActionPanel(actionPanel === "panel_late" ? null : "panel_late")} badge={`${lateNewJobs.length} yeni · ${lateWipJobs.length} WIP`} />
                   {actionPanel === "panel_late" && lateJobs.length > 0 && (
                     <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#FEF2F2", borderRadius: 8, border: "1px solid #FECACA" }}>
+                      <div style={{ fontSize: 10, color: "#991B1B", marginBottom: 6, paddingLeft: 2 }}>
+                        🆕 = yeni açılması gereken iş emri · ⚙ = devam eden iş emri (tamamlanmazsa sevkiyat riski)
+                      </div>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
                         <thead><tr style={{ borderBottom: "1px solid #FECACA" }}>
                           <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>#</th>
-                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>İş</th>
+                          <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500, color: "#991B1B" }}>Tip</th>
+                          <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>İş / Emir</th>
                           <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>Parça</th>
                           <th style={{ padding: "4px 6px", textAlign: "left", fontWeight: 500, color: "#991B1B" }}>Ürün Adı</th>
                           <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#991B1B" }}>Adet</th>
@@ -9806,31 +10089,41 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           <th style={{ padding: "4px 6px", textAlign: "right", fontWeight: 500, color: "#991B1B" }}>Slack</th>
                           <th style={{ padding: "4px 6px", textAlign: "center", fontWeight: 500, color: "#991B1B" }}>Malzeme</th>
                         </tr></thead>
-                        <tbody>{lateJobs.map((j, i) => (
-                          <tr key={j.id} style={{ borderTop: "0.5px solid #FECACA" }}>
-                            <td style={{ padding: "5px 6px", color: "#991B1B" }}>{i + 1}</td>
-                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: "#DC2626", fontWeight: 500 }}>{j.id}</td>
-                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>
-                              {j.partCode}
-                              {(() => {
-                                const expRow = (explosionResult?.parts || []).find(r => r.code === j.partCode);
-                                const pls = expRow?.productionLineStock;
-                                if (!pls || pls.total <= 0) return null;
-                                const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
-                                  pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
-                                  "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
-                                return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
-                              })()}
-                            </td>
-                            <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
-                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
-                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.operations.length}</td>
-                            <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.totalProductionDays}g</td>
-                            <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)" }}>{j.dueDate?.substring(5)}</td>
-                            <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700, color: "#DC2626" }}>❌ {j.slackDays}g</td>
-                            <td style={{ padding: "5px 6px", textAlign: "center" }}>{j.materialWarnings?.length > 0 ? `📦${j.materialWarnings.length}` : "✓"}</td>
-                          </tr>
-                        ))}</tbody>
+                        <tbody>{lateJobs.map((j, i) => {
+                          const isWip = j._type === "wip";
+                          // WIP için kalan miktar bilgisi (tooltip)
+                          const wipTooltip = isWip
+                            ? `Emir No: ${j.emirNo}\nİç kalan: ${j.intRem || 0} · Fason kalan: ${j.fasRem || 0}\nAktif op sayısı: ${j.opsCount}\nAktif operasyonlar:\n${(j.activeOps || []).map(op => `  • ${op.opName || op.opCode}${op.isFason ? " (fason)" : ""} — kalan ${op.remaining}`).join("\n")}`
+                            : null;
+                          return (
+                            <tr key={j.id} style={{ borderTop: "0.5px solid #FECACA", background: isWip ? "#FFFBEB" : "transparent" }}>
+                              <td style={{ padding: "5px 6px", color: "#991B1B" }}>{i + 1}</td>
+                              <td style={{ padding: "5px 6px", textAlign: "center", fontSize: 10, fontWeight: 600 }} title={isWip ? "Devam eden iş emri — tamamlanmazsa bu deadline'a yetişemez" : "Açılması gereken yeni iş emri"}>
+                                {isWip ? <span style={{ color: "#D97706" }}>⚙ WIP</span> : <span style={{ color: "#DC2626" }}>🆕 YENİ</span>}
+                              </td>
+                              <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: isWip ? "#D97706" : "#DC2626", fontWeight: 500 }} title={wipTooltip || ""}>{isWip ? j.emirNo : j.id}</td>
+                              <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>
+                                {j.partCode}
+                                {(() => {
+                                  const expRow = (explosionResult?.parts || []).find(r => r.code === j.partCode);
+                                  const pls = expRow?.productionLineStock;
+                                  if (!pls || pls.total <= 0) return null;
+                                  const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                    pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                    "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                                  return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
+                                })()}
+                              </td>
+                              <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
+                              <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
+                              <td style={{ padding: "5px 6px", textAlign: "right" }}>{isWip ? j.opsCount : j.operations.length}</td>
+                              <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.totalProductionDays}g</td>
+                              <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)" }}>{j.dueDate?.substring(5)}</td>
+                              <td style={{ padding: "5px 6px", textAlign: "right", fontWeight: 700, color: isWip ? "#D97706" : "#DC2626" }}>❌ {j.slackDays}g</td>
+                              <td style={{ padding: "5px 6px", textAlign: "center" }}>{isWip ? <span style={{ color: "var(--color-text-tertiary)" }} title="Devam eden iş emri — malzeme kontrolü yok sayılır">—</span> : (j.materialWarnings?.length > 0 ? `📦${j.materialWarnings.length}` : "✓")}</td>
+                            </tr>
+                          );
+                        })}</tbody>
                       </table>
                     </div>
                   )}
@@ -9961,7 +10254,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   )}
 
                   {/* 5. İş Emri Listesi (öncelik sırasına göre) */}
-                  <PanelHeader icon="📋" title="İş Emri Öncelik Listesi" count={jobs.length} color="#3B82F6" isOpen={actionPanel === "panel_jobs"} onClick={() => setActionPanel(actionPanel === "panel_jobs" ? null : "panel_jobs")} badge="Tüm işler öncelik sırasına göre" />
+                  <PanelHeader icon="📋" title="İş Emri Öncelik Listesi" count={jobs.length} color="#3B82F6" isOpen={actionPanel === "panel_jobs"} onClick={() => setActionPanel(actionPanel === "panel_jobs" ? null : "panel_jobs")} badge="Yeni açılacak iş emirleri (WIP hariç)" />
                   {actionPanel === "panel_jobs" && (
                     <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "var(--color-background-secondary)", borderRadius: 8, border: "1px solid var(--color-border-tertiary)" }}>
                       <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>

@@ -14,7 +14,7 @@
  *     - Cloud Scheduler tarafından otomatik tetiklenir.
  *     - Cron: hibrit (sabah yoğun + öğle/ikindi)
  *       Cron 1: "* /10 8-9 * * 1-5"  → Pzt-Cum 08:00-09:50, 10 dk arayla
- *       Cron 2: "0 12,15 * * 1-5"     → Pzt-Cum 12:00 ve 15:00
+ *       Cron 2: "0 15,19 * * 1-5"     → Pzt-Cum 12:00 ve 15:00
  *
  * Her iki fonksiyon da aynı `runVioImport()` ana akışını çalıştırır.
  *
@@ -256,7 +256,7 @@ exports.fetchVioReportsHttp = onRequest(
 exports.fetchVioReportsMorning = onSchedule(
   {
     region: REGION,
-    schedule: "*/10 8-9 * * 1-5",
+    schedule: "*/15 9-11 * * 1-5",
     timeZone: "Europe/Istanbul",
     secrets: [GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN],
     timeoutSeconds: 540,
@@ -275,7 +275,7 @@ exports.fetchVioReportsMorning = onSchedule(
 exports.fetchVioReportsMidday = onSchedule(
   {
     region: REGION,
-    schedule: "0 12,15 * * 1-5",
+    schedule: "0 15,19 * * 1-5",
     timeZone: "Europe/Istanbul",
     secrets: [GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN],
     timeoutSeconds: 540,
