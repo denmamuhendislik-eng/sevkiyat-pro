@@ -7142,9 +7142,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             const wipInt = pool?.wipInt || 0;
             const wipFas = pool?.wipFas || 0;
             const stkUretim = pool?.stkUretim || 0;
+            // Parent bilgisi — RAW/BUY parçaların hangi MAKE'in altında olduğunu görmek için
+            const parent = bomParts[bp.parentIdx];
             prodParts.push({
               code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType,
-              level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim
+              level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim,
+              parentCode: parent?.stockCode || null, parentName: parent?.stockName || null
             });
           });
         }
@@ -10350,7 +10353,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                   return cMs - todayMs <= horizonMs;
                                 });
 
-                            // Parça-bazlı konsolide harita: code → { code, name, supplyType, totalShort, containers:[{date, short}], firstDate }
+                            // Parça-bazlı konsolide harita: code → { code, name, supplyType, totalShort, containers:[{date, short}], firstDate, parents:Set }
                             const partMap = {};
                             horizonContainers.forEach(cs => {
                               cs.cProducts.forEach(cp => {
@@ -10362,16 +10365,27 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     partMap[p.code] = {
                                       code: p.code, name: p.name, supplyType: p.supplyType,
                                       totalShort: 0, containers: [], firstDate: cs.date,
-                                      wipInt: p.wipInt || 0, wipFas: p.wipFas || 0
+                                      wipInt: p.wipInt || 0, wipFas: p.wipFas || 0,
+                                      parentsMap: {} // parentCode → { code, name, totalShort }
                                     };
                                   }
                                   partMap[p.code].totalShort += p.short;
                                   partMap[p.code].containers.push({ date: cs.date, short: p.short });
                                   if (cs.date < partMap[p.code].firstDate) partMap[p.code].firstDate = cs.date;
+                                  // Parent topla — RAW/BUY için "kim için" sorusunun cevabı
+                                  if (p.parentCode) {
+                                    if (!partMap[p.code].parentsMap[p.parentCode]) {
+                                      partMap[p.code].parentsMap[p.parentCode] = { code: p.parentCode, name: p.parentName, totalShort: 0 };
+                                    }
+                                    partMap[p.code].parentsMap[p.parentCode].totalShort += p.short;
+                                  }
                                 });
                               });
                             });
-                            const allParts = Object.values(partMap);
+                            const allParts = Object.values(partMap).map(p => ({
+                              ...p,
+                              parents: Object.values(p.parentsMap).sort((a, b) => b.totalShort - a.totalShort)
+                            }));
 
                             // Kategorileme
                             const buyParts = allParts.filter(p => {
@@ -10482,6 +10496,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                               <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500, color }}>Tip</th>
                                               <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Toplam Eksik</th>
                                               <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Sevkiyat Dağılımı</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Bağlı Olduğu Parça</th>
                                               <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500, color }}>İlk Tarih</th>
                                               {acilActive === "poTakip" && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Açık PO</th>}
                                               {(acilActive === "make" || acilActive === "fason") && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>WIP</th>}
@@ -10491,6 +10506,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                               const containerSummary = p.containers.length <= 4
                                                 ? p.containers.map(c => `${c.date.substring(5)}(${c.short})`).join(" · ")
                                                 : p.containers.slice(0, 3).map(c => `${c.date.substring(5)}(${c.short})`).join(" · ") + ` +${p.containers.length - 3}`;
+                                              // Bağlı olduğu parça: tek parent ise direkt göster, çok parent varsa en yüksek + N daha
+                                              const parents = p.parents || [];
+                                              let parentSummary = "—";
+                                              let parentTooltip = "";
+                                              if (parents.length === 1) {
+                                                const pr = parents[0];
+                                                parentSummary = `${pr.code}`;
+                                                parentTooltip = `${pr.code} — ${pr.name || ""}\n(${pr.totalShort} ad bu parça için)`;
+                                              } else if (parents.length > 1) {
+                                                const top = parents[0];
+                                                parentSummary = `${top.code} +${parents.length - 1} daha`;
+                                                parentTooltip = parents.map(pr => `${pr.code} — ${pr.name || ""} (${pr.totalShort} ad)`).join("\n");
+                                              }
                                               return (
                                                 <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22` }}>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.code}</td>
@@ -10500,6 +10528,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   </td>
                                                   <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color }}>{p.totalShort}</td>
                                                   <td style={{ padding: "4px 6px", fontSize: 9, color: "var(--color-text-secondary)" }} title={p.containers.map(c => `${c.date}: ${c.short} ad`).join("\n")}>{containerSummary}</td>
+                                                  <td style={{ padding: "4px 6px", fontSize: 9, fontFamily: "var(--font-mono)", color: parents.length > 0 ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: parentTooltip ? "help" : "default" }} title={parentTooltip}>{parentSummary}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.firstDate.substring(5)}</td>
                                                   {acilActive === "poTakip" && <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={po?.suppliers?.length ? `Tedarikçi: ${po.suppliers.join(", ")}` : ""}>📦{po?.totalRemaining || 0}</td>}
                                                   {(acilActive === "make" || acilActive === "fason") && (
