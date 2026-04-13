@@ -7146,6 +7146,34 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             const stkUretim = pool?.stkUretim || 0;
             // Parent bilgisi — RAW/BUY parçaların hangi MAKE'in altında olduğunu görmek için
             const parent = bomParts[bp.parentIdx];
+
+            // 🔍 DEBUG — Q70 7131'in 17/04 sevkiyatında neden ortaya çıktığını izlemek için
+            if (bp.stockCode === "150-0046" && c.date === "2026-04-17" && short > 0) {
+              const rootPart = bomParts.find(pp => pp.parentIdx === null || pp.parentIdx === undefined);
+              const ancestors = [];
+              let curIdx = bp.parentIdx;
+              while (curIdx !== null && curIdx !== undefined) {
+                const a = bomParts[curIdx];
+                if (!a) break;
+                ancestors.push({
+                  code: a.stockCode, name: a.stockName, supplyType: a.supplyType,
+                  bomQty: bomQtys[curIdx], covered: partCovered[curIdx] || 0,
+                  poolAvail: stockPool[a.stockCode]?.avail
+                });
+                curIdx = a.parentIdx;
+              }
+              console.log("🔍 [DEBUG Q70-7131 @ 17/04]", {
+                product: { pid: cp.pid, name: cp.product?.nameTR, qty: cp.qty, modelKey },
+                Q70: { needed, covered, short, bomQty: bomQtys[bi], pool: stockPool[bp.stockCode] },
+                root: rootPart ? {
+                  code: rootPart.stockCode, name: rootPart.stockName,
+                  bomQty: bomQtys[0], covered: partCovered[0],
+                  poolAvail: stockPool[rootPart.stockCode]?.avail
+                } : null,
+                ancestors_root_to_parent: ancestors.reverse() // root'tan parent'a sıralı
+              });
+            }
+
             prodParts.push({
               code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType,
               level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim,
