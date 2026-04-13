@@ -5319,7 +5319,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           if (!parentIsRoot && !parentIsSevkiyatRoot &&
               (parentType === "MAKE" || parentType === "MAKE+FASON" || parentType === "FASON")) {
             const parentStk = stockLookup[parent.stockCode];
-            const parentStkAvail = parentStk ? parentStk.ambar : 0;
+            const parentAk = akibetLookup[parent.stockCode];
+            // parentStkAvail: ambar + nonBulk WIP. Toplu iş emirleri (montaj/pres) sayılmaz —
+            // bunlar baştan açılan ana ürün/yarımamul iş emirleri; alt ihtiyacı baskılayamaz.
+            const parentStkAvail = (parentStk?.ambar || 0)
+                                 + (parentAk?.internalRemainingNonBulk || 0)
+                                 + (parentAk?.fasonRemainingNonBulk || 0);
             if (parentStkAvail >= parentNeeded) {
               partQtys[i] = 0;
               return;
@@ -6912,12 +6917,37 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const onAkibetDrop = (e) => { e.preventDefault(); const f = e.dataTransfer?.files?.[0]; if (f && /\.xlsx?$/i.test(f.name)) handleAkibetImport(f); };
   const onAkibetFileSelect = (e) => { const f = e.target.files?.[0]; if (f) handleAkibetImport(f); };
 
-  // Build akibet lookup: stockCode → { internalRemaining, fasonRemaining, totalQty }
+  // Build akibet lookup: stockCode → { internalRemaining, fasonRemaining, totalQty,
+  //                                     internalRemainingNonBulk, fasonRemainingNonBulk }
+  // NonBulk = "toplu açılmamış" iş emirleri. Toplu = order'ın tüm aktif (cancelled hariç)
+  // op'ları MONTAJ veya PRES içeren bir hatta. Toplu iş emirleri ana ürünler için
+  // (red diş tak, vb.) baştan açılır, gerçek üretim başlamayabilir → cascade'de güvenilmez.
+  // Cascade'de "parent karşılandı mı" kontrolünde sadece nonBulk WIP kullanılır.
   const akibetLookup = useMemo(() => {
     if (!akibet || !akibet.parts) return {};
+    const isBulkOpName = (name) => {
+      if (!name) return false;
+      const u = name.toUpperCase();
+      return u.includes("MONTAJ") || u.includes("PRES");
+    };
     const map = {};
     akibet.parts.forEach(p => {
-      map[p.code] = { internalRemaining: p.internalRemaining, fasonRemaining: p.fasonRemaining, totalQty: p.totalQty, orderCount: p.orderCount };
+      let intRemNonBulk = 0, fasRemNonBulk = 0;
+      (p.orders || []).forEach(order => {
+        const activeOps = (order.ops || []).filter(op => !op.cancelled && op.remaining > 0);
+        if (activeOps.length === 0) return;
+        // Toplu mu? Tüm aktif op'lar bulk-keyword içeriyor mu?
+        const isOrderBulk = activeOps.every(op => isBulkOpName(op.name));
+        if (isOrderBulk) return; // toplu → güvenilmez, sayma
+        // Non-bulk order: order'ın intRem/fasRem'ini ekle
+        intRemNonBulk += order.intRem || 0;
+        fasRemNonBulk += order.fasRem || 0;
+      });
+      map[p.code] = {
+        internalRemaining: p.internalRemaining, fasonRemaining: p.fasonRemaining,
+        internalRemainingNonBulk: intRemNonBulk, fasonRemainingNonBulk: fasRemNonBulk,
+        totalQty: p.totalQty, orderCount: p.orderCount
+      };
     });
     return map;
   }, [akibet]);
@@ -7184,10 +7214,12 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const pidToProduct = {};
     (products || []).forEach(p => { pidToProduct[p.id] = p; });
 
-    // WIP-dahil havuz: avail = ambar + wipInt + wipFas
+    // WIP-dahil havuz: avail = ambar + nonBulk WIP (toplu iş emirleri güvenilmez, sayılmaz)
     const stockPool = {};
     explosionResult.parts.forEach(r => {
-      const wipTotal = (r.wipInt || 0) + (r.wipFas || 0);
+      // explosionResult.parts'ta nonBulk WIP doğrudan yok — akibetLookup'tan bak
+      const ak = akibetLookup[r.code];
+      const wipTotal = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
       stockPool[r.code] = { avail: (r.stkAmbar || 0) + wipTotal };
     });
     Object.values(bomModels || {}).forEach(model => {
@@ -7195,7 +7227,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         if (!bp.stockCode || stockPool[bp.stockCode]) return;
         const stk = stockLookup[bp.stockCode];
         const ak = akibetLookup[bp.stockCode];
-        const wipTotal = (ak?.internalRemaining || 0) + (ak?.fasonRemaining || 0);
+        const wipTotal = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
         stockPool[bp.stockCode] = { avail: (stk?.ambar || 0) + wipTotal };
       });
     });
@@ -7207,7 +7239,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       const vioCode = VIO_CODES[p.id] || p.vioCode;
       const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
       const ak = akibetLookup[rootPart.stockCode];
-      const wipTotal = (ak?.internalRemaining || 0) + (ak?.fasonRemaining || 0);
+      const wipTotal = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
       if (stockPool[rootPart.stockCode]) {
         stockPool[rootPart.stockCode].avail = (stk?.ambar || 0) + wipTotal;
       } else {
