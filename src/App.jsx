@@ -5224,70 +5224,136 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     return { byProduct, containers: containers.sort((a, b) => a.date.localeCompare(b.date)), totalProducts, totalUnits };
   }, [yearsData, products, expCutoff, expYear]);
 
-  // BOM Explosion — multi-level, multi-pass for PRODUCT type
+  // BOM Explosion — single-pass recursive, PRODUCT concept removed (v13 refactor)
+  // supplyType artık sadece tedarik yöntemi: BUY/RAW/MAKE/FASON/MAKE+FASON
+  // Ürün rolü (sevkiyatta bağımsız satılma) ayrı bir boyut — sevkiyat planından türetilir.
   const runBomExplosion = () => {
     if (exploding) return;
     setExploding(true);
     try {
       const initialDemand = { ...unshippedDemand.byProduct };
       const grossReq = {};
-      const productDemand = {}; // stockCode → accumulated PRODUCT demand (for pass 2)
 
-      // Helper: explode one product through its BOM
-      const explodeProduct = (pid, demandQty, modelKey, pass) => {
+      // Legacy normalization — eski Firestore kayıtlarında "PRODUCT" kalmış olabilir, MAKE gibi davran
+      const normalizeSupplyType = (t) => (t === "PRODUCT" ? "MAKE" : t);
+
+      // stockCode → harici BOM modeli (yaprak parçalar için alt-BOM completion)
+      const modelByStockCode = {};
+      Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
+        if (m.modelCode) modelByStockCode[m.modelCode] = mk;
+        const firstPart = (m.parts || []).find(p => p.level === 0);
+        if (firstPart) modelByStockCode[firstPart.stockCode] = mk;
+      });
+
+      // Ön tarama: sevkiyat ürünlerinin root stok kodlarını topla.
+      // Bu kodlar parent stok düşümünden muaf tutulur — çünkü stokları kendi grossReq
+      // net hesabında zaten düşülecek (çift düşümü önler).
+      const sevkiyatProductCodes = new Set();
+      Object.entries(initialDemand).forEach(([pidStr, dInfo]) => {
+        const pid = Number(pidStr);
+        if (ANA_IDS.includes(pid)) return;
+        if (!dInfo || dInfo.qty <= 0) return;
+        const mapping = bomMapping[pid];
+        if (!mapping) return;
+        if (typeof mapping === "string" && mapping.startsWith("direct:")) {
+          sevkiyatProductCodes.add(mapping.substring(7));
+        } else if (bomModels[mapping]) {
+          const rootPart = (bomModels[mapping].parts || []).find(p => p.parentIdx === null || p.parentIdx === undefined);
+          if (rootPart) sevkiyatProductCodes.add(rootPart.stockCode);
+        }
+      });
+
+      // Recursive explode — tek BOM'u patlatır, yaprak MAKE parçalar için harici modelleri de recursive takip eder
+      // visitedModels: aynı çağrı zincirinde aynı modele dönmeyi engeller (sonsuz döngü koruması)
+      const explodeProduct = (pid, demandQty, modelKey, pass, visitedModels) => {
+        if (!modelKey || visitedModels.has(modelKey)) return;
         const model = bomModels[modelKey];
         if (!model) return;
         const parts = model.parts || [];
         if (parts.length === 0) return;
+
+        const nextVisited = new Set(visitedModels); nextVisited.add(modelKey);
+
+        // Bu BOM içinde hangi parçaların alt çocuğu var? (yaprak tespiti için)
+        const hasChildInThisBom = new Set();
+        parts.forEach(p => {
+          if (p.parentIdx !== null && p.parentIdx !== undefined) hasChildInThisBom.add(p.parentIdx);
+        });
+
         const partQtys = {};
 
         parts.forEach((p, i) => {
+          const sType = normalizeSupplyType(p.supplyType);
           let needed;
+
           if (p.parentIdx === null || p.parentIdx === undefined) {
-            needed = (p.qty || 1) * demandQty;
-          } else {
-            // Üst seviye BUY veya RAW ise alt bileşenler patlatılmaz
-            const parent = parts[p.parentIdx];
-            if (parent && (parent.supplyType === "BUY" || parent.supplyType === "RAW")) {
+            // Root: bu BOM'un kendi ürünü. grossReq'e eklenmez (bağımsız talep ayrı işlenir).
+            partQtys[i] = (p.qty || 1) * demandQty;
+            return;
+          }
+
+          const parent = parts[p.parentIdx];
+          const parentType = normalizeSupplyType(parent?.supplyType);
+
+          // Parent BUY/RAW → alt patlatılmaz (dışarıdan alınır, iç yapısı bizi ilgilendirmez)
+          if (parent && (parentType === "BUY" || parentType === "RAW")) {
+            partQtys[i] = 0;
+            return;
+          }
+
+          const parentNeeded = partQtys[p.parentIdx] || 0;
+          if (parentNeeded === 0) { partQtys[i] = 0; return; }
+
+          // Parent MAKE/MAKE+FASON ambar stoğuyla karşılanıyorsa alt bileşenler gereksiz.
+          // ANCAK atlanır:
+          //   (a) Parent root ise — root mamul stoku bağımsız talep hesabında zaten düşülüyor (rawDemand - productStock)
+          //   (b) Parent bir sevkiyat ürünü root'u ise — bu parçanın grossReq net hesabında stok düşecek, burada düşersek çift düşüm olur
+          const parentIsRoot = (parent.parentIdx === null || parent.parentIdx === undefined);
+          const parentIsSevkiyatRoot = sevkiyatProductCodes.has(parent.stockCode);
+          if (!parentIsRoot && !parentIsSevkiyatRoot &&
+              (parentType === "MAKE" || parentType === "MAKE+FASON")) {
+            const parentStk = stockLookup[parent.stockCode];
+            const parentStkAvail = parentStk ? parentStk.ambar : 0;
+            if (parentStkAvail >= parentNeeded) {
               partQtys[i] = 0;
               return;
             }
-            const parentNeeded = partQtys[p.parentIdx] || 0;
-            if (parentNeeded === 0) { partQtys[i] = 0; return; }
-            // Üst MAKE parça stokla karşılanıyorsa alt bileşenler gereksiz
-            // ANCAK: root seviye (mamul) için bu kontrol yapılmaz — mamul stoku talep hesabında zaten düşülüyor
-            if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined &&
-                (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON")) {
-              const parentStk = stockLookup[parent.stockCode];
-              const parentStkAvail = parentStk ? parentStk.ambar : 0; // Sadece ambar stoku — üretimdeki henüz hazır değil
-              if (parentStkAvail >= parentNeeded) {
-                partQtys[i] = 0;
-                return; // Üst parça ambarda yeterli, üretmeye gerek yok
-              }
-              // Ambardan karşılanan kısmı düş — sadece net ihtiyaç kadar alt parça lazım
-              const parentNet = Math.max(0, parentNeeded - parentStkAvail);
-              needed = (p.qty || 1) * parentNet;
-            } else {
-              needed = (p.qty || 1) * parentNeeded;
-            }
+            const parentNet = Math.max(0, parentNeeded - parentStkAvail);
+            needed = (p.qty || 1) * parentNet;
+          } else {
+            needed = (p.qty || 1) * parentNeeded;
           }
-          partQtys[i] = needed;
 
-          // Skip root-level parts (the product itself) — only child components go into grossReq
-          if (p.parentIdx === null || p.parentIdx === undefined) return;
+          partQtys[i] = needed;
+          if (needed <= 0) return;
 
           const code = p.stockCode;
           if (!grossReq[code]) {
-            grossReq[code] = { code, name: p.stockName, unit: p.unit || "AD", level: p.level, supplyType: p.supplyType, grossQty: 0, sources: [] };
+            grossReq[code] = { code, name: p.stockName, unit: p.unit || "AD", level: p.level, supplyType: sType, grossQty: 0, sources: [] };
           }
           grossReq[code].grossQty += needed;
           grossReq[code].sources.push({ pid, modelKey, qty: needed, pass });
           if (p.level > grossReq[code].level) grossReq[code].level = p.level;
+          // supplyType legacy normalization — grossReq'te her zaman normalize tip
+          if (grossReq[code].supplyType === "PRODUCT") grossReq[code].supplyType = "MAKE";
 
-          // PRODUCT tipi → pass 2'de alt malzemeleri patlatılacak
-          if (p.supplyType === "PRODUCT") {
-            if (!productDemand[code]) productDemand[code] = 0;
-            productDemand[code] += needed;
+          // Alt-BOM completion (ex Pass 2):
+          // Bu parça bu BOM içinde yaprak (alt çocuğu yok) ve MAKE/FASON tipinde ise,
+          // parçanın kendi harici BOM modeli varsa recursive patlat.
+          // Böylece "eski BOM alt ağacı içermiyor" durumu telafi edilir, ama tam ağaç içeren
+          // modern BOM'larda çift sayma olmaz (hasChildInThisBom true olur, atlanır).
+          if (!hasChildInThisBom.has(i) && (sType === "MAKE" || sType === "MAKE+FASON" || sType === "FASON")) {
+            const childModelKey = modelByStockCode[code];
+            if (childModelKey && childModelKey !== modelKey && !nextVisited.has(childModelKey)) {
+              // Forward demand: sevkiyat ürünü ise tam needed ilet (stok grossReq net'te düşecek);
+              // değilse parent ambar stoğunu düş (alt kümeye net ileti).
+              const forwardDemand = sevkiyatProductCodes.has(code)
+                ? needed
+                : Math.max(0, needed - (stockLookup[code]?.ambar || 0));
+              if (forwardDemand > 0) {
+                explodeProduct(pid, forwardDemand, childModelKey, pass, nextVisited);
+              }
+            }
           }
         });
       };
@@ -5295,6 +5361,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       // Pass 1: Talep hesaplama (kaynak: montaj planı veya sevkiyat planı)
       const directItems = [];
       const demandSummary = {}; // pid → { source, rawDemand, productStock, netDemand }
+
+      // Helper: stockCode için default supplyType (mevcut BOM'larda varsa oradan al, yoksa prefix kuralı)
+      const inferSupplyType = (stockCode) => {
+        const bomPart = Object.values(bomModels).flatMap(m => m?.parts || []).find(p => p.stockCode === stockCode);
+        if (bomPart) return normalizeSupplyType(bomPart.supplyType);
+        const pfx = (stockCode || "").split("-")[0];
+        if (pfx === "150") return "RAW";
+        if (pfx === "157") return "BUY";
+        if (pfx === "151") return "MAKE";
+        if (pfx === "152") return "MAKE"; // v13: 152 artık MAKE (eskiden PRODUCT)
+        return "MAKE";
+      };
 
       Object.entries(initialDemand).forEach(([pidStr, dInfo]) => {
         const pid = Number(pidStr);
@@ -5337,63 +5415,52 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         demandSummary[pid] = { source, rawDemand, productStock, netDemand, montajStockRaw, vioStockRaw, name: product?.nameTR || `PID ${pid}` };
 
         // "direct:STOK_KODU" formatı → BOM'u olmayan ürün, doğrudan talep
-        // BOM ÖNCELİKLİ: rawDemand ile ekle — stok düşümü net hesapta tek seferde yapılır
-        // Böylece aynı stok kodu BOM'da da geçiyorsa, BOM tüketimi sonrası kalan stok ürün mamul stoğuna yansır
+        // Sevkiyat ürünleri için rawDemand ile ekle — stok düşümü grossReq net hesabında tek sefer yapılır
         if (typeof mapping === "string" && mapping.startsWith("direct:")) {
           const stockCode = mapping.substring(7);
-          if (rawDemand > 0) {
+          if (!isAna && rawDemand > 0) {
             directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: rawDemand });
           }
           return;
         }
 
-        if (netDemand <= 0) return; // stok yeterli, üretim/alım gerekmez
-
-        // Normal BOM eşleştirmesi
         const modelKey = mapping;
         if (!modelKey || !bomModels[modelKey]) return;
-        explodeProduct(pid, netDemand, modelKey, 1);
+
+        // v13 REFACTOR: Sevkiyat ürünü (non-ANA) ise BOM root'u rawDemand ile grossReq'e girer.
+        // Bu sayede ürün kendisi MAKE listesinde iş emri olarak görünür (eski PRODUCT bug'ı çözümü).
+        // ANA ürünler için root girmez — onlar montaj süreciyle yönetilir.
+        if (!isAna && rawDemand > 0) {
+          const rootPart = (bomModels[modelKey].parts || []).find(p => p.parentIdx === null || p.parentIdx === undefined);
+          if (rootPart) {
+            directItems.push({ pid, stockCode: rootPart.stockCode, name: product?.nameTR || rootPart.stockCode, qty: rawDemand });
+          }
+        }
+
+        if (netDemand <= 0) return; // stok yeterli, alt bileşen üretimi gerekmez
+
+        // BOM'u alt bileşenlere kadar patlat — tek geçiş, Pass 2 artık yok
+        explodeProduct(pid, netDemand, modelKey, 1, new Set());
       });
 
-      // Doğrudan talep ekleme (BOM'u olmayan ürünler)
+      // Doğrudan talepleri grossReq'e ekle — sevkiyat ürünlerinin root'u (BOM'lu + BOM'suz) buradan girer
       directItems.forEach(item => {
         if (!grossReq[item.stockCode]) {
-          grossReq[item.stockCode] = { code: item.stockCode, name: item.name, unit: "AD", level: -1, supplyType: "BUY", grossQty: 0, sources: [] };
+          grossReq[item.stockCode] = {
+            code: item.stockCode, name: item.name, unit: "AD",
+            level: -1, supplyType: inferSupplyType(item.stockCode),
+            grossQty: 0, sources: []
+          };
         }
         grossReq[item.stockCode].grossQty += item.qty;
         grossReq[item.stockCode].sources.push({ pid: item.pid, modelKey: null, qty: item.qty, pass: 0 });
+        // supplyType legacy normalization
+        if (grossReq[item.stockCode].supplyType === "PRODUCT") grossReq[item.stockCode].supplyType = "MAKE";
       });
 
-      // Pass 2: PRODUCT tipi parçaların alt BOM'larını patlat
-      // stockCode → bomModels modelKey eşleştirmesi
-      const modelByStockCode = {};
-      Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
-        if (m.modelCode) modelByStockCode[m.modelCode] = mk;
-        const firstPart = (m.parts || []).find(p => p.level === 0);
-        if (firstPart) modelByStockCode[firstPart.stockCode] = mk;
-      });
-
-      let pass2Count = 0;
-      const productNoBom = []; // PRODUCT ama alt BOM bulunamadı → kendisi satın alınmalı
-      Object.entries(productDemand).forEach(([stockCode, totalQty]) => {
-        const mk = modelByStockCode[stockCode];
-        if (mk && bomModels[mk]) {
-          explodeProduct(stockCode, totalQty, mk, 2);
-          pass2Count++;
-        } else {
-          productNoBom.push(stockCode);
-        }
-      });
-
-      // PRODUCT olarak işaretlenmiş ama alt BOM'u olmayan parçalar →
-      // grossReq'te supplyType'ı BUY'a çevir ki satınalma listesinde görünsün.
-      // (Sadece bu lokal MRP hesap görünümü için; global parts tipini değiştirmez.)
-      productNoBom.forEach(stockCode => {
-        if (grossReq[stockCode] && grossReq[stockCode].supplyType === "PRODUCT") {
-          grossReq[stockCode].supplyType = "BUY";
-          grossReq[stockCode]._reclassifiedFromProduct = true;
-        }
-      });
+      // v13: Pass 2 ve productDemand/_reclassifiedFromProduct mantığı tamamen kaldırıldı.
+      // Alt-BOM completion artık explodeProduct içinde recursive olarak yapılıyor.
+      const pass2Count = 0;
 
       // Net requirement calculation
       const results = Object.values(grossReq).map(r => {
@@ -5474,7 +5541,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         totalGap: results.filter(r => r.gap > 0).length,
         mappedProducts, unmappedProducts,
         crossCheckIssues: crossCheckIssues.length,
-        pass2Count, productDemandCodes: Object.keys(productDemand),
+        pass2Count, productDemandCodes: [],
         demandSummary,
         calculatedAt: new Date().toISOString()
       });
@@ -6163,7 +6230,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       let supplyType = "MAKE";
       if (prefix === "150") supplyType = "RAW";
       else if (prefix === "157") supplyType = "BUY";
-      else if (prefix === "152") supplyType = "PRODUCT";
+      // v13: 152 artık MAKE (eskiden PRODUCT — kaldırıldı)
 
       // Mevcut BOM'larda bu stok kodu için manuel override varsa onu kullan (global tutarlılık)
       const existingOverride = Object.values(bomModels || {}).flatMap(m => m?.parts || []).find(p => p.stockCode === stockCode && p._autoSupplyType);
@@ -6193,7 +6260,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       let rootType = "MAKE";
       if (prefix === "150") rootType = "RAW";
       else if (prefix === "157") rootType = "BUY";
-      else if (prefix === "152") rootType = "PRODUCT";
+      // v13: 152 artık MAKE (eskiden PRODUCT — kaldırıldı)
       parts.unshift({
         stockCode: modelCode, stockName: modelName, level: 0, qty: 1,
         unit: "AD", supplyType: rootType, parentIdx: null,
@@ -6900,7 +6967,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           const poolKey = `__product_${cp.pid}`;
           if (!stockPool[poolKey]) {
             stockPool[poolKey] = { avail: stk?.ambar || 0, wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
-              name: cp.product?.nameTR, supplyType: "PRODUCT", level: 0 };
+              name: cp.product?.nameTR, supplyType: "MAKE", level: 0 };
           }
           const needed = cp.qty;
           const pool = stockPool[poolKey];
@@ -6913,10 +6980,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           prodParts.push({
             code: vioCode || `PID-${cp.pid}`,
             name: cp.product?.nameTR || `Ürün ${cp.pid}`,
-            supplyType: "PRODUCT",
+            supplyType: "MAKE",
             level: 1, needed, covered, short,
             wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
-            _isProductRoot: true, // gösterimde ayırt etmek için ileride kullanılabilir
+            _isProductRoot: true, // v13: "mamul" ayrımı artık supplyType ile değil, bu flag ile yapılır
           });
           allProdData[key] = prodParts;
           return;
@@ -6969,7 +7036,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 prodParts.push({
                   code: bp.stockCode,
                   name: `${bp.stockName || cp.product?.nameTR} (mamul)`,
-                  supplyType: "PRODUCT",
+                  supplyType: "MAKE",
                   level: 1, needed, covered, short,
                   wipInt: pool?.wipInt || 0, wipFas: pool?.wipFas || 0, stkUretim: pool?.stkUretim || 0,
                   _isProductRoot: true,
@@ -7836,7 +7903,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     "FASON": { bg: "#FBEAF0", c: "#72243E" },
     "BUY": { bg: "#EAF3DE", c: "#27500A" },
     "RAW": { bg: "#FAEEDA", c: "#633806" },
-    "PRODUCT": { bg: "#E1F5EE", c: "#04342C" }
+    "PRODUCT": { bg: "#E6F1FB", c: "#0C447C" } // v13 legacy — MAKE ile aynı renk
   };
 
   const levelColors = ["#185FA5", "#1D9E75", "#BA7517", "#993C1D", "#7C3AED"];
@@ -7895,7 +7962,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                 }}
                 title={p._autoSupplyType ? `Otomatik: ${p._autoSupplyType} → Manuel: ${p.supplyType}` : p.supplyType}
               >
-                {["MAKE","MAKE+FASON","FASON","BUY","RAW","PRODUCT"].map(t => (
+                {["MAKE","MAKE+FASON","FASON","BUY","RAW"].map(t => (
                   <option key={t} value={t}>{t}</option>
                 ))}
               </select>
@@ -8810,7 +8877,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                             }}
                             title={p._autoSupplyType ? `Otomatik: ${p._autoSupplyType} → Manuel: ${p.supplyType}` : p.supplyType}
                           >
-                            {["MAKE","MAKE+FASON","FASON","BUY","RAW","PRODUCT"].map(t => (
+                            {["MAKE","MAKE+FASON","FASON","BUY","RAW"].map(t => (
                               <option key={t} value={t}>{t}</option>
                             ))}
                           </select>
@@ -9134,7 +9201,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               const pfx = code.split("-")[0];
               if (pfx === "150") return "RAW";
               if (pfx === "157") return "BUY";
-              if (pfx === "152") return "PRODUCT";
+              if (pfx === "152") return "MAKE"; // v13: eskiden PRODUCT
               if (pfx === "151") return "MAKE";
               return "MAKE";
             };
@@ -11179,7 +11246,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const mappedCount = demandProducts.filter(p => isMappedUI(p.id)).length;
 
         const levelLabels = { 0: "L0 — Ana", 1: "L1 — Montaj", 2: "L2 — İşlenmiş", 3: "L3 — Hammadde" };
-        const supplyColors = { MAKE: "#1D9E75", "MAKE+FASON": "#D97706", FASON: "#C2410C", BUY: "#2563EB", RAW: "#92400E", PRODUCT: "#534AB7" };
+        const supplyColors = { MAKE: "#1D9E75", "MAKE+FASON": "#D97706", FASON: "#C2410C", BUY: "#2563EB", RAW: "#92400E", PRODUCT: "#1D9E75" };
         const hasStock = Object.keys(stockLookup).length > 0;
         const hasAkibet = Object.keys(akibetLookup).length > 0;
         const hasPurchase = Object.keys(purchaseLookup).length > 0;
@@ -11190,13 +11257,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           return p?.vioCode || VIO_CODES[pid] || "";
         };
 
-        // Build comprehensive BOM PRODUCT lookup from all imported BOMs
+        // Build comprehensive BOM lookup from all imported BOMs
+        // v13: "PRODUCT" artık ayrı bir tip değil — root parçalar (parentIdx===null) mamul rolünü temsil eder.
+        // Eşleştirme önceliği artık supplyType==="PRODUCT" yerine isRoot üzerinden yapılır.
         const bomProductLookup = (() => {
           const lookup = [];
           Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
             (m.parts || []).forEach(p => {
               const nameTokens = (p.stockName || "").toUpperCase().replace(/[,]/g, ".").split(/\s+/).filter(t => t.length >= 2);
-              lookup.push({ stockCode: p.stockCode, stockName: p.stockName || "", modelKey: mk, supplyType: p.supplyType, level: p.level, nameTokens });
+              const isRoot = (p.parentIdx === null || p.parentIdx === undefined);
+              // Legacy PRODUCT → MAKE normalization ve isRoot flag
+              const normalizedType = p.supplyType === "PRODUCT" ? "MAKE" : p.supplyType;
+              lookup.push({ stockCode: p.stockCode, stockName: p.stockName || "", modelKey: mk, supplyType: normalizedType, level: p.level, nameTokens, isRoot });
             });
           });
           return lookup;
@@ -11227,19 +11299,19 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
           // Try to find BOM part where stockName starts with same token
           if (firstToken.length >= 3) {
-            // Prefer PRODUCT type, then others
+            // v13: Root (mamul) parçalar öncelikli, sonra diğerleri
             const nameMatches = safeLookup.filter(b => (b.nameTokens[0] || "") === firstToken);
-            const productMatch = nameMatches.find(b => b.supplyType === "PRODUCT");
-            if (productMatch) return { ...productMatch, matchType: "nameExact" };
+            const rootMatch = nameMatches.find(b => b.isRoot);
+            if (rootMatch) return { ...rootMatch, matchType: "nameExact" };
             if (nameMatches.length > 0) return { ...nameMatches[0], matchType: "nameExact" };
 
             // stockName contains the first token
-            const containsMatches = safeLookup.filter(b => 
-              b.stockName.toUpperCase().replace(/[,]/g, ".").includes(firstToken) && 
-              (b.supplyType === "PRODUCT" || b.supplyType === "MAKE" || b.supplyType === "BUY" || b.supplyType === "RAW")
+            const containsMatches = safeLookup.filter(b =>
+              b.stockName.toUpperCase().replace(/[,]/g, ".").includes(firstToken) &&
+              (b.isRoot || b.supplyType === "MAKE" || b.supplyType === "BUY" || b.supplyType === "RAW")
             );
-            const productContains = containsMatches.find(b => b.supplyType === "PRODUCT");
-            if (productContains) return { ...productContains, matchType: "nameContains" };
+            const rootContains = containsMatches.find(b => b.isRoot);
+            if (rootContains) return { ...rootContains, matchType: "nameContains" };
             if (containsMatches.length > 0) return { ...containsMatches[0], matchType: "nameContains" };
           }
 
@@ -11250,8 +11322,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               const bomTwo = (b.nameTokens[0] || "") + " " + (b.nameTokens[1] || "");
               return bomTwo === twoTokens;
             });
-            const productMulti = multiMatches.find(b => b.supplyType === "PRODUCT");
-            if (productMulti) return { ...productMulti, matchType: "nameMulti" };
+            const rootMulti = multiMatches.find(b => b.isRoot);
+            if (rootMulti) return { ...rootMulti, matchType: "nameMulti" };
             if (multiMatches.length > 0) return { ...multiMatches[0], matchType: "nameMulti" };
           }
 
