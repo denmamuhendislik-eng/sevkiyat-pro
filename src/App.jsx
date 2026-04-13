@@ -4780,6 +4780,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [actionPanel, setActionPanel] = useState(null); // aksiyon paneli açık id
   const [partSearch, setPartSearch] = useState(""); // parça arama
   const [shipReqOpen, setShipReqOpen] = useState({}); // sevkiyat ihtiyaç açılır-kapanır
+  const [acilHorizon, setAcilHorizon] = useState(60); // Acil aksiyon bandı zaman ufku (gün)
+  const [acilActive, setAcilActive] = useState(null); // hangi sayaç açık: "buy"|"make"|"fason"|"wip"|"poTakip"|null
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
   const [schedOverrides, setSchedOverrides] = useState({}); // "partCode|opCode" → machineId
   const [jobOrder, setJobOrder] = useState({}); // machineId → ["jobId|opIdx", ...]
@@ -10336,6 +10338,214 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       <PanelHeader icon="📦" title="Sevkiyat Bazlı İhtiyaç" count={containers.length} color="#059669" isOpen={actionPanel === "panel_shipReq"} onClick={() => setActionPanel(actionPanel === "panel_shipReq" ? null : "panel_shipReq")} badge={`${containerStats.filter(c => c.shortParts > 0).length} eksikli sevkiyat`} />
                       {actionPanel === "panel_shipReq" && containers.length > 0 && (
                         <div style={{ padding: "6px 12px 12px", marginBottom: 6, background: "#F0FDF4", borderRadius: 8, border: "1px solid #BBF7D0" }}>
+                          {/* ⚡ ACİL AKSİYON BANDI */}
+                          {(() => {
+                            // Tarih ufku içindeki konteynerleri filtrele
+                            const horizonMs = acilHorizon * 86400000;
+                            const todayMs = new Date().setHours(0,0,0,0);
+                            const horizonContainers = (acilHorizon === 0)
+                              ? containerStats
+                              : containerStats.filter(cs => {
+                                  const cMs = new Date(cs.date).getTime();
+                                  return cMs - todayMs <= horizonMs;
+                                });
+
+                            // Parça-bazlı konsolide harita: code → { code, name, supplyType, totalShort, containers:[{date, short}], firstDate }
+                            const partMap = {};
+                            horizonContainers.forEach(cs => {
+                              cs.cProducts.forEach(cp => {
+                                const prodParts = allProdData[`${cs.id}|${cp.pid}`] || [];
+                                prodParts.forEach(p => {
+                                  if (p.short <= 0) return;
+                                  if (p._isProductRoot) return; // mamul satırını sayma (alt parçalar zaten patlatıldı)
+                                  if (!partMap[p.code]) {
+                                    partMap[p.code] = {
+                                      code: p.code, name: p.name, supplyType: p.supplyType,
+                                      totalShort: 0, containers: [], firstDate: cs.date,
+                                      wipInt: p.wipInt || 0, wipFas: p.wipFas || 0
+                                    };
+                                  }
+                                  partMap[p.code].totalShort += p.short;
+                                  partMap[p.code].containers.push({ date: cs.date, short: p.short });
+                                  if (cs.date < partMap[p.code].firstDate) partMap[p.code].firstDate = cs.date;
+                                });
+                              });
+                            });
+                            const allParts = Object.values(partMap);
+
+                            // Kategorileme
+                            const buyParts = allParts.filter(p => {
+                              if (p.supplyType !== "BUY" && p.supplyType !== "RAW") return false;
+                              const po = purchaseLookup[p.code];
+                              return !po || (po.totalRemaining || 0) === 0;
+                            });
+                            const poTakipParts = allParts.filter(p => {
+                              if (p.supplyType !== "BUY" && p.supplyType !== "RAW") return false;
+                              const po = purchaseLookup[p.code];
+                              const rem = po?.totalRemaining || 0;
+                              return rem > 0 && rem < p.totalShort;
+                            });
+                            const makeParts = allParts.filter(p => {
+                              if (p.supplyType !== "MAKE" && p.supplyType !== "MAKE+FASON") return false;
+                              return (p.wipInt + p.wipFas) === 0;
+                            });
+                            const fasonParts = allParts.filter(p => {
+                              if (p.supplyType !== "FASON") return false;
+                              return p.wipFas === 0;
+                            });
+                            // WIP geciken: wipJobs içinden slackDays<0 olanlar — ama horizon içinde dueDate'i olanlar
+                            const wipLateParts = (wipJobs || []).filter(w => {
+                              if (w.slackDays == null || w.slackDays >= 0) return false;
+                              if (acilHorizon === 0) return true;
+                              const dMs = new Date(w.dueDate).getTime();
+                              return dMs - todayMs <= horizonMs;
+                            });
+
+                            const SayacBox = ({ icon, count, label, sub, color, bg, active, onClick, disabled }) => (
+                              <div onClick={disabled ? undefined : onClick} style={{
+                                flex: 1, padding: "8px 10px", borderRadius: 8,
+                                background: active ? color : (disabled ? "#F9FAFB" : bg),
+                                border: `1px solid ${active ? color : (disabled ? "#E5E7EB" : color + "55")}`,
+                                cursor: disabled ? "default" : "pointer",
+                                opacity: disabled ? 0.5 : 1,
+                                transition: "all 0.15s",
+                                textAlign: "center"
+                              }}>
+                                <div style={{ fontSize: 18, color: active ? "#FFF" : color, fontWeight: 700 }}>{icon} {count}</div>
+                                <div style={{ fontSize: 10, color: active ? "#FFF" : color, fontWeight: 600, marginTop: 2 }}>{label}</div>
+                                <div style={{ fontSize: 8, color: active ? "rgba(255,255,255,0.85)" : "var(--color-text-tertiary)", marginTop: 1 }}>{sub}</div>
+                              </div>
+                            );
+
+                            const horizonLabel = acilHorizon === 0 ? "Tüm sevkiyatlar" : `Önümüzdeki ${acilHorizon} gün`;
+
+                            return (
+                              <div style={{ marginBottom: 12, padding: "10px 12px", background: "#FFF", borderRadius: 8, border: "1px solid #BBF7D0" }}>
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                                  <div style={{ fontSize: 11, fontWeight: 600, color: "#065F46" }}>
+                                    ⚡ Acil Aksiyon — {horizonLabel} · {horizonContainers.length} sevkiyat
+                                  </div>
+                                  <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid #BBF7D0" }}>
+                                    {[30, 60, 90, 0].map(h => (
+                                      <button key={h} onClick={() => setAcilHorizon(h)} style={{
+                                        padding: "3px 10px", fontSize: 10, fontWeight: 600,
+                                        background: acilHorizon === h ? "#059669" : "#FFF",
+                                        color: acilHorizon === h ? "#FFF" : "#065F46",
+                                        border: "none", cursor: "pointer", borderRight: h !== 0 ? "1px solid #BBF7D0" : "none"
+                                      }}>{h === 0 ? "Tümü" : `${h}g`}</button>
+                                    ))}
+                                  </div>
+                                </div>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  <SayacBox icon="🛒" count={buyParts.length} label="Sipariş ver" sub="BUY · PO yok"
+                                    color="#DC2626" bg="#FEF2F2" active={acilActive === "buy"} disabled={buyParts.length === 0}
+                                    onClick={() => setAcilActive(acilActive === "buy" ? null : "buy")} />
+                                  <SayacBox icon="⚡" count={makeParts.length} label="İş emri aç" sub="MAKE · WIP yok"
+                                    color="#7C3AED" bg="#F5F3FF" active={acilActive === "make"} disabled={makeParts.length === 0}
+                                    onClick={() => setAcilActive(acilActive === "make" ? null : "make")} />
+                                  <SayacBox icon="🚀" count={fasonParts.length} label="Fason gönder" sub="FASON · WIP yok"
+                                    color="#0891B2" bg="#ECFEFF" active={acilActive === "fason"} disabled={fasonParts.length === 0}
+                                    onClick={() => setAcilActive(acilActive === "fason" ? null : "fason")} />
+                                  <SayacBox icon="⚙" count={wipLateParts.length} label="WIP hızlandır" sub="Devam eden, geciken"
+                                    color="#D97706" bg="#FFFBEB" active={acilActive === "wip"} disabled={wipLateParts.length === 0}
+                                    onClick={() => setAcilActive(acilActive === "wip" ? null : "wip")} />
+                                  <SayacBox icon="📞" count={poTakipParts.length} label="PO takip" sub="Kısmi sipariş"
+                                    color="#92400E" bg="#FEF3C7" active={acilActive === "poTakip"} disabled={poTakipParts.length === 0}
+                                    onClick={() => setAcilActive(acilActive === "poTakip" ? null : "poTakip")} />
+                                </div>
+
+                                {/* Aktif sayacın konsolide listesi */}
+                                {acilActive && (() => {
+                                  let list = [], title = "", color = "#DC2626", isWipList = false;
+                                  if (acilActive === "buy") { list = buyParts; title = "🛒 Sipariş Verilmesi Gereken Parçalar"; color = "#DC2626"; }
+                                  else if (acilActive === "make") { list = makeParts; title = "⚡ Yeni İş Emri Açılması Gereken Parçalar"; color = "#7C3AED"; }
+                                  else if (acilActive === "fason") { list = fasonParts; title = "🚀 Fasona Gönderilmesi Gereken Parçalar"; color = "#0891B2"; }
+                                  else if (acilActive === "poTakip") { list = poTakipParts; title = "📞 PO Takibi Gereken Parçalar (kısmi sipariş)"; color = "#92400E"; }
+                                  else if (acilActive === "wip") { list = wipLateParts; title = "⚙ Hızlandırılması Gereken WIP İş Emirleri"; color = "#D97706"; isWipList = true; }
+
+                                  // En çok eksikten en aza
+                                  list = isWipList
+                                    ? [...list].sort((a, b) => a.slackDays - b.slackDays)
+                                    : [...list].sort((a, b) => a.firstDate.localeCompare(b.firstDate) || b.totalShort - a.totalShort);
+
+                                  if (list.length === 0) return null;
+
+                                  return (
+                                    <div style={{ marginTop: 10, padding: "8px 10px", background: color + "08", borderRadius: 6, border: `1px solid ${color}33` }}>
+                                      <div style={{ fontSize: 10, fontWeight: 600, color, marginBottom: 6 }}>{title} ({list.length})</div>
+                                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                                        {!isWipList ? (
+                                          <>
+                                            <thead><tr style={{ borderBottom: `1px solid ${color}44` }}>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Kod</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Ad</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500, color }}>Tip</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Toplam Eksik</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Sevkiyat Dağılımı</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500, color }}>İlk Tarih</th>
+                                              {acilActive === "poTakip" && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Açık PO</th>}
+                                              {(acilActive === "make" || acilActive === "fason") && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>WIP</th>}
+                                            </tr></thead>
+                                            <tbody>{list.map(p => {
+                                              const po = purchaseLookup[p.code];
+                                              const containerSummary = p.containers.length <= 4
+                                                ? p.containers.map(c => `${c.date.substring(5)}(${c.short})`).join(" · ")
+                                                : p.containers.slice(0, 3).map(c => `${c.date.substring(5)}(${c.short})`).join(" · ") + ` +${p.containers.length - 3}`;
+                                              return (
+                                                <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22` }}>
+                                                  <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.code}</td>
+                                                  <td style={{ padding: "4px 6px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "center" }}>
+                                                    <span style={{ fontSize: 8, padding: "0 4px", borderRadius: 2, background: p.supplyType === "MAKE" ? "#ECFDF5" : p.supplyType === "BUY" ? "#DBEAFE" : p.supplyType === "RAW" ? "#DBEAFE" : "#FEF3C7", color: p.supplyType === "MAKE" ? "#065F46" : (p.supplyType === "BUY" || p.supplyType === "RAW") ? "#1D4ED8" : "#92400E" }}>{p.supplyType}</span>
+                                                  </td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color }}>{p.totalShort}</td>
+                                                  <td style={{ padding: "4px 6px", fontSize: 9, color: "var(--color-text-secondary)" }} title={p.containers.map(c => `${c.date}: ${c.short} ad`).join("\n")}>{containerSummary}</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.firstDate.substring(5)}</td>
+                                                  {acilActive === "poTakip" && <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={po?.suppliers?.length ? `Tedarikçi: ${po.suppliers.join(", ")}` : ""}>📦{po?.totalRemaining || 0}</td>}
+                                                  {(acilActive === "make" || acilActive === "fason") && (
+                                                    <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9, color: "var(--color-text-tertiary)" }}>
+                                                      {(p.wipInt + p.wipFas) > 0 ? `⚙${p.wipInt + p.wipFas}` : "—"}
+                                                    </td>
+                                                  )}
+                                                </tr>
+                                              );
+                                            })}</tbody>
+                                          </>
+                                        ) : (
+                                          <>
+                                            <thead><tr style={{ borderBottom: `1px solid ${color}44` }}>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Emir No</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Parça</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Ad</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Adet</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Op</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500, color }}>Sevkiyat</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Slack</th>
+                                            </tr></thead>
+                                            <tbody>{list.map(w => {
+                                              const opSummary = (w.activeOps || []).map(op => `${op.opName || op.opCode}${op.isFason ? "(F)" : ""}: ${op.remaining}`).join(" · ");
+                                              return (
+                                                <tr key={w.id} style={{ borderTop: `0.5px solid ${color}22` }}>
+                                                  <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", color, fontWeight: 600 }}>{w.emirNo}</td>
+                                                  <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{w.partCode}</td>
+                                                  <td style={{ padding: "4px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.partName}</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "right" }}>{w.qty}ad</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={opSummary}>{w.opsCount}</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{w.dueDate?.substring(5)}</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color }}>❌ {w.slackDays}g</td>
+                                                </tr>
+                                              );
+                                            })}</tbody>
+                                          </>
+                                        )}
+                                      </table>
+                                    </div>
+                                  );
+                                })()}
+                              </div>
+                            );
+                          })()}
+
                           {containerStats.map(cs => {
                             const cKey = `c_${cs.id}`;
                             const isContainerOpen = shipReqOpen[cKey];
