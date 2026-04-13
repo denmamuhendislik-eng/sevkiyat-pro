@@ -12004,7 +12004,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     {ps.effectiveStock > 0 ? ps.effectiveStock : ps.bomStockUsed > 0 ? "0" : "—"}
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: displayNetDemand > 0 ? "#DC2626" : "#16A34A" }}>
-                                    {displayNetDemand > 0 ? displayNetDemand : "✓ Stok yeterli"}
+                                    {(() => {
+                                      const bomExtra = Math.max(0, (ps.bomDependentTotal || 0) - (ps.bomStockUsed || 0));
+                                      const grandTotal = displayNetDemand + bomExtra;
+                                      if (displayNetDemand === 0 && bomExtra === 0) return "✓ Stok yeterli";
+                                      if (bomExtra === 0) return displayNetDemand;
+                                      // Hem sevkiyat hem BOM ek talebi var → ana sayı toplam, alt detay
+                                      const tip = `Toplam üretim/tedarik: ${grandTotal} adet\n` +
+                                        `• Sevkiyat net: ${displayNetDemand}\n` +
+                                        `• BOM ek (üst ürünler için): ${bomExtra}`;
+                                      return (
+                                        <span title={tip}>
+                                          {grandTotal}
+                                          <div style={{ fontSize: 7, color: "#9CA3AF", fontWeight: 400, marginTop: 1 }}>
+                                            {displayNetDemand}+{bomExtra}
+                                          </div>
+                                        </span>
+                                      );
+                                    })()}
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right" }}>{ps.totalParts || "—"}</td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", color: "#16A34A" }}>{ps.covered || "—"}</td>
