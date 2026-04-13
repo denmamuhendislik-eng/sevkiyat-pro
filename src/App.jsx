@@ -6931,37 +6931,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       return u.includes("MONTAJ") || u.includes("PRES");
     };
     const map = {};
-    const debugCodes = new Set(["151-0416", "360060", "151-1244", "151-0164"]);
     akibet.parts.forEach(p => {
       let intRemNonBulk = 0, fasRemNonBulk = 0;
-      const orderDebug = [];
       (p.orders || []).forEach(order => {
         const activeOps = (order.ops || []).filter(op => !op.cancelled && op.remaining > 0);
         if (activeOps.length === 0) return;
         // Toplu mu? Tüm aktif op'lar bulk-keyword içeriyor mu?
         const isOrderBulk = activeOps.every(op => isBulkOpName(op.name));
-        if (debugCodes.has(p.code) || debugCodes.has(p.name)) {
-          orderDebug.push({
-            emirNo: order.emirNo, qty: order.qty,
-            intRem: order.intRem, fasRem: order.fasRem,
-            activeOps: activeOps.map(op => ({ name: op.name, opCode: op.opCode, remaining: op.remaining, isFason: op.isFason, isBulk: isBulkOpName(op.name) })),
-            isOrderBulk
-          });
-        }
         if (isOrderBulk) return; // toplu → güvenilmez, sayma
         // Non-bulk order: order'ın intRem/fasRem'ini ekle
         intRemNonBulk += order.intRem || 0;
         fasRemNonBulk += order.fasRem || 0;
       });
-      if (orderDebug.length > 0) {
-        console.log(`🔍 [BULK-DEBUG ${p.code}] ${p.name}`, {
-          totalIntRem: p.internalRemaining,
-          totalFasRem: p.fasonRemaining,
-          intRemNonBulk, fasRemNonBulk,
-          orderCount: (p.orders || []).length,
-          orders: orderDebug
-        });
-      }
       map[p.code] = {
         internalRemaining: p.internalRemaining, fasonRemaining: p.fasonRemaining,
         internalRemainingNonBulk: intRemNonBulk, fasonRemainingNonBulk: fasRemNonBulk,
@@ -10616,7 +10597,22 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                               }
                                               return (
                                                 <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22` }}>
-                                                  <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.code}</td>
+                                                  <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
+                                                    {p.code}
+                                                    {(() => {
+                                                      const expRow = (explosionResult?.parts || []).find(r => r.code === p.code);
+                                                      const pls = expRow?.productionLineStock;
+                                                      if (!pls || pls.total <= 0) return null;
+                                                      const tip = "Üretim hattında bekleyen mamul/yarımamul\n─────────────────────────────\n" +
+                                                        pls.byLocation.map(b => `${b.loc}: ${b.qty} ${(p.unit || "AD").toLowerCase()}${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                                        "\n\n⚠ Yeni iş emri açmadan/sipariş vermeden önce kontrol edin —\noperasyonu bitmiş ama henüz transfer/teslim alınmamış olabilir.";
+                                                      return (
+                                                        <span style={{ marginLeft: 4, padding: "1px 5px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 700, cursor: "help", border: "1px solid #FDE68A" }} title={tip}>
+                                                          🔍{pls.total}
+                                                        </span>
+                                                      );
+                                                    })()}
+                                                  </td>
                                                   <td style={{ padding: "4px 6px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "center" }}>
                                                     <span style={{ fontSize: 8, padding: "0 4px", borderRadius: 2, background: p.supplyType === "MAKE" ? "#ECFDF5" : p.supplyType === "BUY" ? "#DBEAFE" : p.supplyType === "RAW" ? "#DBEAFE" : "#FEF3C7", color: p.supplyType === "MAKE" ? "#065F46" : (p.supplyType === "BUY" || p.supplyType === "RAW") ? "#1D4ED8" : "#92400E" }}>{p.supplyType}</span>
