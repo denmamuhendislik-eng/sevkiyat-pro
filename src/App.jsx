@@ -5489,7 +5489,26 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           if (Math.abs(diff) > 0.5) crossCheck = { stokWip, akibetWip, diff };
         }
 
-        return { ...r, stkAmbar, stkUretim, stkFason, stkAvail, bomDependentQty, wipInt, wipFas, wipTotal, openPO, netQty, gap, crossCheck, productCount: r.sources.length };
+        // v13: Üretim hattı stok detayı — sevkiyat bazlı ihtiyaç ekranında "kontrol önerilir" rozeti için
+        // Sadece kategori="uretim" olan satırlar (PRES HATTI, KAYNAK HATTI, TALAŞ AMBARI, Üretim Hattı, Lazer Mamül Ambarı)
+        // Aynı lokasyon+operasyon için birden çok satır olabilir → topla
+        let productionLineStock = null;
+        if (stk && stk.locs && stk.locs.length > 0) {
+          const aggMap = {}; // key: "loc|opName|opNo" → { loc, opName, opNo, qty }
+          stk.locs.forEach(l => {
+            if (l.c !== "uretim" || !l.q || l.q <= 0) return;
+            const key = `${l.l}|${l.o || ""}|${l.n || ""}`;
+            if (!aggMap[key]) aggMap[key] = { loc: l.l, opName: l.o || null, opNo: l.n || null, qty: 0 };
+            aggMap[key].qty += l.q;
+          });
+          const byLocation = Object.values(aggMap).sort((a, b) => b.qty - a.qty);
+          if (byLocation.length > 0) {
+            const total = byLocation.reduce((s, x) => s + x.qty, 0);
+            productionLineStock = { total, byLocation };
+          }
+        }
+
+        return { ...r, stkAmbar, stkUretim, stkFason, stkAvail, bomDependentQty, wipInt, wipFas, wipTotal, openPO, netQty, gap, crossCheck, productionLineStock, productCount: r.sources.length };
       });
 
       results.sort((a, b) => a.level - b.level || b.netQty - a.netQty);
@@ -9789,7 +9808,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                           <tr key={j.id} style={{ borderTop: "0.5px solid #FECACA" }}>
                             <td style={{ padding: "5px 6px", color: "#991B1B" }}>{i + 1}</td>
                             <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: "#DC2626", fontWeight: 500 }}>{j.id}</td>
-                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>{j.partCode}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>
+                              {j.partCode}
+                              {(() => {
+                                const expRow = (explosionResult?.parts || []).find(r => r.code === j.partCode);
+                                const pls = expRow?.productionLineStock;
+                                if (!pls || pls.total <= 0) return null;
+                                const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                  pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                  "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                                return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
+                              })()}
+                            </td>
                             <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
                             <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
                             <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.operations.length}</td>
@@ -9869,7 +9899,18 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         <tbody>{riskJobs.map(j => (
                           <tr key={j.id} style={{ borderTop: "0.5px solid #FDE68A" }}>
                             <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: "#D97706", fontWeight: 500 }}>{j.id}</td>
-                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>{j.partCode}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>
+                              {j.partCode}
+                              {(() => {
+                                const expRow = (explosionResult?.parts || []).find(r => r.code === j.partCode);
+                                const pls = expRow?.productionLineStock;
+                                if (!pls || pls.total <= 0) return null;
+                                const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                  pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                  "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                                return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
+                              })()}
+                            </td>
                             <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
                             <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
                             <td style={{ padding: "5px 6px", textAlign: "center", fontFamily: "var(--font-mono)" }}>{j.dueDate?.substring(5)}</td>
@@ -10079,6 +10120,20 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                                     {p.stkUretim > 0 && <>🏭{p.stkUretim}</>}
                                                                   </span>
                                                                 )}
+                                                                {/* v13: Üretim hattı stok rozeti — operasyonu bitmiş ama transfer bekliyor olabilir */}
+                                                                {p.short > 0 && (() => {
+                                                                  const expRow = (explosionResult?.parts || []).find(r => r.code === p.code);
+                                                                  const pls = expRow?.productionLineStock;
+                                                                  if (!pls || pls.total <= 0) return null;
+                                                                  const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                                                    pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                                                    "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                                                                  return (
+                                                                    <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>
+                                                                      🔍{pls.total}
+                                                                    </span>
+                                                                  );
+                                                                })()}
                                                               </td>
                                                               <td style={{ padding: "3px 4px", textAlign: "center" }}>{p.short > 0 ? "🔴" : "✅"}</td>
                                                             </tr>
@@ -10092,6 +10147,22 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                                 <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8 }}>{sp.needed}</td>
                                                                 <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8, color: "#16A34A" }}>{sp.covered}</td>
                                                                 <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8, fontWeight: sp.short > 0 ? 600 : 400, color: sp.short > 0 ? "#DC2626" : "#16A34A" }}>{sp.short > 0 ? sp.short : "—"}</td>
+                                                                <td style={{ padding: "2px 4px", textAlign: "left", fontSize: 8 }}>
+                                                                  {/* v13: Alt seviye parça için de üretim hattı rozeti */}
+                                                                  {sp.short > 0 && (() => {
+                                                                    const expRow = (explosionResult?.parts || []).find(r => r.code === sp.code);
+                                                                    const pls = expRow?.productionLineStock;
+                                                                    if (!pls || pls.total <= 0) return null;
+                                                                    const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                                                      pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                                                      "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                                                                    return (
+                                                                      <span style={{ padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 7, fontWeight: 600, cursor: "help" }} title={tip}>
+                                                                        🔍{pls.total}
+                                                                      </span>
+                                                                    );
+                                                                  })()}
+                                                                </td>
                                                                 <td style={{ padding: "2px 4px", textAlign: "center", fontSize: 8 }}>{sp.short > 0 ? "🔴" : "✅"}</td>
                                                               </tr>
                                                             ))}
