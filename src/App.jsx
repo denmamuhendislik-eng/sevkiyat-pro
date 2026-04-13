@@ -7026,6 +7026,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             level: 1, needed, covered, short,
             wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
             _isProductRoot: true, // v13: "mamul" ayrımı artık supplyType ile değil, bu flag ile yapılır
+            pid: cp.pid, productName: cp.product?.nameTR || null
           });
           allProdData[key] = prodParts;
           return;
@@ -7082,6 +7083,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                   level: 1, needed, covered, short,
                   wipInt: pool?.wipInt || 0, wipFas: pool?.wipFas || 0, stkUretim: pool?.stkUretim || 0,
                   _isProductRoot: true,
+                  pid: cp.pid, productName: cp.product?.nameTR || null
                 });
               }
               return;
@@ -7147,7 +7149,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
             prodParts.push({
               code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType,
               level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim,
-              parentCode: parent?.stockCode || null, parentName: parent?.stockName || null
+              parentCode: parent?.stockCode || null, parentName: parent?.stockName || null,
+              pid: cp.pid, productName: cp.product?.nameTR || null
             });
           });
         }
@@ -10366,7 +10369,8 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       code: p.code, name: p.name, supplyType: p.supplyType,
                                       totalShort: 0, containers: [], firstDate: cs.date,
                                       wipInt: p.wipInt || 0, wipFas: p.wipFas || 0,
-                                      parentsMap: {} // parentCode → { code, name, totalShort }
+                                      parentsMap: {}, // parentCode → { code, name, totalShort }
+                                      productsMap: {} // pid → { pid, name, totalShort, containers:[{date, short}] }
                                     };
                                   }
                                   partMap[p.code].totalShort += p.short;
@@ -10379,12 +10383,21 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                     }
                                     partMap[p.code].parentsMap[p.parentCode].totalShort += p.short;
                                   }
+                                  // Sevkiyat ürünü topla — hangi son ürünün BOM'u için talep doğdu
+                                  if (p.pid) {
+                                    if (!partMap[p.code].productsMap[p.pid]) {
+                                      partMap[p.code].productsMap[p.pid] = { pid: p.pid, name: p.productName || `PID ${p.pid}`, totalShort: 0, containers: [] };
+                                    }
+                                    partMap[p.code].productsMap[p.pid].totalShort += p.short;
+                                    partMap[p.code].productsMap[p.pid].containers.push({ date: cs.date, short: p.short });
+                                  }
                                 });
                               });
                             });
                             const allParts = Object.values(partMap).map(p => ({
                               ...p,
-                              parents: Object.values(p.parentsMap).sort((a, b) => b.totalShort - a.totalShort)
+                              parents: Object.values(p.parentsMap).sort((a, b) => b.totalShort - a.totalShort),
+                              products: Object.values(p.productsMap).sort((a, b) => b.totalShort - a.totalShort)
                             }));
 
                             // Kategorileme
@@ -10497,6 +10510,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                               <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Toplam Eksik</th>
                                               <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Sevkiyat Dağılımı</th>
                                               <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Bağlı Olduğu Parça</th>
+                                              <th style={{ padding: "3px 6px", textAlign: "left", fontWeight: 500, color }}>Hangi Ürün İçin</th>
                                               <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500, color }}>İlk Tarih</th>
                                               {acilActive === "poTakip" && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Açık PO</th>}
                                               {(acilActive === "make" || acilActive === "fason") && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>WIP</th>}
@@ -10519,6 +10533,21 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 parentSummary = `${top.code} +${parents.length - 1} daha`;
                                                 parentTooltip = parents.map(pr => `${pr.code} — ${pr.name || ""} (${pr.totalShort} ad)`).join("\n");
                                               }
+                                              // Hangi ürün için: sevkiyat ürün listesi
+                                              const productList = p.products || [];
+                                              let productSummary = "—";
+                                              let productTooltip = "";
+                                              if (productList.length === 1) {
+                                                const pr = productList[0];
+                                                const shortName = (pr.name || "").length > 20 ? (pr.name || "").substring(0, 18) + "…" : (pr.name || "");
+                                                productSummary = shortName;
+                                                productTooltip = `${pr.name}\n${pr.containers.map(c => `  • ${c.date}: ${c.short} ad`).join("\n")}`;
+                                              } else if (productList.length > 1) {
+                                                const top = productList[0];
+                                                const shortName = (top.name || "").length > 18 ? (top.name || "").substring(0, 16) + "…" : (top.name || "");
+                                                productSummary = `${shortName} +${productList.length - 1}`;
+                                                productTooltip = productList.map(pr => `${pr.name} (${pr.totalShort} ad)\n${pr.containers.map(c => `  • ${c.date}: ${c.short}`).join("\n")}`).join("\n\n");
+                                              }
                                               return (
                                                 <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22` }}>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.code}</td>
@@ -10529,6 +10558,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                   <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color }}>{p.totalShort}</td>
                                                   <td style={{ padding: "4px 6px", fontSize: 9, color: "var(--color-text-secondary)" }} title={p.containers.map(c => `${c.date}: ${c.short} ad`).join("\n")}>{containerSummary}</td>
                                                   <td style={{ padding: "4px 6px", fontSize: 9, fontFamily: "var(--font-mono)", color: parents.length > 0 ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: parentTooltip ? "help" : "default" }} title={parentTooltip}>{parentSummary}</td>
+                                                  <td style={{ padding: "4px 6px", fontSize: 9, color: productList.length > 0 ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: productTooltip ? "help" : "default" }} title={productTooltip}>{productSummary}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.firstDate.substring(5)}</td>
                                                   {acilActive === "poTakip" && <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={po?.suppliers?.length ? `Tedarikçi: ${po.suppliers.join(", ")}` : ""}>📦{po?.totalRemaining || 0}</td>}
                                                   {(acilActive === "make" || acilActive === "fason") && (
