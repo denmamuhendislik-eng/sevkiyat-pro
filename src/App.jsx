@@ -5053,9 +5053,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           return;
         }
         // Store compactly — parts as object keyed by code (for O(1) lookup by BOM explosion)
+        // v13: pl[] = sadece üretim hattı (PRES/KAYNAK/TALAŞ/Üretim/Lazer Mamül) detayı — rozet için
         const partsObj = {};
         result.parts.forEach(p => {
-          partsObj[p.code] = { n: p.name, u: p.unit, g: p.group, a: p.ambar, r: p.uretim, f: p.fason, h: p.haric, t: p.total, lc: p.locs.length };
+          const pl = (p.locs || []).filter(l => l.c === "uretim").map(l => ({ l: l.l, q: l.q, o: l.o || null, n: l.n || null }));
+          partsObj[p.code] = { n: p.name, u: p.unit, g: p.group, a: p.ambar, r: p.uretim, f: p.fason, h: p.haric, t: p.total, lc: p.locs.length, ...(pl.length > 0 ? { pl } : {}) };
         });
         await saveStock({
           importedAt: new Date().toISOString(), fileName: file.name,
@@ -5085,7 +5087,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     if (!stock?.parts) return {};
     const map = {};
     Object.entries(stock.parts).forEach(([code, p]) => {
-      map[code] = { ambar: p.a || 0, uretim: p.r || 0, fason: p.f || 0, haric: p.h || 0, total: p.t || 0, name: p.n, unit: p.u, group: p.g };
+      map[code] = { ambar: p.a || 0, uretim: p.r || 0, fason: p.f || 0, haric: p.h || 0, total: p.t || 0, name: p.n, unit: p.u, group: p.g, pl: p.pl || [] };
     });
     return map;
   }, [stock]);
@@ -5490,16 +5492,16 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         }
 
         // v13: Üretim hattı stok detayı — sevkiyat bazlı ihtiyaç ekranında "kontrol önerilir" rozeti için
-        // Sadece kategori="uretim" olan satırlar (PRES HATTI, KAYNAK HATTI, TALAŞ AMBARI, Üretim Hattı, Lazer Mamül Ambarı)
-        // Aynı lokasyon+operasyon için birden çok satır olabilir → topla
+        // stk.pl[] sadece üretim hattı satırlarını içerir (PRES HATTI, KAYNAK HATTI, TALAŞ AMBARI, Üretim Hattı, Lazer Mamül Ambarı)
+        // Aynı lokasyon+operasyon birden çok satıra bölünmüşse topla
         let productionLineStock = null;
-        if (stk && stk.locs && stk.locs.length > 0) {
+        if (stk && stk.pl && stk.pl.length > 0) {
           const aggMap = {}; // key: "loc|opName|opNo" → { loc, opName, opNo, qty }
-          stk.locs.forEach(l => {
-            if (l.c !== "uretim" || !l.q || l.q <= 0) return;
-            const key = `${l.l}|${l.o || ""}|${l.n || ""}`;
-            if (!aggMap[key]) aggMap[key] = { loc: l.l, opName: l.o || null, opNo: l.n || null, qty: 0 };
-            aggMap[key].qty += l.q;
+          stk.pl.forEach(pl => {
+            if (!pl.q || pl.q <= 0) return;
+            const key = `${pl.l}|${pl.o || ""}|${pl.n || ""}`;
+            if (!aggMap[key]) aggMap[key] = { loc: pl.l, opName: pl.o || null, opNo: pl.n || null, qty: 0 };
+            aggMap[key].qty += pl.q;
           });
           const byLocation = Object.values(aggMap).sort((a, b) => b.qty - a.qty);
           if (byLocation.length > 0) {
