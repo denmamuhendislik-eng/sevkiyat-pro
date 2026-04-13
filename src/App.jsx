@@ -5516,10 +5516,25 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
           codesToCheck.add(mapping.substring(7));
         }
         let totalBomUsed = 0;
+        let totalBomDep = 0;
+        const depSources = []; // hangi üst ürünlerden ne kadar — tooltip için
         codesToCheck.forEach(code => {
           if (bomStockUsed[code]) totalBomUsed = Math.max(totalBomUsed, bomStockUsed[code]);
+          // grossReq'deki bu parça satırından BOM bağımlı talep kaynaklarını topla
+          const partRow = results.find(r => r.code === code);
+          if (partRow) {
+            totalBomDep = Math.max(totalBomDep, partRow.bomDependentQty || 0);
+            (partRow.sources || []).filter(s => s.pass >= 1).forEach(s => {
+              const parentPid = typeof s.pid === "number" ? s.pid : null;
+              if (parentPid === pid) return; // kendisi hariç
+              const parentPr = products?.find(pp => pp.id === parentPid);
+              depSources.push({ pid: parentPid, name: parentPr?.nameTR || `PID ${parentPid}`, qty: s.qty });
+            });
+          }
         });
         d.bomStockUsed = totalBomUsed;
+        d.bomDependentTotal = totalBomDep;
+        d.bomDependentSources = depSources;
         d.effectiveStock = Math.max(0, d.productStock - totalBomUsed);
         d.adjustedNetDemand = Math.max(0, d.rawDemand - d.effectiveStock);
       });
@@ -11790,6 +11805,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                         montajStockRaw: d.montajStockRaw ?? null, vioStockRaw: d.vioStockRaw ?? null,
                         bomStockUsed: d.bomStockUsed || 0, effectiveStock: d.effectiveStock ?? d.productStock ?? 0,
                         adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
+                        bomDependentTotal: d.bomDependentTotal || 0, bomDependentSources: d.bomDependentSources || [],
                         totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
                     }
                     pMap[pid].totalParts++;
@@ -11811,6 +11827,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       montajStockRaw: d.montajStockRaw ?? null, vioStockRaw: d.vioStockRaw ?? null,
                       bomStockUsed: d.bomStockUsed || 0, effectiveStock: d.effectiveStock ?? d.productStock ?? 0,
                       adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
+                      bomDependentTotal: d.bomDependentTotal || 0, bomDependentSources: d.bomDependentSources || [],
                       totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
                   }
                 });
@@ -11963,8 +11980,25 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                       return <div style={{ fontSize: 7, color: "#16A34A" }}>VIO: {cc.vio} ✓</div>;
                                     })()}
                                   </td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.bomStockUsed > 0 ? "#7C3AED" : "var(--color-text-tertiary)", fontSize: 10 }}>
-                                    {ps.bomStockUsed > 0 ? <span title={`BOM bağımlı talep için ${ps.bomStockUsed} adet stoktan ayrıldı`}>−{ps.bomStockUsed}</span> : "—"}
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.bomDependentTotal > 0 ? "#7C3AED" : "var(--color-text-tertiary)", fontSize: 10 }}>
+                                    {ps.bomDependentTotal > 0 ? (() => {
+                                      const srcDetail = (ps.bomDependentSources || []).length > 0
+                                        ? ps.bomDependentSources.map(s => `• ${s.name}: ${s.qty}`).join("\n")
+                                        : "";
+                                      const extraNeed = Math.max(0, ps.bomDependentTotal - ps.bomStockUsed);
+                                      const tip = `Toplam BOM talebi: ${ps.bomDependentTotal} adet\n` +
+                                        (srcDetail ? srcDetail + "\n" : "") +
+                                        (ps.bomStockUsed > 0 ? `Stoktan karşılanan: ${ps.bomStockUsed}\n` : "") +
+                                        (extraNeed > 0 ? `Ek üretim gereği: ${extraNeed}` : "Tamamı stoktan karşılandı");
+                                      return (
+                                        <span title={tip}>
+                                          +{ps.bomDependentTotal}
+                                          {ps.bomStockUsed > 0 && (
+                                            <div style={{ fontSize: 7, color: "#A855F7", marginTop: 1 }}>−{ps.bomStockUsed} stk</div>
+                                          )}
+                                        </span>
+                                      );
+                                    })() : "—"}
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 500, color: ps.effectiveStock > 0 ? "#16A34A" : "var(--color-text-tertiary)" }}>
                                     {ps.effectiveStock > 0 ? ps.effectiveStock : ps.bomStockUsed > 0 ? "0" : "—"}
@@ -12002,7 +12036,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                       <div style={{ marginTop: 8, fontSize: 10, color: "var(--color-text-tertiary)", display: "flex", gap: 16, flexWrap: "wrap" }}>
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#DBEAFE", color: "#1D4ED8", fontSize: 9 }}>Montaj</span> = talep montaj planından, stok montaj stoktan</span>
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#F3E8FF", color: "#7C3AED", fontSize: 9 }}>Sevkiyat</span> = talep sevkiyat planından, stok VIO raporundan</span>
-                        <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#EDE9FE", color: "#7C3AED", fontSize: 9 }}>⚡ BOM</span> = diğer ürünlerin BOM'unda kullanılan stok (öncelikli)</span>
+                        <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#EDE9FE", color: "#7C3AED", fontSize: 9 }}>⚡ BOM</span> = üst ürünlerin bu ürüne BOM talebi (+) / mamul stoğundan rezerve edilen (−)</span>
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9 }}>⚠ VIO</span> = montaj stok vs VIO stok farkı (&gt;2 uyarı)</span>
                       </div>
                     </div>
