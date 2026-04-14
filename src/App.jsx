@@ -5466,8 +5466,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         } else {
           // Diğer ürünler — sevkiyat planından talep, VIO stoktan mamul stok
           rawDemand = dInfo.qty;
-          const stk = stockLookup[VIO_CODES[pid] || product?.vioCode] || stockLookup[product?.vioCode] || {};
-          productStock = stk.ambar || 0;
+          const vioCode = VIO_CODES[pid] || product?.vioCode;
+          const stk = stockLookup[vioCode] || stockLookup[product?.vioCode] || {};
+          // productStock = VIO ambar + non-bulk akibet WIP + onaylı hat stoğu
+          // Mail'den gelen stok raporunda üretim/montaj hattı lokasyonları çoğu zaman yok;
+          // o yüzden non-bulk WIP ile gerçek durumu gösteriyoruz. Onaylı PLS (🔍) operatörün
+          // teyit ettiği hat stoğu — varsa ekle. Toplu (MONTAJ/PRES) iş emirleri non-bulk'ta değil.
+          const vioAmbar = stk.ambar || 0;
+          const ak = akibetLookup[vioCode];
+          const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+          const plsConf = plsConfirmedLookup[vioCode]?.qty || 0;
+          productStock = vioAmbar + nonBulkWip + plsConf;
+          vioStockRaw = vioAmbar;
           source = "sevkiyat";
         }
 
@@ -10464,7 +10474,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                 const prodParts = allProdData[`${cs.id}|${cp.pid}`] || [];
                                 prodParts.forEach(p => {
                                   if (p.short <= 0) return;
-                                  if (p._isProductRoot) return; // mamul satırını sayma (alt parçalar zaten patlatıldı)
+                                  // Root mamul satırı: ANA ürünler (C44, TP32 vb. montajla yapılan) için
+                                  // alt parçalar zaten iş emri olarak listede — bu yüzden root'u atla.
+                                  // Sevkiyat ürünleri (121299 gibi) kendi başına iş emri açılması gereken
+                                  // mamul ise root'u da say — aksi halde "İş emri aç" listesinde görünmez.
+                                  if (p._isProductRoot && ANA_IDS.includes(p.pid)) return;
                                   if (!partMap[p.code]) {
                                     partMap[p.code] = {
                                       code: p.code, name: p.name, supplyType: p.supplyType,
