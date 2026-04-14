@@ -7184,14 +7184,19 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     (products || []).forEach(p => { pidToProduct[p.id] = p; });
 
     // Stok havuzunu kur — explosion parts + BOM'daki ek parçalar
+    // v14 Adım 3 (Ömer kuralı): WIP artık "hazır stok" olarak havuza eklenmez.
+    // Açık iş emri olan bir parça ambar stoğu yeterli değilse EKSİK olarak görünür.
+    // WIP bilgisi bilgi/rozet olarak stockPool'da tutulur ama avail'e karışmaz.
+    // "Her şey hazırmış" yanılsaması ortadan kalkar — operatör/planlamacı fiziksel
+    // konum (fason/iç/op) tooltip'inden karar verir.
     const stockPool = {};
     explosionResult.parts.forEach(r => {
-      // Non-bulk WIP'i akibetLookup'tan al (toplu montaj/pres iş emirleri sayılmaz)
       const ak = akibetLookup[r.code];
       const nonBulkWip = (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[r.code]?.qty || 0;
       stockPool[r.code] = {
-        avail: (r.stkAmbar || 0) + nonBulkWip + plsConf,
+        avail: (r.stkAmbar || 0) + plsConf, // v14 Adım 3: WIP çıkarıldı
+        wipTotal: nonBulkWip, // bilgi olarak kalır (rozet için)
         wipInt: r.wipInt || 0,
         wipFas: r.wipFas || 0,
         stkUretim: r.stkUretim || 0,
@@ -7206,7 +7211,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         const nonBulkWip = (ak?.remainingNonBulk || 0);
         const plsConf = plsConfirmedLookup[bp.stockCode]?.qty || 0;
         stockPool[bp.stockCode] = {
-          avail: (stk?.ambar || 0) + nonBulkWip + plsConf,
+          avail: (stk?.ambar || 0) + plsConf, // v14 Adım 3: WIP çıkarıldı
+          wipTotal: nonBulkWip,
           wipInt: ak?.internalRemaining || 0,
           wipFas: ak?.fasonRemaining || 0,
           stkUretim: stk?.uretim || 0,
@@ -7231,13 +7237,16 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const nonBulkWip = (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[rootPart.stockCode]?.qty || 0;
       // Var olan havuzu ezme (BOM döngüsü zaten set etmiş olabilir), ama availini VIO stoğuyla güncelle
+      // v14 Adım 3: WIP avail'e eklenmez (Ömer kuralı)
       if (stockPool[rootPart.stockCode]) {
         if (stk && stk.ambar !== undefined) {
-          stockPool[rootPart.stockCode].avail = (stk.ambar || 0) + nonBulkWip + plsConf;
+          stockPool[rootPart.stockCode].avail = (stk.ambar || 0) + plsConf;
+          stockPool[rootPart.stockCode].wipTotal = nonBulkWip;
         }
       } else {
         stockPool[rootPart.stockCode] = {
-          avail: (stk?.ambar || 0) + nonBulkWip + plsConf,
+          avail: (stk?.ambar || 0) + plsConf,
+          wipTotal: nonBulkWip,
           wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
           name: rootPart.stockName, supplyType: rootPart.supplyType, level: 0
         };
@@ -7424,13 +7433,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             const pool = stockPool[bp.stockCode];
             const wipInt = pool?.wipInt || 0;
             const wipFas = pool?.wipFas || 0;
+            const wipTotal = pool?.wipTotal || 0; // v14 Adım 3: WIP "hazır" değil — rozet için bilgi
             const stkUretim = pool?.stkUretim || 0;
             // Parent bilgisi — RAW/BUY parçaların hangi MAKE'in altında olduğunu görmek için
             const parent = bomParts[bp.parentIdx];
 
             prodParts.push({
               code: bp.stockCode, name: bp.stockName, supplyType: bp.supplyType,
-              level: depthMemo[bi] || 0, needed, covered, short, wipInt, wipFas, stkUretim,
+              level: depthMemo[bi] || 0, needed, covered, short,
+              wipInt, wipFas, wipTotal, stkUretim,
               parentCode: parent?.stockCode || null, parentName: parent?.stockName || null,
               pid: cp.pid, productName: cp.product?.nameTR || null,
               unit: bp.unit || "AD"
@@ -11207,13 +11218,34 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                               <td style={{ padding: "3px 6px", textAlign: "right", color: "#16A34A" }}>{p.covered}</td>
                                                               <td style={{ padding: "3px 6px", textAlign: "right", fontWeight: p.short > 0 ? 600 : 400, color: p.short > 0 ? "#DC2626" : "#16A34A" }}>{p.short > 0 ? p.short : "—"}</td>
                                                               <td style={{ padding: "3px 4px", textAlign: "left", fontSize: 8 }}>
-                                                                {(p.wipInt > 0 || p.wipFas > 0 || p.stkUretim > 0) && (
-                                                                  <span style={{ color: "#D97706" }} title="Devam eden / üretimde olan miktarlar — henüz ambarda değil">
-                                                                    {p.wipInt > 0 && <>🔶{p.wipInt} </>}
-                                                                    {p.wipFas > 0 && <>⧖{p.wipFas} </>}
-                                                                    {p.stkUretim > 0 && <>🏭{p.stkUretim}</>}
-                                                                  </span>
-                                                                )}
+                                                                {/* v14 Adım 3: WIP rozeti artık "hazır" değil, sadece bilgi — Ömer tıklayıp
+                                                                    hangi emir, nerede, ne yaşta görüp kendi kararını verir. */}
+                                                                {(p.wipTotal > 0 || p.wipInt > 0 || p.wipFas > 0 || p.stkUretim > 0) && (() => {
+                                                                  const _ak = akibetLookup[p.code];
+                                                                  const _totalWip = p.wipTotal > 0 ? p.wipTotal : (p.wipInt + p.wipFas);
+                                                                  const _fmtDate = (iso) => { if (!iso) return "?"; const [y,m,d] = iso.split("-"); return `${d}.${m}.${y.substring(2)}`; };
+                                                                  const _orderLines = (_ak?.orders || [])
+                                                                    .filter(o => (o.rem || 0) > 0)
+                                                                    .map(o => {
+                                                                      const stage = o.firstOpenOp ? ` · ${o.firstOpenOp.isFason ? "🔩" : "⚙"}${o.firstOpenOp.name}` : "";
+                                                                      const age = o.ageDays != null ? ` · ${o.ageDays}g` : "";
+                                                                      const dateStr = o.openDate ? ` (${_fmtDate(o.openDate)})` : "";
+                                                                      const remOps = o.remainingOps ? ` · kalan ${o.remainingOps.total} op (${o.remainingOps.fason}F+${o.remainingOps.internal}İ)` : "";
+                                                                      return `  • Emir ${o.emirNo}${dateStr} — ${o.rem} ad${age}${stage}${remOps}`;
+                                                                    }).join("\n");
+                                                                  const _oldest = _ak?.oldestAgeDays || 0;
+                                                                  const _tip = `WIP — devam eden iş emri\n─────────────────────────────\nToplam kalan: ${_totalWip} ad · ${_ak?.orderCount || 0} emir${_oldest > 0 ? ` · en yaşlı ${_oldest}g` : ""}\nHammadde: emir açılışında çıkarılır ✓\n\nNOT: WIP artık "hazır stok" sayılmıyor — parça eksikse eksik\ngörünür. Bu rozet sana WIP'in fiziksel konumunu söyler,\nsen emirin zamanında bitip bitmeyeceğine karar verirsin.\n${_orderLines ? "\n" + _orderLines : ""}`;
+                                                                  const _firstActive = (_ak?.orders || []).find(o => o.rem > 0 && o.firstOpenOp);
+                                                                  const _stageBadge = _firstActive?.firstOpenOp ? (_firstActive.firstOpenOp.isFason ? "🔩" : "⚙") : "";
+                                                                  const _isOld = _oldest >= 14;
+                                                                  const _ageSuffix = _oldest > 0 ? ` ${_oldest}g` : "";
+                                                                  return (
+                                                                    <span style={{ color: _isOld ? "#991B1B" : "#D97706", cursor: "help", fontWeight: 600 }} title={_tip}>
+                                                                      {_stageBadge}{_totalWip}{_ageSuffix}
+                                                                      {p.stkUretim > 0 && <> 🏭{p.stkUretim}</>}
+                                                                    </span>
+                                                                  );
+                                                                })()}
                                                                 {/* v13: Üretim hattı stok rozeti — operasyonu bitmiş ama transfer bekliyor olabilir */}
                                                                 {p.short > 0 && (() => {
                                                                   const expRow = (explosionResult?.parts || []).find(r => r.code === p.code);
