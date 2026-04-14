@@ -4910,20 +4910,36 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
   // Üretim hattı stoğu onayı — toggle (ekle/kaldır)
   const togglePlsConfirmation = async (partCode, qty) => {
-    if (!db || !canEdit) return;
+    console.log("🔘 [PLS-TOGGLE] tıklandı", { partCode, qty, db: !!db, canEdit, authUser: authUser?.email });
+    if (!db) {
+      console.warn("🔘 [PLS-TOGGLE] DB yok, işlem iptal");
+      alert("Veritabanı bağlantısı yok");
+      return;
+    }
+    if (!canEdit) {
+      console.warn("🔘 [PLS-TOGGLE] canEdit false, yetki yok");
+      alert("Bu işlem için yetki yok (admin/üretim rolü gerekli)");
+      return;
+    }
     const updated = { ...plsConfirmations };
-    if (updated[partCode]) {
-      // Zaten onaylı → iptal et
+    const wasConfirmed = !!updated[partCode];
+    if (wasConfirmed) {
       delete updated[partCode];
     } else {
-      // Yeni onay
       updated[partCode] = {
         qty: qty,
         confirmedAt: new Date().toISOString(),
         confirmedBy: authUser?.email || authUser?.uid || "bilinmiyor"
       };
     }
-    await setDoc(doc(db, APP_COL, "plsConfirmations"), updated);
+    try {
+      console.log("🔘 [PLS-TOGGLE] yazıyor...", { wasConfirmed, yeniDurum: wasConfirmed ? "iptal" : "onaylandı", updated });
+      await setDoc(doc(db, APP_COL, "plsConfirmations"), updated);
+      console.log("🔘 [PLS-TOGGLE] başarılı");
+    } catch (err) {
+      console.error("🔘 [PLS-TOGGLE] HATA", err);
+      alert("Kaydetme hatası: " + err.message);
+    }
   };
   const saveJobOrder = async (machineId, orderArr) => {
     if (!db || !canEdit) return;
