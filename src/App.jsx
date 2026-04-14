@@ -7616,7 +7616,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
             needed = Math.ceil(bomQtys[bi] || 0);
             if (needed <= 0) return;
-          } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON" || parent.supplyType === "FASON")) {
+          } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && parent.supplyType !== "BUY" && parent.supplyType !== "RAW") {
+            // v15 fix: line 7414 ile aynı — legacy PRODUCT supplyType'lı BOM parçaları
+            // cascade'den kaçıyordu. Exclusion-based kontrol hepsini kapsar.
             const parentBi = bp.parentIdx;
             const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
             const parentCov = partCovered[parentBi] || 0;
