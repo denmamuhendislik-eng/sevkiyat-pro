@@ -5373,8 +5373,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             // emirleri alt ihtiyacı baskılayamaz. Onaylı hat stoğu gerçek mamul gibi davranır.
             const parentPlsConf = plsConfirmedLookup[parent.stockCode]?.qty || 0;
             const parentStkAvail = (parentStk?.ambar || 0)
-                                 + (parentAk?.internalRemainingNonBulk || 0)
-                                 + (parentAk?.fasonRemainingNonBulk || 0)
+                                 + (parentAk?.remainingNonBulk || 0)
                                  + parentPlsConf;
             if (parentStkAvail >= parentNeeded) {
               partQtys[i] = 0;
@@ -5475,7 +5474,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
           // teyit ettiği hat stoğu — varsa ekle. Toplu (MONTAJ/PRES) iş emirleri non-bulk'ta değil.
           const vioAmbar = stk.ambar || 0;
           const ak = akibetLookup[vioCode];
-          const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+          const nonBulkWip = ak?.remainingNonBulk || 0;
           const plsConf = plsConfirmedLookup[vioCode]?.qty || 0;
           productStock = vioAmbar + nonBulkWip + plsConf;
           vioStockRaw = vioAmbar;
@@ -5557,7 +5556,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         const ak = akibetLookup[r.code];
         const wipInt = ak ? ak.internalRemaining : 0;
         const wipFas = ak ? ak.fasonRemaining : 0;
-        const wipTotal = wipInt + wipFas;
+        // v14 fix: WIP toplamı çift sayıma karşı. MAKE+FASON parçalarda aynı
+        // 80 parça hem iç hem fason op'lardan geçer → intRem+fasRem şişirir.
+        const wipTotal = ak ? (ak.totalRemaining || 0) : 0;
         const po = purchaseLookup[r.code];
         const openPO = po ? po.totalRemaining : 0;
         const netQty = Math.max(0, r.grossQty - stkAvail - wipTotal);
@@ -5857,7 +5858,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
           (requirements.levels[lk]?.items || []).forEach(item => {
             if (item.requirement > 0) {
               const ak = akibetLookup[item.code];
-              const wip = ak ? (ak.internalRemaining + ak.fasonRemaining) : 0;
+              const wip = ak ? (ak.totalRemaining || 0) : 0;
               const stk = stockLookup[item.code];
               const stkAvail = stk ? (stk.ambar + (stockIncludeUretim ? stk.uretim : 0) + (stockIncludeFason ? stk.fason : 0)) : 0;
               const netQty = Math.max(0, item.requirement - stkAvail - wip);
@@ -6866,7 +6867,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
     Object.values(partsMap).forEach(part => {
       const orders = [];
-      let internalRemaining = 0, fasonRemaining = 0, totalQty = 0;
+      let internalRemaining = 0, fasonRemaining = 0, totalRemaining = 0, totalQty = 0;
 
       Object.values(part.ordersMap).forEach(order => {
         // Sayacıya göre sırala (zaten sıralı geliyor olmalı, garanti olsun)
@@ -6913,20 +6914,26 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
           if (op.isFason) orderFasRem = Math.max(orderFasRem, op.remaining);
           else orderIntRem = Math.max(orderIntRem, op.remaining);
         });
+        // v14 fix: Emirin GERÇEK fiziksel kalan parça sayısı = MAX(iç, fason).
+        // Aynı 80 parça hem iç hem fason op'lardan geçer; intRem+fasRem = ÇİFT SAYIM.
+        // intRem/fasRem ayrımı workload dağılımı için korunur, ama WIP toplamı orderRem üzerinden.
+        const orderRem = Math.max(orderIntRem, orderFasRem);
 
         orders.push({
           emirNo: order.emirNo, qty: order.qty,
           intRem: orderIntRem, fasRem: orderFasRem,
+          rem: orderRem,
           ops
         });
         totalQty += order.qty;
         internalRemaining += orderIntRem;
         fasonRemaining += orderFasRem;
+        totalRemaining += orderRem;
       });
 
       parts.push({
         code: part.code, name: part.name, unit: part.unit,
-        totalQty, internalRemaining, fasonRemaining,
+        totalQty, internalRemaining, fasonRemaining, totalRemaining,
         orderCount: orders.length,
         orders
       });
@@ -7006,7 +7013,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     };
     const map = {};
     akibet.parts.forEach(p => {
-      let intRemNonBulk = 0, fasRemNonBulk = 0;
+      let intRemNonBulk = 0, fasRemNonBulk = 0, remNonBulk = 0;
       (p.orders || []).forEach(order => {
         const activeOps = (order.ops || []).filter(op => !op.cancelled && op.remaining > 0);
         if (activeOps.length === 0) return;
@@ -7016,10 +7023,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         // Non-bulk order: order'ın intRem/fasRem'ini ekle
         intRemNonBulk += order.intRem || 0;
         fasRemNonBulk += order.fasRem || 0;
+        remNonBulk += order.rem || 0;
       });
       map[p.code] = {
         internalRemaining: p.internalRemaining, fasonRemaining: p.fasonRemaining,
         internalRemainingNonBulk: intRemNonBulk, fasonRemainingNonBulk: fasRemNonBulk,
+        // v14 fix: Çift sayım yapmayan gerçek kalan parça sayıları
+        totalRemaining: p.totalRemaining || 0,
+        remainingNonBulk: remNonBulk,
         totalQty: p.totalQty, orderCount: p.orderCount
       };
     });
@@ -7042,7 +7053,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     explosionResult.parts.forEach(r => {
       // Non-bulk WIP'i akibetLookup'tan al (toplu montaj/pres iş emirleri sayılmaz)
       const ak = akibetLookup[r.code];
-      const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+      const nonBulkWip = (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[r.code]?.qty || 0;
       stockPool[r.code] = {
         avail: (r.stkAmbar || 0) + nonBulkWip + plsConf,
@@ -7057,7 +7068,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (!bp.stockCode || stockPool[bp.stockCode]) return;
         const stk = stockLookup[bp.stockCode];
         const ak = akibetLookup[bp.stockCode];
-        const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+        const nonBulkWip = (ak?.remainingNonBulk || 0);
         const plsConf = plsConfirmedLookup[bp.stockCode]?.qty || 0;
         stockPool[bp.stockCode] = {
           avail: (stk?.ambar || 0) + nonBulkWip + plsConf,
@@ -7082,7 +7093,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const vioCode = VIO_CODES[p.id] || p.vioCode;
       const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
       const ak = akibetLookup[rootPart.stockCode];
-      const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+      const nonBulkWip = (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[rootPart.stockCode]?.qty || 0;
       // Var olan havuzu ezme (BOM döngüsü zaten set etmiş olabilir), ama availini VIO stoğuyla güncelle
       if (stockPool[rootPart.stockCode]) {
@@ -7323,7 +7334,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     explosionResult.parts.forEach(r => {
       // explosionResult.parts'ta nonBulk WIP doğrudan yok — akibetLookup'tan bak
       const ak = akibetLookup[r.code];
-      const wipTotal = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+      const wipTotal = (ak?.remainingNonBulk || 0);
       stockPool[r.code] = { avail: (r.stkAmbar || 0) + wipTotal };
     });
     Object.values(bomModels || {}).forEach(model => {
@@ -7331,7 +7342,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (!bp.stockCode || stockPool[bp.stockCode]) return;
         const stk = stockLookup[bp.stockCode];
         const ak = akibetLookup[bp.stockCode];
-        const wipTotal = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+        const wipTotal = (ak?.remainingNonBulk || 0);
         stockPool[bp.stockCode] = { avail: (stk?.ambar || 0) + wipTotal };
       });
     });
@@ -7343,7 +7354,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const vioCode = VIO_CODES[p.id] || p.vioCode;
       const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
       const ak = akibetLookup[rootPart.stockCode];
-      const wipTotal = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+      const wipTotal = (ak?.remainingNonBulk || 0);
       if (stockPool[rootPart.stockCode]) {
         stockPool[rootPart.stockCode].avail = (stk?.ambar || 0) + wipTotal;
       } else {
@@ -9659,7 +9670,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               const ak = akibetLookup[it.code];
               const intRem = ak ? ak.internalRemaining : 0;
               const fasRem = ak ? ak.fasonRemaining : 0;
-              const wip = intRem + fasRem;
+              // v14 fix: WIP = gerçek fiziksel kalan (MAKE+FASON çift sayıma karşı)
+              const wip = ak ? (ak.totalRemaining || 0) : 0;
               // VIO Stok
               const stk = stockLookup[it.code];
               const stkAmbar = stk ? stk.ambar : 0;
@@ -10264,15 +10276,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                   // YENİ satırlarda: aynı parça için mevcut WIP varsa bilgi rozeti
                                   const ak = akibetLookup[j.partCode];
                                   if (!ak) return null;
-                                  const totalRem = (ak.internalRemaining || 0) + (ak.fasonRemaining || 0);
+                                  const totalRem = ak.totalRemaining || 0;
                                   if (totalRem <= 0) return null;
                                   // Emir detayları için akibet.parts'tan tam kayıt
                                   const akPart = akibet?.parts?.find(p => p.code === j.partCode);
                                   const orderLines = akPart?.orders
-                                    ?.filter(o => (o.intRem || 0) + (o.fasRem || 0) > 0)
-                                    ?.map(o => `  • Emir ${o.emirNo} (qty ${o.qty}) — iç:${o.intRem} fason:${o.fasRem}`)
+                                    ?.filter(o => (o.rem || 0) > 0)
+                                    ?.map(o => `  • Emir ${o.emirNo} (qty ${o.qty}) — kalan:${o.rem} (iç:${o.intRem}, fason:${o.fasRem})`)
                                     ?.join("\n") || "";
-                                  const tip = `Bu parça için mevcut açık iş emri var\n─────────────────────────────\nToplam kalan: ${totalRem} ad (iç:${ak.internalRemaining}, fason:${ak.fasonRemaining})\nEmir sayısı: ${ak.orderCount || 0}\n${orderLines ? "\n" + orderLines : ""}\n\nNot: Bu WIP'ler net hesaba zaten dahil — ${j.qty}ad yeni iş, WIP'ten SONRAKİ ek talebi karşılamak için.`;
+                                  const tip = `Bu parça için mevcut açık iş emri var\n─────────────────────────────\nToplam kalan: ${totalRem} ad\nEmir sayısı: ${ak.orderCount || 0}\n${orderLines ? "\n" + orderLines : ""}\n\nNot: Bu WIP'ler net hesaba zaten dahil — ${j.qty}ad yeni iş, WIP'ten SONRAKİ ek talebi karşılamak için.`;
                                   return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>⚙{totalRem}/{ak.orderCount || 0}eo</span>;
                                 })()}
                               </td>
