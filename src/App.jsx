@@ -7194,9 +7194,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const ak = akibetLookup[r.code];
       const nonBulkWip = (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[r.code]?.qty || 0;
+      const baseAvail = (r.stkAmbar || 0) + plsConf;
       stockPool[r.code] = {
-        avail: (r.stkAmbar || 0) + plsConf, // v14 Adım 3: WIP çıkarıldı
-        wipTotal: nonBulkWip, // bilgi olarak kalır (rozet için)
+        avail: baseAvail, // v14 Adım 3: WIP çıkarıldı — parça eksikse eksik görünür
+        // v14 Adım 3: Cascade için WIP dahil havuz — "WIP'in hammaddesi zaten çıkarılmış"
+        // parent için cascade amacıyla WIP karşılanmış sayılır, child için hammadde talep edilmez
+        cascadeAvail: baseAvail + nonBulkWip,
+        wipTotal: nonBulkWip,
         wipInt: r.wipInt || 0,
         wipFas: r.wipFas || 0,
         stkUretim: r.stkUretim || 0,
@@ -7210,8 +7214,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         const ak = akibetLookup[bp.stockCode];
         const nonBulkWip = (ak?.remainingNonBulk || 0);
         const plsConf = plsConfirmedLookup[bp.stockCode]?.qty || 0;
+        const baseAvail = (stk?.ambar || 0) + plsConf;
         stockPool[bp.stockCode] = {
-          avail: (stk?.ambar || 0) + plsConf, // v14 Adım 3: WIP çıkarıldı
+          avail: baseAvail,
+          cascadeAvail: baseAvail + nonBulkWip,
           wipTotal: nonBulkWip,
           wipInt: ak?.internalRemaining || 0,
           wipFas: ak?.fasonRemaining || 0,
@@ -7237,15 +7243,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const nonBulkWip = (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[rootPart.stockCode]?.qty || 0;
       // Var olan havuzu ezme (BOM döngüsü zaten set etmiş olabilir), ama availini VIO stoğuyla güncelle
-      // v14 Adım 3: WIP avail'e eklenmez (Ömer kuralı)
+      // v14 Adım 3: WIP avail'e eklenmez (Ömer kuralı) — cascadeAvail'e ise eklenir
+      const baseAvail = (stk?.ambar || 0) + plsConf;
       if (stockPool[rootPart.stockCode]) {
         if (stk && stk.ambar !== undefined) {
-          stockPool[rootPart.stockCode].avail = (stk.ambar || 0) + plsConf;
+          stockPool[rootPart.stockCode].avail = baseAvail;
+          stockPool[rootPart.stockCode].cascadeAvail = baseAvail + nonBulkWip;
           stockPool[rootPart.stockCode].wipTotal = nonBulkWip;
         }
       } else {
         stockPool[rootPart.stockCode] = {
-          avail: (stk?.ambar || 0) + plsConf,
+          avail: baseAvail,
+          cascadeAvail: baseAvail + nonBulkWip,
           wipTotal: nonBulkWip,
           wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
           name: rootPart.stockName, supplyType: rootPart.supplyType, level: 0
@@ -7349,6 +7358,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
           const sorted = bomParts.map((bp, bi) => ({ bp, bi, depth: depthMemo[bi] || 0 })).sort((a, b) => a.depth - b.depth);
           const partCovered = {};
+          // v14 Adım 3: Cascade için ayrı covered — parent'ın WIP'i child ihtiyacını azaltır
+          // (hammadde zaten çıkarıldı varsayımı). Display için partCovered (sadece ambar+PLS) kalır.
+          const partCoveredCascade = {};
           sorted.forEach(({ bp, bi, depth }) => {
             if (depth === 0) {
               const needed = Math.ceil(bomQtys[bi] || 0);
@@ -7359,6 +7371,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               const short = needed - covered;
               partCovered[bi] = covered;
               if (pool && covered > 0) pool.avail -= covered;
+              // Cascade havuzundan paralel tüketim
+              const cascAvail = pool ? (pool.cascadeAvail || 0) : 0;
+              const cascCov = Math.min(needed, cascAvail);
+              partCoveredCascade[bi] = cascCov;
+              if (pool && cascCov > 0) pool.cascadeAvail -= cascCov;
               totalParts++;
               if (short > 0) {
                 shortParts++;
@@ -7370,7 +7387,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                   name: `${bp.stockName || cp.product?.nameTR} (mamul)`,
                   supplyType: "MAKE",
                   level: 1, needed, covered, short,
-                  wipInt: pool?.wipInt || 0, wipFas: pool?.wipFas || 0, stkUretim: pool?.stkUretim || 0,
+                  wipInt: pool?.wipInt || 0, wipFas: pool?.wipFas || 0,
+                  wipTotal: pool?.wipTotal || 0,
+                  stkUretim: pool?.stkUretim || 0,
                   _isProductRoot: true,
                   pid: cp.pid, productName: cp.product?.nameTR || null,
                   unit: bp.unit || "AD"
@@ -7382,21 +7401,22 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             if (needed <= 0) return;
             const parent = bomParts[bp.parentIdx];
             // Parent ROOT ise (depth 1 parçalar) — ana ürün mamul stoğundan kapsanan kısmı düş
+            // v14 Adım 3: Cascade için parent'ın WIP'i karşılanmış sayılır → child için needed azaltılır
             if (parent && (parent.parentIdx === null || parent.parentIdx === undefined)) {
               const parentBi = bp.parentIdx;
               const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
-              const parentCov = partCovered[parentBi] || 0;
-              if (parentCov >= parentNeeded) { bomQtys[bi] = 0; return; }
-              const parentNet = parentNeeded - parentCov;
+              const parentCovCasc = partCoveredCascade[parentBi] || 0;
+              if (parentCovCasc >= parentNeeded) { bomQtys[bi] = 0; return; }
+              const parentNet = parentNeeded - parentCovCasc;
               bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
               needed = Math.ceil(bomQtys[bi] || 0);
               if (needed <= 0) return;
             } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON" || parent.supplyType === "FASON")) {
               const parentBi = bp.parentIdx;
               const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
-              const parentCov = partCovered[parentBi] || 0;
-              if (parentCov >= parentNeeded) { bomQtys[bi] = 0; return; }
-              const parentNet = parentNeeded - parentCov;
+              const parentCovCasc = partCoveredCascade[parentBi] || 0;
+              if (parentCovCasc >= parentNeeded) { bomQtys[bi] = 0; return; }
+              const parentNet = parentNeeded - parentCovCasc;
               bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
             }
             const finalNeeded = Math.ceil(bomQtys[bi] || 0);
@@ -7406,6 +7426,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             const covered = Math.min(finalNeeded, avail);
             partCovered[bi] = covered;
             if (pool && covered > 0) pool.avail -= covered;
+            // v14 Adım 3: Cascade havuzundan paralel tüketim (WIP dahil)
+            const cascAvail = pool ? (pool.cascadeAvail || 0) : 0;
+            const cascCov = Math.min(finalNeeded, cascAvail);
+            partCoveredCascade[bi] = cascCov;
+            if (pool && cascCov > 0) pool.cascadeAvail -= cascCov;
 
             // L1 sayaç (panel header için)
             if (depth === 1) {
