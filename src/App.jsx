@@ -4782,6 +4782,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   const [shipReqOpen, setShipReqOpen] = useState({}); // sevkiyat ihtiyaç açılır-kapanır
   const [acilHorizon, setAcilHorizon] = useState(60); // Acil aksiyon bandı zaman ufku (gün)
   const [acilActive, setAcilActive] = useState(null); // hangi sayaç açık: "buy"|"make"|"fason"|"wip"|"poTakip"|null
+  const [plsConfPopupOpen, setPlsConfPopupOpen] = useState(false); // onaylı PLS parçaları popup'ı
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
   // Üretim Hattı Stoğu Onayları: partCode → { qty, confirmedAt, confirmedBy }
   // Operatör "bu hat stoğu teyit ettim, gerçek mamul sayılabilir" onayı verir.
@@ -4910,20 +4911,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
   // Üretim hattı stoğu onayı — toggle (ekle/kaldır)
   const togglePlsConfirmation = async (partCode, qty) => {
-    console.log("🔘 [PLS-TOGGLE] tıklandı", { partCode, qty, db: !!db, canEdit, userRole, user: authUser?.email });
-    if (!db) {
-      console.warn("🔘 [PLS-TOGGLE] DB yok, işlem iptal");
-      alert("Veritabanı bağlantısı yok");
-      return;
-    }
-    if (!canEdit) {
-      console.warn("🔘 [PLS-TOGGLE] canEdit false, yetki yok");
-      alert("Bu işlem için yetki yok (admin/üretim rolü gerekli)");
-      return;
-    }
+    if (!db || !canEdit) return;
     const updated = { ...plsConfirmations };
-    const wasConfirmed = !!updated[partCode];
-    if (wasConfirmed) {
+    if (updated[partCode]) {
       delete updated[partCode];
     } else {
       updated[partCode] = {
@@ -4933,11 +4923,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       };
     }
     try {
-      console.log("🔘 [PLS-TOGGLE] yazıyor...", { wasConfirmed, yeniDurum: wasConfirmed ? "iptal" : "onaylandı", updated });
       await setDoc(doc(db, APP_COL, "plsConfirmations"), updated);
-      console.log("🔘 [PLS-TOGGLE] başarılı");
     } catch (err) {
-      console.error("🔘 [PLS-TOGGLE] HATA", err);
+      console.error("PLS onay kaydı hatası:", err);
       alert("Kaydetme hatası: " + err.message);
     }
   };
@@ -10562,11 +10550,94 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
                             return (
                               <div style={{ marginBottom: 12, padding: "10px 12px", background: "#FFF", borderRadius: 8, border: "1px solid #BBF7D0" }}>
+                                {plsConfPopupOpen && (
+                                  <div onClick={() => setPlsConfPopupOpen(false)}
+                                       style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <div onClick={(e) => e.stopPropagation()}
+                                         style={{ background: "#FFF", borderRadius: 12, maxWidth: 800, width: "90%", maxHeight: "80vh", overflow: "auto", boxShadow: "0 20px 40px rgba(0,0,0,0.25)" }}>
+                                      <div style={{ padding: "14px 18px", borderBottom: "1px solid var(--color-border)", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "#FFF", zIndex: 1 }}>
+                                        <div>
+                                          <div style={{ fontSize: 14, fontWeight: 600, color: "#166534" }}>
+                                            ✓ Hat Stoğu Onaylı Parçalar ({Object.keys(plsConfirmedLookup).length})
+                                          </div>
+                                          <div style={{ fontSize: 10, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                                            Bu parçalar gerçek stok gibi davranır, MRP hesabında havuza katılır
+                                          </div>
+                                        </div>
+                                        <div style={{ display: "flex", gap: 8 }}>
+                                          {canEdit && Object.keys(plsConfirmedLookup).length > 0 && (
+                                            <button onClick={async () => {
+                                              if (!confirm(`${Object.keys(plsConfirmedLookup).length} onayın tamamı iptal edilecek. Emin misiniz?`)) return;
+                                              try { await setDoc(doc(db, APP_COL, "plsConfirmations"), {}); }
+                                              catch (err) { alert("Hata: " + err.message); }
+                                            }}
+                                                    style={{ padding: "4px 10px", fontSize: 10, background: "#FEF2F2", color: "#991B1B", border: "1px solid #FECACA", borderRadius: 4, cursor: "pointer" }}>
+                                              Tümünü İptal
+                                            </button>
+                                          )}
+                                          <button onClick={() => setPlsConfPopupOpen(false)}
+                                                  style={{ padding: "4px 10px", fontSize: 10, background: "var(--color-bg-secondary)", border: "1px solid var(--color-border)", borderRadius: 4, cursor: "pointer" }}>
+                                            Kapat
+                                          </button>
+                                        </div>
+                                      </div>
+                                      <div style={{ padding: 14 }}>
+                                        <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                                          <thead>
+                                            <tr style={{ background: "var(--color-bg-secondary)", fontSize: 10, color: "var(--color-text-secondary)" }}>
+                                              <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Kod</th>
+                                              <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Ad</th>
+                                              <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600 }}>Onaylı</th>
+                                              <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600 }}>Güncel Hat</th>
+                                              <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Onaylayan</th>
+                                              <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Tarih</th>
+                                              {canEdit && <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 600 }}>İptal</th>}
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {Object.entries(plsConfirmedLookup).sort((a, b) => (b[1].confirmedAt || "").localeCompare(a[1].confirmedAt || "")).map(([code, conf]) => {
+                                              const stk = stockLookup[code];
+                                              const currentPls = stk?.pl ? stk.pl.reduce((s, x) => s + (x.q || 0), 0) : 0;
+                                              const name = stk?.name || "—";
+                                              const unit = (stk?.unit || "AD").toLowerCase();
+                                              const d = conf.confirmedAt ? new Date(conf.confirmedAt) : null;
+                                              const dateStr = d ? `${d.toLocaleDateString("tr-TR")} ${d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}` : "—";
+                                              return (
+                                                <tr key={code} style={{ borderTop: "1px solid var(--color-border)" }}>
+                                                  <td style={{ padding: "6px 8px", fontFamily: "var(--font-mono)", fontSize: 10 }}>{code}</td>
+                                                  <td style={{ padding: "6px 8px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>{name}</td>
+                                                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#166534" }}>{conf.qty} <span style={{ fontSize: 9, fontWeight: 400, color: "var(--color-text-tertiary)" }}>{unit}</span></td>
+                                                  <td style={{ padding: "6px 8px", textAlign: "right", fontSize: 10, color: currentPls >= conf.qty ? "var(--color-text-secondary)" : "#DC2626" }}>
+                                                    {currentPls} {unit}
+                                                    {currentPls < conf.qty && <span title="Güncel hat stoğu onay miktarının altında — onay otomatik iptal edilecek" style={{ marginLeft: 4 }}>⚠</span>}
+                                                  </td>
+                                                  <td style={{ padding: "6px 8px", fontSize: 10, color: "var(--color-text-secondary)" }}>{conf.confirmedBy || "—"}</td>
+                                                  <td style={{ padding: "6px 8px", fontSize: 10, color: "var(--color-text-secondary)" }}>{dateStr}</td>
+                                                  {canEdit && (
+                                                    <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                                                      <button onClick={() => togglePlsConfirmation(code, conf.qty)}
+                                                              title="Bu onayı iptal et"
+                                                              style={{ padding: "2px 8px", fontSize: 10, background: "#FEF2F2", color: "#991B1B", border: "1px solid #FECACA", borderRadius: 3, cursor: "pointer" }}>
+                                                        ✕
+                                                      </button>
+                                                    </td>
+                                                  )}
+                                                </tr>
+                                              );
+                                            })}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
                                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                                   <div style={{ fontSize: 11, fontWeight: 600, color: "#065F46" }}>
                                     ⚡ Acil Aksiyon — {horizonLabel} · {horizonContainers.length} sevkiyat
                                     {Object.keys(plsConfirmedLookup).length > 0 && (
-                                      <span style={{ marginLeft: 10, padding: "1px 8px", borderRadius: 10, background: "#DCFCE7", color: "#166534", fontSize: 9, fontWeight: 600 }} title="Onaylanmış üretim hattı stokları havuza katılıyor — ilgili parçalar listelerden düşer">
+                                      <span onClick={() => setPlsConfPopupOpen(true)}
+                                            style={{ marginLeft: 10, padding: "1px 8px", borderRadius: 10, background: "#DCFCE7", color: "#166534", fontSize: 9, fontWeight: 600, cursor: "pointer", border: "1px solid #86EFAC" }}
+                                            title="Onaylı hat-stoğu parçalarını görüntüle · yönet">
                                         ✓ {Object.keys(plsConfirmedLookup).length} parça hat-stoğu onaylı
                                       </span>
                                     )}
