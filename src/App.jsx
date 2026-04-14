@@ -7113,10 +7113,21 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (!model?.parts) {
           const vioCode = VIO_CODES[cp.pid] || cp.product?.vioCode;
           const stk = (vioCode && stockLookup[vioCode]) || null;
+          // Supply type tespiti: "direct:..." mapping varsa kullanıcı "bu BOM'suz parça" demiş.
+          // Stok koduna bakarak BUY/RAW/MAKE ayırt et. Prefix 150=RAW, 157/116/121/119/210=BUY,
+          // diğerleri MAKE. BOM mapping ekranından kullanıcı kontrolünde.
+          let detectedType = "MAKE";
+          if (typeof modelKey === "string" && modelKey.startsWith("direct:")) {
+            const directCode = modelKey.substring(7) || vioCode;
+            const pfx = (directCode || "").split("-")[0];
+            if (pfx === "150") detectedType = "RAW";
+            else if (pfx === "157" || pfx === "116" || pfx === "121" || pfx === "119" || pfx === "210") detectedType = "BUY";
+            // Diğer prefix'ler için MAKE varsayımı
+          }
           const poolKey = `__product_${cp.pid}`;
           if (!stockPool[poolKey]) {
             stockPool[poolKey] = { avail: stk?.ambar || 0, wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
-              name: cp.product?.nameTR, supplyType: "MAKE", level: 0 };
+              name: cp.product?.nameTR, supplyType: detectedType, level: 0 };
           }
           const needed = cp.qty;
           const pool = stockPool[poolKey];
@@ -7129,7 +7140,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
           prodParts.push({
             code: vioCode || `PID-${cp.pid}`,
             name: cp.product?.nameTR || `Ürün ${cp.pid}`,
-            supplyType: "MAKE",
+            supplyType: detectedType,
             level: 1, needed, covered, short,
             wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
             _isProductRoot: true, // v13: "mamul" ayrımı artık supplyType ile değil, bu flag ile yapılır
