@@ -6795,6 +6795,35 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
     const norm = (s) => String(s || "").replace(/[\n\r]/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
 
+    // v14: Emir tarihi parse — VIO formatı D(D)MMYYYY, 7 veya 8 haneli (örn "2042026" = 02.04.2026).
+    // Bazı rapor sürümlerinde "DD.MM.YYYY", "DD/MM/YYYY" veya Excel serial de gelebilir.
+    const parseEmirTarihi = (v) => {
+      if (v === "" || v === undefined || v === null) return null;
+      const s = String(v).trim();
+      if (!s) return null;
+      if (/^\d{7,8}$/.test(s)) {
+        const padded = s.padStart(8, "0");
+        const dd = padded.substring(0, 2);
+        const mm = padded.substring(2, 4);
+        const yyyy = padded.substring(4, 8);
+        const y = Number(yyyy);
+        if (y < 2000 || y > 2100) return null;
+        return `${yyyy}-${mm}-${dd}`;
+      }
+      const m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+      if (m) {
+        const dd = m[1].padStart(2, "0");
+        const mm = m[2].padStart(2, "0");
+        return `${m[3]}-${mm}-${dd}`;
+      }
+      const n = Number(s);
+      if (!isNaN(n) && n > 25000 && n < 100000) {
+        const d = new Date((n - 25569) * 86400 * 1000);
+        if (!isNaN(d.getTime())) return d.toISOString().substring(0, 10);
+      }
+      return null;
+    };
+
     // Sütun isimlerinden indeks haritası çıkar — başlıklar `\n` içerebilir, varyantlar olabilir.
     const findHeaderColumns = (row) => {
       const cols = {};
@@ -6865,7 +6894,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       }
       const part = partsMap[currentCode];
       if (!part.ordersMap[emirNo]) {
-        part.ordersMap[emirNo] = { emirNo, qty: emirQty, opsRaw: [] };
+        const openDate = cols.emirTarihi != null ? parseEmirTarihi(r[cols.emirTarihi]) : null;
+        part.ordersMap[emirNo] = { emirNo, qty: emirQty, openDate, opsRaw: [] };
       }
       part.ordersMap[emirNo].opsRaw.push({
         sayaci, uretilen, kalan, opNo, opName, isMrk, isFason
@@ -6930,10 +6960,27 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         // intRem/fasRem ayrımı workload dağılımı için korunur, ama WIP toplamı orderRem üzerinden.
         const orderRem = Math.max(orderIntRem, orderFasRem);
 
+        // v14 Adım 1: Emir'in fiziksel konumu — ilk açık op ve kalan op dağılımı
+        // ops zaten sayacı sırasında, ilk non-cancelled + remaining>0 olan = şu an nerede
+        const activeOps = ops.filter(op => !op.cancelled && op.remaining > 0);
+        const firstActive = ops.find(op => !op.cancelled && op.remaining > 0);
+        const firstOpenOp = firstActive ? {
+          name: firstActive.name,
+          isFason: firstActive.isFason,
+          opCode: firstActive.opCode
+        } : null;
+        const remainingOps = {
+          total: activeOps.length,
+          fason: activeOps.filter(op => op.isFason).length,
+          internal: activeOps.filter(op => !op.isFason).length
+        };
+
         orders.push({
           emirNo: order.emirNo, qty: order.qty,
+          openDate: order.openDate || null,
           intRem: orderIntRem, fasRem: orderFasRem,
           rem: orderRem,
+          firstOpenOp, remainingOps,
           ops
         });
         totalQty += order.qty;
@@ -7022,6 +7069,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const u = name.toUpperCase();
       return u.includes("MONTAJ") || u.includes("PRES");
     };
+    const todayMs = Date.now();
     const map = {};
     akibet.parts.forEach(p => {
       let intRemNonBulk = 0, fasRemNonBulk = 0, remNonBulk = 0;
@@ -7033,15 +7081,66 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const needsCompute = (partTotalRem === undefined || partTotalRem === null);
       if (needsCompute) partTotalRem = 0;
 
+      // v14 Adım 1: Her emir için zenginleştirilmiş bilgi — backend eski parse için fallback
+      // compute. openDate, firstOpenOp, remainingOps, ageDays runtime'da türetilir.
+      const enrichedOrders = [];
+
       (p.orders || []).forEach(order => {
         const activeOps = (order.ops || []).filter(op => !op.cancelled && op.remaining > 0);
-        if (activeOps.length === 0) return;
+        if (activeOps.length === 0) {
+          // geçerli op yok, yine de listede tut (tamamlanmış için boş)
+          enrichedOrders.push({
+            emirNo: order.emirNo, qty: order.qty,
+            openDate: order.openDate || null,
+            ageDays: null,
+            intRem: order.intRem || 0, fasRem: order.fasRem || 0, rem: 0,
+            firstOpenOp: null,
+            remainingOps: { total: 0, fason: 0, internal: 0 },
+            ops: order.ops || []
+          });
+          return;
+        }
         // Emir'in gerçek fiziksel kalan parça sayısı: MAX(int, fas) — aynı parça
         // hem iç hem fason op'tan geçer, toplamak çift sayımdır.
         const orderRem = (order.rem !== undefined && order.rem !== null)
           ? order.rem
           : Math.max(order.intRem || 0, order.fasRem || 0);
         if (needsCompute) partTotalRem += orderRem;
+
+        // firstOpenOp + remainingOps fallback
+        let firstOpenOp = order.firstOpenOp;
+        let remainingOps = order.remainingOps;
+        if (!firstOpenOp) {
+          const firstActive = (order.ops || []).find(op => !op.cancelled && op.remaining > 0);
+          firstOpenOp = firstActive ? {
+            name: firstActive.name, isFason: firstActive.isFason, opCode: firstActive.opCode
+          } : null;
+        }
+        if (!remainingOps) {
+          remainingOps = {
+            total: activeOps.length,
+            fason: activeOps.filter(op => op.isFason).length,
+            internal: activeOps.filter(op => !op.isFason).length
+          };
+        }
+        // ageDays hesabı — openDate varsa
+        let ageDays = null;
+        if (order.openDate) {
+          const d = new Date(order.openDate);
+          if (!isNaN(d.getTime())) {
+            ageDays = Math.floor((todayMs - d.getTime()) / 86400000);
+          }
+        }
+
+        enrichedOrders.push({
+          emirNo: order.emirNo, qty: order.qty,
+          openDate: order.openDate || null,
+          ageDays,
+          intRem: order.intRem || 0, fasRem: order.fasRem || 0, rem: orderRem,
+          firstOpenOp, remainingOps,
+          ops: order.ops || []
+        });
+
         // Toplu mu? Tüm aktif op'lar bulk-keyword içeriyor mu?
         const isOrderBulk = activeOps.every(op => isBulkOpName(op.name));
         if (isOrderBulk) return; // toplu → güvenilmez, sayma
@@ -7049,13 +7148,25 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         fasRemNonBulk += order.fasRem || 0;
         remNonBulk += orderRem;
       });
+
+      // v14 Adım 1: Part-level özet sinyaller — "en yaşlı açık emir" ve "duran mı?"
+      const activeEnriched = enrichedOrders.filter(o => o.rem > 0);
+      const oldestAge = activeEnriched.reduce((m, o) => (o.ageDays != null && o.ageDays > m ? o.ageDays : m), 0);
+      // Duran: tüm aktif emirler ilk op'ta VE en az biri yaşlı
+      const stuckAtFirstOp = activeEnriched.length > 0
+        && activeEnriched.every(o => o.firstOpenOp && o.remainingOps && o.remainingOps.total === (o.ops?.filter(op => !op.cancelled).length || 0));
+
       map[p.code] = {
         internalRemaining: p.internalRemaining, fasonRemaining: p.fasonRemaining,
         internalRemainingNonBulk: intRemNonBulk, fasonRemainingNonBulk: fasRemNonBulk,
         // v14 fix: Çift sayım yapmayan gerçek kalan parça sayıları
         totalRemaining: partTotalRem,
         remainingNonBulk: remNonBulk,
-        totalQty: p.totalQty, orderCount: p.orderCount
+        totalQty: p.totalQty, orderCount: p.orderCount,
+        // v14 Adım 1: Zaman/konum sinyalleri (tooltip ve gelecek karar motoru için)
+        orders: enrichedOrders,
+        oldestAgeDays: oldestAge,
+        stuckAtFirstOp
       };
     });
     return map;
@@ -10274,10 +10385,39 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                         </tr></thead>
                         <tbody>{lateJobs.map((j, i) => {
                           const isWip = j._type === "wip";
-                          // WIP için kalan miktar bilgisi (tooltip)
-                          const wipTooltip = isWip
-                            ? `Emir No: ${j.emirNo}\nİç kalan: ${j.intRem || 0} · Fason kalan: ${j.fasRem || 0}\nAktif op sayısı: ${j.opsCount}\nAktif operasyonlar:\n${(j.activeOps || []).map(op => `  • ${op.opName || op.opCode}${op.isFason ? " (fason)" : ""} — kalan ${op.remaining}`).join("\n")}`
-                            : null;
+                          // WIP için kalan miktar bilgisi (tooltip) — v14 Adım 1: akibetLookup'tan
+                          // emir'in zenginleştirilmiş bilgilerini çek (openDate, firstOpenOp, ageDays)
+                          let wipTooltip = null;
+                          if (isWip) {
+                            const _ak = akibetLookup[j.partCode];
+                            const _order = _ak?.orders?.find(o => String(o.emirNo) === String(j.emirNo));
+                            const _fmtDate = (iso) => {
+                              if (!iso) return "?";
+                              const [y, m, d] = iso.split("-");
+                              return `${d}.${m}.${y}`;
+                            };
+                            const dateLine = _order?.openDate
+                              ? `Açılış: ${_fmtDate(_order.openDate)} (${_order.ageDays ?? "?"} gün önce)`
+                              : "";
+                            const stageLine = _order?.firstOpenOp
+                              ? `Şu an: ${_order.firstOpenOp.isFason ? "🔩 " : "⚙ "}${_order.firstOpenOp.name}${_order.firstOpenOp.isFason ? " (fason)" : ""}`
+                              : "";
+                            const remOpsLine = _order?.remainingOps
+                              ? `Kalan: ${_order.remainingOps.total} op (${_order.remainingOps.fason} fason + ${_order.remainingOps.internal} iç)`
+                              : "";
+                            const opsDetail = (j.activeOps || []).map(op => `  • ${op.opName || op.opCode}${op.isFason ? " (fason)" : ""} — kalan ${op.remaining}`).join("\n");
+                            wipTooltip = [
+                              `Emir No: ${j.emirNo}`,
+                              dateLine,
+                              stageLine,
+                              remOpsLine,
+                              `İç kalan: ${j.intRem || 0} · Fason kalan: ${j.fasRem || 0}`,
+                              "Hammadde: emir açılışında çıkarılır ✓",
+                              "─────────────────────────────",
+                              "Aktif operasyonlar:",
+                              opsDetail
+                            ].filter(Boolean).join("\n");
+                          }
                           return (
                             <tr key={j.id} style={{ borderTop: "0.5px solid #FECACA", background: isWip ? "#FFFBEB" : "transparent" }}>
                               <td style={{ padding: "5px 6px", color: "#991B1B" }}>{i + 1}</td>
@@ -10302,14 +10442,33 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                   if (!ak) return null;
                                   const totalRem = ak.totalRemaining || 0;
                                   if (totalRem <= 0) return null;
-                                  // Emir detayları için akibet.parts'tan tam kayıt
-                                  const akPart = akibet?.parts?.find(p => p.code === j.partCode);
-                                  const orderLines = akPart?.orders
-                                    ?.filter(o => (o.rem || 0) > 0)
-                                    ?.map(o => `  • Emir ${o.emirNo} (qty ${o.qty}) — kalan:${o.rem} (iç:${o.intRem}, fason:${o.fasRem})`)
-                                    ?.join("\n") || "";
-                                  const tip = `Bu parça için mevcut açık iş emri var\n─────────────────────────────\nToplam kalan: ${totalRem} ad\nEmir sayısı: ${ak.orderCount || 0}\n${orderLines ? "\n" + orderLines : ""}\n\nNot: Bu WIP'ler net hesaba zaten dahil — ${j.qty}ad yeni iş, WIP'ten SONRAKİ ek talebi karşılamak için.`;
-                                  return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>⚙{totalRem}/{ak.orderCount || 0}eo</span>;
+                                  // v14 Adım 1: akibetLookup'taki zenginleştirilmiş orders kullan
+                                  // (eski akibet.parts fallback'i olmadan, openDate/firstOpenOp dahil)
+                                  const activeOrders = (ak.orders || []).filter(o => (o.rem || 0) > 0);
+                                  const fmtDate = (iso) => {
+                                    if (!iso) return "?";
+                                    const [y, m, d] = iso.split("-");
+                                    return `${d}.${m}.${y.substring(2)}`;
+                                  };
+                                  const orderLines = activeOrders.map(o => {
+                                    const stage = o.firstOpenOp
+                                      ? ` · ${o.firstOpenOp.isFason ? "🔩" : "⚙"}${o.firstOpenOp.name}`
+                                      : "";
+                                    const age = o.ageDays != null ? ` · ${o.ageDays}g` : "";
+                                    const dateStr = o.openDate ? ` (${fmtDate(o.openDate)})` : "";
+                                    const remOps = o.remainingOps
+                                      ? ` · kalan ${o.remainingOps.total} op (${o.remainingOps.fason}F+${o.remainingOps.internal}İ)`
+                                      : "";
+                                    return `  • Emir ${o.emirNo}${dateStr} — ${o.rem} ad${age}${stage}${remOps}`;
+                                  }).join("\n");
+                                  const ageSummary = ak.oldestAgeDays > 0 ? ` · en yaşlı ${ak.oldestAgeDays}g` : "";
+                                  const tip = `Bu parça için mevcut açık iş emri var\n─────────────────────────────\nToplam kalan: ${totalRem} ad · ${ak.orderCount || 0} emir${ageSummary}\nHammadde: emir açılışında çıkarılır ✓\n${orderLines ? "\n" + orderLines : ""}\n\nNot: Bu WIP'ler net hesaba zaten dahil — ${j.qty}ad yeni iş, WIP'ten SONRAKİ ek talebi karşılamak için.`;
+                                  // Rozette yaş göster — 14g+ ise yaşlı uyarı rengi
+                                  const isOld = (ak.oldestAgeDays || 0) >= 14;
+                                  const bg = isOld ? "#FEE2E2" : "#FEF3C7";
+                                  const col = isOld ? "#991B1B" : "#92400E";
+                                  const suffix = isOld ? `⚠${ak.oldestAgeDays}g` : "";
+                                  return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: bg, color: col, fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>⚙{totalRem}/{ak.orderCount || 0}eo{suffix}</span>;
                                 })()}
                               </td>
                               <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
