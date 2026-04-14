@@ -10291,7 +10291,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             return (
                               <tr key={f.code} style={{ borderTop: "0.5px solid #A5F3FC", background: isLate ? "#FEF2F2" : "transparent" }}>
                                 <td style={{ padding: "5px 6px", color: isLate ? "#991B1B" : "#0E7490" }}>{i + 1}</td>
-                                <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: isLate ? "#DC2626" : "#0891B2", fontWeight: 500 }}>{f.code}</td>
+                                <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", color: isLate ? "#DC2626" : "#0891B2", fontWeight: 500 }}>
+                                  {f.code}
+                                  {(() => {
+                                    const expRow = (explosionResult?.parts || []).find(r => r.code === f.code);
+                                    const pls = expRow?.productionLineStock;
+                                    if (!pls || pls.total <= 0) return null;
+                                    const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                      pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                      "\n\nÜretim ile teyit edilmesi öneriliyor — fason göndermeden önce kontrol edin.";
+                                    return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
+                                  })()}
+                                </td>
                                 <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.name}</td>
                                 <td style={{ padding: "5px 6px", textAlign: "right" }}>{f.qty}ad</td>
                                 <td style={{ padding: "5px 6px", maxWidth: 220, fontSize: 9, lineHeight: 1.4 }} title={opTooltip}>
@@ -10372,7 +10383,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                         <tbody>{matList.map((mw, i) => (
                           <tr key={mw.code + i} style={{ borderTop: "0.5px solid #E9D5FF" }}>
                             <td style={{ padding: "5px 6px" }}>{mw.status === "missing" ? "🔴" : mw.status === "partial" ? "🟡" : "🔵"}</td>
-                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{mw.code}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
+                              {mw.code}
+                              {(() => {
+                                const expRow = (explosionResult?.parts || []).find(r => r.code === mw.code);
+                                const pls = expRow?.productionLineStock;
+                                if (!pls || pls.total <= 0) return null;
+                                const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                  pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                  "\n\nÜretim ile teyit edilmesi öneriliyor — sipariş vermeden önce kontrol edin.";
+                                return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
+                              })()}
+                            </td>
                             <td style={{ padding: "5px 6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{mw.name}</td>
                             <td style={{ padding: "5px 6px", textAlign: "right" }}>{mw.neededQty}</td>
                             <td style={{ padding: "5px 6px", textAlign: "right" }}>{mw.stkAvail}</td>
@@ -10419,7 +10441,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                           <tr key={j.id} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: j.slackDays < 0 ? "#FEF2F2" : j.slackDays <= 5 ? "#FFFBEB" : "transparent" }}>
                             <td style={{ padding: "5px 6px", color: "var(--color-text-tertiary)" }}>{i + 1}</td>
                             <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)", fontWeight: 500, color: j.slackDays < 0 ? "#DC2626" : j.slackDays <= 5 ? "#D97706" : "var(--color-text-info)" }}>{j.id}</td>
-                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>{j.partCode}</td>
+                            <td style={{ padding: "5px 6px", fontFamily: "var(--font-mono)" }}>
+                              {j.partCode}
+                              {(() => {
+                                const expRow = (explosionResult?.parts || []).find(r => r.code === j.partCode);
+                                const pls = expRow?.productionLineStock;
+                                if (!pls || pls.total <= 0) return null;
+                                const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                  pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                  "\n\nÜretim ile teyit edilmesi öneriliyor — iş emri açmadan önce kontrol edin.";
+                                return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
+                              })()}
+                            </td>
                             <td style={{ padding: "5px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{j.partName}</td>
                             <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.qty}ad</td>
                             <td style={{ padding: "5px 6px", textAlign: "right" }}>{j.operations.length}</td>
@@ -11116,7 +11149,17 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             </tr></thead>
                             <tbody>{matchedExp.slice(0, 15).map((r, i) => (
                               <tr key={i} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-                                <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{r.code}</td>
+                                <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
+                                  {r.code}
+                                  {(() => {
+                                    const pls = r.productionLineStock;
+                                    if (!pls || pls.total <= 0) return null;
+                                    const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                                      pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                                      "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                                    return <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>;
+                                  })()}
+                                </td>
                                 <td style={{ padding: "4px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.name}</td>
                                 <td style={{ padding: "4px 6px", textAlign: "center" }}>
                                   <span style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: r.supplyType === "MAKE" ? "#ECFDF5" : r.supplyType === "BUY" ? "#DBEAFE" : "#FEF3C7", color: r.supplyType === "MAKE" ? "#065F46" : r.supplyType === "BUY" ? "#1D4ED8" : "#92400E" }}>{r.supplyType}</span>
