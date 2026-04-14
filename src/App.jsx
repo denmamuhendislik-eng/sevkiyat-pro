@@ -7379,6 +7379,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               totalParts++;
               if (short > 0) {
                 shortParts++;
+                // v16.2: Root parçalar için de deadline kaydı — önceden sadece depth>=1
+                // branch'ında (line 7442) yazılıyordu, root parçalar (121299 mamul 152-0812
+                // gibi) deadline'sız kalıyordu → wipJobs/scheduling onları "acil değil" sanıyordu.
+                // İlk kısa kaldığı konteynere yaz (overwrite etme — mevcut mantıkla simetrik).
+                if (!partRealDeadlines[bp.stockCode]) {
+                  partRealDeadlines[bp.stockCode] = {
+                    dueDate: c.date, duePid: cp.pid, dueContainerId: c.id
+                  };
+                }
                 // Root mamul eksikse UI'da görünebilmesi için L1 kalemi olarak push.
                 // Alt BOM zaten depth 1'den itibaren patlayacak; bu sadece "ürünün
                 // kendi mamul stoğu yetersiz" mesajını iletir.
@@ -7602,6 +7611,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             const covered = Math.min(needed, avail);
             partCovered[bi] = covered;
             if (pool && covered > 0) pool.avail -= covered;
+            // v16.2: Root parçalar için deadline — partRealDeadlines (shipReqAnalysis) ile
+            // simetrik. WIP-dahil havuzda kısa kalırsa schedule için deadline kaydet.
+            if (covered < needed && !partRealDeadlines[bp.stockCode]) {
+              partRealDeadlines[bp.stockCode] = { dueDate: c.date, duePid: cp.pid, dueContainerId: c.id };
+            }
             return;
           }
           let needed = Math.ceil(bomQtys[bi] || 0);
