@@ -7025,22 +7025,35 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     const map = {};
     akibet.parts.forEach(p => {
       let intRemNonBulk = 0, fasRemNonBulk = 0, remNonBulk = 0;
+      // v14 fallback: Eğer Firestore'daki akibet eski parse ile yazılmışsa
+      // (backend otomasyonu henüz güncellenmedi), p.totalRemaining ve order.rem
+      // bulunmaz. Runtime'da hesapla — aksi halde MRP Hesapla WIP "—" gösterir ve
+      // alt-BOM forwardDemand'da WIP düşmez → 151-0414-1 için yanlış hammadde talebi.
+      let partTotalRem = p.totalRemaining;
+      const needsCompute = (partTotalRem === undefined || partTotalRem === null);
+      if (needsCompute) partTotalRem = 0;
+
       (p.orders || []).forEach(order => {
         const activeOps = (order.ops || []).filter(op => !op.cancelled && op.remaining > 0);
         if (activeOps.length === 0) return;
+        // Emir'in gerçek fiziksel kalan parça sayısı: MAX(int, fas) — aynı parça
+        // hem iç hem fason op'tan geçer, toplamak çift sayımdır.
+        const orderRem = (order.rem !== undefined && order.rem !== null)
+          ? order.rem
+          : Math.max(order.intRem || 0, order.fasRem || 0);
+        if (needsCompute) partTotalRem += orderRem;
         // Toplu mu? Tüm aktif op'lar bulk-keyword içeriyor mu?
         const isOrderBulk = activeOps.every(op => isBulkOpName(op.name));
         if (isOrderBulk) return; // toplu → güvenilmez, sayma
-        // Non-bulk order: order'ın intRem/fasRem'ini ekle
         intRemNonBulk += order.intRem || 0;
         fasRemNonBulk += order.fasRem || 0;
-        remNonBulk += order.rem || 0;
+        remNonBulk += orderRem;
       });
       map[p.code] = {
         internalRemaining: p.internalRemaining, fasonRemaining: p.fasonRemaining,
         internalRemainingNonBulk: intRemNonBulk, fasonRemainingNonBulk: fasRemNonBulk,
         // v14 fix: Çift sayım yapmayan gerçek kalan parça sayıları
-        totalRemaining: p.totalRemaining || 0,
+        totalRemaining: partTotalRem,
         remainingNonBulk: remNonBulk,
         totalQty: p.totalQty, orderCount: p.orderCount
       };
