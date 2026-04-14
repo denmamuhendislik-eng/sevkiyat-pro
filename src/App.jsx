@@ -5308,7 +5308,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         const mapping = bomMapping[pid];
         if (!mapping) return;
         if (typeof mapping === "string" && mapping.startsWith("direct:")) {
-          sevkiyatProductCodes.add(mapping.substring(7));
+          sevkiyatProductCodes.add(mapping.substring(7).split("|")[0]);
         } else if (bomModels[mapping]) {
           const rootPart = (bomModels[mapping].parts || []).find(p => p.parentIdx === null || p.parentIdx === undefined);
           if (rootPart) sevkiyatProductCodes.add(rootPart.stockCode);
@@ -5491,9 +5491,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         // "direct:STOK_KODU" formatı → BOM'u olmayan ürün, doğrudan talep
         // Sevkiyat ürünleri için rawDemand ile ekle — stok düşümü grossReq net hesabında tek sefer yapılır
         if (typeof mapping === "string" && mapping.startsWith("direct:")) {
-          const stockCode = mapping.substring(7);
+          const parts = mapping.substring(7).split("|");
+          const stockCode = parts[0];
+          const manualSupplyType = parts[1] || null; // kullanıcının BOM eşleşme ekranında seçtiği tip
           if (!isAna && rawDemand > 0) {
-            directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: rawDemand });
+            directItems.push({ pid, stockCode, name: product?.nameTR || stockCode, qty: rawDemand, manualSupplyType });
           }
           return;
         }
@@ -5520,11 +5522,17 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       // Doğrudan talepleri grossReq'e ekle — sevkiyat ürünlerinin root'u (BOM'lu + BOM'suz) buradan girer
       directItems.forEach(item => {
         if (!grossReq[item.stockCode]) {
+          // BOM eşleşme ekranında kullanıcı manuel supply type seçtiyse onu kullan.
+          // Aksi halde stok kodu prefix'inden çıkar (legacy tahmin).
+          const resolvedType = item.manualSupplyType || inferSupplyType(item.stockCode);
           grossReq[item.stockCode] = {
             code: item.stockCode, name: item.name, unit: "AD",
-            level: -1, supplyType: inferSupplyType(item.stockCode),
+            level: -1, supplyType: resolvedType,
             grossQty: 0, sources: []
           };
+        } else if (item.manualSupplyType) {
+          // Kullanıcı manuel tip belirlemiş — önceki (legacy prefix) varsa override et
+          grossReq[item.stockCode].supplyType = item.manualSupplyType;
         }
         grossReq[item.stockCode].grossQty += item.qty;
         grossReq[item.stockCode].sources.push({ pid: item.pid, modelKey: null, qty: item.qty, pass: 0 });
@@ -5608,7 +5616,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (product?.vioCode) codesToCheck.add(product.vioCode);
         const mapping = bomMapping[pid];
         if (typeof mapping === "string" && mapping.startsWith("direct:") && mapping.length > 7) {
-          codesToCheck.add(mapping.substring(7));
+          codesToCheck.add(mapping.substring(7).split("|")[0]);
         }
         let totalBomUsed = 0;
         let totalBomDep = 0;
@@ -7113,16 +7121,22 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (!model?.parts) {
           const vioCode = VIO_CODES[cp.pid] || cp.product?.vioCode;
           const stk = (vioCode && stockLookup[vioCode]) || null;
-          // Supply type tespiti: "direct:..." mapping varsa kullanıcı "bu BOM'suz parça" demiş.
-          // Stok koduna bakarak BUY/RAW/MAKE ayırt et. Prefix 150=RAW, 157/116/121/119/210=BUY,
-          // diğerleri MAKE. BOM mapping ekranından kullanıcı kontrolünde.
+          // Supply type tespiti:
+          // 1. BOM eşleşme ekranında kullanıcı "direct:CODE|TYPE" formatıyla tip belirlediyse → onu kullan
+          // 2. Aksi halde stok kodu prefix'inden tahmin et (legacy)
           let detectedType = "MAKE";
           if (typeof modelKey === "string" && modelKey.startsWith("direct:")) {
-            const directCode = modelKey.substring(7) || vioCode;
-            const pfx = (directCode || "").split("-")[0];
-            if (pfx === "150") detectedType = "RAW";
-            else if (pfx === "157" || pfx === "116" || pfx === "121" || pfx === "119" || pfx === "210") detectedType = "BUY";
-            // Diğer prefix'ler için MAKE varsayımı
+            const directParts = modelKey.substring(7).split("|");
+            const directCode = directParts[0] || vioCode;
+            const manualType = directParts[1]; // kullanıcı seçimi (BUY/RAW/MAKE/FASON)
+            if (manualType && ["BUY", "RAW", "MAKE", "FASON"].includes(manualType)) {
+              detectedType = manualType;
+            } else {
+              // Legacy fallback: prefix ile tahmin
+              const pfx = (directCode || "").split("-")[0];
+              if (pfx === "150") detectedType = "RAW";
+              else if (pfx === "157" || pfx === "116" || pfx === "121" || pfx === "119" || pfx === "210") detectedType = "BUY";
+            }
           }
           const poolKey = `__product_${cp.pid}`;
           if (!stockPool[poolKey]) {
@@ -12496,7 +12510,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                       {demandProducts.map(p => {
                         const m = bomMapping[p.id];
                         const isDirect = typeof m === "string" && m.startsWith("direct:");
-                        const directCode = isDirect ? m.substring(7) : "";
+                        // "direct:CODE" veya "direct:CODE|SUPPLY" — supply opsiyonel
+                        const directRaw = isDirect ? m.substring(7) : "";
+                        const directParts = directRaw.split("|");
+                        const directCode = directParts[0] || "";
+                        const directSupply = directParts[1] || ""; // "BUY" | "RAW" | "MAKE" | "FASON" | ""
                         const hasBom = m && !isDirect && bomModels[m];
                         const mapped = hasBom || (isDirect && directCode.length > 0);
                         const comp = productComparison.find(c => c.pid === p.id);
@@ -12515,8 +12533,23 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             <td style={{ padding: "5px 8px" }}>
                               {canEdit ? (
                                 isDirect ? (
-                                  <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                                  <div style={{ display: "flex", gap: 4, alignItems: "center", flexWrap: "wrap" }}>
                                     <span style={{ fontSize: 10, fontFamily: "var(--font-mono)", color: "#7C3AED", background: "#F5F3FF", padding: "2px 6px", borderRadius: 4 }}>📦 {directCode}</span>
+                                    <select
+                                      value={directSupply}
+                                      onChange={e => {
+                                        const v = e.target.value;
+                                        const newVal = v ? `direct:${directCode}|${v}` : `direct:${directCode}`;
+                                        saveBomMapping({ ...bomMapping, [p.id]: newVal });
+                                      }}
+                                      title="Tedarik tipi — BOM'suz ürünler için (satınalınır mı, üretilir mi?)"
+                                      style={{ fontSize: 10, padding: "2px 4px", borderRadius: 3, border: "1px solid var(--color-border-secondary)", background: directSupply ? (directSupply === "BUY" || directSupply === "RAW" ? "#DBEAFE" : directSupply === "MAKE" ? "#ECFDF5" : "#FEF3C7") : "var(--color-background-secondary)", color: directSupply ? (directSupply === "BUY" || directSupply === "RAW" ? "#1D4ED8" : directSupply === "MAKE" ? "#065F46" : "#92400E") : "var(--color-text-tertiary)", fontWeight: 600 }}>
+                                      <option value="">Tip?</option>
+                                      <option value="BUY">BUY</option>
+                                      <option value="RAW">RAW</option>
+                                      <option value="MAKE">MAKE</option>
+                                      <option value="FASON">FASON</option>
+                                    </select>
                                     <button onClick={() => saveBomMapping({ ...bomMapping, [p.id]: null })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, color: "var(--color-text-tertiary)", padding: "2px" }} title="Sıfırla">✕</button>
                                   </div>
                                 ) : (
