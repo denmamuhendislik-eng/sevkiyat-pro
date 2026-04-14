@@ -10842,6 +10842,31 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                               // short 95 → listede kalır (45 ad yeni emir gerçekten gerek).
                               const effectiveShort = p.totalShort - (p.wipTotal || 0);
                               return effectiveShort > 0;
+                            }).map(p => {
+                              // v16 (2. yarı): WIP'i kronolojik (FIFO) dağıt — erken sevkiyatlar
+                              // WIP ile kapanır, yeni emir ihtiyacı WIP'in tükendiği konteynerden
+                              // itibaren görünür. Böylece firstDate sıralaması da doğru çalışır;
+                              // 152-0812 için 04-17 yerine 06-11 ilk tarih olur.
+                              // Üst seviye (totalShort/containers/firstDate) effective değerlerle
+                              // güncellenir. productsMap/parentsMap tooltip'leri orijinal kaynak
+                              // bilgi olarak kalır (hangi sevkiyat talep etti — bilgi amaçlı).
+                              const wipInitial = p.wipTotal || 0;
+                              let wipLeft = wipInitial;
+                              const sorted = [...p.containers].sort((a, b) => a.date.localeCompare(b.date));
+                              const effContainers = [];
+                              sorted.forEach(c => {
+                                const coveredByWip = Math.min(c.short, wipLeft);
+                                wipLeft -= coveredByWip;
+                                const effShort = c.short - coveredByWip;
+                                if (effShort > 0) effContainers.push({ date: c.date, short: effShort });
+                              });
+                              const effTotalShort = effContainers.reduce((s, c) => s + c.short, 0);
+                              return {
+                                ...p,
+                                totalShort: effTotalShort,
+                                containers: effContainers,
+                                firstDate: effContainers[0]?.date || p.firstDate,
+                              };
                             });
                             const fasonParts = allParts.filter(p => {
                               if (p.supplyType !== "FASON") return false;
