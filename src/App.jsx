@@ -5430,7 +5430,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (bomPart) return normalizeSupplyType(bomPart.supplyType);
         const pfx = (stockCode || "").split("-")[0];
         if (pfx === "150") return "RAW";
-        if (pfx === "157") return "BUY";
+        // Satın alınan hammadde/malzeme kategorileri: civata, rulman, sac plaka, döküm teker, lama vs.
+        if (pfx === "157" || pfx === "116" || pfx === "121" || pfx === "119" || pfx === "210") return "BUY";
         if (pfx === "151") return "MAKE";
         if (pfx === "152") return "MAKE"; // v13: 152 artık MAKE (eskiden PRODUCT)
         return "MAKE";
