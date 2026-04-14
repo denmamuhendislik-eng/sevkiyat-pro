@@ -10784,7 +10784,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                       code: p.code, name: p.name, supplyType: p.supplyType,
                                       unit: p.unit || "AD",
                                       totalShort: 0, containers: [], firstDate: cs.date,
-                                      wipInt: p.wipInt || 0, wipFas: p.wipFas || 0,
+                                      wipInt: p.wipInt || 0, wipFas: p.wipFas || 0, wipTotal: p.wipTotal || 0,
                                       parentsMap: {}, // parentCode → { code, name, totalShort }
                                       productsMap: {} // pid → { pid, name, totalShort, containers:[{date, short}] }
                                     };
@@ -10833,11 +10833,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             });
                             const makeParts = allParts.filter(p => {
                               if (p.supplyType !== "MAKE" && p.supplyType !== "MAKE+FASON") return false;
-                              // WIP varsa bile listele — havuz zaten WIP'i hesaba kattı, totalShort > 0 ise
-                              // havuz yetmedi demektir, yeni iş emri gerekli. WIP hızlandır kategorisi
-                              // geciken (slack<0) WIP için ayrı çalışır, mükerrer gösterim kabul edilebilir
-                              // çünkü aksiyonlar farklı: "yeni iş emri aç" vs "mevcut WIP'i hızlandır".
-                              return true;
+                              // v16: WIP kredisi — v14 Adım 3'ün yeni iş emri kararı sütunu.
+                              // Görünürlükte WIP "hazır" değil (panelde eksik görünür — dokunulmadı),
+                              // AMA yeni iş emri kararında WIP karşılanmış sayılır (cascade ile simetrik).
+                              // effectiveShort = totalShort - wipTotal. Eğer ≤ 0 → WIP yeter, yeni
+                              // emir gereksiz (WIP geciken ise "WIP Hızlandır" kategorisi ayrı çalışır).
+                              // Örn: 151-0414 WIP 160, short 27 → listeden çıkar. 152-0812 WIP 50,
+                              // short 95 → listede kalır (45 ad yeni emir gerçekten gerek).
+                              const effectiveShort = p.totalShort - (p.wipTotal || 0);
+                              return effectiveShort > 0;
                             });
                             const fasonParts = allParts.filter(p => {
                               if (p.supplyType !== "FASON") return false;
