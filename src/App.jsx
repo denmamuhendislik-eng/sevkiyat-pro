@@ -12751,7 +12751,17 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
               // Column definitions
               const C = {
-                code: { label: "Stok Kodu", mono: true, fs: 10, render: r => r.code },
+                code: { label: "Stok Kodu", mono: true, fs: 10, render: r => {
+                  const pls = r.productionLineStock;
+                  if (!pls || pls.total <= 0) return r.code;
+                  const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
+                    pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
+                    "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                  return (<>
+                    {r.code}
+                    <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>
+                  </>);
+                } },
                 name: { label: "Stok Adı", mw: 240, render: r => r.name },
                 unit: { label: "Br", align: "center", fs: 10, render: r => r.unit || "AD" },
                 level: { label: "Svye", align: "center", render: r => <span style={{ fontSize: 9, padding: "1px 4px", borderRadius: 3, background: ["#534AB718","#185FA518","#1D9E7518","#BA751718"][r.level] || "#88888818", color: ["#534AB7","#185FA5","#1D9E75","#BA7517"][r.level] || "#888" }}>L{r.level}</span> },
