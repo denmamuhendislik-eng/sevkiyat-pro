@@ -10588,7 +10588,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                               <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Kod</th>
                                               <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Ad</th>
                                               <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600 }}>Onaylı</th>
-                                              <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600 }}>Güncel Hat</th>
+                                              <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Lokasyon</th>
                                               <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Onaylayan</th>
                                               <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 600 }}>Tarih</th>
                                               {canEdit && <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 600 }}>İptal</th>}
@@ -10597,19 +10597,34 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                           <tbody>
                                             {Object.entries(plsConfirmedLookup).sort((a, b) => (b[1].confirmedAt || "").localeCompare(a[1].confirmedAt || "")).map(([code, conf]) => {
                                               const stk = stockLookup[code];
-                                              const currentPls = stk?.pl ? stk.pl.reduce((s, x) => s + (x.q || 0), 0) : 0;
-                                              const name = stk?.name || "—";
+                                              const pl = stk?.pl || [];
+                                              // Lokasyonları topla (aynı lokasyonda birden fazla op varsa ayrı ayrı göster)
+                                              const locAgg = {};
+                                              pl.forEach(x => {
+                                                if (!x.q || x.q <= 0) return;
+                                                const key = `${x.l}|${x.o || ""}|${x.n || ""}`;
+                                                if (!locAgg[key]) locAgg[key] = { loc: x.l, op: x.o || null, opNo: x.n || null, qty: 0 };
+                                                locAgg[key].qty += x.q;
+                                              });
+                                              const locList = Object.values(locAgg).sort((a, b) => b.qty - a.qty);
+                                              const currentPls = locList.reduce((s, x) => s + x.qty, 0);
                                               const unit = (stk?.unit || "AD").toLowerCase();
+                                              const locSummary = locList.length === 0 ? "—"
+                                                : locList.length === 1 ? `${locList[0].loc}: ${locList[0].qty}`
+                                                : `${locList[0].loc}: ${locList[0].qty} · +${locList.length - 1}`;
+                                              const locTooltip = locList.map(x => `${x.loc}: ${x.qty} ${unit}${x.op ? ` (${x.op}${x.opNo ? ` · ${x.opNo}` : ""})` : ""}`).join("\n");
+                                              const name = stk?.name || "—";
                                               const d = conf.confirmedAt ? new Date(conf.confirmedAt) : null;
                                               const dateStr = d ? `${d.toLocaleDateString("tr-TR")} ${d.toLocaleTimeString("tr-TR", { hour: "2-digit", minute: "2-digit" })}` : "—";
                                               return (
                                                 <tr key={code} style={{ borderTop: "1px solid var(--color-border)" }}>
                                                   <td style={{ padding: "6px 8px", fontFamily: "var(--font-mono)", fontSize: 10 }}>{code}</td>
-                                                  <td style={{ padding: "6px 8px", maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>{name}</td>
+                                                  <td style={{ padding: "6px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>{name}</td>
                                                   <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#166534" }}>{conf.qty} <span style={{ fontSize: 9, fontWeight: 400, color: "var(--color-text-tertiary)" }}>{unit}</span></td>
-                                                  <td style={{ padding: "6px 8px", textAlign: "right", fontSize: 10, color: currentPls >= conf.qty ? "var(--color-text-secondary)" : "#DC2626" }}>
-                                                    {currentPls} {unit}
-                                                    {currentPls < conf.qty && <span title="Güncel hat stoğu onay miktarının altında — onay otomatik iptal edilecek" style={{ marginLeft: 4 }}>⚠</span>}
+                                                  <td style={{ padding: "6px 8px", fontSize: 10, color: currentPls >= conf.qty ? "var(--color-text-secondary)" : "#DC2626", cursor: locTooltip ? "help" : "default", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                                      title={locTooltip || ""}>
+                                                    {locSummary}
+                                                    {currentPls < conf.qty && <span style={{ marginLeft: 4 }}>⚠</span>}
                                                   </td>
                                                   <td style={{ padding: "6px 8px", fontSize: 10, color: "var(--color-text-secondary)" }}>{conf.confirmedBy || "—"}</td>
                                                   <td style={{ padding: "6px 8px", fontSize: 10, color: "var(--color-text-secondary)" }}>{dateStr}</td>
