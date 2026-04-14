@@ -2588,7 +2588,7 @@ ${el.innerHTML}
           {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={userRole} selectedYear={selYear}/>}
 
           {/* ========== MRP PAGE ========== */}
-          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} products={products} yearsData={yearsData} setProducts={setProducts}/>}
+          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts}/>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
@@ -4741,7 +4741,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 // ============================================================
 // MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
 // ============================================================
-function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
+function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts }) {
   const APP_COL = "appData";
   const BOM_DOC = "bomModels";
   const WC_DOC = "workCenters";
@@ -4910,7 +4910,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
 
   // Üretim hattı stoğu onayı — toggle (ekle/kaldır)
   const togglePlsConfirmation = async (partCode, qty) => {
-    console.log("🔘 [PLS-TOGGLE] tıklandı", { partCode, qty, db: !!db, canEdit, authUser: authUser?.email });
+    console.log("🔘 [PLS-TOGGLE] tıklandı", { partCode, qty, db: !!db, canEdit, userRole, user: authUser?.email });
     if (!db) {
       console.warn("🔘 [PLS-TOGGLE] DB yok, işlem iptal");
       alert("Veritabanı bağlantısı yok");
@@ -4929,7 +4929,7 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       updated[partCode] = {
         qty: qty,
         confirmedAt: new Date().toISOString(),
-        confirmedBy: authUser?.email || authUser?.uid || "bilinmiyor"
+        confirmedBy: authUser?.email || userRole || "bilinmiyor"
       };
     }
     try {
