@@ -7139,19 +7139,6 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               else if (pfx === "157" || pfx === "116" || pfx === "121" || pfx === "119" || pfx === "210") detectedType = "BUY";
             }
           }
-          // 🔍 DEBUG — 116 prefix'li parçalar için tespit sürecini izle (bir kez log)
-          if ((vioCode && vioCode.startsWith("116")) || (cp.product?.nameTR || "").includes("SAC PLAKA")) {
-            if (!window.__directTypeLogged) window.__directTypeLogged = new Set();
-            const logKey = `${cp.pid}|${c.id}`;
-            if (!window.__directTypeLogged.has(logKey)) {
-              window.__directTypeLogged.add(logKey);
-              console.log("🔍 [DIRECT-TYPE]", {
-                pid: cp.pid, name: cp.product?.nameTR, vioCode, modelKey, detectedType,
-                isDirect: typeof modelKey === "string" && modelKey.startsWith("direct:"),
-                directParts: typeof modelKey === "string" && modelKey.startsWith("direct:") ? modelKey.substring(7).split("|") : null
-              });
-            }
-          }
           const poolKey = `__product_${cp.pid}`;
           if (!stockPool[poolKey]) {
             stockPool[poolKey] = { avail: stk?.ambar || 0, wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
@@ -10600,7 +10587,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                               if (p.supplyType !== "BUY" && p.supplyType !== "RAW") return false;
                               const po = purchaseLookup[p.code];
                               const rem = po?.totalRemaining || 0;
-                              return rem > 0 && rem < p.totalShort;
+                              // PO var ve hâlâ eksik kalan talep varsa PO takibe al.
+                              // Önceki: rem < totalShort (kısmi karşılama) — PO tam karşılarsa kör nokta oluyordu.
+                              // Şimdi: rem > 0 ise takip (PO zamanında gelecek mi? takip edilmeli)
+                              return rem > 0 && p.totalShort > 0;
                             });
                             const makeParts = allParts.filter(p => {
                               if (p.supplyType !== "MAKE" && p.supplyType !== "MAKE+FASON") return false;
