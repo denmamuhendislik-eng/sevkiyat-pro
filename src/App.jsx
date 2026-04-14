@@ -4783,6 +4783,10 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
   const [acilHorizon, setAcilHorizon] = useState(60); // Acil aksiyon bandı zaman ufku (gün)
   const [acilActive, setAcilActive] = useState(null); // hangi sayaç açık: "buy"|"make"|"fason"|"wip"|"poTakip"|null
   const [wipAssignments, setWipAssignments] = useState({}); // "code|opCode|emirNo" → machineId
+  // Üretim Hattı Stoğu Onayları: partCode → { qty, confirmedAt, confirmedBy }
+  // Operatör "bu hat stoğu teyit ettim, gerçek mamul sayılabilir" onayı verir.
+  // Stok raporu yenilendiğinde otomatik iptal: güncel hat stoğu < onay qty ise invalid.
+  const [plsConfirmations, setPlsConfirmations] = useState({});
   const [schedOverrides, setSchedOverrides] = useState({}); // "partCode|opCode" → machineId
   const [jobOrder, setJobOrder] = useState({}); // machineId → ["jobId|opIdx", ...]
   const [editingOpPart, setEditingOpPart] = useState(null);
@@ -4849,6 +4853,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     unsubs.push(onSnapshot(wipRef, snap => {
       if (snap.exists()) setWipAssignments(snap.data());
     }, () => {}));
+    // Üretim Hattı Stoğu Onayları
+    const plsRef = doc(db, APP_COL, "plsConfirmations");
+    unsubs.push(onSnapshot(plsRef, snap => {
+      if (snap.exists()) setPlsConfirmations(snap.data());
+    }, () => {}));
     // Çizelge Manuel Tezgah Taşımaları
     const overRef = doc(db, APP_COL, "schedOverrides");
     unsubs.push(onSnapshot(overRef, snap => {
@@ -4897,6 +4906,24 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     const updated = { ...wipAssignments, [key]: machineId || null };
     if (!machineId) delete updated[key];
     await setDoc(doc(db, APP_COL, "wipAssignments"), updated);
+  };
+
+  // Üretim hattı stoğu onayı — toggle (ekle/kaldır)
+  const togglePlsConfirmation = async (partCode, qty) => {
+    if (!db || !canEdit) return;
+    const updated = { ...plsConfirmations };
+    if (updated[partCode]) {
+      // Zaten onaylı → iptal et
+      delete updated[partCode];
+    } else {
+      // Yeni onay
+      updated[partCode] = {
+        qty: qty,
+        confirmedAt: new Date().toISOString(),
+        confirmedBy: authUser?.email || authUser?.uid || "bilinmiyor"
+      };
+    }
+    await setDoc(doc(db, APP_COL, "plsConfirmations"), updated);
   };
   const saveJobOrder = async (machineId, orderArr) => {
     if (!db || !canEdit) return;
@@ -5093,6 +5120,23 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
     });
     return map;
   }, [stock]);
+
+  // Onaylı üretim hattı stoğu — partCode → geçerli onay miktarı (0 ise onay yok/iptal)
+  // Otomatik iptal mantığı: güncel hat stoğu onaylanan miktarın altına düştüyse onay geçersiz.
+  // Çünkü hat stoğu azaldıysa, operatörün onayladığı miktar artık yoktur.
+  const plsConfirmedLookup = useMemo(() => {
+    if (!plsConfirmations || Object.keys(plsConfirmations).length === 0) return {};
+    const map = {};
+    Object.entries(plsConfirmations).forEach(([code, conf]) => {
+      if (!conf || !conf.qty) return;
+      const stk = stockLookup[code];
+      if (!stk || !stk.pl || stk.pl.length === 0) return; // hat stoğu artık yok → onay geçersiz
+      const currentPlsTotal = stk.pl.reduce((s, x) => s + (x.q || 0), 0);
+      if (currentPlsTotal < conf.qty) return; // güncel hat stoğu < onay → onay geçersiz (otomatik iptal)
+      map[code] = { qty: conf.qty, confirmedAt: conf.confirmedAt, confirmedBy: conf.confirmedBy };
+    });
+    return map;
+  }, [plsConfirmations, stockLookup]);
 
   // Filtered stock parts for table display
   const filteredStockParts = useMemo(() => {
@@ -5320,11 +5364,14 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
               (parentType === "MAKE" || parentType === "MAKE+FASON" || parentType === "FASON")) {
             const parentStk = stockLookup[parent.stockCode];
             const parentAk = akibetLookup[parent.stockCode];
-            // parentStkAvail: ambar + nonBulk WIP. Toplu iş emirleri (montaj/pres) sayılmaz —
-            // bunlar baştan açılan ana ürün/yarımamul iş emirleri; alt ihtiyacı baskılayamaz.
+            // parentStkAvail: ambar + nonBulk WIP + onaylı hat stoğu
+            // Toplu iş emirleri (montaj/pres) sayılmaz — baştan açılan ana ürün/yarımamul iş
+            // emirleri alt ihtiyacı baskılayamaz. Onaylı hat stoğu gerçek mamul gibi davranır.
+            const parentPlsConf = plsConfirmedLookup[parent.stockCode]?.qty || 0;
             const parentStkAvail = (parentStk?.ambar || 0)
                                  + (parentAk?.internalRemainingNonBulk || 0)
-                                 + (parentAk?.fasonRemainingNonBulk || 0);
+                                 + (parentAk?.fasonRemainingNonBulk || 0)
+                                 + parentPlsConf;
             if (parentStkAvail >= parentNeeded) {
               partQtys[i] = 0;
               return;
@@ -5479,7 +5526,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const stkAmbar = stk ? stk.ambar : 0;
         const stkUretim = stk ? stk.uretim : 0;
         const stkFason = stk ? stk.fason : 0;
-        const stkAvail = stkAmbar + (stockIncludeUretim ? stkUretim : 0) + (stockIncludeFason ? stkFason : 0);
+        // Onaylı üretim hattı stoğu — operatör "hat stoğu teyit edildi" demişse hesaba kat
+        const plsConf = plsConfirmedLookup[r.code]?.qty || 0;
+        const stkAvail = stkAmbar + (stockIncludeUretim ? stkUretim : 0) + (stockIncludeFason ? stkFason : 0) + plsConf;
         const ak = akibetLookup[r.code];
         const wipInt = ak ? ak.internalRemaining : 0;
         const wipFas = ak ? ak.fasonRemaining : 0;
@@ -6969,8 +7018,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       // Non-bulk WIP'i akibetLookup'tan al (toplu montaj/pres iş emirleri sayılmaz)
       const ak = akibetLookup[r.code];
       const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+      const plsConf = plsConfirmedLookup[r.code]?.qty || 0;
       stockPool[r.code] = {
-        avail: (r.stkAmbar || 0) + nonBulkWip,
+        avail: (r.stkAmbar || 0) + nonBulkWip + plsConf,
         wipInt: r.wipInt || 0,
         wipFas: r.wipFas || 0,
         stkUretim: r.stkUretim || 0,
@@ -6983,8 +7033,9 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
         const stk = stockLookup[bp.stockCode];
         const ak = akibetLookup[bp.stockCode];
         const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+        const plsConf = plsConfirmedLookup[bp.stockCode]?.qty || 0;
         stockPool[bp.stockCode] = {
-          avail: (stk?.ambar || 0) + nonBulkWip,
+          avail: (stk?.ambar || 0) + nonBulkWip + plsConf,
           wipInt: ak?.internalRemaining || 0,
           wipFas: ak?.fasonRemaining || 0,
           stkUretim: stk?.uretim || 0,
@@ -7007,14 +7058,15 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
       const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
       const ak = akibetLookup[rootPart.stockCode];
       const nonBulkWip = (ak?.internalRemainingNonBulk || 0) + (ak?.fasonRemainingNonBulk || 0);
+      const plsConf = plsConfirmedLookup[rootPart.stockCode]?.qty || 0;
       // Var olan havuzu ezme (BOM döngüsü zaten set etmiş olabilir), ama availini VIO stoğuyla güncelle
       if (stockPool[rootPart.stockCode]) {
         if (stk && stk.ambar !== undefined) {
-          stockPool[rootPart.stockCode].avail = (stk.ambar || 0) + nonBulkWip;
+          stockPool[rootPart.stockCode].avail = (stk.ambar || 0) + nonBulkWip + plsConf;
         }
       } else {
         stockPool[rootPart.stockCode] = {
-          avail: (stk?.ambar || 0) + nonBulkWip,
+          avail: (stk?.ambar || 0) + nonBulkWip + plsConf,
           wipInt: 0, wipFas: 0, stkUretim: stk?.uretim || 0,
           name: rootPart.stockName, supplyType: rootPart.supplyType, level: 0
         };
@@ -10497,6 +10549,11 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
                                   <div style={{ fontSize: 11, fontWeight: 600, color: "#065F46" }}>
                                     ⚡ Acil Aksiyon — {horizonLabel} · {horizonContainers.length} sevkiyat
+                                    {Object.keys(plsConfirmedLookup).length > 0 && (
+                                      <span style={{ marginLeft: 10, padding: "1px 8px", borderRadius: 10, background: "#DCFCE7", color: "#166534", fontSize: 9, fontWeight: 600 }} title="Onaylanmış üretim hattı stokları havuza katılıyor — ilgili parçalar listelerden düşer">
+                                        ✓ {Object.keys(plsConfirmedLookup).length} parça hat-stoğu onaylı
+                                      </span>
+                                    )}
                                   </div>
                                   <div style={{ display: "flex", gap: 0, borderRadius: 6, overflow: "hidden", border: "1px solid #BBF7D0" }}>
                                     {[30, 60, 90, 0].map(h => (
@@ -10596,18 +10653,35 @@ function MRPPlanlama({ db, userRole, products, yearsData, setProducts }) {
                                                 productTooltip = productList.map(pr => `${pr.name} (${pr.totalShort} ${u})\n${pr.containers.map(c => `  • ${c.date}: ${c.short}`).join("\n")}`).join("\n\n");
                                               }
                                               return (
-                                                <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22` }}>
+                                                <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22`, background: plsConfirmedLookup[p.code] ? "#F0FDF4" : "transparent" }}>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
                                                     {p.code}
                                                     {(() => {
                                                       const expRow = (explosionResult?.parts || []).find(r => r.code === p.code);
                                                       const pls = expRow?.productionLineStock;
                                                       if (!pls || pls.total <= 0) return null;
-                                                      const tip = "Üretim hattında bekleyen mamul/yarımamul\n─────────────────────────────\n" +
-                                                        pls.byLocation.map(b => `${b.loc}: ${b.qty} ${(p.unit || "AD").toLowerCase()}${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
-                                                        "\n\n⚠ Yeni iş emri açmadan/sipariş vermeden önce kontrol edin —\noperasyonu bitmiş ama henüz transfer/teslim alınmamış olabilir.";
+                                                      const isConfirmed = !!plsConfirmedLookup[p.code];
+                                                      const u = (p.unit || "AD").toLowerCase();
+                                                      const locTip = pls.byLocation.map(b => `${b.loc}: ${b.qty} ${u}${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n");
+                                                      if (isConfirmed) {
+                                                        const conf = plsConfirmedLookup[p.code];
+                                                        const confDate = conf.confirmedAt ? new Date(conf.confirmedAt).toLocaleDateString("tr-TR") : "";
+                                                        const tip = `✓ Hat stoğu onaylandı: ${conf.qty} ${u}\n(${conf.confirmedBy || "bilinmiyor"} · ${confDate})\n─────────────────────────────\n${locTip}\n\n${canEdit ? "Tıkla: onayı iptal et" : "Sadece yetkililer iptal edebilir"}`;
+                                                        return (
+                                                          <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(p.code, pls.total); } : undefined}
+                                                                style={{ marginLeft: 4, padding: "1px 6px", borderRadius: 3, background: "#DCFCE7", color: "#166534", fontSize: 9, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: "1px solid #86EFAC" }}
+                                                                title={tip}>
+                                                            ✓{conf.qty}
+                                                          </span>
+                                                        );
+                                                      }
+                                                      const tip = "Üretim hattında bekleyen mamul/yarımamul\n─────────────────────────────\n" + locTip +
+                                                        "\n\n⚠ Yeni iş emri açmadan/sipariş vermeden önce kontrol edin —\noperasyonu bitmiş ama henüz transfer/teslim alınmamış olabilir." +
+                                                        (canEdit ? `\n\nTıkla: ${pls.total} ${u} hat stoğunu ONAYLA (hesaba katılır)` : "\n\nSadece yetkililer onaylayabilir");
                                                       return (
-                                                        <span style={{ marginLeft: 4, padding: "1px 5px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 700, cursor: "help", border: "1px solid #FDE68A" }} title={tip}>
+                                                        <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(p.code, pls.total); } : undefined}
+                                                              style={{ marginLeft: 4, padding: "1px 5px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: "1px solid #FDE68A" }}
+                                                              title={tip}>
                                                           🔍{pls.total}
                                                         </span>
                                                       );
