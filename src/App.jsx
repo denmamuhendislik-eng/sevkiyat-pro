@@ -5407,10 +5407,21 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             const childModelKey = modelByStockCode[code];
             if (childModelKey && childModelKey !== modelKey && !nextVisited.has(childModelKey)) {
               // Forward demand: sevkiyat ürünü ise tam needed ilet (stok grossReq net'te düşecek);
-              // değilse parent ambar stoğunu düş (alt kümeye net ileti).
-              const forwardDemand = sevkiyatProductCodes.has(code)
-                ? needed
-                : Math.max(0, needed - (stockLookup[code]?.ambar || 0));
+              // değilse parent'ın karşılanma havuzunu düş (alt kümeye net ileti).
+              // v14 fix: ambar yanında nonBulk WIP + onaylı PLS de düşülür — aksi halde WIP'i
+              // olan parça için alt-BOM patlatılıp çocuk hammaddeleri körü körüne talep ediliyordu
+              // (151-0414 örneği: WIP 80 var, brüt 10, forward yanlışlıkla 3 oluyordu → 151-0414-1
+              // için 3 ad → 150-0116 için 94 kg yanlış hammadde talebi). Şimdi forward = 0.
+              let forwardDemand;
+              if (sevkiyatProductCodes.has(code)) {
+                forwardDemand = needed;
+              } else {
+                const fAk = akibetLookup[code];
+                const fNonBulkWip = fAk?.remainingNonBulk || 0;
+                const fPls = plsConfirmedLookup[code]?.qty || 0;
+                const fAmbar = stockLookup[code]?.ambar || 0;
+                forwardDemand = Math.max(0, needed - fAmbar - fNonBulkWip - fPls);
+              }
               if (forwardDemand > 0) {
                 explodeProduct(pid, forwardDemand, childModelKey, pass, nextVisited);
               }
