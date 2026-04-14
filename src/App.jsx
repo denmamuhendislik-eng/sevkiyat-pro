@@ -5445,7 +5445,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         const product = products?.find(p => p.id === pid);
         let rawDemand, productStock, netDemand, source;
 
-        let montajStockRaw = null, vioStockRaw = null;
+        let montajStockRaw = null, vioStockRaw = null, productWipRaw = 0, productPlsRaw = 0;
         if (isAna && montajCalc.hasMontaj) {
           // ANA ürün — montaj planından talep
           rawDemand = montajCalc.remainingPlan[pid] || 0;
@@ -5478,13 +5478,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
           const plsConf = plsConfirmedLookup[vioCode]?.qty || 0;
           productStock = vioAmbar + nonBulkWip + plsConf;
           vioStockRaw = vioAmbar;
+          productWipRaw = nonBulkWip;
+          productPlsRaw = plsConf;
           source = "sevkiyat";
         }
 
         // Net talep = ham talep − mamul stok (negatif olamaz)
         netDemand = Math.max(0, rawDemand - productStock);
 
-        demandSummary[pid] = { source, rawDemand, productStock, netDemand, montajStockRaw, vioStockRaw, name: product?.nameTR || `PID ${pid}` };
+        demandSummary[pid] = { source, rawDemand, productStock, netDemand, montajStockRaw, vioStockRaw, productWipRaw, productPlsRaw, name: product?.nameTR || `PID ${pid}` };
 
         // "direct:STOK_KODU" formatı → BOM'u olmayan ürün, doğrudan talep
         // Sevkiyat ürünleri için rawDemand ile ekle — stok düşümü grossReq net hesabında tek sefer yapılır
@@ -12879,6 +12881,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             <th style={{ padding: "8px 6px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Kaynak</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#8B5CF6" }}>Mamul Stok</th>
+                            <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#0891B2" }} title="Açık iş emirleri kalan miktarı (toplu montaj/pres iş emirleri hariç) + onaylı hat stoğu">⚙ WIP</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#7C3AED" }}>⚡ BOM</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#16A34A" }}>Kalan Stok</th>
                             <th style={{ padding: "8px 8px", textAlign: "right", fontWeight: 500, fontSize: 10, color: "#DC2626" }}>Net Talep</th>
@@ -12908,14 +12911,35 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                     </span>
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{ps.rawDemand}</td>
-                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.productStock > 0 ? "#8B5CF6" : "var(--color-text-tertiary)" }}>
-                                    {ps.productStock > 0 ? ps.productStock : "—"}
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: (ps.vioStockRaw > 0 || ps.montajStockRaw > 0) ? "#8B5CF6" : "var(--color-text-tertiary)" }}>
+                                    {(() => {
+                                      // Mamul stok gösterimi: ANA ürünler için montaj, sevkiyat için VIO ambar
+                                      const displayStock = ps.source === "montaj"
+                                        ? (ps.montajStockRaw ?? 0)
+                                        : (ps.vioStockRaw ?? 0);
+                                      return displayStock > 0 ? displayStock : "—";
+                                    })()}
                                     {(() => {
                                       const cc = stockCrossCheck[ps.pid];
                                       if (!cc) return null;
                                       if (cc.status === "novio") return <div style={{ fontSize: 7, color: "var(--color-text-tertiary)" }}>VIO yok</div>;
                                       if (cc.status === "mismatch") return <div style={{ fontSize: 7, color: "#DC2626" }} title={`Montaj: ${cc.montaj}, VIO: ${cc.vio}, Fark: ${cc.diff > 0 ? "+" : ""}${cc.diff}`}>⚠ VIO: {cc.vio} ({cc.diff > 0 ? "+" : ""}{cc.diff})</div>;
                                       return <div style={{ fontSize: 7, color: "#16A34A" }}>VIO: {cc.vio} ✓</div>;
+                                    })()}
+                                  </td>
+                                  <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10, color: ((ps.productWipRaw || 0) + (ps.productPlsRaw || 0)) > 0 ? "#0891B2" : "var(--color-text-tertiary)" }}
+                                      title={(() => {
+                                        const w = ps.productWipRaw || 0;
+                                        const p = ps.productPlsRaw || 0;
+                                        if (w === 0 && p === 0) return "";
+                                        const parts = [];
+                                        if (w > 0) parts.push(`Açık iş emri kalan: ${w} ad (toplu montaj/pres hariç)`);
+                                        if (p > 0) parts.push(`Onaylı hat stoğu: ${p} ad`);
+                                        return parts.join("\n");
+                                      })()}>
+                                    {(() => {
+                                      const total = (ps.productWipRaw || 0) + (ps.productPlsRaw || 0);
+                                      return total > 0 ? total : "—";
                                     })()}
                                   </td>
                                   <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: ps.bomDependentTotal > 0 ? "#7C3AED" : "var(--color-text-tertiary)", fontSize: 10 }}>
