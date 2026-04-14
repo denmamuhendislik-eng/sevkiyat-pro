@@ -7267,12 +7267,6 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     const partRealDeadlines = {}; // partCode → { dueDate, duePid, dueContainerId }
     const today = new Date();
 
-    // ── TEŞHİS LOG 1: stockPool başlangıç durumu (cascade tüketiminden ÖNCE)
-    console.log("🔬 TEŞHİS-1 stockPool[152-0812] başlangıç:", stockPool["152-0812"]);
-    console.log("🔬 TEŞHİS-1 stockPool[151-0526] başlangıç:", stockPool["151-0526"]);
-    console.log("🔬 TEŞHİS-1 stockPool[152-0109] başlangıç:", stockPool["152-0109"]);
-    console.log("🔬 TEŞHİS-1 akibetLookup[152-0812]:", akibetLookup["152-0812"]);
-
     allContainers.forEach(c => {
       const cProducts = Object.entries(c.products || {}).map(([pid, qty]) => ({
         pid: Number(pid), qty, product: pidToProduct[Number(pid)]
@@ -7406,22 +7400,6 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             let needed = Math.ceil(bomQtys[bi] || 0);
             if (needed <= 0) return;
             const parent = bomParts[bp.parentIdx];
-            // ── TEŞHİS LOG 2: 152-0812 ve 151-0526 işlenirken — GİRİŞ
-            const _isTarget = (bp.stockCode === "152-0812" || bp.stockCode === "151-0526");
-            const _isEarly = c.date <= "2026-06-15";
-            if (_isTarget && _isEarly) {
-              console.log(`🔬 TEŞHİS-2 [${c.date}|${cp.product?.nameTR}|${cp.qty}ad] ${bp.stockCode} GİRİŞ depth=${depth}`, {
-                bi, bomQtys_bi: bomQtys[bi], needed,
-                parent_stockCode: parent?.stockCode,
-                parent_supplyType: parent?.supplyType,
-                parent_parentIdx: parent?.parentIdx,
-                parent_bomQtys: bomQtys[bp.parentIdx],
-                parent_covDisplay: partCovered[bp.parentIdx],
-                parent_covCascade: partCoveredCascade[bp.parentIdx],
-                pool_avail: stockPool[bp.stockCode]?.avail,
-                pool_cascadeAvail: stockPool[bp.stockCode]?.cascadeAvail
-              });
-            }
             // Parent ROOT ise (depth 1 parçalar) — ana ürün mamul stoğundan kapsanan kısmı düş
             // v14 Adım 3: Cascade için parent'ın WIP'i karşılanmış sayılır → child için needed azaltılır
             if (parent && (parent.parentIdx === null || parent.parentIdx === undefined)) {
@@ -7433,7 +7411,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               bomQtys[bi] = Math.ceil((bp.qty || 1) * parentNet);
               needed = Math.ceil(bomQtys[bi] || 0);
               if (needed <= 0) return;
-            } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && (parent.supplyType === "MAKE" || parent.supplyType === "MAKE+FASON" || parent.supplyType === "FASON")) {
+            } else if (parent && parent.parentIdx !== null && parent.parentIdx !== undefined && parent.supplyType !== "BUY" && parent.supplyType !== "RAW") {
+              // v15 fix: supplyType inclusion ("MAKE"||"MAKE+FASON"||"FASON") legacy
+              // BOM kayıtlarında bazı MAKE parçalar "PRODUCT" olarak duruyor (v13 migrasyonu
+              // bomModels'a tam yansımamış). Bu branch tetiklenmediğinde child, parent'ın
+              // cascade kapsamasını öğrenemiyor → 151-0526 gibi RAW'lar için yanlış talep.
+              // Çözüm: line 7354 initial propagation ile aynı stil — parent BUY/RAW değilse
+              // "üretici" say. Böylece PRODUCT, MAKE, MAKE+FASON, FASON hepsi kapsanır.
               const parentBi = bp.parentIdx;
               const parentNeeded = Math.ceil(bomQtys[parentBi] || 0);
               const parentCovCasc = partCoveredCascade[parentBi] || 0;
@@ -7467,17 +7451,6 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                 duePid: cp.pid,
                 dueContainerId: c.id
               };
-            }
-            // ── TEŞHİS LOG 3: 152-0812 ve 151-0526 işlenirken — ÇIKIŞ
-            if (_isTarget && _isEarly) {
-              console.log(`🔬 TEŞHİS-3 [${c.date}|${cp.product?.nameTR}] ${bp.stockCode} ÇIKIŞ`, {
-                finalNeeded, covered, short: finalNeeded - covered,
-                cascCov, bomQtys_bi_final: bomQtys[bi],
-                partCovered_bi: partCovered[bi],
-                partCoveredCascade_bi: partCoveredCascade[bi],
-                pool_avail_after: stockPool[bp.stockCode]?.avail,
-                pool_cascadeAvail_after: stockPool[bp.stockCode]?.cascadeAvail
-              });
             }
           });
 
