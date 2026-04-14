@@ -10532,11 +10532,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             });
                             const makeParts = allParts.filter(p => {
                               if (p.supplyType !== "MAKE" && p.supplyType !== "MAKE+FASON") return false;
-                              return (p.wipInt + p.wipFas) === 0;
+                              // WIP varsa bile listele — havuz zaten WIP'i hesaba kattı, totalShort > 0 ise
+                              // havuz yetmedi demektir, yeni iş emri gerekli. WIP hızlandır kategorisi
+                              // geciken (slack<0) WIP için ayrı çalışır, mükerrer gösterim kabul edilebilir
+                              // çünkü aksiyonlar farklı: "yeni iş emri aç" vs "mevcut WIP'i hızlandır".
+                              return true;
                             });
                             const fasonParts = allParts.filter(p => {
                               if (p.supplyType !== "FASON") return false;
-                              return p.wipFas === 0;
+                              return true;
                             });
                             // WIP geciken: wipJobs içinden slackDays<0 olanlar — ama horizon içinde dueDate'i olanlar
                             const wipLateParts = (wipJobs || []).filter(w => {
@@ -10688,10 +10692,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                   <SayacBox icon="🛒" count={buyParts.length} label="Sipariş ver" sub="BUY · PO yok"
                                     color="#DC2626" bg="#FEF2F2" active={acilActive === "buy"} disabled={buyParts.length === 0}
                                     onClick={() => setAcilActive(acilActive === "buy" ? null : "buy")} />
-                                  <SayacBox icon="⚡" count={makeParts.length} label="İş emri aç" sub="MAKE · WIP yok"
+                                  <SayacBox icon="⚡" count={makeParts.length} label="İş emri aç" sub="MAKE · yeni açılacak"
                                     color="#7C3AED" bg="#F5F3FF" active={acilActive === "make"} disabled={makeParts.length === 0}
                                     onClick={() => setAcilActive(acilActive === "make" ? null : "make")} />
-                                  <SayacBox icon="🚀" count={fasonParts.length} label="Fason gönder" sub="FASON · WIP yok"
+                                  <SayacBox icon="🚀" count={fasonParts.length} label="Fason gönder" sub="FASON · yeni gönderilecek"
                                     color="#0891B2" bg="#ECFEFF" active={acilActive === "fason"} disabled={fasonParts.length === 0}
                                     onClick={() => setAcilActive(acilActive === "fason" ? null : "fason")} />
                                   <SayacBox icon="⚙" count={wipLateParts.length} label="WIP hızlandır" sub="Devam eden, geciken"
