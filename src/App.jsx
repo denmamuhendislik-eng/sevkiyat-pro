@@ -11086,6 +11086,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                             </tr></thead>
                                             <tbody>{list.map(p => {
                                               const po = purchaseLookup[p.code];
+                                              const poRem = po?.totalRemaining || 0;
+                                              const poGap = acilActive === "poTakip" ? Math.max(0, p.totalShort - poRem) : 0;
                                               const containerSummary = p.containers.length <= 4
                                                 ? p.containers.map(c => `${c.date.substring(5)}(${c.short})`).join(" · ")
                                                 : p.containers.slice(0, 3).map(c => `${c.date.substring(5)}(${c.short})`).join(" · ") + ` +${p.containers.length - 3}`;
@@ -11119,7 +11121,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                 productTooltip = productList.map(pr => `${pr.name} (${pr.totalShort} ${u})\n${pr.containers.map(c => `  • ${c.date}: ${c.short}`).join("\n")}`).join("\n\n");
                                               }
                                               return (
-                                                <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22`, background: plsConfirmedLookup[p.code] ? "#F0FDF4" : "transparent" }}>
+                                                <tr key={p.code} style={{ borderTop: `0.5px solid ${color}22`, background: poGap > 0 ? "#FEF2F2" : plsConfirmedLookup[p.code] ? "#F0FDF4" : "transparent" }}>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
                                                     {p.code}
                                                     {(() => {
@@ -11162,7 +11164,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                   <td style={{ padding: "4px 6px", fontSize: 9, fontFamily: "var(--font-mono)", color: parents.length > 0 ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: parentTooltip ? "help" : "default" }} title={parentTooltip}>{parentSummary}</td>
                                                   <td style={{ padding: "4px 6px", fontSize: 9, color: productList.length > 0 ? "var(--color-text-secondary)" : "var(--color-text-tertiary)", maxWidth: 160, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", cursor: productTooltip ? "help" : "default" }} title={productTooltip}>{productSummary}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{p.firstDate.substring(5)}</td>
-                                                  {acilActive === "poTakip" && <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={po?.suppliers?.length ? `Tedarikçi: ${po.suppliers.join(", ")}` : ""}>📦{po?.totalRemaining || 0}</td>}
+                                                  {acilActive === "poTakip" && <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={(po?.suppliers?.length ? `Tedarikçi: ${po.suppliers.join(", ")}\n` : "") + (poGap > 0 ? `⚠ Açık sipariş eksiği karşılamıyor — kalan ${poGap} ${u} için tedarikçiye ek miktar veya hızlandırma gerekli` : poRem > 0 ? "✓ Açık sipariş eksiği tamamen kapatıyor — sadece zamanlama takibi" : "")}>📦{poRem}{poGap > 0 && <span style={{ marginLeft: 3, color: "#DC2626", fontWeight: 700 }}>/ -{poGap}</span>}</td>}
                                                   {(acilActive === "make" || acilActive === "fason") && (
                                                     <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9, color: "var(--color-text-tertiary)" }}>
                                                       {(p.wipInt + p.wipFas) > 0 ? `⚙${p.wipInt + p.wipFas}` : "—"}
