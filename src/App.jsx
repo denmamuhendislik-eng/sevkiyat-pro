@@ -160,6 +160,8 @@ export default function App() {
   const [packingStandards, setPackingStandards] = useState({}); // {pid: {qtyPerPallet, ambalajType, dara}}
   const [editStdPid, setEditStdPid] = useState(null);
   const [editStdTemp, setEditStdTemp] = useState({qtyPerPallet:"",ambalajType:0,dara:""});
+  const [editKgPid, setEditKgPid] = useState(null);
+  const [editKgTemp, setEditKgTemp] = useState("");
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
@@ -1094,6 +1096,28 @@ ${el.innerHTML}
       }}));
     }
     setEditStdPid(null);
+  };
+
+  const saveEditKg = (pid) => {
+    if (!isAdmin) { setEditKgPid(null); return; }
+    const newKg = parseFloat(editKgTemp);
+    const oldP = products.find(p => p.id === pid);
+    if (!oldP) { setEditKgPid(null); return; }
+    if (isNaN(newKg) || newKg <= 0) {
+      alert("KG değeri 0'dan büyük bir sayı olmalıdır.");
+      return;
+    }
+    if (newKg === oldP.kg) { setEditKgPid(null); return; }
+    const ok = confirm(
+      `${oldP.nameTR}\n\n` +
+      `Birim KG: ${oldP.kg} → ${newKg}\n\n` +
+      `⚠ Bu değişiklik ile geçmiş ve gelecek tüm sevkiyatların toplam KG'si yeniden hesaplanacak. ` +
+      `Palet hesapları, sevkiyat raporları ve istatistikler etkilenir.\n\n` +
+      `Devam edilsin mi?`
+    );
+    if (!ok) return;
+    setProducts(prev => prev.map(p => p.id === pid ? { ...p, kg: newKg } : p));
+    setEditKgPid(null);
   };
 
   const openPacking = (cid) => {
@@ -2076,7 +2100,26 @@ ${el.innerHTML}
                       <div style={{fontSize:10,color:"var(--color-text-tertiary)"}}>{p.nameEN}</div>
                     </div>
                     <div style={{textAlign:"right",flexShrink:0}}>
-                      <div style={{fontSize:16,fontWeight:600}}>{p.kg} <span style={{fontSize:10,fontWeight:400}}>KG</span></div>
+                      {editKgPid === p.id ? (
+                        <div style={{display:"flex",alignItems:"center",gap:4,justifyContent:"flex-end"}}>
+                          <input type="number" step="0.1" min="0" autoFocus value={editKgTemp}
+                            onChange={e=>setEditKgTemp(e.target.value)}
+                            onKeyDown={e=>{if(e.key==="Enter")saveEditKg(p.id);if(e.key==="Escape")setEditKgPid(null);}}
+                            style={{width:60,textAlign:"right",padding:"2px 4px",borderRadius:4,border:"2px solid #534AB7",fontSize:14,fontWeight:600}}/>
+                          <span style={{fontSize:10,fontWeight:400}}>KG</span>
+                          <button onClick={()=>saveEditKg(p.id)} title="Kaydet (Enter)" style={{padding:"1px 6px",borderRadius:4,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:10,fontWeight:600,cursor:"pointer"}}>✓</button>
+                          <button onClick={()=>setEditKgPid(null)} title="İptal (Esc)" style={{padding:"1px 6px",borderRadius:4,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:10,cursor:"pointer"}}>✕</button>
+                        </div>
+                      ) : (
+                        <div onClick={isAdmin ? ()=>{setEditKgTemp(String(p.kg));setEditKgPid(p.id);} : undefined}
+                             title={isAdmin ? "Tıkla: birim KG'yi düzenle" : ""}
+                             style={{fontSize:16,fontWeight:600,cursor:isAdmin?"pointer":"default",padding:isAdmin?"1px 4px":0,borderRadius:4,transition:"background 0.15s"}}
+                             onMouseEnter={isAdmin ? (e)=>e.currentTarget.style.background="rgba(83,74,183,0.08)" : undefined}
+                             onMouseLeave={isAdmin ? (e)=>e.currentTarget.style.background="transparent" : undefined}>
+                          {p.kg} <span style={{fontSize:10,fontWeight:400}}>KG</span>
+                          {isAdmin && <span style={{fontSize:9,marginLeft:3,color:"var(--color-text-tertiary)",fontWeight:400}}>✎</span>}
+                        </div>
+                      )}
                       {VIO_CODES[p.id]&&<div style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",fontFamily:"monospace",marginTop:2}}>{VIO_CODES[p.id]}</div>}
                     </div>
                   </div>
