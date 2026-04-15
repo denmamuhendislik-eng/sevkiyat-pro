@@ -11186,9 +11186,41 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                             <tbody>{list.map(w => {
                                               const opSummary = (w.activeOps || []).map(op => `${op.opName || op.opCode}${op.isFason ? "(F)" : ""}: ${op.remaining}`).join(" · ");
                                               return (
-                                                <tr key={w.id} style={{ borderTop: `0.5px solid ${color}22` }}>
+                                                <tr key={w.id} style={{ borderTop: `0.5px solid ${color}22`, background: plsConfirmedLookup[w.partCode] ? "#F0FDF4" : "transparent" }}>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", color, fontWeight: 600 }}>{w.emirNo}</td>
-                                                  <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{w.partCode}</td>
+                                                  <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
+                                                    {w.partCode}
+                                                    {(() => {
+                                                      const expRow = (explosionResult?.parts || []).find(r => r.code === w.partCode);
+                                                      const pls = expRow?.productionLineStock;
+                                                      if (!pls || pls.total <= 0) return null;
+                                                      const isConfirmed = !!plsConfirmedLookup[w.partCode];
+                                                      const u = "ad";
+                                                      const locTip = pls.byLocation.map(b => `${b.loc}: ${b.qty} ${u}${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n");
+                                                      if (isConfirmed) {
+                                                        const conf = plsConfirmedLookup[w.partCode];
+                                                        const confDate = conf.confirmedAt ? new Date(conf.confirmedAt).toLocaleDateString("tr-TR") : "";
+                                                        const tip = `✓ Hat stoğu onaylandı: ${conf.qty} ${u}\n(${conf.confirmedBy || "bilinmiyor"} · ${confDate})\n─────────────────────────────\n${locTip}\n\n${canEdit ? "Tıkla: onayı iptal et" : "Sadece yetkililer iptal edebilir"}`;
+                                                        return (
+                                                          <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(w.partCode, pls.total); } : undefined}
+                                                                style={{ marginLeft: 4, padding: "1px 6px", borderRadius: 3, background: "#DCFCE7", color: "#166534", fontSize: 9, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: "1px solid #86EFAC" }}
+                                                                title={tip}>
+                                                            ✓{conf.qty}
+                                                          </span>
+                                                        );
+                                                      }
+                                                      const tip = "Üretim hattında bekleyen mamul/yarımamul\n─────────────────────────────\n" + locTip +
+                                                        "\n\n⚠ Yeni iş emri açmadan/sipariş vermeden önce kontrol edin —\noperasyonu bitmiş ama henüz transfer/teslim alınmamış olabilir." +
+                                                        (canEdit ? `\n\nTıkla: ${pls.total} ${u} hat stoğunu ONAYLA (hesaba katılır)` : "\n\nSadece yetkililer onaylayabilir");
+                                                      return (
+                                                        <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(w.partCode, pls.total); } : undefined}
+                                                              style={{ marginLeft: 4, padding: "1px 5px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: "1px solid #FDE68A" }}
+                                                              title={tip}>
+                                                          🔍{pls.total}
+                                                        </span>
+                                                      );
+                                                    })()}
+                                                  </td>
                                                   <td style={{ padding: "4px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.partName}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "right" }}>{w.qty}ad</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={opSummary}>{w.opsCount}</td>
@@ -13105,12 +13137,30 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                 code: { label: "Stok Kodu", mono: true, fs: 10, render: r => {
                   const pls = r.productionLineStock;
                   if (!pls || pls.total <= 0) return r.code;
-                  const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" +
-                    pls.byLocation.map(b => `${b.loc}: ${b.qty} ad${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n") +
-                    "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir.";
+                  const isConfirmed = !!plsConfirmedLookup[r.code];
+                  const u = (r.unit || "AD").toLowerCase();
+                  const locTip = pls.byLocation.map(b => `${b.loc}: ${b.qty} ${u}${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n");
+                  if (isConfirmed) {
+                    const conf = plsConfirmedLookup[r.code];
+                    const confDate = conf.confirmedAt ? new Date(conf.confirmedAt).toLocaleDateString("tr-TR") : "";
+                    const tip = `✓ Hat stoğu onaylandı: ${conf.qty} ${u}\n(${conf.confirmedBy || "bilinmiyor"} · ${confDate})\n─────────────────────────────\n${locTip}\n\n${canEdit ? "Tıkla: onayı iptal et" : "Sadece yetkililer iptal edebilir"}`;
+                    return (<>
+                      {r.code}
+                      <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(r.code, pls.total); } : undefined}
+                            style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#DCFCE7", color: "#166534", fontSize: 8, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: "1px solid #86EFAC" }}
+                            title={tip}>
+                        ✓{conf.qty}
+                      </span>
+                    </>);
+                  }
+                  const tip = "Üretim hattı stoğu kontrolü\n─────────────────────────────\n" + locTip +
+                    "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir." +
+                    (canEdit ? `\n\nTıkla: ${pls.total} ${u} hat stoğunu ONAYLA (hesaba katılır)` : "\n\nSadece yetkililer onaylayabilir");
                   return (<>
                     {r.code}
-                    <span style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: "help" }} title={tip}>🔍{pls.total}</span>
+                    <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(r.code, pls.total); } : undefined}
+                          style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: canEdit ? "pointer" : "help", border: "1px solid #FDE68A" }}
+                          title={tip}>🔍{pls.total}</span>
                   </>);
                 } },
                 name: { label: "Stok Adı", mw: 240, render: r => r.name },
