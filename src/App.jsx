@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "rea
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend, ReferenceLine } from "recharts";
 import { auth, db } from "./firebase";
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, getDoc, setDoc, onSnapshot } from "firebase/firestore";
+import { doc, getDoc, setDoc, onSnapshot, getDocs, collection } from "firebase/firestore";
 import * as XLSX from "xlsx";
 import QRCode from "qrcode";
 import jsPDF from "jspdf";
@@ -1120,6 +1120,33 @@ ${el.innerHTML}
     setEditKgPid(null);
   };
 
+  const downloadFullBackup = async () => {
+    if (!isAdmin || !db) { alert("Yetki yok veya bağlantı hazır değil."); return; }
+    try {
+      const snap = await getDocs(collection(db, "appData"));
+      const backup = {
+        backupDate: new Date().toISOString(),
+        appName: "sevkiyat-pro",
+        backupBy: authUser?.email || "bilinmiyor",
+        docCount: snap.size,
+        docs: {}
+      };
+      snap.forEach(d => { backup.docs[d.id] = d.data(); });
+      const blob = new Blob([JSON.stringify(backup, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const ts = new Date().toISOString().slice(0,19).replace(/[:T]/g, "-");
+      a.download = `sevkiyat-pro-backup-${ts}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      alert(`✅ Yedek indirildi\n\nDoc sayısı: ${snap.size}\nBoyut: ${(blob.size / 1024).toFixed(1)} KB\n\nDoc isimleri:\n${Object.keys(backup.docs).join(", ")}`);
+    } catch (e) {
+      console.error("Yedek hatası:", e);
+      alert("❌ Yedek alınamadı: " + e.message);
+    }
+  };
+
   const openPacking = (cid) => {
     const q = yd.quantities[cid] || {};
     const items = Object.entries(q).filter(([,qty])=>qty>0).map(([pid,qty])=>{
@@ -1898,6 +1925,7 @@ ${el.innerHTML}
           </div>
           <div style={{display:"flex",gap:4}}>
             {isAdmin&&<button onClick={()=>{setShowUserMgmt(true);loadUsers();}} style={{...bS,padding:"2px 6px",fontSize:9}}>Kullanıcılar</button>}
+            {isAdmin&&<button onClick={downloadFullBackup} style={{...bS,padding:"2px 6px",fontSize:9}} title="appData collection'ındaki tüm doc'ları JSON olarak indirir">💾 Yedek</button>}
             <button onClick={doLogout} style={{...bS,padding:"2px 6px",fontSize:9,color:"#E24B4A"}}>Çıkış</button>
           </div>
         </div>}
