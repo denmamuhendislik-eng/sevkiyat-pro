@@ -5782,7 +5782,6 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       // setTimeout yerine flag + useEffect pattern — state güncellenmesi sonrası garantili çalışır
       if (canEdit) {
         autoCalcPending.current = true;
-        console.log("[AUTO-CALC] BOM Explosion bitti, flag set edildi. useEffect birazdan tetiklenecek.");
       }
     } catch (err) {
       setExplosionResult({ error: err.message });
@@ -5927,7 +5926,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
   const nextWorkday = (d) => { let r = new Date(d); while (isWeekend(r)) r = addDays(r, 1); return r; };
 
-  const calculateSchedule = async () => {
+  const calculateSchedule = async (silent = false) => {
     const useMrp = schedSource === "mrp";
     // Guard: gerekli veriler yüklü mü?
     if (useMrp) {
@@ -5935,9 +5934,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     } else {
       if (!requirements || !workCenters || !bomModels || calculating) return;
     }
-    // Manuel taşıma varsa uyar
+    // Manuel taşıma varsa uyar (silent=true ise atla — otomatik tetiklemede popup istemeyiz)
     const overrideCount = Object.keys(schedOverrides).length;
-    if (overrideCount > 0) {
+    if (overrideCount > 0 && !silent) {
       if (!confirm(`${overrideCount} manuel tezgah ataması var. Yeniden hesaplandıktan sonra otomatik geri uygulanacak.\n\nDevam edilsin mi?`)) return;
     }
     setCalculating(true);
@@ -6365,33 +6364,16 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   };
 
   // v18.9: BOM Explosion sonrası Çizelge Hesapla otomatik tetikleyici
-  // useEffect pattern'i — state güncellenmesi bitince çalışır, React closure güvenli
-  // Not: setSchedSource çağırmıyoruz çünkü aynı render cycle'da yansımayacaktı.
-  // Kullanıcı Çizelge tab'ında hangi kaynağı seçtiyse (VIO/MRP) ona göre çalışır:
-  //   - "mrp" seçili ise: explosionResult kullanılır ✓
-  //   - "vio" seçili ise: requirements (VIO ihtiyaç) kullanılır — varsa çalışır
+  // useEffect pattern'i — state güncellenmesi bitince çalışır, React closure güvenli.
+  // Override varsa da çalışır (silent=true → confirm popup atlanır, override'lar korunur).
   useEffect(() => {
-    // v18.9.2: Teşhis logları — neden çalışmadığını anlamak için
-    console.log("[AUTO-CALC] useEffect tetiklendi. flag:", autoCalcPending.current,
-                "explosionResult:", !!explosionResult?.parts,
-                "canEdit:", canEdit,
-                "workCenters:", !!workCenters,
-                "bomModels:", !!bomModels,
-                "schedOverrides:", Object.keys(schedOverrides || {}).length,
-                "schedSource:", schedSource);
-    if (!autoCalcPending.current) { console.log("[AUTO-CALC] flag kapalı, atlandı"); return; }
-    if (!explosionResult?.parts) { console.log("[AUTO-CALC] explosionResult yok, atlandı"); return; }
-    if (!canEdit) { console.log("[AUTO-CALC] canEdit yok, atlandı"); return; }
-    if (!workCenters || !bomModels) { console.log("[AUTO-CALC] workCenters/bomModels yok, atlandı"); return; }
-    if (Object.keys(schedOverrides || {}).length > 0) {
-      console.log("[AUTO-CALC] override var, sessizce atlandı");
-      autoCalcPending.current = false;
-      return;
-    }
-    console.log("[AUTO-CALC] ✓ Tüm kontroller geçti, calculateSchedule çağrılıyor");
-    autoCalcPending.current = false;
-    try { calculateSchedule(); console.log("[AUTO-CALC] calculateSchedule çağrısı başlatıldı"); }
-    catch (e) { console.warn("[AUTO-CALC] Hata:", e); }
+    if (!autoCalcPending.current) return;           // Sadece BOM Explosion sonrası
+    if (!explosionResult?.parts) return;             // Yeni sonuç henüz gelmedi
+    if (!canEdit) return;                            // Yetki yok
+    if (!workCenters || !bomModels) return;          // Gerekli veriler yok
+    autoCalcPending.current = false;                 // Flag sıfırla (tekrar tetiklenme önlemi)
+    try { calculateSchedule(true); }                 // silent=true → override popup'ı atla
+    catch (e) { console.warn("Otomatik çizelge hesabı başarısız:", e); }
   }, [explosionResult]);
   const parseBomExcel = (workbook) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
