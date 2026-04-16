@@ -5782,6 +5782,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       // setTimeout yerine flag + useEffect pattern — state güncellenmesi sonrası garantili çalışır
       if (canEdit) {
         autoCalcPending.current = true;
+        console.log("[AUTO-CALC] BOM Explosion bitti, flag set edildi. useEffect birazdan tetiklenecek.");
       }
     } catch (err) {
       setExplosionResult({ error: err.message });
@@ -6370,17 +6371,27 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   //   - "mrp" seçili ise: explosionResult kullanılır ✓
   //   - "vio" seçili ise: requirements (VIO ihtiyaç) kullanılır — varsa çalışır
   useEffect(() => {
-    if (!autoCalcPending.current) return;           // Sadece BOM Explosion sonrası
-    if (!explosionResult?.parts) return;             // Yeni sonuç henüz gelmedi
-    if (!canEdit) return;                            // Yetki yok
-    if (!workCenters || !bomModels) return;          // Gerekli veriler yok
+    // v18.9.2: Teşhis logları — neden çalışmadığını anlamak için
+    console.log("[AUTO-CALC] useEffect tetiklendi. flag:", autoCalcPending.current,
+                "explosionResult:", !!explosionResult?.parts,
+                "canEdit:", canEdit,
+                "workCenters:", !!workCenters,
+                "bomModels:", !!bomModels,
+                "schedOverrides:", Object.keys(schedOverrides || {}).length,
+                "schedSource:", schedSource);
+    if (!autoCalcPending.current) { console.log("[AUTO-CALC] flag kapalı, atlandı"); return; }
+    if (!explosionResult?.parts) { console.log("[AUTO-CALC] explosionResult yok, atlandı"); return; }
+    if (!canEdit) { console.log("[AUTO-CALC] canEdit yok, atlandı"); return; }
+    if (!workCenters || !bomModels) { console.log("[AUTO-CALC] workCenters/bomModels yok, atlandı"); return; }
     if (Object.keys(schedOverrides || {}).length > 0) {
-      autoCalcPending.current = false;               // Override varsa sessizce atla
+      console.log("[AUTO-CALC] override var, sessizce atlandı");
+      autoCalcPending.current = false;
       return;
     }
-    autoCalcPending.current = false;                 // Flag sıfırla (tekrar tetiklenme önlemi)
-    try { calculateSchedule(); }
-    catch (e) { console.warn("Otomatik çizelge hesabı başarısız:", e); }
+    console.log("[AUTO-CALC] ✓ Tüm kontroller geçti, calculateSchedule çağrılıyor");
+    autoCalcPending.current = false;
+    try { calculateSchedule(); console.log("[AUTO-CALC] calculateSchedule çağrısı başlatıldı"); }
+    catch (e) { console.warn("[AUTO-CALC] Hata:", e); }
   }, [explosionResult]);
   const parseBomExcel = (workbook) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
