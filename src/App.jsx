@@ -11405,6 +11405,24 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                                   const _ak = akibetLookup[p.code];
                                                                   const _totalWip = p.wipTotal > 0 ? p.wipTotal : (p.wipInt + p.wipFas);
                                                                   const _fmtDate = (iso) => { if (!iso) return "?"; const [y,m,d] = iso.split("-"); return `${d}.${m}.${y.substring(2)}`; };
+                                                                  // v18.6: Op'lar arası transit hesabı — her op'un şu an elinde kaç ad olduğunu gösterir.
+                                                                  // Formül: transit[i] = (i==0 ? order.qty : ops[i-1].uretilen) - ops[i].uretilen
+                                                                  // Böylece operatör "kaç ad iç üretimde, kaç ad fason'da" ayrımını direkt görür.
+                                                                  const _buildFlowLine = (o) => {
+                                                                    const validOps = (o.ops || []).filter(op => !op.cancelled);
+                                                                    if (validOps.length === 0) return "";
+                                                                    const parts = [];
+                                                                    for (let i = 0; i < validOps.length; i++) {
+                                                                      const op = validOps[i];
+                                                                      const prevProduced = i === 0 ? (o.qty || 0) : (validOps[i-1].uretilen || 0);
+                                                                      const transit = prevProduced - (op.uretilen || 0);
+                                                                      if (transit > 0 && (op.remaining || 0) > 0) {
+                                                                        const icon = op.isFason ? "🔩" : "⚙";
+                                                                        parts.push(`${icon}${op.name} (${transit})`);
+                                                                      }
+                                                                    }
+                                                                    return parts.length > 0 ? `\n     Şu an: ${parts.join(" · ")}` : "";
+                                                                  };
                                                                   const _orderLines = (_ak?.orders || [])
                                                                     .filter(o => (o.rem || 0) > 0)
                                                                     .map(o => {
@@ -11412,7 +11430,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                                       const age = o.ageDays != null ? ` · ${o.ageDays}g` : "";
                                                                       const dateStr = o.openDate ? ` (${_fmtDate(o.openDate)})` : "";
                                                                       const remOps = o.remainingOps ? ` · kalan ${o.remainingOps.total} op (${o.remainingOps.fason}F+${o.remainingOps.internal}İ)` : "";
-                                                                      return `  • Emir ${o.emirNo}${dateStr} — ${o.rem} ad${age}${stage}${remOps}`;
+                                                                      const flowLine = _buildFlowLine(o);
+                                                                      return `  • Emir ${o.emirNo}${dateStr} — ${o.rem} ad${age}${stage}${remOps}${flowLine}`;
                                                                     }).join("\n");
                                                                   const _oldest = _ak?.oldestAgeDays || 0;
                                                                   const _tip = `WIP — devam eden iş emri\n─────────────────────────────\nToplam kalan: ${_totalWip} ad · ${_ak?.orderCount || 0} emir${_oldest > 0 ? ` · en yaşlı ${_oldest}g` : ""}\nHammadde: emir açılışında çıkarılır ✓\n\nNOT: WIP artık "hazır stok" sayılmıyor — parça eksikse eksik\ngörünür. Bu rozet sana WIP'in fiziksel konumunu söyler,\nsen emirin zamanında bitip bitmeyeceğine karar verirsin.\n${_orderLines ? "\n" + _orderLines : ""}`;
@@ -11479,6 +11498,22 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                                     const _ak = akibetLookup[sp.code];
                                                                     const _totalWip = sp.wipTotal > 0 ? sp.wipTotal : (sp.wipInt + sp.wipFas);
                                                                     const _fmtDate = (iso) => { if (!iso) return "?"; const [y,m,d] = iso.split("-"); return `${d}.${m}.${y.substring(2)}`; };
+                                                                    // v18.6: Op'lar arası transit hesabı (L1 ile aynı mantık)
+                                                                    const _buildFlowLine = (o) => {
+                                                                      const validOps = (o.ops || []).filter(op => !op.cancelled);
+                                                                      if (validOps.length === 0) return "";
+                                                                      const parts = [];
+                                                                      for (let i = 0; i < validOps.length; i++) {
+                                                                        const op = validOps[i];
+                                                                        const prevProduced = i === 0 ? (o.qty || 0) : (validOps[i-1].uretilen || 0);
+                                                                        const transit = prevProduced - (op.uretilen || 0);
+                                                                        if (transit > 0 && (op.remaining || 0) > 0) {
+                                                                          const icon = op.isFason ? "🔩" : "⚙";
+                                                                          parts.push(`${icon}${op.name} (${transit})`);
+                                                                        }
+                                                                      }
+                                                                      return parts.length > 0 ? `\n     Şu an: ${parts.join(" · ")}` : "";
+                                                                    };
                                                                     const _orderLines = (_ak?.orders || [])
                                                                       .filter(o => (o.rem || 0) > 0)
                                                                       .map(o => {
@@ -11486,7 +11521,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                                         const age = o.ageDays != null ? ` · ${o.ageDays}g` : "";
                                                                         const dateStr = o.openDate ? ` (${_fmtDate(o.openDate)})` : "";
                                                                         const remOps = o.remainingOps ? ` · kalan ${o.remainingOps.total} op (${o.remainingOps.fason}F+${o.remainingOps.internal}İ)` : "";
-                                                                        return `  • Emir ${o.emirNo}${dateStr} — ${o.rem} ad${age}${stage}${remOps}`;
+                                                                        const flowLine = _buildFlowLine(o);
+                                                                        return `  • Emir ${o.emirNo}${dateStr} — ${o.rem} ad${age}${stage}${remOps}${flowLine}`;
                                                                       }).join("\n");
                                                                     const _oldest = _ak?.oldestAgeDays || 0;
                                                                     const _tip = `WIP — devam eden iş emri\n─────────────────────────────\nToplam kalan: ${_totalWip} ad · ${_ak?.orderCount || 0} emir${_oldest > 0 ? ` · en yaşlı ${_oldest}g` : ""}\nHammadde: emir açılışında çıkarılır ✓\n\nNOT: WIP artık "hazır stok" sayılmıyor — parça eksikse eksik\ngörünür. Bu rozet sana WIP'in fiziksel konumunu söyler,\nsen emirin zamanında bitip bitmeyeceğine karar verirsin.\n${_orderLines ? "\n" + _orderLines : ""}`;
