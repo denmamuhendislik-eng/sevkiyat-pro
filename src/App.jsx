@@ -5240,16 +5240,35 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
   // ==================== BOM EXPLOSION ENGINE ====================
   const MAPPING_DOC = "mrpBomMapping";
+  const MRP_CACHE_DOC = "mrpCache"; // v18.9: BOM Explosion sonucunu Firestore'da sakla
   const [bomMapping, setBomMapping] = useState({});
   const [explosionResult, setExplosionResult] = useState(null);
   const [exploding, setExploding] = useState(false);
   const [expCutoff, setExpCutoff] = useState(""); // tarih filtresi: bu tarihe kadar
+  // v18.9: mrpCache — sayfa yenileyince explosionResult kaybolmasın
+  const mrpCacheLoaded = useRef(false);
 
   // Firestore listener for BOM mapping
   useEffect(() => {
     if (!db) return;
     const ref = doc(db, APP_COL, MAPPING_DOC);
     const unsub = onSnapshot(ref, snap => { if (snap.exists()) setBomMapping(snap.data()); }, () => {});
+    return () => unsub();
+  }, [db]);
+
+  // v18.9: Firestore listener for mrpCache — BOM Explosion sonucu sayfa yenilemelerde kaybolmasın
+  useEffect(() => {
+    if (!db) return;
+    const ref = doc(db, APP_COL, MRP_CACHE_DOC);
+    const unsub = onSnapshot(ref, snap => {
+      if (snap.exists()) {
+        const data = snap.data();
+        if (data.explosionResult && !mrpCacheLoaded.current) {
+          setExplosionResult(data.explosionResult);
+          mrpCacheLoaded.current = true;
+        }
+      }
+    }, () => {});
     return () => unsub();
   }, [db]);
   const saveBomMapping = async (data) => { if (!db || !canEdit) return; await setDoc(doc(db, APP_COL, MAPPING_DOC), data); };
@@ -5737,7 +5756,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const unmappedProducts = allPids.filter(pid => !isMapped(pid));
       const crossCheckIssues = results.filter(r => r.crossCheck);
 
-      setExplosionResult({
+      const newResult = {
         parts: results, totalGross: results.length,
         totalNet: results.filter(r => r.netQty > 0).length,
         totalGap: results.filter(r => r.gap > 0).length,
@@ -5746,7 +5765,35 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         pass2Count, productDemandCodes: [],
         demandSummary,
         calculatedAt: new Date().toISOString()
-      });
+      };
+      setExplosionResult(newResult);
+      // v18.9: Sonucu Firestore'a kaydet → sayfa yenilemede kaybolmasın
+      // Sadece canEdit (admin+üretim) yazar; diğer kullanıcılar sessizce atlar
+      if (db && canEdit) {
+        setDoc(doc(db, APP_COL, MRP_CACHE_DOC), {
+          explosionResult: newResult,
+          calculatedAt: newResult.calculatedAt,
+          calculatedBy: authUser?.email || "bilinmiyor"
+        }).catch(e => console.warn("mrpCache kaydedilemedi:", e));
+      }
+      // v18.9: BOM Explosion bittikten sonra Çizelge Hesaplayı otomatik tetikle
+      // - Override varsa sessizce atla (confirm popup çıkmasın)
+      // - canEdit yoksa atla
+      if (canEdit) {
+        setTimeout(() => {
+          try {
+            const overrideCount = Object.keys(schedOverrides || {}).length;
+            if (overrideCount > 0) return; // Sessizce atla — kullanıcı manuel tetikleyebilir
+            if (workCenters && bomModels && newResult.parts) {
+              // schedSource "mrp" olmalı ki explosionResult'ı kullansın
+              setSchedSource("mrp");
+              calculateSchedule();
+            }
+          } catch (e) {
+            console.warn("Otomatik çizelge hesaplaması başarısız:", e);
+          }
+        }, 300);
+      }
     } catch (err) {
       setExplosionResult({ error: err.message });
     }
