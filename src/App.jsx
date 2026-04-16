@@ -5247,6 +5247,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   const [expCutoff, setExpCutoff] = useState(""); // tarih filtresi: bu tarihe kadar
   // v18.9: mrpCache — sayfa yenileyince explosionResult kaybolmasın
   const mrpCacheLoaded = useRef(false);
+  // v18.9: BOM Explosion sonrası otomatik çizelge flagı — useEffect ile tetiklenir
+  const autoCalcPending = useRef(false);
 
   // Firestore listener for BOM mapping
   useEffect(() => {
@@ -5777,22 +5779,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         }).catch(e => console.warn("mrpCache kaydedilemedi:", e));
       }
       // v18.9: BOM Explosion bittikten sonra Çizelge Hesaplayı otomatik tetikle
-      // - Override varsa sessizce atla (confirm popup çıkmasın)
-      // - canEdit yoksa atla
+      // setTimeout yerine flag + useEffect pattern — state güncellenmesi sonrası garantili çalışır
       if (canEdit) {
-        setTimeout(() => {
-          try {
-            const overrideCount = Object.keys(schedOverrides || {}).length;
-            if (overrideCount > 0) return; // Sessizce atla — kullanıcı manuel tetikleyebilir
-            if (workCenters && bomModels && newResult.parts) {
-              // schedSource "mrp" olmalı ki explosionResult'ı kullansın
-              setSchedSource("mrp");
-              calculateSchedule();
-            }
-          } catch (e) {
-            console.warn("Otomatik çizelge hesaplaması başarısız:", e);
-          }
-        }, 300);
+        autoCalcPending.current = true;
       }
     } catch (err) {
       setExplosionResult({ error: err.message });
@@ -6373,6 +6362,26 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       setCalculating(false);
     }
   };
+
+  // v18.9: BOM Explosion sonrası Çizelge Hesapla otomatik tetikleyici
+  // useEffect pattern'i — state güncellenmesi bitince çalışır, React closure güvenli
+  // Not: setSchedSource çağırmıyoruz çünkü aynı render cycle'da yansımayacaktı.
+  // Kullanıcı Çizelge tab'ında hangi kaynağı seçtiyse (VIO/MRP) ona göre çalışır:
+  //   - "mrp" seçili ise: explosionResult kullanılır ✓
+  //   - "vio" seçili ise: requirements (VIO ihtiyaç) kullanılır — varsa çalışır
+  useEffect(() => {
+    if (!autoCalcPending.current) return;           // Sadece BOM Explosion sonrası
+    if (!explosionResult?.parts) return;             // Yeni sonuç henüz gelmedi
+    if (!canEdit) return;                            // Yetki yok
+    if (!workCenters || !bomModels) return;          // Gerekli veriler yok
+    if (Object.keys(schedOverrides || {}).length > 0) {
+      autoCalcPending.current = false;               // Override varsa sessizce atla
+      return;
+    }
+    autoCalcPending.current = false;                 // Flag sıfırla (tekrar tetiklenme önlemi)
+    try { calculateSchedule(); }
+    catch (e) { console.warn("Otomatik çizelge hesabı başarısız:", e); }
+  }, [explosionResult]);
   const parseBomExcel = (workbook) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
