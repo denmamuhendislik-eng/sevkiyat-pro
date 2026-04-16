@@ -11473,6 +11473,34 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                                 <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8, color: "#16A34A" }}>{sp.covered}</td>
                                                                 <td style={{ padding: "2px 6px", textAlign: "right", fontSize: 8, fontWeight: sp.short > 0 ? 600 : 400, color: sp.short > 0 ? "#DC2626" : "#16A34A" }}>{sp.short > 0 ? sp.short : "—"}</td>
                                                                 <td style={{ padding: "2px 4px", textAlign: "left", fontSize: 8 }}>
+                                                                  {/* v18.5: Alt seviye parça için de WIP rozeti (L1 ile aynı mantık) — 
+                                                                      parent bulk olduğunda child L2'ye düşüyor, daha önce WIP bilgisi kayboluyordu */}
+                                                                  {(sp.wipTotal > 0 || sp.wipInt > 0 || sp.wipFas > 0 || sp.stkUretim > 0) && (() => {
+                                                                    const _ak = akibetLookup[sp.code];
+                                                                    const _totalWip = sp.wipTotal > 0 ? sp.wipTotal : (sp.wipInt + sp.wipFas);
+                                                                    const _fmtDate = (iso) => { if (!iso) return "?"; const [y,m,d] = iso.split("-"); return `${d}.${m}.${y.substring(2)}`; };
+                                                                    const _orderLines = (_ak?.orders || [])
+                                                                      .filter(o => (o.rem || 0) > 0)
+                                                                      .map(o => {
+                                                                        const stage = o.firstOpenOp ? ` · ${o.firstOpenOp.isFason ? "🔩" : "⚙"}${o.firstOpenOp.name}` : "";
+                                                                        const age = o.ageDays != null ? ` · ${o.ageDays}g` : "";
+                                                                        const dateStr = o.openDate ? ` (${_fmtDate(o.openDate)})` : "";
+                                                                        const remOps = o.remainingOps ? ` · kalan ${o.remainingOps.total} op (${o.remainingOps.fason}F+${o.remainingOps.internal}İ)` : "";
+                                                                        return `  • Emir ${o.emirNo}${dateStr} — ${o.rem} ad${age}${stage}${remOps}`;
+                                                                      }).join("\n");
+                                                                    const _oldest = _ak?.oldestAgeDays || 0;
+                                                                    const _tip = `WIP — devam eden iş emri\n─────────────────────────────\nToplam kalan: ${_totalWip} ad · ${_ak?.orderCount || 0} emir${_oldest > 0 ? ` · en yaşlı ${_oldest}g` : ""}\nHammadde: emir açılışında çıkarılır ✓\n\nNOT: WIP artık "hazır stok" sayılmıyor — parça eksikse eksik\ngörünür. Bu rozet sana WIP'in fiziksel konumunu söyler,\nsen emirin zamanında bitip bitmeyeceğine karar verirsin.\n${_orderLines ? "\n" + _orderLines : ""}`;
+                                                                    const _firstActive = (_ak?.orders || []).find(o => o.rem > 0 && o.firstOpenOp);
+                                                                    const _stageBadge = _firstActive?.firstOpenOp ? (_firstActive.firstOpenOp.isFason ? "🔩" : "⚙") : "";
+                                                                    const _isOld = _oldest >= 14;
+                                                                    const _ageSuffix = _oldest > 0 ? ` ${_oldest}g` : "";
+                                                                    return (
+                                                                      <span style={{ color: _isOld ? "#991B1B" : "#D97706", cursor: "help", fontWeight: 600, fontSize: 7, marginRight: 3 }} title={_tip}>
+                                                                        {_stageBadge}{_totalWip}{_ageSuffix}
+                                                                        {sp.stkUretim > 0 && <> 🏭{sp.stkUretim}</>}
+                                                                      </span>
+                                                                    );
+                                                                  })()}
                                                                   {/* v13: Alt seviye parça için de üretim hattı rozeti */}
                                                                   {sp.short > 0 && (() => {
                                                                     const expRow = (explosionResult?.parts || []).find(r => r.code === sp.code);
