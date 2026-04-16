@@ -5926,8 +5926,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   const isWeekend = (d) => d.getDay() === 0 || d.getDay() === 6;
   const nextWorkday = (d) => { let r = new Date(d); while (isWeekend(r)) r = addDays(r, 1); return r; };
 
-  const calculateSchedule = async (silent = false) => {
-    const useMrp = schedSource === "mrp";
+  const calculateSchedule = async (silent = false, forceMrp = false) => {
+    // forceMrp=true → schedSource ne olursa olsun MRP modunda çalış (otomatik BOM Explosion sonrası)
+    const useMrp = forceMrp || schedSource === "mrp";
     // Guard: gerekli veriler yüklü mü?
     if (useMrp) {
       if (!explosionResult?.parts || !workCenters || !bomModels || calculating) return;
@@ -6366,13 +6367,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   // v18.9: BOM Explosion sonrası Çizelge Hesapla otomatik tetikleyici
   // useEffect pattern'i — state güncellenmesi bitince çalışır, React closure güvenli.
   // Override varsa da çalışır (silent=true → confirm popup atlanır, override'lar korunur).
+  // BOM Explosion yapan kullanıcı MRP sonucunu kullanmak istiyor demektir → forceMrp=true
   useEffect(() => {
     if (!autoCalcPending.current) return;           // Sadece BOM Explosion sonrası
     if (!explosionResult?.parts) return;             // Yeni sonuç henüz gelmedi
     if (!canEdit) return;                            // Yetki yok
     if (!workCenters || !bomModels) return;          // Gerekli veriler yok
     autoCalcPending.current = false;                 // Flag sıfırla (tekrar tetiklenme önlemi)
-    try { calculateSchedule(true); }                 // silent=true → override popup'ı atla
+    setSchedSource("mrp");                           // UI'da "Kendi MRP" seçili görünsün
+    try { calculateSchedule(true, true); }           // silent=true, forceMrp=true
     catch (e) { console.warn("Otomatik çizelge hesabı başarısız:", e); }
   }, [explosionResult]);
   const parseBomExcel = (workbook) => {
