@@ -10957,9 +10957,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                               if (p.supplyType !== "FASON") return false;
                               return true;
                             });
-                            // WIP geciken: wipJobs içinden slackDays<0 olanlar — ama horizon içinde dueDate'i olanlar
+                            // v18.7: WIP hızlandır — slack < 10 (hem geciken, hem yaklaşan dar zamanlı)
+                            // Renk ayrımı render'da: kırmızı (<0), turuncu (0-2), sarı (3-9)
                             const wipLateParts = (wipJobs || []).filter(w => {
-                              if (w.slackDays == null || w.slackDays >= 0) return false;
+                              if (w.slackDays == null || w.slackDays >= 10) return false;
                               if (acilHorizon === 0) return true;
                               const dMs = new Date(w.dueDate).getTime();
                               return dMs - todayMs <= horizonMs;
@@ -11258,8 +11259,24 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                             </tr></thead>
                                             <tbody>{list.map(w => {
                                               const opSummary = (w.activeOps || []).map(op => `${op.opName || op.opCode}${op.isFason ? "(F)" : ""}: ${op.remaining}`).join(" · ");
+                                              // v18.7: slack'e göre renk ayrımı — -: kırmızı, 0-2: turuncu, 3-9: sarı
+                                              const _slack = w.slackDays;
+                                              const _rowBg = plsConfirmedLookup[w.partCode]
+                                                ? "#F0FDF4"
+                                                : _slack < 0 ? "#FEF2F2"
+                                                : _slack <= 2 ? "#FFEDD5"
+                                                : _slack <= 9 ? "#FFFBEB"
+                                                : "transparent";
+                                              const _slackColor = _slack < 0 ? "#DC2626"
+                                                : _slack <= 2 ? "#EA580C"
+                                                : _slack <= 9 ? "#D97706"
+                                                : "#16A34A";
+                                              const _slackIcon = _slack < 0 ? "❌"
+                                                : _slack <= 2 ? "⚠"
+                                                : _slack <= 9 ? "⏳"
+                                                : "✓";
                                               return (
-                                                <tr key={w.id} style={{ borderTop: `0.5px solid ${color}22`, background: plsConfirmedLookup[w.partCode] ? "#F0FDF4" : "transparent" }}>
+                                                <tr key={w.id} style={{ borderTop: `0.5px solid ${color}22`, background: _rowBg }}>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", color, fontWeight: 600 }}>{w.emirNo}</td>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
                                                     {w.partCode}
@@ -11298,7 +11315,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                   <td style={{ padding: "4px 6px", textAlign: "right" }}>{w.qty}ad</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={opSummary}>{w.opsCount}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{w.dueDate?.substring(5)}</td>
-                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color }}>❌ {w.slackDays}g</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: _slackColor }}>{_slackIcon} {w.slackDays}g</td>
                                                 </tr>
                                               );
                                             })}</tbody>
