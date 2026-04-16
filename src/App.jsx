@@ -10973,7 +10973,16 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                               // Şimdi: rem > 0 ise takip (PO zamanında gelecek mi? takip edilmeli)
                               return rem > 0 && p.totalShort > 0;
                             });
-                            const makeParts = allParts.filter(p => {
+                            // v18.10: makeParts'ı ikiye böl — "sadece görünüm" ayrımı, hesap değişmiyor.
+                            // Ana liste: gerçekten yeni emir açılması gereken parçalar
+                            // makePartsBulk: zaten bulk emir açık VE bulk WIP eksiği tamamen kapatan parçalar
+                            //   → operatör "yeni emir aç" yerine "zaten açık, takip et" der
+                            // Kriterler (akibetLookup'tan okuma, yeniden hesap yok):
+                            //   1. orderCount > 0 (aktif emir var)
+                            //   2. remainingNonBulk === 0 (tüm emirler bulk)
+                            //   3. totalRemaining > 0 (bulk emirin kalanı var)
+                            //   4. totalRemaining >= p.totalShort (bulk yetiyor, kısmi değil)
+                            const _makePartsAll = allParts.filter(p => {
                               if (p.supplyType !== "MAKE" && p.supplyType !== "MAKE+FASON") return false;
                               // v16: WIP kredisi — v14 Adım 3'ün yeni iş emri kararı sütunu.
                               // Görünürlükte WIP "hazır" değil (panelde eksik görünür — dokunulmadı),
@@ -10984,7 +10993,27 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                               // short 95 → listede kalır (45 ad yeni emir gerçekten gerek).
                               const effectiveShort = p.totalShort - (p.wipTotal || 0);
                               return effectiveShort > 0;
-                            }).map(p => {
+                            });
+                            // Bulk-yeterli ayrımı (sadece render için)
+                            const isBulkSufficient = (p) => {
+                              const ak = akibetLookup[p.code];
+                              if (!ak || !ak.orderCount || ak.orderCount <= 0) return false;
+                              if ((ak.remainingNonBulk || 0) !== 0) return false;    // nonBulk varsa normal WIP
+                              if ((ak.totalRemaining || 0) <= 0) return false;        // hiç emir kalanı yok
+                              if ((ak.totalRemaining || 0) < (p.totalShort || 0)) return false;  // kısmi — ana listede kalsın
+                              return true;
+                            };
+                            const makePartsBulk = _makePartsAll.filter(isBulkSufficient).map(p => {
+                              // Bulk listesi için özel işlem — WIP FIFO dağıtımı yapmıyoruz çünkü
+                              // ana liste mantığı bu değil; operatör "zaten emir var" bilgisini görsün
+                              const ak = akibetLookup[p.code];
+                              return {
+                                ...p,
+                                _bulkWipTotal: ak?.totalRemaining || 0,
+                                _bulkOrderCount: ak?.orderCount || 0
+                              };
+                            });
+                            const makeParts = _makePartsAll.filter(p => !isBulkSufficient(p)).map(p => {
                               // v16 (2. yarı): WIP'i kronolojik (FIFO) dağıt — erken sevkiyatlar
                               // WIP ile kapanır, yeni emir ihtiyacı WIP'in tükendiği konteynerden
                               // itibaren görünür. Böylece firstDate sıralaması da doğru çalışır;
@@ -11177,6 +11206,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                   <SayacBox icon="📞" count={poTakipParts.length} label="PO takip" sub="Kısmi sipariş"
                                     color="#92400E" bg="#FEF3C7" active={acilActive === "poTakip"} disabled={poTakipParts.length === 0}
                                     onClick={() => setAcilActive(acilActive === "poTakip" ? null : "poTakip")} />
+                                  <SayacBox icon="🔒" count={makePartsBulk.length} label="Bulk WIP İzle" sub="Zaten emir açık"
+                                    color="#6B7280" bg="#F3F4F6" active={acilActive === "bulkwip"} disabled={makePartsBulk.length === 0}
+                                    onClick={() => setAcilActive(acilActive === "bulkwip" ? null : "bulkwip")} />
                                 </div>
 
                                 {/* Aktif sayacın konsolide listesi */}
@@ -11187,6 +11219,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                   else if (acilActive === "fason") { list = fasonParts; title = "🚀 Fasona Gönderilmesi Gereken Parçalar"; color = "#0891B2"; }
                                   else if (acilActive === "poTakip") { list = poTakipParts; title = "📞 PO Takibi Gereken Parçalar (kısmi sipariş)"; color = "#92400E"; }
                                   else if (acilActive === "wip") { list = wipLateParts; title = "⚙ Hızlandırılması Gereken WIP İş Emirleri"; color = "#D97706"; isWipList = true; }
+                                  else if (acilActive === "bulkwip") { list = makePartsBulk; title = "🔒 Bulk WIP İzleme — Zaten Açık Emirler Eksiği Karşılıyor"; color = "#6B7280"; }
 
                                   // En çok eksikten en aza
                                   list = isWipList
@@ -11212,6 +11245,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                               <th style={{ padding: "3px 6px", textAlign: "center", fontWeight: 500, color }}>İlk Tarih</th>
                                               {acilActive === "poTakip" && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Açık PO</th>}
                                               {(acilActive === "make" || acilActive === "fason") && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>WIP</th>}
+                                              {acilActive === "bulkwip" && <th style={{ padding: "3px 6px", textAlign: "right", fontWeight: 500, color }}>Bulk WIP</th>}
                                             </tr></thead>
                                             <tbody>{list.map(p => {
                                               const po = purchaseLookup[p.code];
@@ -11297,6 +11331,12 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                   {(acilActive === "make" || acilActive === "fason") && (
                                                     <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9, color: "var(--color-text-tertiary)" }}>
                                                       {(p.wipInt + p.wipFas) > 0 ? `⚙${p.wipInt + p.wipFas}` : "—"}
+                                                    </td>
+                                                  )}
+                                                  {acilActive === "bulkwip" && (
+                                                    <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9, color: "#6B7280", fontWeight: 600 }}
+                                                        title={`Zaten açık ${p._bulkOrderCount} emir · toplam kalan ${p._bulkWipTotal} ad\nBulk emirlerin ilerleyişi operasyon seviyesinde izlenemediği için normal WIP hesabında sayılmaz.\nAma bu parça için ${p._bulkWipTotal} ad ≥ eksik ${p.totalShort} ad → yeni emir açmaya gerek yok, mevcut bulk emirler eksiği karşılar.\n\n⚠ Bulk emrin zamanında bitip bitmeyeceğini operatör değerlendirmeli.`}>
+                                                      🔒{p._bulkWipTotal}
                                                     </td>
                                                   )}
                                                 </tr>
