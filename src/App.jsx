@@ -5756,6 +5756,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   // Explosion filter states
   const [expFilter, setExpFilter] = useState("all");
   const [expSearch, setExpSearch] = useState("");
+  // v18.8: Satınalma Excel export popup
+  const [purExpOpen, setPurExpOpen] = useState(false);
+  const [purExpMode, setPurExpMode] = useState("new"); // "new" | "track" | "all"
+  const [purExpFormat, setPurExpFormat] = useState("single"); // "single" | "multi"
+  const [purExpCats, setPurExpCats] = useState({}); // { "raw_dokum": true, ... }
   const filteredExpResults = useMemo(() => {
     if (!explosionResult?.parts) return [];
     let items = explosionResult.parts;
@@ -13459,6 +13464,27 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                     >
                       📅 Çizelge Tab'ına Git →
                     </button>
+                    {/* v18.8: Satınalma Excel Export — sadece Satınalma tabında göster */}
+                    {expFilter === "buy" && (
+                      <button
+                        onClick={() => {
+                          // Popup açılışında tüm kategorileri varsayılan olarak seçili yap
+                          const allCats = {};
+                          Object.keys(rawGroups).forEach(k => { allCats[k] = true; });
+                          Object.keys(buyGroups).forEach(k => { allCats[k] = true; });
+                          setPurExpCats(allCats);
+                          setPurExpOpen(true);
+                        }}
+                        style={{
+                          padding: "6px 14px", borderRadius: 6, border: "1px solid #1D4ED8", cursor: "pointer",
+                          background: "#EFF6FF", color: "#1D4ED8", fontSize: 11, fontWeight: 600, whiteSpace: "nowrap",
+                          display: "flex", alignItems: "center", gap: 4
+                        }}
+                        title="Satınalma listesini Excel olarak indir"
+                      >
+                        📥 Excel Export
+                      </button>
+                    )}
                     <span style={{ fontSize: 11, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
                       {new Date(exp.calculatedAt).toLocaleString("tr-TR")}
                     </span>
@@ -13681,6 +13707,237 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                         </div>
                       )}
                       {!buyParts.length && <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-success)", fontSize: 12 }}>✓ Tüm BUY/RAW parçalar stok + sipariş ile karşılanmış</div>}
+
+                      {/* v18.8: Excel Export Popup */}
+                      {purExpOpen && (() => {
+                        // Mod filtresine göre item filtrele
+                        const modeFilter = (items) => {
+                          if (purExpMode === "new") return items.filter(r => (r.gap || 0) > 0);
+                          if (purExpMode === "track") return items.filter(r => (r.openPO || 0) > 0);
+                          return items; // "all"
+                        };
+                        // Seçili kategoriler + mod filtre
+                        const getFiltered = () => {
+                          const all = [];
+                          Object.entries(rawGroups).forEach(([k, grp]) => {
+                            if (!purExpCats[k]) return;
+                            modeFilter(grp.items).forEach(it => all.push({ ...it, _catLabel: grp.label, _catGroup: "RAW" }));
+                          });
+                          Object.entries(buyGroups).forEach(([k, grp]) => {
+                            if (!purExpCats[k]) return;
+                            modeFilter(grp.items).forEach(it => all.push({ ...it, _catLabel: grp.label, _catGroup: "BUY" }));
+                          });
+                          return all;
+                        };
+                        const selectedCount = Object.values(purExpCats).filter(Boolean).length;
+                        const totalCount = Object.keys(rawGroups).length + Object.keys(buyGroups).length;
+                        const allSelected = selectedCount === totalCount && totalCount > 0;
+                        const filteredItems = getFiltered();
+
+                        // Mod sayaçları (tüm kategoriler için)
+                        const modeCount = (m) => {
+                          let sum = 0;
+                          Object.values(rawGroups).forEach(grp => {
+                            grp.items.forEach(r => {
+                              if (m === "new" && (r.gap || 0) > 0) sum++;
+                              else if (m === "track" && (r.openPO || 0) > 0) sum++;
+                              else if (m === "all") sum++;
+                            });
+                          });
+                          Object.values(buyGroups).forEach(grp => {
+                            grp.items.forEach(r => {
+                              if (m === "new" && (r.gap || 0) > 0) sum++;
+                              else if (m === "track" && (r.openPO || 0) > 0) sum++;
+                              else if (m === "all") sum++;
+                            });
+                          });
+                          return sum;
+                        };
+
+                        // XLSX üret ve indir
+                        const doExport = () => {
+                          if (filteredItems.length === 0) {
+                            alert("Seçilen kriterlere uyan kalem yok. Filtreleri gözden geçirin.");
+                            return;
+                          }
+                          // Mod'a göre sütun seti
+                          const rowsForMode = (items) => items.map(r => {
+                            const supplier = (r._poSuppliers || []).join(", ");
+                            if (purExpMode === "new") {
+                              return {
+                                "Stok Kodu": r.code || "",
+                                "Stok Adı": r.name || "",
+                                "Birim": r.unit || "AD",
+                                "Sipariş Açığı": r.gap || 0,
+                                "Tedarikçi": supplier,
+                                "Kategori": r._catLabel || ""
+                              };
+                            } else if (purExpMode === "track") {
+                              const kalanIhtiyac = Math.max(0, (r.netQty || 0) - (r.openPO || 0));
+                              return {
+                                "Stok Kodu": r.code || "",
+                                "Stok Adı": r.name || "",
+                                "Birim": r.unit || "AD",
+                                "Açık Sipariş": r.openPO || 0,
+                                "Kalan İhtiyaç": kalanIhtiyac,
+                                "Tedarikçi": supplier,
+                                "Kategori": r._catLabel || ""
+                              };
+                            } else {
+                              return {
+                                "Stok Kodu": r.code || "",
+                                "Stok Adı": r.name || "",
+                                "Birim": r.unit || "AD",
+                                "Brüt İhtiyaç": r.gross || 0,
+                                "Stok": r.stock || 0,
+                                "WIP": r.wip || 0,
+                                "Net Açık": r.netQty || 0,
+                                "Açık Sipariş": r.openPO || 0,
+                                "Sipariş Açığı": r.gap || 0,
+                                "Tedarikçi": supplier,
+                                "Kategori": r._catLabel || "",
+                                "Grup": r._catGroup || ""
+                              };
+                            }
+                          });
+
+                          const wb = XLSX.utils.book_new();
+                          const modeLabel = purExpMode === "new" ? "YeniSiparis" : purExpMode === "track" ? "Takip" : "Tumu";
+                          const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+
+                          if (purExpFormat === "single") {
+                            // Tek sayfa — tüm seçili kategoriler birleşik
+                            const rows = rowsForMode(filteredItems);
+                            const ws = XLSX.utils.json_to_sheet(rows);
+                            XLSX.utils.book_append_sheet(wb, ws, "Satinalma");
+                          } else {
+                            // Kategori başına ayrı sayfa
+                            const byCategory = {};
+                            filteredItems.forEach(it => {
+                              const key = it._catLabel || "Diger";
+                              if (!byCategory[key]) byCategory[key] = [];
+                              byCategory[key].push(it);
+                            });
+                            Object.entries(byCategory).forEach(([catLabel, items]) => {
+                              const rows = rowsForMode(items);
+                              // Sheet adı max 31 karakter, özel karakter yok
+                              const sheetName = catLabel.replace(/[/\\?*:[\]]/g, "").substring(0, 31);
+                              const ws = XLSX.utils.json_to_sheet(rows);
+                              XLSX.utils.book_append_sheet(wb, ws, sheetName);
+                            });
+                          }
+
+                          const fname = `Satinalma_${modeLabel}_${dateStr}.xlsx`;
+                          XLSX.writeFile(wb, fname);
+                          setPurExpOpen(false);
+                        };
+
+                        return (
+                          <div onClick={() => setPurExpOpen(false)}
+                               style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 1500, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <div onClick={e => e.stopPropagation()}
+                                 style={{ background: "var(--color-background-primary)", borderRadius: 10, padding: 20, maxWidth: 520, width: "90%", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 10px 40px rgba(0,0,0,0.2)" }}>
+                              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 14, display: "flex", alignItems: "center", gap: 6 }}>
+                                📥 Satınalma Excel Export
+                              </div>
+
+                              {/* DURUM */}
+                              <div style={{ marginBottom: 14 }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--color-text-secondary)" }}>📋 Durum</div>
+                                {[
+                                  { k: "new", label: "Yeni sipariş açılacaklar", sub: "Sipariş açığı > 0 — VIO'da PO açmak için", count: modeCount("new") },
+                                  { k: "track", label: "Takip listesi", sub: "Açık sipariş var — tedarikçi takibi", count: modeCount("track") },
+                                  { k: "all", label: "Tümü", sub: "Tüm kalemler, tüm sütunlar", count: modeCount("all") },
+                                ].map(opt => (
+                                  <label key={opt.k} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 8px", borderRadius: 6, cursor: "pointer", background: purExpMode === opt.k ? "#EFF6FF" : "transparent", marginBottom: 2 }}>
+                                    <input type="radio" name="purExpMode" checked={purExpMode === opt.k} onChange={() => setPurExpMode(opt.k)} style={{ marginTop: 2 }} />
+                                    <div style={{ flex: 1 }}>
+                                      <div style={{ fontSize: 12, fontWeight: 600 }}>{opt.label} <span style={{ color: "var(--color-text-tertiary)", fontWeight: 400 }}>({opt.count} kalem)</span></div>
+                                      <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{opt.sub}</div>
+                                    </div>
+                                  </label>
+                                ))}
+                              </div>
+
+                              {/* KATEGORİLER */}
+                              <div style={{ marginBottom: 14 }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--color-text-secondary)", display: "flex", alignItems: "center", gap: 8 }}>
+                                  📂 Kategoriler
+                                  <label style={{ fontSize: 10, fontWeight: 400, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                                    <input type="checkbox" checked={allSelected} onChange={e => {
+                                      const v = e.target.checked;
+                                      const all = {};
+                                      Object.keys(rawGroups).forEach(k => { all[k] = v; });
+                                      Object.keys(buyGroups).forEach(k => { all[k] = v; });
+                                      setPurExpCats(all);
+                                    }} />
+                                    Tümünü seç
+                                  </label>
+                                </div>
+                                <div style={{ background: "var(--color-background-secondary)", borderRadius: 6, padding: 8, maxHeight: 200, overflowY: "auto" }}>
+                                  {Object.keys(rawGroups).length > 0 && (
+                                    <div style={{ marginBottom: 6 }}>
+                                      <div style={{ fontSize: 10, fontWeight: 700, color: "#92400E", marginBottom: 3 }}>RAW Hammadde</div>
+                                      {Object.values(rawGroups).sort((a,b) => b.items.length - a.items.length).map(grp => (
+                                        <label key={grp.cat} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 6px 3px 18px", cursor: "pointer" }}>
+                                          <input type="checkbox" checked={!!purExpCats[grp.cat]} onChange={e => setPurExpCats(prev => ({ ...prev, [grp.cat]: e.target.checked }))} />
+                                          <span>{grp.icon}</span>
+                                          <span style={{ flex: 1 }}>{grp.label}</span>
+                                          <span style={{ color: "var(--color-text-tertiary)", fontSize: 10 }}>({grp.items.length})</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  )}
+                                  {Object.keys(buyGroups).length > 0 && (
+                                    <div>
+                                      <div style={{ fontSize: 10, fontWeight: 700, color: "#1D4ED8", marginBottom: 3 }}>BUY Standart parça</div>
+                                      {Object.values(buyGroups).sort((a,b) => b.items.length - a.items.length).map(grp => (
+                                        <label key={grp.cat} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, padding: "3px 6px 3px 18px", cursor: "pointer" }}>
+                                          <input type="checkbox" checked={!!purExpCats[grp.cat]} onChange={e => setPurExpCats(prev => ({ ...prev, [grp.cat]: e.target.checked }))} />
+                                          <span>{grp.icon}</span>
+                                          <span style={{ flex: 1 }}>{grp.label}</span>
+                                          <span style={{ color: "var(--color-text-tertiary)", fontSize: 10 }}>({grp.items.length})</span>
+                                        </label>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+
+                              {/* FORMAT */}
+                              <div style={{ marginBottom: 14 }}>
+                                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6, color: "var(--color-text-secondary)" }}>📑 Format</div>
+                                {[
+                                  { k: "single", label: "Tek sayfa", sub: "Tüm seçili kategoriler alt alta" },
+                                  { k: "multi", label: "Kategori başına ayrı sayfa", sub: "Her kategori Excel'de ayrı sheet" },
+                                ].map(opt => (
+                                  <label key={opt.k} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "6px 8px", borderRadius: 6, cursor: "pointer", background: purExpFormat === opt.k ? "#EFF6FF" : "transparent", marginBottom: 2 }}>
+                                    <input type="radio" name="purExpFormat" checked={purExpFormat === opt.k} onChange={() => setPurExpFormat(opt.k)} style={{ marginTop: 2 }} />
+                                    <div style={{ flex: 1 }}>
+                                      <div style={{ fontSize: 12, fontWeight: 600 }}>{opt.label}</div>
+                                      <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{opt.sub}</div>
+                                    </div>
+                                  </label>
+                                ))}
+                              </div>
+
+                              {/* ÖZET */}
+                              <div style={{ padding: "8px 10px", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 6, fontSize: 11, marginBottom: 12 }}>
+                                <b>{filteredItems.length} kalem</b> indirilecek ({selectedCount} kategori seçili)
+                              </div>
+
+                              {/* BUTONLAR */}
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                                <button onClick={() => setPurExpOpen(false)} style={{ padding: "7px 14px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", background: "transparent", fontSize: 12, cursor: "pointer" }}>İptal</button>
+                                <button onClick={doExport} disabled={filteredItems.length === 0 || selectedCount === 0}
+                                        style={{ padding: "7px 18px", borderRadius: 6, border: "none", background: filteredItems.length > 0 && selectedCount > 0 ? "#1D4ED8" : "#94A3B8", color: "#FFF", fontSize: 12, fontWeight: 600, cursor: filteredItems.length > 0 && selectedCount > 0 ? "pointer" : "not-allowed" }}>
+                                  📥 İndir
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
 
