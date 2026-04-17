@@ -11414,8 +11414,44 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                 : _slack <= 2 ? "⚠"
                                                 : _slack <= 9 ? "⏳"
                                                 : "✓";
+                                              // v18.11: Satır tooltip'i — v18.6 Stil C (akış durumu) birebir replikasyon.
+                                              // Akibet üzerinden o tek emrin transit + kalan op bilgisi okunur.
+                                              // Hesap yeniden yapılmaz, sadece okunur; yan etki yok.
+                                              const _wipTip = (() => {
+                                                const _ak = akibetLookup[w.partCode];
+                                                const _order = (_ak?.orders || []).find(o => o.emirNo === w.emirNo);
+                                                if (!_order) return opSummary; // fallback: akibet bulunamazsa eski basit özet
+                                                const _fmtDate = (iso) => { if (!iso) return "?"; const [y,m,d] = iso.split("-"); return `${d}.${m}.${y.substring(2)}`; };
+                                                // v18.6 transit formülü: prevProduced - op.uretilen = bu op'un elindeki
+                                                const validOps = (_order.ops || []).filter(op => !op.cancelled);
+                                                const flowParts = [];
+                                                for (let i = 0; i < validOps.length; i++) {
+                                                  const op = validOps[i];
+                                                  const prevProduced = i === 0 ? (_order.qty || 0) : (validOps[i-1].uretilen || 0);
+                                                  const transit = prevProduced - (op.uretilen || 0);
+                                                  if (transit > 0 && (op.remaining || 0) > 0) {
+                                                    const icon = op.isFason ? "🔩" : "⚙";
+                                                    flowParts.push(`${icon}${op.name} (${transit})`);
+                                                  }
+                                                }
+                                                const flowLine = flowParts.length > 0 ? `Şu an: ${flowParts.join(" · ")}` : "";
+                                                const opsDetail = (_order.ops || [])
+                                                  .filter(op => !op.cancelled && (op.remaining || 0) > 0)
+                                                  .map(op => `  • ${op.isFason ? "🔩" : "⚙"} ${op.name} — kalan ${op.remaining}`)
+                                                  .join("\n");
+                                                const ageStr = _order.ageDays != null ? ` · yaş ${_order.ageDays}g` : "";
+                                                const dateLine = _order.openDate ? `Açılış: ${_fmtDate(_order.openDate)}${ageStr}` : "";
+                                                const remOpsLine = _order.remainingOps ? `Kalan: ${_order.remainingOps.total} op (${_order.remainingOps.fason}F + ${_order.remainingOps.internal}İ)` : "";
+                                                const totalRem = _order.rem || ((w.intRem || 0) + (w.fasRem || 0));
+                                                const header = `WIP — devam eden iş emri\n─────────────────────────────\nEmir ${w.emirNo} — ${totalRem} ad`;
+                                                const meta = [dateLine, remOpsLine, "Hammadde: emir açılışında çıkarılmış ✓"].filter(Boolean).join("\n");
+                                                const flowBlock = flowLine ? `\n\n${flowLine}` : "";
+                                                const opsBlock = opsDetail ? `\n\nKalan operasyonlar:\n${opsDetail}` : "";
+                                                const footer = `\n\nNOT: WIP artık "hazır stok" sayılmıyor.\nBu rozet sana WIP'in fiziksel konumunu söyler,\nsen emirin zamanında bitip bitmeyeceğine karar verirsin.`;
+                                                return `${header}\n${meta}${flowBlock}${opsBlock}${footer}`;
+                                              })();
                                               return (
-                                                <tr key={w.id} style={{ borderTop: `0.5px solid ${color}22`, background: _rowBg }}>
+                                                <tr key={w.id} title={_wipTip} style={{ borderTop: `0.5px solid ${color}22`, background: _rowBg, cursor: "help" }}>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", color, fontWeight: 600 }}>{w.emirNo}</td>
                                                   <td style={{ padding: "4px 6px", fontFamily: "var(--font-mono)", fontSize: 9 }}>
                                                     {w.partCode}
@@ -11452,7 +11488,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                   </td>
                                                   <td style={{ padding: "4px 6px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{w.partName}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "right" }}>{w.qty}ad</td>
-                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }} title={opSummary}>{w.opsCount}</td>
+                                                  <td style={{ padding: "4px 6px", textAlign: "right", fontSize: 9 }}>{w.opsCount}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "center", fontFamily: "var(--font-mono)", fontSize: 9 }}>{w.dueDate?.substring(5)}</td>
                                                   <td style={{ padding: "4px 6px", textAlign: "right", fontWeight: 700, color: _slackColor }}>{_slackIcon} {w.slackDays}g</td>
                                                 </tr>
