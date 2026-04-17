@@ -3632,9 +3632,12 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         let cumGer = Number(ms.initialStock?.[pid]) || 0;
         let readyDate = cumGer >= cumTarget ? (ms.initDate || today) : null;
         for (const [d, day] of allGerDays) {
-          if (d > c.date) break;
+          // v18.10: break kaldırıldı — sevkiyat tarihinden sonra tamamlanan modeller
+          // de readyDate alır → negatif marj hesaplanır → "en geç hazırlanan" doğru çıkar.
+          // Önceki: if (d > c.date) break; → geç kalanlar atlanıyordu → sıralama bozuluyordu.
           cumGer += Number(day.actual?.[pid]) || 0;
           if (!readyDate && cumGer >= cumTarget) readyDate = d;
+          if (readyDate) break; // readyDate bulunduysa daha ileri gitmeye gerek yok
         }
         if (readyDate && readyDate <= c.date) {
           modelMargins[pid] = calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
@@ -3658,9 +3661,26 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
         const vals = realMargins.filter(r => r.modelMargins[pid] !== undefined && r.modelMargins[pid] > -50).map(r => r.modelMargins[pid]);
         if (vals.length > 0) modelAvgMargins[pid] = { avg: vals.reduce((s,v)=>s+v,0)/vals.length, count: vals.length };
       });
-      slowestModel = Object.entries(modelAvgMargins).length > 0
-        ? Object.entries(modelAvgMargins).reduce((w,[pid,d]) => d.avg < w.avg ? {pid:Number(pid),avg:d.avg,count:d.count} : w, {pid:null,avg:Infinity,count:0})
-        : null;
+      slowestModel = (() => {
+        // v18.10: Her konteynerde en son hazır olan modeli (worstPid) say.
+        // En çok kez "en son" olan model = gerçek darboğaz.
+        // Eski yaklaşım: en düşük ortalama marj → yanıltıcı (farklı konteyner sayıları)
+        const lastReadyCount = {};
+        realMargins.forEach(r => {
+          if (r.worstPid) lastReadyCount[r.worstPid] = (lastReadyCount[r.worstPid] || 0) + 1;
+        });
+        if (Object.keys(lastReadyCount).length === 0) return null;
+        // En çok "en son" olan; eşitse ortalama marjı düşük olan (tie-break)
+        return Object.entries(lastReadyCount)
+          .reduce((w, [pid, cnt]) => {
+            const pidN = Number(pid);
+            const avg = modelAvgMargins[pidN]?.avg ?? Infinity;
+            if (cnt > w.count || (cnt === w.count && avg < w.avg)) {
+              return { pid: pidN, avg, count: modelAvgMargins[pidN]?.count || cnt };
+            }
+            return w;
+          }, { pid: null, avg: Infinity, count: 0 });
+      })();
     } // end if (allGerDays.length > 0 && shippedContainers.length > 0)
 
     // 6) Haftalık trend (son 4 hafta)
@@ -4397,7 +4417,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                       {p && <div style={{width:8,height:8,borderRadius:"50%",background:p.color}}/>}
                       <span style={{fontSize:"18px",fontWeight:600,color:avgM>=5?"#16a34a":avgM>=2?"#f59e0b":"#dc2626"}}>{p?kisaAd(p.nameTR):"—"}</span>
                     </div>
-                    <div style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>Ort. {Math.round(avgM*10)/10} gün önce ({kpi.slowestModel.count} sevkiyat)</div>
+                    <div style={{fontSize:"10px",color:"var(--color-text-tertiary)"}}>Ort. {Math.round(avgM*10)/10} gün önce ({kpi.slowestModel.count} sevkiyatta en son)</div>
                   </>);
                 })() : <div style={{fontSize:"11px",color:"var(--color-text-tertiary)"}}>Henüz sevkiyat yok</div>}
               </div>
