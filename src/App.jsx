@@ -3683,7 +3683,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
             const pidN = Number(pid);
             const avg = modelAvgMargins[pidN]?.avg ?? Infinity;
             if (cnt > w.count || (cnt === w.count && avg < w.avg)) {
-              return { pid: pidN, avg, count: modelAvgMargins[pidN]?.count || cnt };
+              return { pid: pidN, avg, count: cnt };
             }
             return w;
           }, { pid: null, avg: Infinity, count: 0 });
