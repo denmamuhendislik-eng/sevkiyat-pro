@@ -3640,9 +3640,16 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
           if (readyDate) break; // readyDate bulunduysa daha ileri gitmeye gerek yok
         }
         if (readyDate && readyDate <= c.date) {
-          modelMargins[pid] = calDays.filter(dd => dd > readyDate && dd <= c.date && !isWeekend(dd) && !holidays.has(dd)).length;
+          // v18.10 fix: calDays geçmiş tarihleri içermiyor → doğrudan iş günü say
+          let _m = 0; const _d = new Date(readyDate); _d.setDate(_d.getDate() + 1);
+          const _end = new Date(c.date);
+          while (_d <= _end) { const _ds = _d.toISOString().slice(0,10); if (!isWeekend(_ds) && !holidays.has(_ds)) _m++; _d.setDate(_d.getDate() + 1); }
+          modelMargins[pid] = _m;
         } else if (readyDate) {
-          modelMargins[pid] = -(calDays.filter(dd => dd > c.date && dd <= readyDate && !isWeekend(dd) && !holidays.has(dd)).length);
+          let _m = 0; const _d = new Date(c.date); _d.setDate(_d.getDate() + 1);
+          const _end = new Date(readyDate);
+          while (_d <= _end) { const _ds = _d.toISOString().slice(0,10); if (!isWeekend(_ds) && !holidays.has(_ds)) _m++; _d.setDate(_d.getDate() + 1); }
+          modelMargins[pid] = -_m;
         }
         // readyDate null → bu model için yeterli GER verisi yok, margin hesabına dahil etme
       });
