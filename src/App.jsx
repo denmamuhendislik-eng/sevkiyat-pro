@@ -5245,8 +5245,12 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const stk = stockLookup[code];
       if (!stk || !stk.pl || stk.pl.length === 0) return; // hat stoğu artık yok → onay geçersiz
       const currentPlsTotal = stk.pl.reduce((s, x) => s + (x.q || 0), 0);
-      if (currentPlsTotal < conf.qty) return; // güncel hat stoğu < onay → onay geçersiz (otomatik iptal)
-      map[code] = { qty: conf.qty, confirmedAt: conf.confirmedAt, confirmedBy: conf.confirmedBy };
+      if (currentPlsTotal <= 0) return; // hat stoğu sıfıra düştü → onay geçersiz
+      // v18.10: Hat stoğu azaldıysa onayı iptal etme, miktarı otomatik güncelle.
+      // Eski: currentPlsTotal < conf.qty → iptal (çok katı, her sabah tekrar onay gerekiyordu)
+      // Yeni: currentPlsTotal > 0 olduğu sürece onay korunur, miktar güncel değerle güncellenir
+      const effectiveQty = Math.min(conf.qty, currentPlsTotal);
+      map[code] = { qty: effectiveQty, confirmedAt: conf.confirmedAt, confirmedBy: conf.confirmedBy };
     });
     return map;
   }, [plsConfirmations, stockLookup]);
