@@ -11603,7 +11603,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
                             // Panel açık/kapalı — shipReqOpen paylaşılan state, yeni key
                             const panelKey = "montajOncelik";
-                            const isPanelOpen = shipReqOpen[panelKey] !== false; // default açık
+                            const isPanelOpen = shipReqOpen[panelKey] === true; // default kapalı
 
                             const statusColor = (s) => s === "full" ? "#16A34A" : s === "partial" ? "#D97706" : s === "low" ? "#EA580C" : "#DC2626";
                             const statusBg = (s) => s === "full" ? "#F0FDF4" : s === "partial" ? "#FFFBEB" : s === "low" ? "#FFEDD5" : "#FEF2F2";
