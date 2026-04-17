@@ -11504,6 +11504,249 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             );
                           })()}
 
+                          {/* ─────────────────────────────────────────────────────────────
+                              v18.12 — Montaj Öncelik Önerisi (SALT OKUR PANEL)
+                              Amaç: Operatöre "bugün hangi modeli toplayabilirim?" sorusunun
+                              cevabını vermek. Mevcut shipReqAnalysis hesabından okur,
+                              fill rate hesaplar, sıralar. Hiçbir state/hesap değişmez.
+                              Horizon state'i Acil Aksiyon ile paylaşılır (acilHorizon).
+                              ───────────────────────────────────────────────────────────── */}
+                          {(() => {
+                            const allProdDataLocal = shipReqAnalysis?.allProdData || {};
+                            const horizonMsLocal = acilHorizon * 86400000;
+                            const todayMsLocal = new Date().setHours(0,0,0,0);
+
+                            // Horizon filtresi — Acil Aksiyon ile aynı mantık
+                            const horizonContainers = acilHorizon === 0
+                              ? containerStats
+                              : containerStats.filter(cs => new Date(cs.date).getTime() - todayMsLocal <= horizonMsLocal);
+
+                            // Her konteyner-ürün için fill rate hesapla
+                            const rows = [];
+                            horizonContainers.forEach(cs => {
+                              cs.cProducts.forEach(cp => {
+                                const key = `${cs.id}|${cp.pid}`;
+                                const prodParts = allProdDataLocal[key] || [];
+                                if (prodParts.length === 0) return;
+
+                                // v14 Adım 3 prensibi: level 1 (L1) parçaları dikkate al — root parça sayma
+                                // Root parça = BOM'u olmayan ürünler için _isProductRoot=true olan tek kayıt
+                                const l1Parts = prodParts.filter(p => p.level === 1 || p._isProductRoot);
+
+                                // Fill rate: her L1 parça için min(covered/needed), en düşük olan = kit fill rate
+                                let minFillRatio = 1;
+                                let totalL1 = 0;
+                                let shortL1 = 0;
+                                const shortPartDetails = [];
+                                l1Parts.forEach(p => {
+                                  totalL1++;
+                                  const ratio = p.needed > 0 ? (p.covered / p.needed) : 1;
+                                  if (ratio < minFillRatio) minFillRatio = ratio;
+                                  if (p.short > 0) {
+                                    shortL1++;
+                                    shortPartDetails.push({
+                                      code: p.code,
+                                      name: p.name,
+                                      short: p.short,
+                                      needed: p.needed,
+                                      supplyType: p.supplyType,
+                                      wipInt: p.wipInt || 0,
+                                      wipFas: p.wipFas || 0,
+                                      unit: p.unit || "AD"
+                                    });
+                                  }
+                                });
+
+                                // "Kaç adet çıkar" = cp.qty * minFillRatio (aşağı yuvarla)
+                                const buildableQty = Math.floor(cp.qty * minFillRatio);
+                                const fillPct = Math.round(minFillRatio * 100);
+
+                                // Durum sınıfı
+                                let status = "full"; // %100
+                                if (fillPct === 0) status = "none";
+                                else if (fillPct < 50) status = "low";
+                                else if (fillPct < 100) status = "partial";
+
+                                rows.push({
+                                  cid: cs.id,
+                                  cdate: cs.date,
+                                  bizDays: cs.bizDays,
+                                  pid: cp.pid,
+                                  productName: cp.product?.nameTR || `Ürün ${cp.pid}`,
+                                  qty: cp.qty,
+                                  buildableQty,
+                                  fillPct,
+                                  status,
+                                  totalL1,
+                                  shortL1,
+                                  shortPartDetails: shortPartDetails.sort((a,b) => b.short - a.short)
+                                });
+                              });
+                            });
+
+                            if (rows.length === 0) return null;
+
+                            // Sıralama: sevkiyat tarihi asc, aynı tarih içinde fill pct desc
+                            rows.sort((a, b) => a.cdate.localeCompare(b.cdate) || b.fillPct - a.fillPct);
+
+                            // Özet sayaçlar
+                            const fullCount = rows.filter(r => r.status === "full").length;
+                            const partialCount = rows.filter(r => r.status === "partial").length;
+                            const lowCount = rows.filter(r => r.status === "low").length;
+                            const noneCount = rows.filter(r => r.status === "none").length;
+
+                            // "Bugün öncelikle" önerisi: En erken sevkiyat tarihli %100, yoksa en yüksek fill pct olan
+                            const topSuggestion = rows.find(r => r.status === "full") || rows[0];
+
+                            // Panel açık/kapalı — shipReqOpen paylaşılan state, yeni key
+                            const panelKey = "montajOncelik";
+                            const isPanelOpen = shipReqOpen[panelKey] !== false; // default açık
+
+                            const statusColor = (s) => s === "full" ? "#16A34A" : s === "partial" ? "#D97706" : s === "low" ? "#EA580C" : "#DC2626";
+                            const statusBg = (s) => s === "full" ? "#F0FDF4" : s === "partial" ? "#FFFBEB" : s === "low" ? "#FFEDD5" : "#FEF2F2";
+                            const statusBorder = (s) => s === "full" ? "#BBF7D0" : s === "partial" ? "#FDE68A" : s === "low" ? "#FED7AA" : "#FECACA";
+                            const statusIcon = (s) => s === "full" ? "✅" : s === "partial" ? "⚠️" : s === "low" ? "🟠" : "❌";
+
+                            return (
+                              <div style={{ marginBottom: 12, padding: "10px 12px", background: "#FFF", borderRadius: 8, border: "1px solid #DDD6FE" }}>
+                                {/* Header */}
+                                <div onClick={() => toggleShipReq(panelKey)} style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", marginBottom: isPanelOpen ? 8 : 0 }}>
+                                  <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isPanelOpen ? "▼" : "▶"}</span>
+                                  <span style={{ fontSize: 13, fontWeight: 700, color: "#6D28D9" }}>🎯 Montaj Öncelik Önerisi</span>
+                                  <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                                    {rows.length} sevkiyat-model · {acilHorizon === 0 ? "tümü" : `${acilHorizon}g`}
+                                  </span>
+                                  <span style={{ flex: 1 }} />
+                                  {fullCount > 0 && <span style={{ fontSize: 10, color: "#16A34A", fontWeight: 600 }}>✅{fullCount}</span>}
+                                  {partialCount > 0 && <span style={{ fontSize: 10, color: "#D97706", fontWeight: 600 }}>⚠️{partialCount}</span>}
+                                  {lowCount > 0 && <span style={{ fontSize: 10, color: "#EA580C", fontWeight: 600 }}>🟠{lowCount}</span>}
+                                  {noneCount > 0 && <span style={{ fontSize: 10, color: "#DC2626", fontWeight: 600 }}>❌{noneCount}</span>}
+                                </div>
+
+                                {isPanelOpen && (
+                                  <>
+                                    {/* Öneri banner */}
+                                    {topSuggestion && (
+                                      <div style={{ padding: "8px 10px", background: statusBg(topSuggestion.status), border: `1px solid ${statusBorder(topSuggestion.status)}`, borderRadius: 6, marginBottom: 8, fontSize: 11 }}>
+                                        <span style={{ fontWeight: 600, color: statusColor(topSuggestion.status) }}>
+                                          {statusIcon(topSuggestion.status)} Bugün öncelikle:
+                                        </span>
+                                        <span style={{ marginLeft: 6, fontWeight: 700 }}>
+                                          {topSuggestion.productName.substring(0, 30)}
+                                        </span>
+                                        <span style={{ marginLeft: 6, color: "var(--color-text-secondary)" }}>
+                                          — {topSuggestion.buildableQty}/{topSuggestion.qty} ad {topSuggestion.status === "full" ? "tam hazır" : `(%${topSuggestion.fillPct})`} · sevkiyat {topSuggestion.cdate.substring(5)}
+                                        </span>
+                                      </div>
+                                    )}
+
+                                    {/* Model listesi */}
+                                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                                      {rows.map(r => {
+                                        const rowKey = `montajOncelik_${r.cid}_${r.pid}`;
+                                        const isRowOpen = !!shipReqOpen[rowKey];
+                                        // Satır tooltip'i
+                                        const tipLines = [
+                                          `${r.productName}`,
+                                          `Sevkiyat ${r.cdate} (${r.bizDays}g) · Talep ${r.qty} ad`,
+                                          `Montaja girebilecek: ${r.buildableQty} ad (%${r.fillPct})`,
+                                          `L1 parça: ${r.totalL1 - r.shortL1}/${r.totalL1} tam`,
+                                          ""
+                                        ];
+                                        if (r.shortPartDetails.length > 0) {
+                                          tipLines.push("Eksik parçalar:");
+                                          r.shortPartDetails.slice(0, 10).forEach(sp => {
+                                            const wip = (sp.wipInt + sp.wipFas) > 0 ? ` · ⚙WIP ${sp.wipInt + sp.wipFas}` : "";
+                                            tipLines.push(`  • ${sp.code} — ${sp.short} ${sp.unit.toLowerCase()} eksik [${sp.supplyType}]${wip}`);
+                                          });
+                                          if (r.shortPartDetails.length > 10) tipLines.push(`  • +${r.shortPartDetails.length - 10} daha…`);
+                                        }
+                                        const rowTip = tipLines.join("\n");
+
+                                        return (
+                                          <div key={rowKey}>
+                                            <div onClick={() => toggleShipReq(rowKey)}
+                                                 title={rowTip}
+                                                 style={{
+                                                   display: "flex", alignItems: "center", gap: 8,
+                                                   padding: "5px 10px", borderRadius: 5,
+                                                   background: statusBg(r.status),
+                                                   border: `1px solid ${statusBorder(r.status)}`,
+                                                   cursor: "help", fontSize: 11
+                                                 }}>
+                                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isRowOpen ? "▼" : "▶"}</span>
+                                              <span style={{ fontSize: 12 }}>{statusIcon(r.status)}</span>
+                                              <span style={{ fontWeight: 700, minWidth: 140, maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                                {r.productName}
+                                              </span>
+                                              <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 45 }}>
+                                                {r.cdate.substring(5)}
+                                              </span>
+                                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 30 }}>
+                                                {r.bizDays}g
+                                              </span>
+                                              <span style={{ flex: 1, textAlign: "center", fontWeight: 600, color: statusColor(r.status) }}>
+                                                {r.buildableQty} / {r.qty} ad
+                                              </span>
+                                              <span style={{ minWidth: 55, textAlign: "right", fontWeight: 700, color: statusColor(r.status) }}>
+                                                %{r.fillPct}
+                                              </span>
+                                              <span style={{ minWidth: 70, textAlign: "right", fontSize: 10, color: "var(--color-text-secondary)" }}>
+                                                {r.shortL1 === 0
+                                                  ? <span style={{ color: "#16A34A" }}>✓ {r.totalL1} parça</span>
+                                                  : <>❌ {r.shortL1}/{r.totalL1} eksik</>}
+                                              </span>
+                                            </div>
+
+                                            {/* Expand: eksik parça detayları */}
+                                            {isRowOpen && r.shortPartDetails.length > 0 && (
+                                              <div style={{ marginLeft: 24, marginTop: 3, marginBottom: 3, padding: "6px 10px", background: "#FAFAFA", borderRadius: 4, border: "1px solid var(--color-border-tertiary)" }}>
+                                                <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginBottom: 4, fontWeight: 600 }}>
+                                                  Eksik L1 parçalar ({r.shortPartDetails.length}):
+                                                </div>
+                                                <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                                                  <thead>
+                                                    <tr style={{ borderBottom: "0.5px solid var(--color-border-tertiary)", color: "var(--color-text-tertiary)", fontSize: 9 }}>
+                                                      <th style={{ padding: "2px 4px", textAlign: "left", fontWeight: 500 }}>Kod</th>
+                                                      <th style={{ padding: "2px 4px", textAlign: "left", fontWeight: 500 }}>Ad</th>
+                                                      <th style={{ padding: "2px 4px", textAlign: "center", fontWeight: 500 }}>Tip</th>
+                                                      <th style={{ padding: "2px 4px", textAlign: "right", fontWeight: 500 }}>Eksik</th>
+                                                      <th style={{ padding: "2px 4px", textAlign: "right", fontWeight: 500 }}>WIP</th>
+                                                    </tr>
+                                                  </thead>
+                                                  <tbody>
+                                                    {r.shortPartDetails.map((sp, spi) => (
+                                                      <tr key={sp.code + "_" + spi} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                                                        <td style={{ padding: "2px 4px", fontFamily: "var(--font-mono)", fontSize: 9 }}>{sp.code}</td>
+                                                        <td style={{ padding: "2px 4px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{sp.name}</td>
+                                                        <td style={{ padding: "2px 4px", textAlign: "center" }}>
+                                                          <span style={{ fontSize: 8, padding: "0 3px", borderRadius: 2, background: sp.supplyType === "MAKE" ? "#ECFDF5" : sp.supplyType === "BUY" ? "#DBEAFE" : sp.supplyType === "RAW" ? "#DBEAFE" : "#FEF3C7", color: sp.supplyType === "MAKE" ? "#065F46" : (sp.supplyType === "BUY" || sp.supplyType === "RAW") ? "#1D4ED8" : "#92400E" }}>
+                                                            {sp.supplyType}
+                                                          </span>
+                                                        </td>
+                                                        <td style={{ padding: "2px 4px", textAlign: "right", fontWeight: 600, color: "#DC2626" }}>{sp.short} <span style={{ fontSize: 8, color: "var(--color-text-tertiary)", fontWeight: 400 }}>{sp.unit.toLowerCase()}</span></td>
+                                                        <td style={{ padding: "2px 4px", textAlign: "right", fontSize: 9, color: "var(--color-text-tertiary)" }}>
+                                                          {(sp.wipInt + sp.wipFas) > 0 ? `⚙${sp.wipInt + sp.wipFas}` : "—"}
+                                                        </td>
+                                                      </tr>
+                                                    ))}
+                                                  </tbody>
+                                                </table>
+                                                <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 4, fontStyle: "italic" }}>
+                                                  ℹ Detaylı parça ağacı için aşağıda konteyner {r.cdate.substring(5)} → {r.productName.substring(0, 20)} satırına bak
+                                                </div>
+                                              </div>
+                                            )}
+                                          </div>
+                                        );
+                                      })}
+                                    </div>
+                                  </>
+                                )}
+                              </div>
+                            );
+                          })()}
+
                           {containerStats.map(cs => {
                             const cKey = `c_${cs.id}`;
                             const isContainerOpen = shipReqOpen[cKey];
