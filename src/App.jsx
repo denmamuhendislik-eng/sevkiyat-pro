@@ -11525,6 +11525,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                             const rows = [];
                             horizonContainers.forEach(cs => {
                               cs.cProducts.forEach(cp => {
+                                // v18.12.1: Sadece Montaj Planı'nda planlanan ana ürünler (ANA_IDS = [1,2,3,4,5])
+                                // C54ST, C44ST, C38ST, TP32/36, TP25/32 — diğer parça sevkiyatları panelde yer almaz
+                                if (!ANA_IDS.includes(cp.pid)) return;
                                 const key = `${cs.id}|${cp.pid}`;
                                 const prodParts = allProdDataLocal[key] || [];
                                 if (prodParts.length === 0) return;
@@ -11614,7 +11617,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                   <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isPanelOpen ? "▼" : "▶"}</span>
                                   <span style={{ fontSize: 13, fontWeight: 700, color: "#6D28D9" }}>🎯 Montaj Öncelik Önerisi</span>
                                   <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
-                                    {rows.length} sevkiyat-model · {acilHorizon === 0 ? "tümü" : `${acilHorizon}g`}
+                                    {rows.length} sevkiyat-model · {acilHorizon === 0 ? "tümü" : `${acilHorizon}g`} · Montaj Planı modelleri
                                   </span>
                                   <span style={{ flex: 1 }} />
                                   {fullCount > 0 && <span style={{ fontSize: 10, color: "#16A34A", fontWeight: 600 }}>✅{fullCount}</span>}
