@@ -4407,7 +4407,18 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
                 sub={`Ort. ${kpi.avgDaily} adet/gün (${kpi.capDays} gün)`} color={kpi.capUtilPct>=80?"#16a34a":kpi.capUtilPct>=50?"#f59e0b":"#dc2626"}/>
               <KCard title="Ort. Günlük Talep" value={kpi.avgDailyDemand+" adet"}
                 sub={`${kpi.totalDemand} adet / ${kpi.remainWorkDays} iş günü`} color={Number(kpi.avgDailyDemand)<=hatMax?"#16a34a":"#dc2626"}/>
-              <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)"}}>
+              <div style={{background:"var(--color-background-secondary)",borderRadius:8,padding:"10px 12px",border:"0.5px solid var(--color-border-tertiary)",cursor:"help"}}
+                title={(() => {
+                  // Teşhis tooltip: her shipped container için model bazlı GER marjları
+                  if (!kpi.realMargins || kpi.realMargins.length === 0) return "GER verisi yok";
+                  return "GER Marj Detayı (iş günü)\n" + "─".repeat(40) + "\n" + kpi.realMargins.map(r => {
+                    const models = Object.entries(r.modelMargins)
+                      .map(([pid, m]) => { const p = anaProducts.find(x=>x.id===Number(pid)); return `  ${p?kisaAd(p.nameTR):pid}: ${m}g`; })
+                      .join("\n");
+                    const worstP = anaProducts.find(x=>x.id===r.worstPid);
+                    return `📦 ${r.date} (en son: ${worstP?kisaAd(worstP.nameTR):r.worstPid})\n${models}`;
+                  }).join("\n\n");
+                })()}>
                 <div style={{fontSize:"10px",color:"var(--color-text-tertiary)",marginBottom:4}}>En Son Tamamlanan Model</div>
                 {kpi.slowestModel && kpi.slowestModel.pid ? (()=>{
                   const p = anaProducts.find(x=>x.id===kpi.slowestModel.pid);
