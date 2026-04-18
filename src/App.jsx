@@ -5081,8 +5081,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   const parseStockReport = (workbook) => {
     const sheet = workbook.Sheets[workbook.SheetNames[0]];
     const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+    // v18.16: XLSX.js Excel'den Type="Number" hücreleri JavaScript number olarak döndürür.
+    // Eski mantık String(v) → "." silme işlemini ondalıklı number'a (örn 4255.32) uyguladığında
+    // 425532 gibi yanlış sonuç üretiyordu. Düzeltme: Number geldiyse doğrudan al, string ise
+    // eski Türk formatı parse'ı ("1.234,56" → 1234.56) aynen çalışsın.
     const pNum = (v) => {
       if (v === "" || v === undefined || v === null) return 0;
+      if (typeof v === "number") return isNaN(v) ? 0 : v;
       const s = String(v).trim(); if (!s) return 0;
       const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
       return isNaN(n) ? 0 : n;
@@ -6956,6 +6961,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
     const pNum = (v) => {
       if (v === "" || v === undefined || v === null) return 0;
+      // v18.16: XLSX Number hücreleri doğrudan al, String'ler için eski Türk formatı parse
+      if (typeof v === "number") return isNaN(v) ? 0 : v;
       const s = String(v).trim();
       if (!s) return 0;
       // Türkçe sayı formatı: "1.234,56" → "1234.56". Veri satırlarında genelde tamsayı.
@@ -8328,6 +8335,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
     const pNum = (v) => {
       if (v === "" || v === undefined || v === null) return 0;
+      // v18.16: XLSX Number hücreleri doğrudan al, String'ler için eski Türk formatı parse
+      if (typeof v === "number") return isNaN(v) ? 0 : v;
       const s = String(v).trim(); if (!s) return 0;
       const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
       return isNaN(n) ? 0 : n;
