@@ -13690,27 +13690,70 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               // takip edilir (direkt parent BUY/RAW olamaz — çünkü BOM explode'u BUY/RAW altında durur,
               // line 5485). Aynı parça birden fazla parent altında olabilir, Map ile dedupe.
               const parentLookup = {}; // stockCode → [{ code, name }]
+              // v18.14: MAKE parça → RAW/BUY hammadde çocukları (tersi yön)
+              // Testere kesimi parçaların "bu parçanın ham malzemesi hangisi" tooltip'i için.
+              const childMaterialLookup = {}; // makeStockCode → [{ code, name, supplyType, qtyPerParent }]
               Object.keys(bomModels || {}).filter(k => k !== "undefined").forEach(mk => {
                 const bomParts = bomModels[mk]?.parts || [];
-                bomParts.forEach(bp => {
-                  if (bp.parentIdx === null || bp.parentIdx === undefined) return;
-                  const parent = bomParts[bp.parentIdx];
-                  if (!parent || !parent.stockCode) return;
-                  // Parent'ın kendisi root değilse (root = sevkiyat ürünü seviyesi, ayrı gösterilir)
-                  // ve parent MAKE/MAKE+FASON/FASON ise (BUY/RAW parent zaten explode'da durdu)
-                  const parentIsRoot = parent.parentIdx === null || parent.parentIdx === undefined;
-                  if (parentIsRoot) return;
-                  const parentType = parent.supplyType === "PRODUCT" ? "MAKE" : parent.supplyType;
-                  if (parentType !== "MAKE" && parentType !== "MAKE+FASON" && parentType !== "FASON") return;
-                  if (!parentLookup[bp.stockCode]) parentLookup[bp.stockCode] = [];
-                  // Dedupe — aynı parent kodu birden fazla kez eklenmesin
-                  if (!parentLookup[bp.stockCode].some(x => x.code === parent.stockCode)) {
-                    parentLookup[bp.stockCode].push({ code: parent.stockCode, name: parent.stockName || "" });
+                bomParts.forEach((bp, bi) => {
+                  // Parent → çocuk yönü (v18.13 — RAW/BUY → parent MAKE)
+                  if (bp.parentIdx !== null && bp.parentIdx !== undefined) {
+                    const parent = bomParts[bp.parentIdx];
+                    if (parent && parent.stockCode) {
+                      const parentIsRoot = parent.parentIdx === null || parent.parentIdx === undefined;
+                      const parentType = parent.supplyType === "PRODUCT" ? "MAKE" : parent.supplyType;
+                      if (!parentIsRoot && (parentType === "MAKE" || parentType === "MAKE+FASON" || parentType === "FASON")) {
+                        if (!parentLookup[bp.stockCode]) parentLookup[bp.stockCode] = [];
+                        if (!parentLookup[bp.stockCode].some(x => x.code === parent.stockCode)) {
+                          parentLookup[bp.stockCode].push({ code: parent.stockCode, name: parent.stockName || "" });
+                        }
+                      }
+                    }
+                  }
+                  // v18.14: MAKE parça → RAW/BUY çocuklar (hammadde listesi)
+                  // Bu parça bir MAKE ise, çocukları arasında hammadde (RAW/BUY) var mı?
+                  const bpType = bp.supplyType === "PRODUCT" ? "MAKE" : bp.supplyType;
+                  if (bpType === "MAKE" || bpType === "MAKE+FASON" || bpType === "FASON") {
+                    const children = bomParts.filter(c => c.parentIdx === bi);
+                    children.forEach(ch => {
+                      if (ch.supplyType !== "RAW" && ch.supplyType !== "BUY") return;
+                      if (!childMaterialLookup[bp.stockCode]) childMaterialLookup[bp.stockCode] = [];
+                      if (!childMaterialLookup[bp.stockCode].some(x => x.code === ch.stockCode)) {
+                        childMaterialLookup[bp.stockCode].push({
+                          code: ch.stockCode,
+                          name: ch.stockName || "",
+                          supplyType: ch.supplyType,
+                          qtyPerParent: ch.qty || 1
+                        });
+                      }
+                    });
                   }
                 });
               });
 
-              // Tooltip metni üreten helper — Stok Kodu hover'ında gösterilir
+              // v18.14: Testere kesimi parça tespiti — C seçeneği (isim + operasyon)
+              // (1) İsim "KSM " prefix'i ile başlıyorsa (ekran görüntüsünde tüm L2/L3 yarımamullerin kalıbı),
+              // VEYA (2) BOM'daki ilk operasyonu TESTERE/KESİM/ŞERİT içeriyorsa → testere kesimi parça.
+              // Perf: Önce op bazlı lookup tek geçişte hesapla, filter/sort sırasında tekrar hesap yok
+              const testereByOpLookup = {}; // stockCode → true (BOM ilk op testere/kesim)
+              Object.keys(bomModels || {}).filter(k => k !== "undefined").forEach(mk => {
+                const bomParts = bomModels[mk]?.parts || [];
+                bomParts.forEach(bp => {
+                  if (!bp.stockCode || testereByOpLookup[bp.stockCode]) return;
+                  if (!bp.operations || bp.operations.length === 0) return;
+                  const firstOp = (bp.operations[0]?.opName || "").toUpperCase();
+                  if (/TESTERE|KESİM|ŞERİT|ŞERIT/.test(firstOp)) {
+                    testereByOpLookup[bp.stockCode] = true;
+                  }
+                });
+              });
+              const isTestereParca = (r) => {
+                const name = (r.name || "").toUpperCase();
+                if (/^KSM\s/.test(name)) return true;
+                return !!testereByOpLookup[r.code];
+              };
+
+              // v18.13: Tooltip metni üreten helper — Stok Kodu hover'ında gösterilir (parent MAKE parçalar)
               const buildParentTip = (code, name) => {
                 const parents = parentLookup[code] || [];
                 if (parents.length === 0) return null;
@@ -13719,6 +13762,38 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                   lines.push(`  • ${p.code}${p.name ? ` — ${p.name}` : ""}`);
                 });
                 if (parents.length > 15) lines.push(`  • +${parents.length - 15} daha…`);
+                return lines.join("\n");
+              };
+
+              // v18.14: MAKE parça için hammadde (child RAW/BUY) durumu tooltip'i
+              // İçerik: hammadde adı + ambar stoğu + net açık + açık sipariş — explosion sonucundan parts[] içinden okur
+              const buildMaterialTip = (r) => {
+                const materials = childMaterialLookup[r.code] || [];
+                if (materials.length === 0) return null;
+                const lines = [`${r.code} — ${r.name || ""}`, `İhtiyaç: ${fmtQty(r.grossQty)} ${r.unit || "AD"}`, "─────────────────────────────", "Hammadde durumu:"];
+                materials.forEach(m => {
+                  // Explosion sonucundan ilgili RAW/BUY kalemin güncel durumunu bul
+                  const matPart = parts.find(p => p.code === m.code);
+                  const stk = stockLookup[m.code];
+                  const stkAmbar = stk?.ambar || 0;
+                  const unit = (stk?.unit || "AD").toLowerCase();
+                  lines.push(`  • ${m.code} — ${m.name}`);
+                  lines.push(`      Ambar stoğu: ${fmtQty(stkAmbar)} ${unit}`);
+                  if (matPart) {
+                    lines.push(`      Net açık: ${matPart.netQty > 0 ? fmtQty(matPart.netQty) + " " + unit : "✓ Tam"}`);
+                    if (matPart.openPO > 0) {
+                      lines.push(`      Açık sipariş: ${fmtQty(matPart.openPO)} ${unit}${matPart.gap > 0 ? ` (açık: ${fmtQty(matPart.gap)})` : " ✓ karşılıyor"}`);
+                    } else if (matPart.netQty > 0) {
+                      lines.push(`      Açık sipariş: yok`);
+                    }
+                  } else {
+                    // Explosion'da yok demek bu parça için bu çağrıda ihtiyaç doğmadı — sadece stok bilgisi
+                    const po = purchaseLookup[m.code];
+                    if (po?.totalRemaining > 0) {
+                      lines.push(`      Açık sipariş: ${fmtQty(po.totalRemaining)} ${unit}`);
+                    }
+                  }
+                });
                 return lines.join("\n");
               };
 
@@ -13747,10 +13822,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               // Column definitions
               const C = {
                 code: { label: "Stok Kodu", mono: true, fs: 10, render: r => {
-                  // v18.13: Parent MAKE parça tooltip'i — r.code metni üzerinde hover
-                  const parentTip = buildParentTip(r.code, r.name);
-                  const codeSpan = parentTip
-                    ? <span style={{ cursor: "help" }} title={parentTip}>{r.code}</span>
+                  // v18.13: Parent MAKE parça tooltip'i — RAW/BUY parçaların hammaddesi olduğu yerler
+                  // v18.14: Hammadde durumu tooltip'i — MAKE parçaların kullandığı RAW/BUY stok durumu
+                  const isMakeType = r.supplyType === "MAKE" || r.supplyType === "MAKE+FASON" || r.supplyType === "FASON";
+                  const parentTip = isMakeType ? null : buildParentTip(r.code, r.name);
+                  const materialTip = isMakeType ? buildMaterialTip(r) : null;
+                  const activeTip = materialTip || parentTip;
+                  const codeSpan = activeTip
+                    ? <span style={{ cursor: "help" }} title={activeTip}>{r.code}</span>
                     : r.code;
 
                   const pls = r.productionLineStock;
@@ -14401,14 +14480,46 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                   )}
 
                   {/* ===== VIEW: Üretim ===== */}
-                  {expFilter === "make" && (
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "#1D9E75", marginBottom: 8 }}>🏭 Üretilecek Parçalar ({makeParts.length})</div>
-                      <DataTable items={makeParts.sort((a,b) => a.level - b.level || b.netQty - a.netQty)}
-                        columns={[C.code, C.name, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
-                        emptyMsg="Üretim ihtiyacı yok — tümü stok + WIP ile karşılanmış" />
-                    </div>
-                  )}
+                  {expFilter === "make" && (() => {
+                    // v18.14: İki alt tabloya böl — Testere Kesimi (KSM yarımamul) ve Diğer
+                    const makeTestere = makeParts.filter(isTestereParca);
+                    const makeDiger = makeParts.filter(r => !isTestereParca(r));
+                    return (
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: "#1D9E75", marginBottom: 8 }}>🏭 Üretilecek Parçalar ({makeParts.length})</div>
+
+                        {/* Testere Kesimi alt tablosu */}
+                        {makeTestere.length > 0 && (
+                          <div style={{ marginBottom: 16 }}>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: "#92400E", marginBottom: 6, padding: "4px 8px", background: "#FEF3C7", borderRadius: 6, border: "1px solid #FDE68A", display: "inline-block" }}>
+                              🪚 Testere Kesimi — KSM Yarımamul ({makeTestere.length})
+                            </div>
+                            <DataTable items={makeTestere.sort((a,b) => a.level - b.level || b.netQty - a.netQty)}
+                              columns={[C.code, C.name, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
+                              emptyMsg="Testere kesimi ihtiyacı yok" />
+                          </div>
+                        )}
+
+                        {/* Diğer üretim parçaları */}
+                        {makeDiger.length > 0 && (
+                          <div>
+                            <div style={{ fontSize: 12, fontWeight: 600, color: "#065F46", marginBottom: 6, padding: "4px 8px", background: "#ECFDF5", borderRadius: 6, border: "1px solid #A7F3D0", display: "inline-block" }}>
+                              🏭 Diğer Üretim Parçaları ({makeDiger.length})
+                            </div>
+                            <DataTable items={makeDiger.sort((a,b) => a.level - b.level || b.netQty - a.netQty)}
+                              columns={[C.code, C.name, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
+                              emptyMsg="Diğer üretim ihtiyacı yok" />
+                          </div>
+                        )}
+
+                        {makeParts.length === 0 && (
+                          <div style={{ padding: 24, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12 }}>
+                            Üretim ihtiyacı yok — tümü stok + WIP ile karşılanmış
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
 
                   {/* ===== VIEW: Fason ===== */}
                   {expFilter === "fason" && (
