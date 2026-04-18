@@ -13767,13 +13767,16 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
               // v18.14: MAKE parça için hammadde (child RAW/BUY) durumu tooltip'i
               // İçerik: hammadde adı + ambar stoğu + net açık + açık sipariş — explosion sonucundan parts[] içinden okur
+              // v18.15 perf: parts[] yerine O(1) Map erişimi
+              const partsByCode = {};
+              parts.forEach(p => { partsByCode[p.code] = p; });
               const buildMaterialTip = (r) => {
                 const materials = childMaterialLookup[r.code] || [];
                 if (materials.length === 0) return null;
                 const lines = [`${r.code} — ${r.name || ""}`, `İhtiyaç: ${fmtQty(r.grossQty)} ${r.unit || "AD"}`, "─────────────────────────────", "Hammadde durumu:"];
                 materials.forEach(m => {
                   // Explosion sonucundan ilgili RAW/BUY kalemin güncel durumunu bul
-                  const matPart = parts.find(p => p.code === m.code);
+                  const matPart = partsByCode[m.code];
                   const stk = stockLookup[m.code];
                   const stkAmbar = stk?.ambar || 0;
                   const unit = (stk?.unit || "AD").toLowerCase();
@@ -13797,8 +13800,52 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                 return lines.join("\n");
               };
 
+              // v18.15: MAKE parçanın hammadde durumunu hesapla — satır renk ve sıralama için
+              // Kurallar (en kötü hammadde belirleyici):
+              //   - Hiç hammadde child'ı yoksa → "unknown" (BOM'da alt bileşen tanımsız)
+              //   - Tüm hammaddeler netQty=0 ise → "green" (hepsi tam, hemen iş emri açılabilir)
+              //   - En az bir hammadde netQty>0 ama openPO karşılıyorsa (gap=0) → "yellow" (sipariş yolda)
+              //   - En az bir hammadde gap>0 ise → "red" (sipariş de açık, bekle)
+              // Sıralama rank: green=0, yellow=1, red=2, unknown=3 (yeşil üstte, sonra sarı, sonra kırmızı, bilinmeyen en altta)
+              // Perf: sort/render sırasında her satır için yeniden hesaplanmasın diye cache'le
+              const materialStatusCache = {};
+              const materialStatus = (r) => {
+                if (materialStatusCache[r.code] !== undefined) return materialStatusCache[r.code];
+                const materials = childMaterialLookup[r.code] || [];
+                let result;
+                if (materials.length === 0) {
+                  result = { status: "unknown", rank: 3 };
+                } else {
+                  let worst = "green";
+                  for (const m of materials) {
+                    const matPart = partsByCode[m.code];
+                    if (!matPart) continue;
+                    if (matPart.gap > 0) { worst = "red"; break; }
+                    if (matPart.netQty > 0 && matPart.openPO === 0) { worst = "red"; break; }
+                    if (matPart.netQty > 0 && matPart.openPO > 0 && matPart.gap === 0) {
+                      if (worst !== "red") worst = "yellow";
+                    }
+                  }
+                  const rankMap = { green: 0, yellow: 1, red: 2 };
+                  result = { status: worst, rank: rankMap[worst] };
+                }
+                materialStatusCache[r.code] = result;
+                return result;
+              };
+
+              // Satır arka plan rengi — hammadde durumuna göre
+              const materialBg = (r) => {
+                const { status } = materialStatus(r);
+                if (status === "green") return "#F0FDF4";
+                if (status === "yellow") return "#FFFBEB";
+                if (status === "red") return "#FEF2F2";
+                return null;
+              };
+
               // Reusable table component
-              const DataTable = ({ items, columns, emptyMsg, maxH }) => {
+              // v18.15: opsiyonel rowBg fonksiyonu — verilirse satır bg'sini override eder.
+              // Verilmezse mevcut davranış (gap/openPO/crossCheck) — diğer tabloları bozmaz.
+              const DataTable = ({ items, columns, emptyMsg, maxH, rowBg }) => {
                 if (!items.length) return <div style={{ padding: 24, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12 }}>{emptyMsg}</div>;
                 return (
                   <div style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden", maxHeight: maxH || "55vh", overflowY: "auto" }}>
@@ -13808,7 +13855,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                       </tr></thead>
                       <tbody>
                         {items.map((r, idx) => {
-                          const bg = r.gap > 0 ? "#FEF2F2" : r.netQty > 0 && r.openPO > 0 ? "#FFFBEB" : r.crossCheck ? "#FEF3C7" : "transparent";
+                          const customBg = rowBg ? rowBg(r) : null;
+                          const bg = customBg !== null && customBg !== undefined
+                            ? customBg
+                            : (r.gap > 0 ? "#FEF2F2" : r.netQty > 0 && r.openPO > 0 ? "#FFFBEB" : r.crossCheck ? "#FEF3C7" : "transparent");
                           return <tr key={idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: bg }}>
                             {columns.map((c, ci) => <td key={ci} style={{ padding: "5px 8px", textAlign: c.align || "left", fontFamily: c.mono ? "var(--font-mono)" : "inherit", fontSize: c.fs || 11, fontWeight: c.fw?.(r) || 400, color: c.cc?.(r) || "inherit", maxWidth: c.mw, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.render(r)}</td>)}
                           </tr>;
@@ -14482,8 +14532,17 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                   {/* ===== VIEW: Üretim ===== */}
                   {expFilter === "make" && (() => {
                     // v18.14: İki alt tabloya böl — Testere Kesimi (KSM yarımamul) ve Diğer
-                    const makeTestere = makeParts.filter(isTestereParca);
-                    const makeDiger = makeParts.filter(r => !isTestereParca(r));
+                    // v18.15: Hammadde durumuna göre sırala (yeşil üstte) ve satır rengini ver
+                    const sortByMaterial = (a, b) => {
+                      const ra = materialStatus(a).rank;
+                      const rb = materialStatus(b).rank;
+                      if (ra !== rb) return ra - rb; // rank küçük = yeşil, önce
+                      // Aynı rank içinde mevcut sıralama: level asc, netQty desc
+                      if (a.level !== b.level) return a.level - b.level;
+                      return b.netQty - a.netQty;
+                    };
+                    const makeTestere = makeParts.filter(isTestereParca).sort(sortByMaterial);
+                    const makeDiger = makeParts.filter(r => !isTestereParca(r)).sort(sortByMaterial);
                     return (
                       <div>
                         <div style={{ fontSize: 13, fontWeight: 600, color: "#1D9E75", marginBottom: 8 }}>🏭 Üretilecek Parçalar ({makeParts.length})</div>
@@ -14493,9 +14552,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                           <div style={{ marginBottom: 16 }}>
                             <div style={{ fontSize: 12, fontWeight: 600, color: "#92400E", marginBottom: 6, padding: "4px 8px", background: "#FEF3C7", borderRadius: 6, border: "1px solid #FDE68A", display: "inline-block" }}>
                               🪚 Testere Kesimi — KSM Yarımamul ({makeTestere.length})
+                              <span style={{ marginLeft: 10, fontSize: 10, fontWeight: 400, color: "#78350F" }}>
+                                🟢 hammadde tam · 🟡 sipariş yolda · 🔴 hammadde eksik
+                              </span>
                             </div>
-                            <DataTable items={makeTestere.sort((a,b) => a.level - b.level || b.netQty - a.netQty)}
+                            <DataTable items={makeTestere}
                               columns={[C.code, C.name, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
+                              rowBg={materialBg}
                               emptyMsg="Testere kesimi ihtiyacı yok" />
                           </div>
                         )}
@@ -14505,9 +14568,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                           <div>
                             <div style={{ fontSize: 12, fontWeight: 600, color: "#065F46", marginBottom: 6, padding: "4px 8px", background: "#ECFDF5", borderRadius: 6, border: "1px solid #A7F3D0", display: "inline-block" }}>
                               🏭 Diğer Üretim Parçaları ({makeDiger.length})
+                              <span style={{ marginLeft: 10, fontSize: 10, fontWeight: 400, color: "#064E3B" }}>
+                                🟢 hammadde tam · 🟡 sipariş yolda · 🔴 hammadde eksik
+                              </span>
                             </div>
-                            <DataTable items={makeDiger.sort((a,b) => a.level - b.level || b.netQty - a.netQty)}
+                            <DataTable items={makeDiger}
                               columns={[C.code, C.name, C.level, C.gross, ...(hasStock?[C.stock]:[]), ...(hasAkibet?[C.wip]:[]), C.net, C.sources, ...(exp.crossCheckIssues>0?[C.cross]:[])]}
+                              rowBg={materialBg}
                               emptyMsg="Diğer üretim ihtiyacı yok" />
                           </div>
                         )}
