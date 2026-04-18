@@ -13685,6 +13685,43 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
               const fmtQty = (n) => !n ? "—" : n % 1 === 0 ? String(n) : n.toFixed(1);
 
+              // v18.13: Her RAW/BUY parçanın parent MAKE parçalarını bul — salt okur, sadece tooltip için.
+              // BOM modelleri üzerinden tek geçiş: her parça için parentIdx zinciri yukarı MAKE bulunana kadar
+              // takip edilir (direkt parent BUY/RAW olamaz — çünkü BOM explode'u BUY/RAW altında durur,
+              // line 5485). Aynı parça birden fazla parent altında olabilir, Map ile dedupe.
+              const parentLookup = {}; // stockCode → [{ code, name }]
+              Object.keys(bomModels || {}).filter(k => k !== "undefined").forEach(mk => {
+                const bomParts = bomModels[mk]?.parts || [];
+                bomParts.forEach(bp => {
+                  if (bp.parentIdx === null || bp.parentIdx === undefined) return;
+                  const parent = bomParts[bp.parentIdx];
+                  if (!parent || !parent.stockCode) return;
+                  // Parent'ın kendisi root değilse (root = sevkiyat ürünü seviyesi, ayrı gösterilir)
+                  // ve parent MAKE/MAKE+FASON/FASON ise (BUY/RAW parent zaten explode'da durdu)
+                  const parentIsRoot = parent.parentIdx === null || parent.parentIdx === undefined;
+                  if (parentIsRoot) return;
+                  const parentType = parent.supplyType === "PRODUCT" ? "MAKE" : parent.supplyType;
+                  if (parentType !== "MAKE" && parentType !== "MAKE+FASON" && parentType !== "FASON") return;
+                  if (!parentLookup[bp.stockCode]) parentLookup[bp.stockCode] = [];
+                  // Dedupe — aynı parent kodu birden fazla kez eklenmesin
+                  if (!parentLookup[bp.stockCode].some(x => x.code === parent.stockCode)) {
+                    parentLookup[bp.stockCode].push({ code: parent.stockCode, name: parent.stockName || "" });
+                  }
+                });
+              });
+
+              // Tooltip metni üreten helper — Stok Kodu hover'ında gösterilir
+              const buildParentTip = (code, name) => {
+                const parents = parentLookup[code] || [];
+                if (parents.length === 0) return null;
+                const lines = [`${code} — ${name || ""}`, "─────────────────────────────", "Hammaddesi olduğu parçalar:"];
+                parents.slice(0, 15).forEach(p => {
+                  lines.push(`  • ${p.code}${p.name ? ` — ${p.name}` : ""}`);
+                });
+                if (parents.length > 15) lines.push(`  • +${parents.length - 15} daha…`);
+                return lines.join("\n");
+              };
+
               // Reusable table component
               const DataTable = ({ items, columns, emptyMsg, maxH }) => {
                 if (!items.length) return <div style={{ padding: 24, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12 }}>{emptyMsg}</div>;
@@ -13710,8 +13747,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
               // Column definitions
               const C = {
                 code: { label: "Stok Kodu", mono: true, fs: 10, render: r => {
+                  // v18.13: Parent MAKE parça tooltip'i — r.code metni üzerinde hover
+                  const parentTip = buildParentTip(r.code, r.name);
+                  const codeSpan = parentTip
+                    ? <span style={{ cursor: "help" }} title={parentTip}>{r.code}</span>
+                    : r.code;
+
                   const pls = r.productionLineStock;
-                  if (!pls || pls.total <= 0) return r.code;
+                  if (!pls || pls.total <= 0) return codeSpan;
                   const isConfirmed = !!plsConfirmedLookup[r.code];
                   const u = (r.unit || "AD").toLowerCase();
                   const locTip = pls.byLocation.map(b => `${b.loc}: ${b.qty} ${u}${b.opName ? ` (${b.opName}${b.opNo ? ` · ${b.opNo}` : ""})` : ""}`).join("\n");
@@ -13720,7 +13763,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                     const confDate = conf.confirmedAt ? new Date(conf.confirmedAt).toLocaleDateString("tr-TR") : "";
                     const tip = `✓ Hat stoğu onaylandı: ${conf.qty} ${u}\n(${conf.confirmedBy || "bilinmiyor"} · ${confDate})\n─────────────────────────────\n${locTip}\n\n${canEdit ? "Tıkla: onayı iptal et" : "Sadece yetkililer iptal edebilir"}`;
                     return (<>
-                      {r.code}
+                      {codeSpan}
                       <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(r.code, pls.total); } : undefined}
                             style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#DCFCE7", color: "#166534", fontSize: 8, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: "1px solid #86EFAC" }}
                             title={tip}>
@@ -13732,7 +13775,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                     "\n\nÜretim ile teyit edilmesi öneriliyor — operasyonu bitmiş ama transfer edilmemiş olabilir." +
                     (canEdit ? `\n\nTıkla: ${pls.total} ${u} hat stoğunu ONAYLA (hesaba katılır)` : "\n\nSadece yetkililer onaylayabilir");
                   return (<>
-                    {r.code}
+                    {codeSpan}
                     <span onClick={canEdit ? (e) => { e.stopPropagation(); togglePlsConfirmation(r.code, pls.total); } : undefined}
                           style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 8, fontWeight: 600, cursor: canEdit ? "pointer" : "help", border: "1px solid #FDE68A" }}
                           title={tip}>🔍{pls.total}</span>
