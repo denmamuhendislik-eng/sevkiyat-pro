@@ -5328,6 +5328,27 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     if (!catKey) delete overrides[stockCode];
     await saveBomMapping({ ...bomMapping, _catOverrides: overrides });
   };
+  // v18.17: Manuel bulk override — bazı parçaların (52005, 42005, 36005, 52010 vb.) otomatik bulk
+  // tespiti yapamadığı durumlar için manuel işaretleme. Pattern: _catOverrides ile birebir aynı.
+  const saveBulkOverride = async (stockCode, manual) => {
+    if (!db || !canEdit) return;
+    const overrides = { ...(bomMapping._bulkOverrides || {}) };
+    if (manual) {
+      overrides[stockCode] = { manual: true, by: (authUser?.email || userRole || "bilinmiyor"), at: new Date().toISOString() };
+    } else {
+      delete overrides[stockCode];
+    }
+    await saveBomMapping({ ...bomMapping, _bulkOverrides: overrides });
+  };
+  // Manuel bulk işaretli parçalar Set'i — her yerde O(1) kontrol için
+  const manualBulkSet = useMemo(() => {
+    const ov = bomMapping?._bulkOverrides || {};
+    return new Set(Object.entries(ov).filter(([, v]) => v?.manual === true).map(([code]) => code));
+  }, [bomMapping]);
+  // Toast: işaretleme sonrası "BOM Explosion gerekli" uyarısı
+  const [bulkToast, setBulkToast] = useState(null); // { code, action: "added"|"removed" } | null
+  // Confirm popup: işaretleme/kaldırma onayı
+  const [bulkConfirm, setBulkConfirm] = useState(null); // { code, name, manual: bool, currentlyAuto: bool } | null
 
   // Compute unshipped demand from sevkiyat planı
   const [expYear, setExpYear] = useState(new Date().getFullYear());
@@ -5510,9 +5531,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
             // parentStkAvail: ambar + nonBulk WIP + onaylı hat stoğu
             // Toplu iş emirleri (montaj/pres) sayılmaz — baştan açılan ana ürün/yarımamul iş
             // emirleri alt ihtiyacı baskılayamaz. Onaylı hat stoğu gerçek mamul gibi davranır.
+            // v18.17: Manuel bulk override — bulk işaretli parçalarda WIP kapsamada sayılmaz
+            const parentNonBulkWip = manualBulkSet.has(parent.stockCode) ? 0 : (parentAk?.remainingNonBulk || 0);
             const parentPlsConf = plsConfirmedLookup[parent.stockCode]?.qty || 0;
             const parentStkAvail = (parentStk?.ambar || 0)
-                                 + (parentAk?.remainingNonBulk || 0)
+                                 + parentNonBulkWip
                                  + parentPlsConf;
             if (parentStkAvail >= parentNeeded) {
               partQtys[i] = 0;
@@ -5556,7 +5579,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                 forwardDemand = needed;
               } else {
                 const fAk = akibetLookup[code];
-                const fNonBulkWip = fAk?.remainingNonBulk || 0;
+                // v18.17: Manuel bulk override — bulk işaretli parçada WIP düşülmez
+                const fNonBulkWip = manualBulkSet.has(code) ? 0 : (fAk?.remainingNonBulk || 0);
                 const fPls = plsConfirmedLookup[code]?.qty || 0;
                 const fAmbar = stockLookup[code]?.ambar || 0;
                 forwardDemand = Math.max(0, needed - fAmbar - fNonBulkWip - fPls);
@@ -5622,9 +5646,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
           // Mail'den gelen stok raporunda üretim/montaj hattı lokasyonları çoğu zaman yok;
           // o yüzden non-bulk WIP ile gerçek durumu gösteriyoruz. Onaylı PLS (🔍) operatörün
           // teyit ettiği hat stoğu — varsa ekle. Toplu (MONTAJ/PRES) iş emirleri non-bulk'ta değil.
+          // v18.17: Manuel bulk override — bulk işaretli ürünlerde WIP productStock'a dahil edilmez
           const vioAmbar = stk.ambar || 0;
           const ak = akibetLookup[vioCode];
-          const nonBulkWip = ak?.remainingNonBulk || 0;
+          const nonBulkWip = manualBulkSet.has(vioCode) ? 0 : (ak?.remainingNonBulk || 0);
           const plsConf = plsConfirmedLookup[vioCode]?.qty || 0;
           productStock = vioAmbar + nonBulkWip + plsConf;
           vioStockRaw = vioAmbar;
@@ -7369,7 +7394,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     const stockPool = {};
     explosionResult.parts.forEach(r => {
       const ak = akibetLookup[r.code];
-      const nonBulkWip = (ak?.remainingNonBulk || 0);
+      // v18.17: Manuel bulk işaretli parçalarda WIP cascade'e dahil edilmez
+      const nonBulkWip = manualBulkSet.has(r.code) ? 0 : (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[r.code]?.qty || 0;
       const baseAvail = (r.stkAmbar || 0) + plsConf;
       stockPool[r.code] = {
@@ -7389,7 +7415,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (!bp.stockCode || stockPool[bp.stockCode]) return;
         const stk = stockLookup[bp.stockCode];
         const ak = akibetLookup[bp.stockCode];
-        const nonBulkWip = (ak?.remainingNonBulk || 0);
+        // v18.17: Manuel bulk override
+        const nonBulkWip = manualBulkSet.has(bp.stockCode) ? 0 : (ak?.remainingNonBulk || 0);
         const plsConf = plsConfirmedLookup[bp.stockCode]?.qty || 0;
         const baseAvail = (stk?.ambar || 0) + plsConf;
         stockPool[bp.stockCode] = {
@@ -7417,7 +7444,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const vioCode = VIO_CODES[p.id] || p.vioCode;
       const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
       const ak = akibetLookup[rootPart.stockCode];
-      const nonBulkWip = (ak?.remainingNonBulk || 0);
+      // v18.17: Manuel bulk override
+      const nonBulkWip = manualBulkSet.has(rootPart.stockCode) ? 0 : (ak?.remainingNonBulk || 0);
       const plsConf = plsConfirmedLookup[rootPart.stockCode]?.qty || 0;
       // Var olan havuzu ezme (BOM döngüsü zaten set etmiş olabilir), ama availini VIO stoğuyla güncelle
       // v14 Adım 3: WIP avail'e eklenmez (Ömer kuralı) — cascadeAvail'e ise eklenir
@@ -7693,11 +7721,12 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
     (products || []).forEach(p => { pidToProduct[p.id] = p; });
 
     // WIP-dahil havuz: avail = ambar + nonBulk WIP (toplu iş emirleri güvenilmez, sayılmaz)
+    // v18.17: Manuel bulk override — bulk işaretli parçalarda WIP düşülmez (her 3 yerde)
     const stockPool = {};
     explosionResult.parts.forEach(r => {
       // explosionResult.parts'ta nonBulk WIP doğrudan yok — akibetLookup'tan bak
       const ak = akibetLookup[r.code];
-      const wipTotal = (ak?.remainingNonBulk || 0);
+      const wipTotal = manualBulkSet.has(r.code) ? 0 : (ak?.remainingNonBulk || 0);
       stockPool[r.code] = { avail: (r.stkAmbar || 0) + wipTotal };
     });
     Object.values(bomModels || {}).forEach(model => {
@@ -7705,7 +7734,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
         if (!bp.stockCode || stockPool[bp.stockCode]) return;
         const stk = stockLookup[bp.stockCode];
         const ak = akibetLookup[bp.stockCode];
-        const wipTotal = (ak?.remainingNonBulk || 0);
+        const wipTotal = manualBulkSet.has(bp.stockCode) ? 0 : (ak?.remainingNonBulk || 0);
         stockPool[bp.stockCode] = { avail: (stk?.ambar || 0) + wipTotal };
       });
     });
@@ -7717,7 +7746,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
       const vioCode = VIO_CODES[p.id] || p.vioCode;
       const stk = (vioCode && stockLookup[vioCode]) || stockLookup[rootPart.stockCode] || null;
       const ak = akibetLookup[rootPart.stockCode];
-      const wipTotal = (ak?.remainingNonBulk || 0);
+      const wipTotal = manualBulkSet.has(rootPart.stockCode) ? 0 : (ak?.remainingNonBulk || 0);
       if (stockPool[rootPart.stockCode]) {
         stockPool[rootPart.stockCode].avail = (stk?.ambar || 0) + wipTotal;
       } else {
@@ -11123,6 +11152,89 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
 
                             return (
                               <div style={{ marginBottom: 12, padding: "10px 12px", background: "#FFF", borderRadius: 8, border: "1px solid #BBF7D0" }}>
+                                {/* v18.17: Manuel Bulk Confirm Popup */}
+                                {bulkConfirm && (
+                                  <div onClick={() => setBulkConfirm(null)}
+                                       style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                    <div onClick={(e) => e.stopPropagation()}
+                                         style={{ background: "#FFF", borderRadius: 12, maxWidth: 520, width: "90%", padding: "20px 24px", boxShadow: "0 20px 40px rgba(0,0,0,0.25)" }}>
+                                      <div style={{ fontSize: 16, fontWeight: 700, color: bulkConfirm.manual ? "#C2410C" : "#065F46", marginBottom: 4 }}>
+                                        {bulkConfirm.manual ? "🔒 Manuel Bulk İşaretle" : "🔓 Manuel Bulk Kaldır"}
+                                      </div>
+                                      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12, fontFamily: "var(--font-mono)" }}>
+                                        {bulkConfirm.code} — {bulkConfirm.name}
+                                      </div>
+                                      <div style={{ fontSize: 12, color: "var(--color-text-primary)", lineHeight: 1.6, background: bulkConfirm.manual ? "#FFF7ED" : "#F0FDF4", padding: "10px 12px", borderRadius: 6, border: `1px solid ${bulkConfirm.manual ? "#FDBA74" : "#A7F3D0"}` }}>
+                                        {bulkConfirm.manual ? (
+                                          <>
+                                            <div style={{ marginBottom: 6 }}><b>Ne olacak?</b></div>
+                                            <div>• Bu parçanın WIP'i cascade'de karşılanmamış sayılır</div>
+                                            <div>• Alt bileşenleri ► ile açılır, hammadde talep edilir</div>
+                                            <div>• Satınalma/Üretim listelerinde yeni kalemler görünebilir</div>
+                                            <div>• İstediğin zaman geri alabilirsin</div>
+                                            {bulkConfirm.autoBulk && (
+                                              <div style={{ marginTop: 8, padding: "6px 8px", background: "#FEF3C7", borderRadius: 4, fontSize: 11, color: "#92400E" }}>
+                                                ⚠ Bilgi: Bu parçayı otomatik sistem zaten bulk sayıyor. Manuel flag gereksiz olacak ama hata olmayacak.
+                                              </div>
+                                            )}
+                                          </>
+                                        ) : (
+                                          <>
+                                            <div>Manuel bulk işaretini kaldıracaksın.</div>
+                                            <div style={{ marginTop: 6 }}>Sistem otomatik tespite dönecek.</div>
+                                          </>
+                                        )}
+                                      </div>
+                                      <div style={{ display: "flex", gap: 8, marginTop: 16, justifyContent: "flex-end" }}>
+                                        <button onClick={() => setBulkConfirm(null)}
+                                                style={{ padding: "6px 14px", fontSize: 12, background: "var(--color-bg-secondary)", border: "1px solid var(--color-border)", borderRadius: 6, cursor: "pointer" }}>
+                                          İptal
+                                        </button>
+                                        <button onClick={async () => {
+                                          const { code, manual } = bulkConfirm;
+                                          setBulkConfirm(null);
+                                          try {
+                                            await saveBulkOverride(code, manual);
+                                            setBulkToast({ code, action: manual ? "added" : "removed" });
+                                          } catch (err) {
+                                            alert("Hata: " + err.message);
+                                          }
+                                        }}
+                                                style={{ padding: "6px 14px", fontSize: 12, background: bulkConfirm.manual ? "#EA580C" : "#059669", color: "#FFF", border: "none", borderRadius: 6, cursor: "pointer", fontWeight: 600 }}>
+                                          {bulkConfirm.manual ? "Evet, Bulk Say" : "Evet, Kaldır"}
+                                        </button>
+                                      </div>
+                                    </div>
+                                  </div>
+                                )}
+
+                                {/* v18.17: Bulk İşaretleme Toast (sağ üstte, BOM Explosion hatırlatması) */}
+                                {bulkToast && (
+                                  <div style={{ position: "fixed", top: 16, right: 16, zIndex: 10001, background: "#FFF", borderRadius: 10, boxShadow: "0 10px 30px rgba(0,0,0,0.18)", border: "1px solid #FDE68A", padding: "12px 14px", maxWidth: 380 }}>
+                                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                                      <span style={{ fontSize: 14, fontWeight: 700, color: "#065F46" }}>
+                                        ✓ Manuel bulk {bulkToast.action === "added" ? "işaretli" : "kaldırıldı"}
+                                      </span>
+                                      <span style={{ fontSize: 11, fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{bulkToast.code}</span>
+                                    </div>
+                                    <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 10, lineHeight: 1.4 }}>
+                                      Sevkiyat Bazlı İhtiyaç paneli anında güncellendi.<br/>
+                                      <span style={{ color: "#92400E" }}>ℹ Satınalma/Üretim listeleri için BOM Explosion tekrar çalıştırılmalı.</span>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                                      <button onClick={() => setBulkToast(null)}
+                                              style={{ padding: "4px 10px", fontSize: 11, background: "var(--color-bg-secondary)", border: "1px solid var(--color-border)", borderRadius: 5, cursor: "pointer" }}>
+                                        Kapat
+                                      </button>
+                                      <button onClick={() => { setBulkToast(null); runBomExplosion(); }}
+                                              disabled={exploding}
+                                              style={{ padding: "4px 10px", fontSize: 11, background: "#7C3AED", color: "#FFF", border: "none", borderRadius: 5, cursor: exploding ? "default" : "pointer", fontWeight: 600, opacity: exploding ? 0.6 : 1 }}>
+                                        {exploding ? "⏳ Çalışıyor..." : "🔥 Şimdi Çalıştır"}
+                                      </button>
+                                    </div>
+                                  </div>
+                                )}
+
                                 {plsConfPopupOpen && (
                                   <div onClick={() => setPlsConfPopupOpen(false)}
                                        style={{ position: "fixed", top: 0, left: 0, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center" }}>
@@ -11839,7 +11951,63 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                               <td style={{ padding: "3px 4px", width: 14 }}>
                                                                 {subParts.length > 0 ? <span onClick={() => toggleShipReq(partKey)} style={{ cursor: "pointer", fontSize: 8, color: "var(--color-text-tertiary)" }}>{isPartOpen ? "▼" : "▶"}</span> : ""}
                                                               </td>
-                                                              <td style={{ padding: "3px 6px", fontFamily: "var(--font-mono)", fontSize: 8 }}>{p.code}</td>
+                                                              <td style={{ padding: "3px 6px", fontFamily: "var(--font-mono)", fontSize: 8 }}>
+                                                                {p.code}
+                                                                {/* v18.17: Manuel/otomatik bulk rozeti — sadece MAKE/MAKE+FASON/FASON parçalarda */}
+                                                                {(p.supplyType === "MAKE" || p.supplyType === "MAKE+FASON" || p.supplyType === "FASON") && (() => {
+                                                                  const _ak = akibetLookup[p.code];
+                                                                  const _activeOrders = (_ak?.orders || []).filter(o => o.rem > 0);
+                                                                  const _hasActiveEmir = _activeOrders.length > 0;
+                                                                  const _manualBulk = manualBulkSet.has(p.code);
+                                                                  // Otomatik bulk: tüm aktif emirlerin tüm aktif op'ları MONTAJ/PRES
+                                                                  const _isBulkOp = (n) => { const u = (n||"").toUpperCase(); return u.includes("MONTAJ") || u.includes("PRES"); };
+                                                                  const _autoBulk = _hasActiveEmir && _activeOrders.every(o =>
+                                                                    (o.ops || []).filter(op => !op.cancelled && op.remaining > 0).every(op => _isBulkOp(op.name))
+                                                                  );
+                                                                  // Hiç aktif emir yoksa ve manuel flag de yoksa rozet gösterme
+                                                                  if (!_hasActiveEmir && !_manualBulk) return null;
+                                                                  // Durum tespiti (4 durum)
+                                                                  // 1) manual + !auto → KOYU TURUNCU (etkili)
+                                                                  // 2) manual + auto  → SOLUK GRİ (gereksiz)
+                                                                  // 3) !manual + auto → AÇIK TURUNCU (otomatik)
+                                                                  // 4) !manual + !auto → rozet yok
+                                                                  let _state, _bg, _color, _border, _icon, _tipHeader, _tipBody;
+                                                                  const _confInfo = bomMapping?._bulkOverrides?.[p.code];
+                                                                  const _confBy = _confInfo?.by || "bilinmiyor";
+                                                                  const _confDate = _confInfo?.at ? new Date(_confInfo.at).toLocaleDateString("tr-TR") : "";
+                                                                  const _opsList = _activeOrders.flatMap(o => (o.ops || []).filter(op => !op.cancelled && op.remaining > 0).map(op => op.name)).filter(Boolean);
+                                                                  const _uniqueOps = [...new Set(_opsList)].slice(0, 5);
+                                                                  if (_manualBulk && !_autoBulk) {
+                                                                    _state = "manual-effective";
+                                                                    _bg = "#EA580C"; _color = "#FFF"; _border = "#C2410C"; _icon = "🔒";
+                                                                    _tipHeader = "🔒 Manuel Bulk — Etkili";
+                                                                    _tipBody = `Manuel olarak "bulk say" işaretli (${_confBy} · ${_confDate})\nOtomatik tespit: non-bulk (op'lar: ${_uniqueOps.join(", ")})\n\nManuel flag devrede:\n  • WIP cascade'de karşılanmamış sayılıyor\n  • Alt bileşenler patlatılıyor → ► açık\n\n${canEdit ? "Tıkla: Manuel işareti kaldır (otomatiğe dön)" : "Sadece yetkililer kaldırabilir"}`;
+                                                                  } else if (_manualBulk && _autoBulk) {
+                                                                    _state = "manual-redundant";
+                                                                    _bg = "#F3F4F6"; _color = "#9CA3AF"; _border = "#E5E7EB"; _icon = "🔓";
+                                                                    _tipHeader = "🔓 Manuel Bulk — Gereksiz";
+                                                                    _tipBody = `Manuel işaret var AMA otomatik zaten bulk sayıyor (${_confBy} · ${_confDate})\nAktif emirlerin tüm op'ları MONTAJ/PRES\n\nManuel flag etkisiz — kaldırılsa da sonuç değişmez.\n\n${canEdit ? "Tıkla: Manuel işareti kaldır (önerilir)" : ""}`;
+                                                                  } else if (!_manualBulk && _autoBulk) {
+                                                                    _state = "auto";
+                                                                    _bg = "#FFEDD5"; _color = "#9A3412"; _border = "#FDBA74"; _icon = "🔒";
+                                                                    _tipHeader = "🔒 Otomatik Bulk";
+                                                                    _tipBody = `Sistem otomatik bulk tespit etti\nAktif emirlerin tüm op'ları MONTAJ/PRES (${_uniqueOps.join(", ")})\n\nBu parçanın WIP'i cascade'de "karşılanmamış" sayılıyor\n→ Alt bileşenler patlatılıyor (normal davranış)\n\n${canEdit ? "Tıkla: Manuel flag ekle (isteğe bağlı, gereksiz)" : ""}`;
+                                                                  } else {
+                                                                    return null;
+                                                                  }
+                                                                  const _onClick = canEdit ? (e) => {
+                                                                    e.stopPropagation();
+                                                                    setBulkConfirm({ code: p.code, name: p.name, manual: !_manualBulk, autoBulk: _autoBulk });
+                                                                  } : undefined;
+                                                                  return (
+                                                                    <span onClick={_onClick}
+                                                                          title={`${_tipHeader}\n─────────────────────────────\n${_tipBody}`}
+                                                                          style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: _bg, color: _color, fontSize: 7, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: `1px solid ${_border}` }}>
+                                                                      {_icon}
+                                                                    </span>
+                                                                  );
+                                                                })()}
+                                                              </td>
                                                               <td style={{ padding: "3px 6px", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</td>
                                                               <td style={{ padding: "3px 4px", textAlign: "center" }}><span style={{ fontSize: 7, padding: "0 3px", borderRadius: 2, background: p.supplyType === "MAKE" ? "#ECFDF5" : p.supplyType === "BUY" ? "#DBEAFE" : "#FEF3C7", color: p.supplyType === "MAKE" ? "#065F46" : p.supplyType === "BUY" ? "#1D4ED8" : "#92400E" }}>{p.supplyType}</span></td>
                                                               <td style={{ padding: "3px 6px", textAlign: "right" }}>{p.needed}</td>
