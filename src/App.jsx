@@ -11992,6 +11992,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                                     _bg = "#FFEDD5"; _color = "#9A3412"; _border = "#FDBA74"; _icon = "🔒";
                                                                     _tipHeader = "🔒 Otomatik Bulk";
                                                                     _tipBody = `Sistem otomatik bulk tespit etti\nAktif emirlerin tüm op'ları MONTAJ/PRES (${_uniqueOps.join(", ")})\n\nBu parçanın WIP'i cascade'de "karşılanmamış" sayılıyor\n→ Alt bileşenler patlatılıyor (normal davranış)\n\n${canEdit ? "Tıkla: Manuel flag ekle (isteğe bağlı, gereksiz)" : ""}`;
+                                                                  } else if (canEdit && _hasActiveEmir) {
+                                                                    // v18.17: 4. durum — otomatik bulk değil, manuel flag de yok ama aktif emir var.
+                                                                    // Admin/üretim için soluk ⊕ rozet: "manuel bulk olarak işaretle" için giriş noktası.
+                                                                    _state = "unmarked-eligible";
+                                                                    _bg = "#F9FAFB"; _color = "#9CA3AF"; _border = "#E5E7EB"; _icon = "⊕";
+                                                                    _tipHeader = "⊕ Manuel Bulk Ekle";
+                                                                    _tipBody = `Bu parçanın aktif emirleri otomatik olarak non-bulk sayılıyor.\nOp'lar: ${_uniqueOps.join(", ") || "—"}\n\nEğer bu emirler aslında bulk ise (örn. "PRES + tek TORNA" gibi\nsistemin tanıyamadığı özel durum) manuel olarak işaretleyebilirsin.\n\nÖrnek: 52005, 42005, 36005, 52010 gibi parçalar.\n\nTıkla: Manuel bulk olarak işaretle`;
                                                                   } else {
                                                                     return null;
                                                                   }
@@ -12002,7 +12009,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
                                                                   return (
                                                                     <span onClick={_onClick}
                                                                           title={`${_tipHeader}\n─────────────────────────────\n${_tipBody}`}
-                                                                          style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: _bg, color: _color, fontSize: 7, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: `1px solid ${_border}` }}>
+                                                                          onMouseEnter={_state === "unmarked-eligible" ? (e) => { e.currentTarget.style.opacity = "1"; } : undefined}
+                                                                          onMouseLeave={_state === "unmarked-eligible" ? (e) => { e.currentTarget.style.opacity = "0.35"; } : undefined}
+                                                                          style={{ marginLeft: 4, padding: "0 4px", borderRadius: 3, background: _bg, color: _color, fontSize: 7, fontWeight: 700, cursor: canEdit ? "pointer" : "help", border: `1px solid ${_border}`, opacity: _state === "unmarked-eligible" ? 0.35 : 1, transition: "opacity 0.15s" }}>
                                                                       {_icon}
                                                                     </span>
                                                                   );
