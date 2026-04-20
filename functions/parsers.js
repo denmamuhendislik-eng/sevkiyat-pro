@@ -30,11 +30,46 @@ const norm = (s) =>
 
 const pNum = (v) => {
   if (v === "" || v === undefined || v === null) return 0;
+  // v18.16 fix: XLSX.js Number hücrelerini (örn. 4255.32) doğrudan al.
+  // String'e çevirip .replace(/\./g, "") uygulanırsa ondalık nokta silinir
+  // ve 425532 gibi yanlış (100x şişkin) sonuç oluşur. String girdiler için
+  // eski Türk formatı parse ("1.234,56" → 1234.56) aynen korunur.
+  if (typeof v === "number") return isNaN(v) ? 0 : v;
   const s = String(v).trim();
   if (!s) return 0;
   // Türkçe sayı formatı: "1.234,56" → "1234.56"
   const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
   return isNaN(n) ? 0 : n;
+};
+
+// v14: Emir tarihi parse — VIO formatı D(D)MMYYYY, 7 veya 8 haneli (örn "2042026" = 02.04.2026).
+// Bazı rapor sürümlerinde "DD.MM.YYYY", "DD/MM/YYYY" veya Excel serial de gelebilir.
+// Çıktı: "YYYY-MM-DD" veya null. Frontend parseAkibetExcel ile birebir aynı.
+const parseEmirTarihi = (v) => {
+  if (v === "" || v === undefined || v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  if (/^\d{7,8}$/.test(s)) {
+    const padded = s.padStart(8, "0");
+    const dd = padded.substring(0, 2);
+    const mm = padded.substring(2, 4);
+    const yyyy = padded.substring(4, 8);
+    const y = Number(yyyy);
+    if (y < 2000 || y > 2100) return null;
+    return `${yyyy}-${mm}-${dd}`;
+  }
+  const m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (m) {
+    const dd = m[1].padStart(2, "0");
+    const mm = m[2].padStart(2, "0");
+    return `${m[3]}-${mm}-${dd}`;
+  }
+  const n = Number(s);
+  if (!isNaN(n) && n > 25000 && n < 100000) {
+    const d = new Date((n - 25569) * 86400 * 1000);
+    if (!isNaN(d.getTime())) return d.toISOString().substring(0, 10);
+  }
+  return null;
 };
 
 // ==================== STOK RAPORU ====================
@@ -287,7 +322,9 @@ function parseAkibetExcel(workbook) {
     }
     const part = partsMap[currentCode];
     if (!part.ordersMap[emirNo]) {
-      part.ordersMap[emirNo] = { emirNo, qty: emirQty, opsRaw: [] };
+      // v14: Emir açılış tarihi (öncelikle emirTarihi column'u, yoksa opBasTarihi fallback)
+      const openDate = cols.emirTarihi != null ? parseEmirTarihi(r[cols.emirTarihi]) : null;
+      part.ordersMap[emirNo] = { emirNo, qty: emirQty, openDate, opsRaw: [] };
     }
     part.ordersMap[emirNo].opsRaw.push({
       sayaci,
@@ -308,6 +345,7 @@ function parseAkibetExcel(workbook) {
     const orders = [];
     let internalRemaining = 0,
       fasonRemaining = 0,
+      totalRemaining = 0,
       totalQty = 0;
 
     Object.values(part.ordersMap).forEach((order) => {
@@ -357,17 +395,42 @@ function parseAkibetExcel(workbook) {
         if (op.isFason) orderFasRem = Math.max(orderFasRem, op.remaining);
         else orderIntRem = Math.max(orderIntRem, op.remaining);
       });
+      // v14 fix: Emirin GERÇEK fiziksel kalan parça sayısı = MAX(iç, fason).
+      // Aynı 80 parça hem iç hem fason op'lardan geçer; intRem+fasRem = ÇİFT SAYIM.
+      // intRem/fasRem ayrımı workload dağılımı için korunur, ama WIP toplamı orderRem üzerinden.
+      const orderRem = Math.max(orderIntRem, orderFasRem);
+
+      // v14 Adım 1: Emir'in fiziksel konumu — ilk açık op ve kalan op dağılımı
+      const activeOps = ops.filter((op) => !op.cancelled && op.remaining > 0);
+      const firstActive = ops.find((op) => !op.cancelled && op.remaining > 0);
+      const firstOpenOp = firstActive
+        ? {
+            name: firstActive.name,
+            isFason: firstActive.isFason,
+            opCode: firstActive.opCode,
+          }
+        : null;
+      const remainingOps = {
+        total: activeOps.length,
+        fason: activeOps.filter((op) => op.isFason).length,
+        internal: activeOps.filter((op) => !op.isFason).length,
+      };
 
       orders.push({
         emirNo: order.emirNo,
         qty: order.qty,
+        openDate: order.openDate || null, // v14
         intRem: orderIntRem,
         fasRem: orderFasRem,
+        rem: orderRem, // v14
+        firstOpenOp, // v14
+        remainingOps, // v14
         ops,
       });
       totalQty += order.qty;
       internalRemaining += orderIntRem;
       fasonRemaining += orderFasRem;
+      totalRemaining += orderRem; // v14
     });
 
     parts.push({
@@ -377,6 +440,7 @@ function parseAkibetExcel(workbook) {
       totalQty,
       internalRemaining,
       fasonRemaining,
+      totalRemaining, // v14
       orderCount: orders.length,
       orders,
     });
