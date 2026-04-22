@@ -112,6 +112,7 @@ export default function App() {
 
   // App states
   const [page, setPage] = useState("planning");
+  const [pendingMrpTab, setPendingMrpTab] = useState(null);
   const [selYear, setSelYear] = useState(2026);
   const [products, setProducts] = useState(PARSED.products);
   const [yearsData, setYearsData] = useState(PARSED.yearsData);
@@ -2660,10 +2661,10 @@ ${el.innerHTML}
           {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={userRole} selectedYear={selYear}/>}
 
           {/* ========== MRP PAGE ========== */}
-          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts}/>}
+          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts} initialTab={pendingMrpTab} onConsumeInitialTab={()=>setPendingMrpTab(null)}/>}
 
           {/* ========== DIGER MUSTERILER PAGE ========== */}
-          {page==="digerMusteriler"&&canSeeMRP&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim}/>}
+          {page==="digerMusteriler"&&canSeeMRP&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
@@ -4854,7 +4855,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 // ============================================================
 // MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
 // ============================================================
-function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts }) {
+function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts, initialTab, onConsumeInitialTab }) {
   const APP_COL = "appData";
   const BOM_DOC = "bomModels";
   const WC_DOC = "workCenters";
@@ -4867,7 +4868,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts 
   const [bomModels, setBomModels] = useState({});
   const [workCenters, setWorkCenters] = useState(null);
   const [requirements, setRequirements] = useState(null);
-  const [activeTab, setActiveTab] = useState("data");
+  const [activeTab, setActiveTab] = useState(initialTab || "data");
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+      if (onConsumeInitialTab) onConsumeInitialTab();
+    }
+  }, [initialTab, onConsumeInitialTab]);
   const [selectedModel, setSelectedModel] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState({});
   const [bomSearch, setBomSearch] = useState("");

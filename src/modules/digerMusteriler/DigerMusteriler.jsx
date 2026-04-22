@@ -1,18 +1,19 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { useSalesOrders, usePlanOverrides, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
+import { useSalesOrders, usePlanOverrides, useBomModels, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
 import { saveSalesOrders, savePlanOverride, removePlanOverride } from './firestore';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
-export default function DigerMusteriler({ isAdmin, isUretim }) {
+export default function DigerMusteriler({ isAdmin, isUretim, onNavigateToMrp }) {
   const canEdit = !!(isAdmin || isUretim);
   const role = isAdmin ? 'admin' : (isUretim ? 'üretim' : 'bilinmiyor');
 
   const { salesOrders, loaded: ordersLoaded } = useSalesOrders();
   const { planOverrides, loaded: overridesLoaded } = usePlanOverrides();
+  const { bomModels, loaded: bomLoaded } = useBomModels();
 
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
@@ -28,10 +29,39 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
 
   const grouped = useWeekGroupedOrders(salesOrders, planOverrides, { customerFilter, searchText, sortMode });
 
-  const allLoaded = ordersLoaded && overridesLoaded;
+  const allLoaded = ordersLoaded && overridesLoaded && bomLoaded;
   const rawOrderCount = Object.keys(salesOrders).length;
   const overrideCount = Object.keys(planOverrides).length;
   const empty = allLoaded && rawOrderCount === 0;
+
+  // BOM eksik tespiti — root stok kodları seti
+  const bomSet = useMemo(() => {
+    const s = new Set();
+    for (const [modelKey, model] of Object.entries(bomModels || {})) {
+      if (modelKey === 'undefined') continue;
+      const root = (model?.parts || []).find(p => p.parentIdx === null || p.parentIdx === undefined);
+      if (root?.stockCode) s.add(root.stockCode);
+    }
+    return s;
+  }, [bomModels]);
+
+  // Unique eksik stok kodları — en çok sipariş alanlar önce
+  const missingBoms = useMemo(() => {
+    if (!bomLoaded || !ordersLoaded) return [];
+    const seen = new Map();
+    for (const o of Object.values(salesOrders || {})) {
+      if (!o.stokKodu || bomSet.has(o.stokKodu)) continue;
+      const e = seen.get(o.stokKodu) || { stokAdi: o.stokAdi || '', count: 0, customers: new Set() };
+      e.count += 1;
+      if (o.customerCode) e.customers.add(o.customerCode);
+      seen.set(o.stokKodu, e);
+    }
+    return Array.from(seen.entries())
+      .map(([k, v]) => ({ stokKodu: k, stokAdi: v.stokAdi, siparisCount: v.count, customerCount: v.customers.size }))
+      .sort((a, b) => b.siparisCount - a.siparisCount);
+  }, [salesOrders, bomSet, bomLoaded, ordersLoaded]);
+
+  const [bomExpanded, setBomExpanded] = useState(false);
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -339,6 +369,66 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
             </div>
           </div>
 
+          {/* BOM eksik uyarı */}
+          {missingBoms.length > 0 && (
+            <div style={{
+              marginTop: 14, padding: 12, borderRadius: 8,
+              background: '#fef2f2', border: '1px solid #fecaca',
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                fontSize: 13, fontWeight: 500, color: '#991b1b', flexWrap: 'wrap',
+              }} onClick={() => setBomExpanded(!bomExpanded)}>
+                <span>❓ {missingBoms.length} ürün BOM eksik</span>
+                <span style={{ fontSize: 11, color: '#b91c1c', fontWeight: 400 }}>
+                  — bu ürünlerin BOM ağacı Sevkiyat Pro'da tanımlı değil
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11 }}>
+                  {bomExpanded ? 'gizle ▲' : 'aç ▼'}
+                </span>
+              </div>
+              {bomExpanded && (
+                <div style={{ marginTop: 10, maxHeight: 280, overflowY: 'auto' }}>
+                  {missingBoms.slice(0, 100).map(m => (
+                    <div key={m.stokKodu} style={{
+                      display: 'flex', alignItems: 'center', gap: 10,
+                      padding: '5px 8px', fontSize: 11,
+                      borderBottom: '1px solid #fecaca',
+                    }}>
+                      <span style={{
+                        fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11,
+                        minWidth: 170, color: '#1c1917',
+                      }}>{m.stokKodu}</span>
+                      <span style={{ flex: 1, color: '#44403c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={m.stokAdi}>
+                        {m.stokAdi || '—'}
+                      </span>
+                      <span style={{ color: '#78716c', fontSize: 10, minWidth: 70, textAlign: 'right' }}>
+                        {m.siparisCount} sip{m.customerCount > 1 ? ` · ${m.customerCount} müş` : ''}
+                      </span>
+                      <button
+                        onClick={() => onNavigateToMrp && onNavigateToMrp('bom')}
+                        disabled={!onNavigateToMrp}
+                        title="MRP Planlama → Ürün Ağacı sekmesine git"
+                        style={{
+                          padding: '3px 10px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+                          border: '1px solid #dc2626',
+                          background: '#fff',
+                          color: '#dc2626',
+                          cursor: onNavigateToMrp ? 'pointer' : 'not-allowed',
+                        }}
+                      >BOM yükle →</button>
+                    </div>
+                  ))}
+                  {missingBoms.length > 100 && (
+                    <div style={{ padding: '6px 8px', fontSize: 10, color: '#78716c', textAlign: 'center' }}>
+                      … ve {missingBoms.length - 100} daha (ilk 100 gösteriliyor)
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* KPI strip */}
           <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             {renderKpi('Toplam', grouped.kpi.totalRows, grouped.kpi.totalBedel, '#1e293b', '#fff')}
@@ -410,7 +500,7 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
               </div>
               {lateExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides })}
+                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet })}
                 </div>
               )}
             </div>
@@ -478,7 +568,7 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
                       {grouped.byWeek[w].length} sipariş
                     </span>
                   </div>
-                  {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides })}
+                  {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
                 </div>
               ))
             )}
@@ -637,13 +727,14 @@ function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
 }
 
 function renderOrderRow(o, currentWeek, isLateContext, ctx) {
-  const { canEdit, openPicker, planOverrides } = ctx;
+  const { canEdit, openPicker, planOverrides, bomSet } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
   const override = planOverrides?.[o.id];
   const vioCurrentWeek = teslim ? getISOWeek(teslim) : '';
   const vioChanged = override && override.origWeek && vioCurrentWeek && vioCurrentWeek !== override.origWeek;
+  const bomMissing = bomSet && !bomSet.has(o.stokKodu);
   return (
     <div
       key={o.id}
@@ -665,7 +756,10 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
       <span style={{
         fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11,
         minWidth: 170, color: '#1c1917',
-      }}>{o.stokKodu}</span>
+      }}>
+        {bomMissing && <span title="BOM yok — MRP → Ürün Ağacı'nda yükle" style={{ color: '#dc2626', marginRight: 4, fontWeight: 700 }}>❓</span>}
+        {o.stokKodu}
+      </span>
       <span style={{
         flex: 1, color: '#44403c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }} title={o.stokAdi}>{o.stokAdi}</span>

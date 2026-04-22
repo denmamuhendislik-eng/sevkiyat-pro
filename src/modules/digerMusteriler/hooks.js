@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { subscribeSalesOrders, subscribePlanOverrides } from "./firestore";
+import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels } from "./firestore";
 import { getISOWeek } from "../../shared/weekUtils";
 
 export function useSalesOrders() {
@@ -26,6 +26,19 @@ export function usePlanOverrides() {
     return unsub;
   }, []);
   return { planOverrides, loaded };
+}
+
+export function useBomModels() {
+  const [bomModels, setBomModels] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    const unsub = subscribeBomModels((data) => {
+      setBomModels(data || {});
+      setLoaded(true);
+    });
+    return unsub;
+  }, []);
+  return { bomModels, loaded };
 }
 
 // Siparişleri filter + sort + ISO-hafta gruplama + KPI hesabı

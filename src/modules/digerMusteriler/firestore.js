@@ -4,6 +4,7 @@ import { db } from "../../firebase";
 const APP_COL = "appData";
 const SALES_ORDERS_DOC = "salesOrders";
 const PLAN_OVERRIDES_DOC = "planOverrides";
+const BOM_MODELS_DOC = "bomModels";
 
 export function subscribeSalesOrders(callback) {
   if (!db) return () => {};
@@ -22,6 +23,17 @@ export function subscribePlanOverrides(callback) {
     ref,
     (snap) => callback(snap.exists() ? snap.data() : {}),
     (err) => { console.error("planOverrides listener:", err); callback({}); }
+  );
+}
+
+// READ-ONLY — bomModels doc'una yazma YOK (v19 Seviye 1 izolasyon)
+export function subscribeBomModels(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, BOM_MODELS_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? snap.data() : {}),
+    (err) => { console.error("bomModels listener:", err); callback({}); }
   );
 }
 
