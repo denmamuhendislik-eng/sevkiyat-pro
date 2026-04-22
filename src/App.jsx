@@ -172,7 +172,8 @@ export default function App() {
   const isPacker = userRole === "packer";
   const isUretim = userRole === "uretim";
   const isViewer = userRole === "viewer";
-  const canPack = isAdmin || isPacker;
+  const isSales = userRole === "satis";
+  const canPack = isAdmin || isPacker || isSales;
 
   // Auth listener
   useEffect(() => {
@@ -202,6 +203,13 @@ export default function App() {
   // Görüntüleyici yalnız planning/dashboard/shipment görebilir — başka sayfadaysa planning'e yönlendir
   useEffect(() => {
     if (userRole === "viewer" && !["planning", "dashboard", "shipment"].includes(page)) {
+      setPage("planning");
+    }
+  }, [userRole, page]);
+
+  // Satış rolü: izinli sayfalar dışına çıkarsa planning'e yönlendir (import & montaj hariç, packing dahil)
+  useEffect(() => {
+    if (userRole === "satis" && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "packing"].includes(page)) {
       setPage("planning");
     }
   }, [userRole, page]);
@@ -1864,7 +1872,8 @@ ${el.innerHTML}
   };
 
   const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"},{id:"mrp",icon:"⚙️",l:"MRP Planlama"},{id:"digerMusteriler",icon:"🤝",l:"Diğer Müşteriler"}];
-  const canSeeMRP = isAdmin || isUretim;
+  const canSeeMRP = isAdmin || isUretim || isSales;
+  const canSeeDigerMusteriler = isAdmin || isSales;
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
@@ -1906,7 +1915,9 @@ ${el.innerHTML}
         </div>
         <div style={{flex:1,padding:"6px 0"}}>
           {nav.filter(n => {
-            if ((n.id === "mrp" || n.id === "digerMusteriler") && !canSeeMRP) return false;
+            if (n.id === "mrp" && !canSeeMRP) return false;
+            if (n.id === "digerMusteriler" && !canSeeDigerMusteriler) return false;
+            if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler"].includes(n.id)) return false;
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
           }).map(n=>(
@@ -2664,7 +2675,7 @@ ${el.innerHTML}
           {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts} initialTab={pendingMrpTab} onConsumeInitialTab={()=>setPendingMrpTab(null)}/>}
 
           {/* ========== DIGER MUSTERILER PAGE ========== */}
-          {page==="digerMusteriler"&&canSeeMRP&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
+          {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
@@ -3004,7 +3015,7 @@ ${el.innerHTML}
             <div style={{fontSize:12,fontWeight:600,color:"var(--color-text-secondary)",marginBottom:8}}>Mevcut Kullanıcılar</div>
             <div style={{display:"flex",flexDirection:"column",gap:6}}>
               {allUsers.map(u=>{
-                const roleColors = {admin:{bg:"rgba(83,74,183,0.1)",c:"#534AB7",l:"Admin"},packer:{bg:"rgba(186,117,23,0.1)",c:"#BA7517",l:"Paketçi"},uretim:{bg:"rgba(29,158,117,0.1)",c:"#1D9E75",l:"Üretim"},operator:{bg:"rgba(56,138,221,0.1)",c:"#388ADD",l:"Operatör"},viewer:{bg:"rgba(136,135,128,0.1)",c:"#888780",l:"Görüntüleyici"}};
+                const roleColors = {admin:{bg:"rgba(83,74,183,0.1)",c:"#534AB7",l:"Admin"},packer:{bg:"rgba(186,117,23,0.1)",c:"#BA7517",l:"Paketçi"},uretim:{bg:"rgba(29,158,117,0.1)",c:"#1D9E75",l:"Üretim"},satis:{bg:"rgba(2,132,199,0.1)",c:"#0284C7",l:"Satış"},operator:{bg:"rgba(56,138,221,0.1)",c:"#388ADD",l:"Operatör"},viewer:{bg:"rgba(136,135,128,0.1)",c:"#888780",l:"Görüntüleyici"}};
                 const rc = roleColors[u.role]||roleColors.viewer;
                 const isSelf = authUser && u.uid === authUser.uid;
                 return <div key={u.uid} style={{display:"flex",alignItems:"center",gap:10,padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-tertiary)",background:isSelf?"rgba(83,74,183,0.03)":"transparent"}}>
@@ -3013,7 +3024,7 @@ ${el.innerHTML}
                     <div style={{fontSize:10,color:"var(--color-text-tertiary)"}}>{u.email}</div>
                   </div>
                   <div style={{display:"flex",gap:4}}>
-                    {["admin","packer","uretim","operator","viewer"].map(r=>{
+                    {["admin","packer","uretim","satis","operator","viewer"].map(r=>{
                       const active = u.role === r;
                       const rc2 = roleColors[r];
                       return <button key={r} onClick={()=>{if(!isSelf&&!active)updateUserRole(u.uid,r);}} disabled={isSelf} style={{padding:"3px 8px",borderRadius:4,border:`1.5px solid ${active?rc2.c:"rgba(0,0,0,0.08)"}`,background:active?rc2.bg:"transparent",color:active?rc2.c:"var(--color-text-tertiary)",fontSize:9,fontWeight:active?600:400,cursor:isSelf?"not-allowed":"pointer",opacity:isSelf&&!active?0.3:1}}>{rc2.l}</button>;
@@ -3049,6 +3060,7 @@ ${el.innerHTML}
                     <button onClick={()=>setNewUserRole("admin")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="admin"?"#534AB7":"rgba(0,0,0,0.12)"}`,background:newUserRole==="admin"?"rgba(83,74,183,0.1)":"transparent",color:newUserRole==="admin"?"#534AB7":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Admin</button>
                     <button onClick={()=>setNewUserRole("packer")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="packer"?"#BA7517":"rgba(0,0,0,0.12)"}`,background:newUserRole==="packer"?"rgba(186,117,23,0.1)":"transparent",color:newUserRole==="packer"?"#BA7517":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Paketçi</button>
                     <button onClick={()=>setNewUserRole("uretim")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="uretim"?"#1D9E75":"rgba(0,0,0,0.12)"}`,background:newUserRole==="uretim"?"rgba(29,158,117,0.1)":"transparent",color:newUserRole==="uretim"?"#1D9E75":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Üretim</button>
+                    <button onClick={()=>setNewUserRole("satis")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="satis"?"#0284C7":"rgba(0,0,0,0.12)"}`,background:newUserRole==="satis"?"rgba(2,132,199,0.1)":"transparent",color:newUserRole==="satis"?"#0284C7":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Satış</button>
                     <button onClick={()=>setNewUserRole("operator")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="operator"?"#388ADD":"rgba(0,0,0,0.12)"}`,background:newUserRole==="operator"?"rgba(56,138,221,0.1)":"transparent",color:newUserRole==="operator"?"#388ADD":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Operatör</button>
                     <button onClick={()=>setNewUserRole("viewer")} style={{flex:1,padding:"6px",borderRadius:6,border:`2px solid ${newUserRole==="viewer"?"#888780":"rgba(0,0,0,0.12)"}`,background:newUserRole==="viewer"?"rgba(136,135,128,0.1)":"transparent",color:newUserRole==="viewer"?"#888780":"var(--color-text-secondary)",fontSize:10,fontWeight:500,cursor:"pointer"}}>Görüntüleyici</button>
                   </div>
@@ -4862,7 +4874,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const REQ_DOC = "mrpRequirements";
   const isAdmin = userRole === "admin";
   const isUretim = userRole === "uretim";
-  const canEdit = isAdmin || isUretim;
+  const isSales = userRole === "satis";
+  const canEdit = isAdmin || isUretim || isSales;
 
   // State
   const [bomModels, setBomModels] = useState({});
