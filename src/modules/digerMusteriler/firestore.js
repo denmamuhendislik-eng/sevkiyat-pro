@@ -1,4 +1,4 @@
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, onSnapshot, setDoc } from "firebase/firestore";
 import { db } from "../../firebase";
 
 const APP_COL = "appData";
@@ -23,4 +23,11 @@ export function subscribePlanOverrides(callback) {
     (snap) => callback(snap.exists() ? snap.data() : {}),
     (err) => { console.error("planOverrides listener:", err); callback({}); }
   );
+}
+
+export async function saveSalesOrders(ordersMap, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok — yükleme sadece admin/üretim rolüne açık");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  const ref = doc(db, APP_COL, SALES_ORDERS_DOC);
+  await setDoc(ref, ordersMap);
 }
