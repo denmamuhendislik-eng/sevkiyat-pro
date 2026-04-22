@@ -62,6 +62,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, onNavigateToMrp }) 
   }, [salesOrders, bomSet, bomLoaded, ordersLoaded]);
 
   const [bomExpanded, setBomExpanded] = useState(false);
+  const [noWeekExpanded, setNoWeekExpanded] = useState(false);
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -506,13 +507,29 @@ export default function DigerMusteriler({ isAdmin, isUretim, onNavigateToMrp }) 
             </div>
           )}
 
-          {/* noWeek edge case */}
+          {/* noWeek edge case — expandable, plan butonu ile yönetilebilir */}
           {grouped.noWeek.length > 0 && (
             <div style={{
-              marginTop: 16, padding: 10, borderRadius: 6,
-              background: '#fffbeb', border: '1px solid #fde68a', fontSize: 12, color: '#78350f',
+              marginTop: 16, padding: 12, borderRadius: 8,
+              background: '#fffbeb', border: '1px solid #fde68a',
             }}>
-              ⚠ {grouped.noWeek.length} sipariş için teslim tarihi yok
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                fontSize: 13, fontWeight: 500, color: '#78350f', flexWrap: 'wrap',
+              }} onClick={() => setNoWeekExpanded(!noWeekExpanded)}>
+                <span>⚠ {grouped.noWeek.length} sipariş için teslim tarihi yok</span>
+                <span style={{ fontSize: 11, color: '#92400e', fontWeight: 400 }}>
+                  — plan haftası atayarak takvime al
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11 }}>
+                  {noWeekExpanded ? 'gizle ▲' : 'aç ▼'}
+                </span>
+              </div>
+              {noWeekExpanded && (
+                <div style={{ marginTop: 10 }}>
+                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
+                </div>
+              )}
             </div>
           )}
 
