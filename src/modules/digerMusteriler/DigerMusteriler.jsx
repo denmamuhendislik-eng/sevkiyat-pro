@@ -1,14 +1,16 @@
-import React, { useState, useRef } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { useSalesOrders, usePlanOverrides, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
-import { saveSalesOrders } from './firestore';
+import { saveSalesOrders, savePlanOverride, removePlanOverride } from './firestore';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
-import { getWeekMonday, formatDateShort, weeksBetween } from '../../shared/weekUtils';
+import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
 export default function DigerMusteriler({ isAdmin, isUretim }) {
   const canEdit = !!(isAdmin || isUretim);
+  const role = isAdmin ? 'admin' : (isUretim ? 'üretim' : 'bilinmiyor');
+
   const { salesOrders, loaded: ordersLoaded } = useSalesOrders();
   const { planOverrides, loaded: overridesLoaded } = usePlanOverrides();
 
@@ -20,6 +22,9 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
   const [searchText, setSearchText] = useState('');
   const [sortMode, setSortMode] = useState('date');
   const [lateExpanded, setLateExpanded] = useState(false);
+
+  // Picker: null | { orderId, anchorX, anchorY, origWeek, currentPlanWeek }
+  const [picker, setPicker] = useState(null);
 
   const grouped = useWeekGroupedOrders(salesOrders, planOverrides, { customerFilter, searchText, sortMode });
 
@@ -62,6 +67,96 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
     if (d > 0) return `+${d} hafta`;
     return `${-d} hf geç`;
   };
+
+  // ---- Picker logic ----
+
+  const openPicker = (e, order) => {
+    if (!canEdit) return;
+    e.stopPropagation();
+    const rect = e.currentTarget.getBoundingClientRect();
+    const origWeek = order.teslimTarihi
+      ? getISOWeek(new Date(order.teslimTarihi + 'T00:00:00Z'))
+      : '';
+    // Viewport bound: eğer picker sağa taşarsa butonun sağ kenarına hizala
+    const pickerWidth = 240;
+    const vw = window.innerWidth;
+    let x = rect.left;
+    if (x + pickerWidth + 16 > vw) x = Math.max(8, vw - pickerWidth - 16);
+    setPicker({
+      orderId: order.id,
+      anchorX: x,
+      anchorY: rect.bottom + 4,
+      origWeek,
+      currentPlanWeek: order.effectiveWeek,
+    });
+  };
+
+  const handleSelectWeek = async (newWeek) => {
+    if (!picker) return;
+    const { orderId, origWeek, currentPlanWeek } = picker;
+    if (newWeek === currentPlanWeek) {
+      setPicker(null);
+      return;
+    }
+    try {
+      if (newWeek === origWeek) {
+        // Seçim VIO haftasıyla eşit → override sil, ham tesliye dön
+        await removePlanOverride(orderId, { canEdit });
+      } else {
+        await savePlanOverride(orderId, {
+          plannedWeek: newWeek,
+          origWeek,
+          note: '',
+          by: role,
+          at: new Date().toISOString(),
+        }, { canEdit });
+      }
+      setPicker(null);
+    } catch (e) {
+      alert('Override kaydı başarısız: ' + (e.message || String(e)));
+    }
+  };
+
+  const handleReset = async () => {
+    if (!picker) return;
+    try {
+      await removePlanOverride(picker.orderId, { canEdit });
+      setPicker(null);
+    } catch (e) {
+      alert('Override silme başarısız: ' + (e.message || String(e)));
+    }
+  };
+
+  // Outside-click → close picker
+  useEffect(() => {
+    if (!picker) return;
+    const handler = (e) => {
+      if (e.target.closest('[data-picker-container]')) return;
+      setPicker(null);
+    };
+    const t = setTimeout(() => {
+      document.addEventListener('mousedown', handler);
+    }, 0);
+    return () => {
+      clearTimeout(t);
+      document.removeEventListener('mousedown', handler);
+    };
+  }, [picker]);
+
+  // Picker hafta listesi — cari hafta -4 ile +20 arası (25 hafta)
+  const pickerWeeks = useMemo(() => {
+    const list = [];
+    const startMonday = getWeekMonday(grouped.currentWeek);
+    startMonday.setUTCDate(startMonday.getUTCDate() - 28);
+    for (let i = 0; i < 25; i++) {
+      const mon = new Date(startMonday);
+      mon.setUTCDate(startMonday.getUTCDate() + i * 7);
+      list.push(getISOWeek(mon));
+    }
+    return list;
+  }, [grouped.currentWeek]);
+
+  // ---- Render ----
 
   return (
     <div style={{ padding: 24, fontFamily: 'system-ui, sans-serif' }}>
@@ -110,7 +205,7 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
         )}
       </div>
 
-      {/* Empty state — veri yoksa yalnızca yükleme kutusunu göster */}
+      {/* Empty state */}
       {empty && (
         <div style={{ marginTop: 20, padding: 24, textAlign: 'center', color: '#a8a29e', fontSize: 13 }}>
           Henüz sipariş yüklenmemiş — yukarıdaki butonla başla.
@@ -192,7 +287,7 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
               </div>
               {lateExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.late, grouped.currentWeek, true)}
+                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker })}
                 </div>
               )}
             </div>
@@ -231,7 +326,7 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
                       {grouped.byWeek[w].length} sipariş
                     </span>
                   </div>
-                  {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false)}
+                  {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker })}
                 </div>
               ))
             )}
@@ -246,6 +341,73 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
       }}>
         Firestore: {allLoaded ? `${rawOrderCount} ham sipariş · ${overrideCount} override` : 'yükleniyor…'}
       </div>
+
+      {/* Week picker popup */}
+      {picker && (
+        <div
+          data-picker-container
+          style={{
+            position: 'fixed',
+            top: picker.anchorY,
+            left: picker.anchorX,
+            background: '#fff',
+            border: '1px solid #d6d3d1',
+            borderRadius: 8,
+            boxShadow: '0 6px 18px rgba(0,0,0,0.12)',
+            padding: 8,
+            zIndex: 100,
+            minWidth: 240,
+            maxHeight: 400,
+            overflowY: 'auto',
+            fontSize: 12,
+          }}
+        >
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#44403c', padding: '2px 6px', marginBottom: 4 }}>
+            Plan haftası seç
+          </div>
+          {picker.currentPlanWeek !== picker.origWeek && picker.origWeek && (
+            <button
+              onClick={handleReset}
+              style={{
+                width: '100%', textAlign: 'left', padding: '6px 10px',
+                background: '#fff7ed', border: '1px solid #fed7aa', borderRadius: 4,
+                fontSize: 11, color: '#c2410c', cursor: 'pointer', marginBottom: 6,
+                fontWeight: 500,
+              }}
+            >
+              ↺ Orijinale dön ({picker.origWeek} — VIO teslim)
+            </button>
+          )}
+          {pickerWeeks.map(w => {
+            const isCurrent = w === picker.currentPlanWeek;
+            const isOrig = w === picker.origWeek;
+            return (
+              <div
+                key={w}
+                onClick={() => handleSelectWeek(w)}
+                style={{
+                  padding: '5px 10px', cursor: 'pointer',
+                  background: isCurrent ? '#dbeafe' : 'transparent',
+                  borderRadius: 4,
+                  fontSize: 11, display: 'flex', alignItems: 'center', gap: 6,
+                  fontWeight: isCurrent ? 600 : 400,
+                }}
+                onMouseEnter={(e) => { if (!isCurrent) e.currentTarget.style.background = '#f5f5f4'; }}
+                onMouseLeave={(e) => { if (!isCurrent) e.currentTarget.style.background = 'transparent'; }}
+              >
+                <span style={{ minWidth: 80 }}>{w}</span>
+                <span style={{ color: '#78716c', fontSize: 10 }}>{weekDiffLabel(w)}</span>
+                {isOrig && (
+                  <span style={{
+                    marginLeft: 'auto', fontSize: 9, padding: '1px 5px', borderRadius: 3,
+                    background: '#fed7aa', color: '#9a3412', fontWeight: 600,
+                  }}>VIO</span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }
@@ -281,7 +443,7 @@ function renderKpi(label, count, bedel, bg, fg) {
   );
 }
 
-function renderOrderGroups(orders, currentWeek, isLateContext) {
+function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
   return groupByBelgeNo(orders).map((g, idx) => {
     const multi = g.items.length > 1;
     return (
@@ -295,13 +457,14 @@ function renderOrderGroups(orders, currentWeek, isLateContext) {
             fontSize: 10, color: '#64748b', padding: '3px 10px', fontWeight: 500,
           }}>Belge {g.belgeNo} · {g.items.length} satır</div>
         )}
-        {g.items.map(o => renderOrderRow(o, currentWeek, isLateContext))}
+        {g.items.map(o => renderOrderRow(o, currentWeek, isLateContext, ctx))}
       </div>
     );
   });
 }
 
-function renderOrderRow(o, currentWeek, isLateContext) {
+function renderOrderRow(o, currentWeek, isLateContext, ctx) {
+  const { canEdit, openPicker } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
@@ -328,9 +491,28 @@ function renderOrderRow(o, currentWeek, isLateContext) {
       <span style={{ fontWeight: 500, minWidth: 80, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
         {formatMoney(o.toplamBedel)} TL
       </span>
-      <span style={{ color: '#78716c', minWidth: 75, textAlign: 'right', fontSize: 11 }}>
+      <span style={{ color: '#78716c', minWidth: 60, textAlign: 'right', fontSize: 11 }}>
         {teslim ? formatDateShort(teslim) : '—'}
       </span>
+      <button
+        data-picker-container
+        onClick={(e) => openPicker(e, o)}
+        disabled={!canEdit}
+        title={canEdit ? 'Plan haftasını değiştir' : 'Sadece admin/üretim düzenleyebilir'}
+        style={{
+          padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+          border: '1px solid ' + (o.isOverride ? '#fb923c' : '#d6d3d1'),
+          background: o.isOverride ? '#fff7ed' : '#fff',
+          color: o.isOverride ? '#c2410c' : '#44403c',
+          cursor: canEdit ? 'pointer' : 'not-allowed',
+          opacity: canEdit ? 1 : 0.6,
+          fontVariantNumeric: 'tabular-nums',
+          minWidth: 82, textAlign: 'center',
+        }}
+      >
+        {o.effectiveWeek || '—'}
+        {o.isOverride && <span style={{ marginLeft: 4, color: '#c2410c' }}>✎</span>}
+      </button>
       {isLateContext && lateWeeks > 0 && (
         <span style={{
           fontSize: 10, padding: '1px 6px', borderRadius: 3,
