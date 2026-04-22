@@ -7,9 +7,9 @@ import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
-export default function DigerMusteriler({ isAdmin, isUretim, onNavigateToMrp }) {
-  const canEdit = !!(isAdmin || isUretim);
-  const role = isAdmin ? 'admin' : (isUretim ? 'üretim' : 'bilinmiyor');
+export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigateToMrp }) {
+  const canEdit = !!(isAdmin || isUretim || isSales);
+  const role = isAdmin ? 'admin' : isSales ? 'satis' : (isUretim ? 'üretim' : 'bilinmiyor');
 
   const { salesOrders, loaded: ordersLoaded } = useSalesOrders();
   const { planOverrides, loaded: overridesLoaded } = usePlanOverrides();
