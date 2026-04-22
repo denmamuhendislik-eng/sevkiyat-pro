@@ -318,6 +318,26 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
             </div>
           )}
 
+          {/* BU HAFTA vurgu */}
+          {(grouped.byWeek[grouped.currentWeek]?.length || 0) > 0 && (() => {
+            const thisWeek = grouped.byWeek[grouped.currentWeek] || [];
+            const bedel = thisWeek.reduce((s, o) => s + (o.toplamBedel || 0), 0);
+            return (
+              <div style={{
+                marginTop: 16, padding: 12, borderRadius: 8,
+                background: '#dcfce7', border: '1px solid #86efac',
+              }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#166534', fontWeight: 500, flexWrap: 'wrap' }}>
+                  <span>📅 BU HAFTA ({grouped.currentWeek})</span>
+                  <span style={{ fontSize: 12, color: '#15803d', fontWeight: 400 }}>
+                    — {thisWeek.length} sipariş · {formatMoney(bedel)} TL
+                  </span>
+                  <span style={{ marginLeft: 'auto', fontSize: 11, color: '#166534' }}>sevke hazır olmalı</span>
+                </div>
+              </div>
+            );
+          })()}
+
           {/* Week list */}
           <div style={{ marginTop: 16 }}>
             {grouped.weekOrder.length === 0 ? (
