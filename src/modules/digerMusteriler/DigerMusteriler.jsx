@@ -184,6 +184,36 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
     return list;
   }, [grouped.currentWeek]);
 
+  // Aylık şerit — cari aydan başlayarak 12 ay (bedel + sipariş sayısı)
+  const monthlyStrip = useMemo(() => {
+    const monthNames = ['Oca','Şub','Mar','Nis','May','Haz','Tem','Ağu','Eyl','Eki','Kas','Ara'];
+    const now = new Date();
+    const months = [];
+    for (let i = 0; i < 12; i++) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + i, 1));
+      const y = d.getUTCFullYear();
+      const mIdx = d.getUTCMonth();
+      const key = `${y}-${String(mIdx + 1).padStart(2, '0')}`;
+      months.push({ key, label: `${monthNames[mIdx]} ${String(y).slice(2)}`, bedel: 0, count: 0 });
+    }
+    const monthMap = {};
+    months.forEach(m => { monthMap[m.key] = m; });
+    for (const w of Object.keys(grouped.byWeek)) {
+      try {
+        const mon = getWeekMonday(w);
+        const key = `${mon.getUTCFullYear()}-${String(mon.getUTCMonth() + 1).padStart(2, '0')}`;
+        const bucket = monthMap[key];
+        if (bucket) {
+          for (const o of grouped.byWeek[w]) {
+            bucket.bedel += o.toplamBedel || 0;
+            bucket.count += 1;
+          }
+        }
+      } catch {}
+    }
+    return months;
+  }, [grouped.byWeek]);
+
   // ---- Render ----
 
   return (
@@ -316,6 +346,24 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
                 </div>
               );
             })}
+          </div>
+
+          {/* Aylık bedel şeridi — 12 ay */}
+          <div style={{ marginTop: 6, display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
+            {monthlyStrip.map(m => (
+              <div key={m.key} style={{
+                flex: '0 0 80px', padding: 6, borderRadius: 6, fontSize: 10,
+                background: '#faf9f7',
+                border: '1px solid #e7e5e4',
+                textAlign: 'center',
+              }}>
+                <div style={{ fontWeight: 600, color: '#44403c' }}>{m.label}</div>
+                <div style={{ color: '#78716c', fontSize: 9, marginTop: 2 }}>{m.count} sipariş</div>
+                <div style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500, marginTop: 2, fontSize: 10 }}>
+                  {m.bedel > 0 ? formatMoney(m.bedel) + ' TL' : '—'}
+                </div>
+              </div>
+            ))}
           </div>
 
           {/* Gecikenler kutusu */}
