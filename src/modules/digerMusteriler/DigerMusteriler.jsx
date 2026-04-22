@@ -171,6 +171,19 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
     return list;
   }, [grouped.currentWeek]);
 
+  // Hafta stripi — cari hafta -1 ile +10 arası (12 hafta)
+  const weekStrip = useMemo(() => {
+    const list = [];
+    const startMonday = getWeekMonday(grouped.currentWeek);
+    startMonday.setUTCDate(startMonday.getUTCDate() - 7);
+    for (let i = 0; i < 12; i++) {
+      const mon = new Date(startMonday);
+      mon.setUTCDate(startMonday.getUTCDate() + i * 7);
+      list.push(getISOWeek(mon));
+    }
+    return list;
+  }, [grouped.currentWeek]);
+
   // ---- Render ----
 
   return (
@@ -279,6 +292,29 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
               const s = grouped.kpi.perCustomer[c.code];
               const badge = customerBadge(c.code);
               return renderKpi(c.shortLabel, s?.count || 0, s?.bedel || 0, badge.bg, badge.fg);
+            })}
+          </div>
+
+          {/* Hafta stripi — 12 hafta mini özet */}
+          <div style={{ marginTop: 12, display: 'flex', gap: 4, overflowX: 'auto', paddingBottom: 4 }}>
+            {weekStrip.map(w => {
+              const cellOrders = grouped.byWeek[w] || [];
+              const bedel = cellOrders.reduce((s, o) => s + (o.toplamBedel || 0), 0);
+              const isCurrent = w === grouped.currentWeek;
+              return (
+                <div key={w} style={{
+                  flex: '0 0 72px', padding: 6, borderRadius: 6, fontSize: 10,
+                  background: isCurrent ? '#dbeafe' : '#fff',
+                  border: '1px solid ' + (isCurrent ? '#60a5fa' : '#e7e5e4'),
+                  textAlign: 'center',
+                }}>
+                  <div style={{ fontWeight: 600, color: isCurrent ? '#1e40af' : '#44403c' }}>{w.slice(-3)}</div>
+                  <div style={{ color: '#78716c', fontSize: 9, marginTop: 2 }}>{cellOrders.length} sip</div>
+                  <div style={{ fontVariantNumeric: 'tabular-nums', fontWeight: 500, marginTop: 2, fontSize: 10 }}>
+                    {bedel > 0 ? formatMoney(bedel) : '—'}
+                  </div>
+                </div>
+              );
             })}
           </div>
 
