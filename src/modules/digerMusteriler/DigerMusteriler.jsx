@@ -513,14 +513,19 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         {o.effectiveWeek || '—'}
         {o.isOverride && <span style={{ marginLeft: 4, color: '#c2410c' }}>✎</span>}
       </button>
-      {isLateContext && lateWeeks > 0 && (
-        <span style={{
-          fontSize: 10, padding: '1px 6px', borderRadius: 3,
-          background: '#fecaca', color: '#991b1b', fontWeight: 600, minWidth: 40, textAlign: 'center',
-        }}>
-          {lateWeeks} hf geç
-        </span>
-      )}
+      {isLateContext && lateWeeks > 0 && (() => {
+        const lc = lateWeeks >= 7 ? { bg: '#fecaca', fg: '#991b1b' }
+                : lateWeeks >= 3 ? { bg: '#fed7aa', fg: '#9a3412' }
+                : { bg: '#fef3c7', fg: '#854d0e' };
+        return (
+          <span style={{
+            fontSize: 10, padding: '1px 6px', borderRadius: 3,
+            background: lc.bg, color: lc.fg, fontWeight: 600, minWidth: 40, textAlign: 'center',
+          }}>
+            {lateWeeks} hf geç
+          </span>
+        );
+      })()}
     </div>
   );
 }
