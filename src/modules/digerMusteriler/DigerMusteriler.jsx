@@ -504,6 +504,9 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
+  const override = planOverrides?.[o.id];
+  const vioCurrentWeek = teslim ? getISOWeek(teslim) : '';
+  const vioChanged = override && override.origWeek && vioCurrentWeek && vioCurrentWeek !== override.origWeek;
   return (
     <div key={o.id} style={{
       display: 'flex', alignItems: 'center', gap: 10, padding: '5px 10px',
@@ -549,6 +552,7 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         {o.effectiveWeek || '—'}
         {o.isOverride && <span style={{ marginLeft: 4, color: '#c2410c' }}>✎</span>}
         {planOverrides?.[o.id]?.note && <span title={planOverrides[o.id].note} style={{ marginLeft: 3, fontSize: 10 }}>💬</span>}
+        {vioChanged && <span title={`VIO teslim değişti: ${override.origWeek} → ${vioCurrentWeek}`} style={{ marginLeft: 3, color: '#2563eb', fontSize: 12, lineHeight: 1 }}>●</span>}
       </button>
       {isLateContext && lateWeeks > 0 && (() => {
         const lc = lateWeeks >= 7 ? { bg: '#fecaca', fg: '#991b1b' }
