@@ -88,25 +88,23 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
       anchorY: rect.bottom + 4,
       origWeek,
       currentPlanWeek: order.effectiveWeek,
+      noteText: planOverrides[order.id]?.note || '',
     });
   };
 
   const handleSelectWeek = async (newWeek) => {
     if (!picker) return;
-    const { orderId, origWeek, currentPlanWeek } = picker;
-    if (newWeek === currentPlanWeek) {
-      setPicker(null);
-      return;
-    }
+    const { orderId, origWeek, noteText } = picker;
+    const note = (noteText || '').trim() ? noteText : '';
     try {
-      if (newWeek === origWeek) {
-        // Seçim VIO haftasıyla eşit → override sil, ham tesliye dön
+      if (newWeek === origWeek && !note) {
+        // Seçim VIO haftasıyla eşit VE not boş → override sil, ham tesliye dön
         await removePlanOverride(orderId, { canEdit });
       } else {
         await savePlanOverride(orderId, {
           plannedWeek: newWeek,
           origWeek,
-          note: '',
+          note,
           by: role,
           at: new Date().toISOString(),
         }, { canEdit });
@@ -114,6 +112,23 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
       setPicker(null);
     } catch (e) {
       alert('Override kaydı başarısız: ' + (e.message || String(e)));
+    }
+  };
+
+  const handleSaveNoteOnly = async () => {
+    if (!picker) return;
+    const { orderId, origWeek, currentPlanWeek, noteText } = picker;
+    try {
+      await savePlanOverride(orderId, {
+        plannedWeek: currentPlanWeek,
+        origWeek,
+        note: noteText || '',
+        by: role,
+        at: new Date().toISOString(),
+      }, { canEdit });
+      setPicker(null);
+    } catch (e) {
+      alert('Not kaydı başarısız: ' + (e.message || String(e)));
     }
   };
 
@@ -287,7 +302,7 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
               </div>
               {lateExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker })}
+                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides })}
                 </div>
               )}
             </div>
@@ -326,7 +341,7 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
                       {grouped.byWeek[w].length} sipariş
                     </span>
                   </div>
-                  {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker })}
+                  {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides })}
                 </div>
               ))
             )}
@@ -364,6 +379,27 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
         >
           <div style={{ fontSize: 11, fontWeight: 600, color: '#44403c', padding: '2px 6px', marginBottom: 4 }}>
             Plan haftası seç
+          </div>
+          <div style={{ padding: '0 6px', marginBottom: 8 }}>
+            <textarea
+              placeholder="Not (isteğe bağlı)…"
+              value={picker.noteText || ''}
+              onChange={(e) => setPicker({ ...picker, noteText: e.target.value })}
+              rows={2}
+              style={{
+                width: '100%', padding: 6, fontSize: 11, borderRadius: 4,
+                border: '1px solid #d6d3d1', outline: 'none',
+                resize: 'vertical', fontFamily: 'inherit', boxSizing: 'border-box',
+              }}
+            />
+            <button
+              onClick={handleSaveNoteOnly}
+              style={{
+                marginTop: 4, padding: '3px 10px', fontSize: 10, borderRadius: 4,
+                border: '1px solid #a8a29e', background: '#fff', cursor: 'pointer',
+                color: '#44403c',
+              }}
+            >Notu kaydet</button>
           </div>
           {picker.currentPlanWeek !== picker.origWeek && picker.origWeek && (
             <button
@@ -464,7 +500,7 @@ function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
 }
 
 function renderOrderRow(o, currentWeek, isLateContext, ctx) {
-  const { canEdit, openPicker } = ctx;
+  const { canEdit, openPicker, planOverrides } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
@@ -512,6 +548,7 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
       >
         {o.effectiveWeek || '—'}
         {o.isOverride && <span style={{ marginLeft: 4, color: '#c2410c' }}>✎</span>}
+        {planOverrides?.[o.id]?.note && <span title={planOverrides[o.id].note} style={{ marginLeft: 3, fontSize: 10 }}>💬</span>}
       </button>
       {isLateContext && lateWeeks > 0 && (() => {
         const lc = lateWeeks >= 7 ? { bg: '#fecaca', fg: '#991b1b' }
