@@ -94,12 +94,16 @@ export function parseSalesOrderExcel(workbook) {
     if (!belgeNo || !stokKodu || stokKodu === "Stok Kodu") continue;
 
     const teslimTarihi = parseSerialDate(r[currentCols.teslimTarihi]);
-    const id = `${belgeNo}_${stokKodu}_${teslimTarihi}`;
+    const orderDateIso = parseSerialDate(r[currentCols.orderDate]);
+    // ID fallback zinciri: teslim yoksa orderDate, o da yoksa row-index.
+    // Aynı belgeNo+stokKodu'da teslim boş 2 satır gelirse collision olmasın diye.
+    const idKey = teslimTarihi || orderDateIso || `row${i}`;
+    const id = `${belgeNo}_${stokKodu}_${idKey}`;
 
     const row = {
       customerCode: currentCustomerCode,
       customerName: currentCustomerName,
-      orderDate: parseSerialDate(r[currentCols.orderDate]),
+      orderDate: orderDateIso,
       belgeNo,
       stokKodu,
       stokAdi: String(r[currentCols.stokAdi] || "").trim(),
