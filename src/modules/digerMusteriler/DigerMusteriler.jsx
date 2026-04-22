@@ -142,6 +142,30 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
     }
   };
 
+  // Drag & drop — satır → hafta başlığı
+  const handleDropOnWeek = async (orderId, targetWeek) => {
+    if (!canEdit) return;
+    const o = salesOrders[orderId];
+    if (!o || !targetWeek) return;
+    const origWeek = o.teslimTarihi ? getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z')) : '';
+    const existingNote = planOverrides[orderId]?.note || '';
+    try {
+      if (targetWeek === origWeek && !existingNote) {
+        await removePlanOverride(orderId, { canEdit });
+      } else {
+        await savePlanOverride(orderId, {
+          plannedWeek: targetWeek,
+          origWeek,
+          note: existingNote,
+          by: role,
+          at: new Date().toISOString(),
+        }, { canEdit });
+      }
+    } catch (e) {
+      alert('Sürükle-bırak başarısız: ' + (e.message || String(e)));
+    }
+  };
+
   // Outside-click → close picker
   useEffect(() => {
     if (!picker) return;
@@ -431,7 +455,16 @@ export default function DigerMusteriler({ isAdmin, isUretim }) {
             ) : (
               grouped.weekOrder.map(w => (
                 <div key={w} style={{ marginBottom: 14 }}>
-                  <div style={{
+                  <div
+                    onDragOver={canEdit ? (e) => { e.preventDefault(); e.currentTarget.style.background = '#dcfce7'; } : undefined}
+                    onDragLeave={canEdit ? (e) => { e.currentTarget.style.background = '#f5f5f4'; } : undefined}
+                    onDrop={canEdit ? (e) => {
+                      e.preventDefault();
+                      const orderId = e.dataTransfer.getData('text/plain');
+                      e.currentTarget.style.background = '#f5f5f4';
+                      handleDropOnWeek(orderId, w);
+                    } : undefined}
+                    style={{
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '6px 10px', background: '#f5f5f4', borderRadius: 6,
                     fontSize: 12, fontWeight: 600, color: '#44403c', marginBottom: 4,
@@ -612,10 +645,18 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
   const vioCurrentWeek = teslim ? getISOWeek(teslim) : '';
   const vioChanged = override && override.origWeek && vioCurrentWeek && vioCurrentWeek !== override.origWeek;
   return (
-    <div key={o.id} style={{
-      display: 'flex', alignItems: 'center', gap: 10, padding: '5px 10px',
-      fontSize: 12, borderBottom: '1px solid #f5f5f4',
-    }}>
+    <div
+      key={o.id}
+      draggable={canEdit}
+      onDragStart={canEdit ? (e) => {
+        e.dataTransfer.setData('text/plain', o.id);
+        e.dataTransfer.effectAllowed = 'move';
+      } : undefined}
+      style={{
+        display: 'flex', alignItems: 'center', gap: 10, padding: '5px 10px',
+        fontSize: 12, borderBottom: '1px solid #f5f5f4',
+        cursor: canEdit ? 'grab' : 'default',
+      }}>
       <span style={{
         display: 'inline-block', padding: '2px 6px', borderRadius: 4,
         fontSize: 10, fontWeight: 600, minWidth: 30, textAlign: 'center',
