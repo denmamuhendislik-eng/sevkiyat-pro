@@ -5204,6 +5204,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const [faEdit, setFaEdit] = useState(null);
   const [mesImporting, setMesImporting] = useState(false);
   const [mesImportResult, setMesImportResult] = useState(null);
+  // v21: MES import sonuç paneli — manuel üzerine yazma detayları genişletilebilir
+  const [mesDetailsExpanded, setMesDetailsExpanded] = useState(false);
 
   // Adım 4 — Kapasite & Çizelge State
   const SCHED_DOC = "mrpSchedule";
@@ -6223,7 +6225,19 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     const parts = [...model.parts];
     const part = { ...parts[partIdx] };
     const ops = [...part.operations];
-    ops[opIdx] = { ...ops[opIdx], [field]: value === "" ? null : parseFloat(value) || null };
+    const prev = ops[opIdx];
+    // v21: Süre kaynak ayrımı — manuel edit işaretlenir, MES metadata temizlenir (MES gerçek sensör, manuel tahmin).
+    // Bir sonraki MES import "önceki manuel"i yakalayıp sonuç panelinde göstersin diye metadata tutuluyor.
+    const roleStr = isAdmin ? "admin" : isSales ? "satis" : (isUretim ? "üretim" : "bilinmiyor");
+    ops[opIdx] = {
+      ...prev,
+      [field]: value === "" ? null : parseFloat(value) || null,
+      manualSource: "manual",
+      manualAt: new Date().toISOString(),
+      manualBy: roleStr,
+      mesSource: null,
+      mesImportedAt: null,
+    };
     part.operations = ops;
     parts[partIdx] = part;
     model.parts = parts;
@@ -8440,14 +8454,20 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       Object.entries(wcCycleSums).forEach(([wc, s]) => { wcAvgCycle[wc] = Math.round((s.total / s.count) * 100) / 100; });
     }
 
-    // BOM eşleşmesi: akibet stok kodu → BOM part → wcCode'a göre operasyon cycle time
-    const getBomCycleTime = (akCode, wcCode) => {
+    // BOM eşleşmesi: akibet stok kodu → BOM part → operasyon cycle time
+    // v21 (23 Nis 2026) 151-0162 bug fix: bomSeqHint parametresi eklendi.
+    // Aynı wcCode'ta 2+ op varsa mappedOps'tan gelen doğru bomSeq indeksiyle eşleş — ilk-eşleşen tuzağından kaçın.
+    const getBomCycleTime = (akCode, wcCode, bomSeqHint = -1) => {
       const bom = bomLookup[akCode];
       if (!bom || !bom.operations) return null;
-      // wcCode ile eşleşen operasyonu bul
+      // Hint varsa doğru indeksi direkt al
+      if (bomSeqHint >= 0 && bom.operations[bomSeqHint] && bom.operations[bomSeqHint].cycleTime > 0) {
+        const op = bom.operations[bomSeqHint];
+        return { cycle: op.cycleTime, setup: op.setupTime || 0, source: "bom", opCode: op.opCode };
+      }
+      // Fallback: wcCode ile eşleşen ilk operasyon (mevcut davranış)
       const op = bom.operations.find(o => o.wcCode === wcCode && o.cycleTime > 0);
-      if (op) return { cycle: op.cycleTime, setup: op.setupTime || 0, source: "bom" };
-      // wcCode eşleşmezse herhangi bir cycle time'ı al (farklı kodlama olabilir)
+      if (op) return { cycle: op.cycleTime, setup: op.setupTime || 0, source: "bom", opCode: op.opCode };
       return null;
     };
 
@@ -8589,7 +8609,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
 
           dbgMatched++;
           // Çevrim süresi: 1) BOM birebir → 2) WC ortalama → 3) 5dk fallback
-          const bomTime = getBomCycleTime(akPart.code, wcCode);
+          // v21: mappedOps'taki doğru bomSeq hint'i geçiyoruz (aynı WC'de çoklu op bug'ı fix).
+          const bomTime = getBomCycleTime(akPart.code, wcCode, currentMapped?.bomSeq);
           let cycleTime, setupTime = 0, timeSource;
           if (bomTime) {
             cycleTime = bomTime.cycle; setupTime = bomTime.setup; timeSource = "bom"; dbgBomMatch++;
@@ -8605,7 +8626,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           items.push({
             key: wipKey, code: akPart.code, name: akPart.name,
             emirNo: order.emirNo, remaining: akOp.remaining,
-            opCode: null, opName: akOp.name,
+            // v21: opCode trace için yazılıyor (önce null idi — hangi BOM op'a eşleştiği görünsün)
+            opCode: bomTime?.opCode || null, opName: akOp.name,
             wcCode, wcName: centers[wcCode]?.name || wcCode,
             isFason: false, wipMin, cycleTime, setupTime, timeSource, machineId: assignedMachine,
             incomingQty, incomingOpName
@@ -8960,6 +8982,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         let matched = 0, notFound = 0;
         const updatedBom = { ...bomModels };
         const mKeys = Object.keys(updatedBom).filter(k => k !== "undefined");
+        // v21: Üzerine yazılan manuel değerler — MES import sonuç paneli için (geçici, state'e yazılır kapanınca kaybolur)
+        const manualOverwrites = [];
 
         for (const [key, mesOp] of Object.entries(result.ops)) {
           if (mesOp.cycleTime === 0) continue;
@@ -8978,12 +9002,30 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                     updatedBom[mk]._cloned = true;
                   }
                   updatedBom[mk].parts[pi] = { ...updatedBom[mk].parts[pi], operations: [...updatedBom[mk].parts[pi].operations] };
+                  const prevOp = updatedBom[mk].parts[pi].operations[oi];
+                  // v21: Üzerine yazma tespiti — manuel değer MES ile değişiyorsa log'la (sonuç paneli için)
+                  if (prevOp.manualSource && prevOp.cycleTime != null && prevOp.cycleTime > 0 && prevOp.cycleTime !== mesOp.cycleTime) {
+                    manualOverwrites.push({
+                      stockCode: mesOp.stockCode,
+                      opCode: prevOp.opCode,
+                      opName: prevOp.opName,
+                      previousValue: prevOp.cycleTime,
+                      previousBy: prevOp.manualBy || "bilinmiyor",
+                      previousAt: prevOp.manualAt || null,
+                      newValue: mesOp.cycleTime,
+                      deltaPercent: prevOp.cycleTime > 0 ? Math.round(((mesOp.cycleTime - prevOp.cycleTime) / prevOp.cycleTime) * 10000) / 100 : 0,
+                    });
+                  }
                   updatedBom[mk].parts[pi].operations[oi] = {
-                    ...updatedBom[mk].parts[pi].operations[oi],
+                    ...prevOp,
                     cycleTime: mesOp.cycleTime,
                     mesRenewalTime: mesOp.renewalTime,
                     mesSource: "MES Import " + new Date().toLocaleDateString("tr-TR"),
-                    mesImportedAt: new Date().toISOString()
+                    mesImportedAt: new Date().toISOString(),
+                    // v21: manuel metadata temizle (artık MES kaynağı)
+                    manualSource: null,
+                    manualAt: null,
+                    manualBy: null,
                   };
                   found = true;
                   matched++;
@@ -9052,7 +9094,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           }
         }
 
-        setMesImportResult({ success: true, totalOps: result.totalOps, totalRows: result.totalRows, matched, notFound, totalMachines: result.totalMachines, machinesAdded });
+        setMesImportResult({ success: true, totalOps: result.totalOps, totalRows: result.totalRows, matched, notFound, totalMachines: result.totalMachines, machinesAdded, manualOverwrites, importedAt: new Date().toISOString() });
       } catch (err) {
         setMesImportResult({ error: "Firestore kayıt hatası: " + err.message });
       }
@@ -9189,7 +9231,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
               )}
               {p.operations.map((op, oi) => {
                 const isFason = parseInt(op.opCode) >= 600;
-                const hasMes = !!op.mesSource;
+                // v21: Süre kaynak ayrımı — manuel varsa MES yeşil görünmez (öncelik manuel'de)
+                const hasMes = !!op.mesSource && !op.manualSource;
+                const hasManual = !!op.manualSource;
                 const wcOptions = workCenters?.centers ? Object.entries(workCenters.centers) : [];
                 return (
                   <div key={oi} style={{ display: "flex", gap: 6, alignItems: "center", padding: "4px 0", fontSize: 11, borderTop: oi > 0 ? "0.5px solid var(--color-border-tertiary)" : "none" }}>
@@ -9233,10 +9277,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                         <label style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Çvr:</label>
                         <input type="number" min="0" step="0.1" value={op.cycleTime ?? ""} placeholder="dk/ad"
                           onChange={e => updateOpTime(selectedModel, p.idx, oi, "cycleTime", e.target.value)}
-                          style={{ width: 44, padding: "2px 4px", borderRadius: 3, border: hasMes ? "1.5px solid #10B981" : "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center", background: hasMes ? "#ECFDF5" : "var(--color-background-primary)" }}
+                          style={{ width: 44, padding: "2px 4px", borderRadius: 3, border: hasMes ? "1.5px solid #10B981" : hasManual ? "1.5px solid #F59E0B" : "1px solid var(--color-border-secondary)", fontSize: 10, textAlign: "center", background: hasMes ? "#ECFDF5" : hasManual ? "#FFFBEB" : "var(--color-background-primary)" }}
                           disabled={!canEdit}
                         />
                         {hasMes && <span style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#ECFDF5", color: "#10B981" }}>MES</span>}
+                        {hasManual && <span title={`Manuel edit: ${op.manualBy || "?"} · ${op.manualAt ? new Date(op.manualAt).toLocaleDateString("tr-TR") : "?"}`} style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#FFFBEB", color: "#D97706" }}>MANUEL</span>}
                       </>
                     ) : (
                       <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3, background: "#FBEAF0", color: "#72243E" }}>FASON</span>
@@ -9250,7 +9295,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                 );
               })}
               <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 4, borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 3 }}>
-                Boş süre alanları varsayılan kullanır (Ayar: 30dk, Çevrim: 5dk/ad) · <span style={{ color: "#10B981" }}>Yeşil çerçeve = MES</span> · Op kodu ≥600 = FASON
+                Boş süre alanları varsayılan kullanır (Ayar: 30dk, Çevrim: 5dk/ad) · <span style={{ color: "#10B981" }}>🟢 Yeşil = MES</span> · <span style={{ color: "#D97706" }}>🟠 Turuncu = Manuel</span> · Op kodu ≥600 = FASON
               </div>
             </div>
           )}
@@ -9985,12 +10030,73 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
             <div style={{ padding: 10, background: "var(--color-background-danger)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-danger)" }}>{mesImportResult.error}</div>
           )}
           {mesImportResult && mesImportResult.success && (
-            <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)" }}>
-              ✓ MES: {mesImportResult.totalRows} satır · {mesImportResult.totalOps} parça×operasyon · <b>{mesImportResult.matched} eşleşti</b> · {mesImportResult.notFound} BOM'da bulunamadı
+            <div style={{ padding: 12, background: "var(--color-background-success)", borderRadius: 8, marginBottom: 12, fontSize: 12, color: "var(--color-text-success)", position: "relative" }}>
+              {/* v21: Kapatma butonu */}
+              <span onClick={() => { setMesImportResult(null); setMesDetailsExpanded(false); }}
+                    title="Paneli kapat"
+                    style={{ position: "absolute", top: 6, right: 10, cursor: "pointer", fontSize: 14, color: "var(--color-text-tertiary)", lineHeight: 1, padding: "2px 6px" }}>×</span>
+              <div style={{ paddingRight: 20 }}>
+                ✓ MES: {mesImportResult.totalRows} satır · {mesImportResult.totalOps} parça×operasyon · <b>{mesImportResult.matched} eşleşti</b> · {mesImportResult.notFound} BOM'da bulunamadı
+                {(mesImportResult.manualOverwrites?.length || 0) > 0 && (
+                  <span style={{ color: "#D97706", fontWeight: 500, marginLeft: 4 }}>
+                    · <b>{mesImportResult.manualOverwrites.length}</b> manuel üzerine yazıldı
+                  </span>
+                )}
+              </div>
               {mesImportResult.machinesAdded > 0 && (
                 <span style={{ display: "block", marginTop: 4, fontSize: 11 }}>
                   ↳ Tezgah: {mesImportResult.totalMachines} tespit · <b>{mesImportResult.machinesAdded} yeni eklendi</b> (İş Merkezleri tab'ından kontrol edin)
                 </span>
+              )}
+              {/* v21: Manuel üzerine yazma detay paneli */}
+              {(mesImportResult.manualOverwrites?.length || 0) > 0 && (
+                <div style={{ marginTop: 8 }}>
+                  <button onClick={() => setMesDetailsExpanded(!mesDetailsExpanded)}
+                          style={{ padding: "4px 10px", fontSize: 10, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "transparent", cursor: "pointer", color: "var(--color-text-primary)" }}>
+                    {mesDetailsExpanded ? "Detayları gizle ▲" : `Detayları göster ▼`}
+                  </button>
+                  {mesDetailsExpanded && (
+                    <div style={{ marginTop: 8, maxHeight: 320, overflowY: "auto", border: "1px solid var(--color-border-tertiary)", borderRadius: 6, background: "var(--color-background-primary)" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <thead>
+                          <tr style={{ color: "var(--color-text-tertiary)", background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
+                            <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--color-border-tertiary)" }}>Stok / Operasyon</th>
+                            <th style={{ textAlign: "right", padding: "6px 8px", borderBottom: "1px solid var(--color-border-tertiary)" }}>Önceki (Manuel) ✋</th>
+                            <th style={{ textAlign: "right", padding: "6px 8px", borderBottom: "1px solid var(--color-border-tertiary)" }}>Yeni (MES) 📊</th>
+                            <th style={{ textAlign: "right", padding: "6px 8px", borderBottom: "1px solid var(--color-border-tertiary)" }}>Fark</th>
+                            <th style={{ textAlign: "left", padding: "6px 8px", borderBottom: "1px solid var(--color-border-tertiary)" }}>Kim · Ne zaman</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {[...mesImportResult.manualOverwrites]
+                            .sort((a, b) => Math.abs(b.deltaPercent) - Math.abs(a.deltaPercent))
+                            .map((ov, i) => {
+                              const absDelta = Math.abs(ov.deltaPercent);
+                              const rowBg = absDelta > 20 ? "#FEE2E2" : absDelta >= 5 ? "#FEF3C7" : "transparent";
+                              const deltaColor = absDelta > 20 ? "#991B1B" : absDelta >= 5 ? "#854D0E" : "var(--color-text-secondary)";
+                              const icon = absDelta > 20 ? "🔴" : absDelta >= 5 ? "🟡" : "";
+                              return (
+                                <tr key={i} style={{ borderBottom: "1px solid var(--color-border-tertiary)", background: rowBg, color: "var(--color-text-primary)" }}>
+                                  <td style={{ padding: "4px 8px" }}>
+                                    <span style={{ fontFamily: "var(--font-mono)", fontWeight: 500 }}>{ov.stockCode}</span>
+                                    <span style={{ marginLeft: 6, color: "var(--color-text-secondary)" }}>{ov.opName || `Op${ov.opCode || "?"}`}</span>
+                                  </td>
+                                  <td style={{ padding: "4px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{ov.previousValue} dk/ad</td>
+                                  <td style={{ padding: "4px 8px", textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>{ov.newValue} dk/ad</td>
+                                  <td style={{ padding: "4px 8px", textAlign: "right", color: deltaColor, fontWeight: 500, fontVariantNumeric: "tabular-nums" }}>
+                                    {ov.deltaPercent > 0 ? "+" : ""}%{ov.deltaPercent} {icon}
+                                  </td>
+                                  <td style={{ padding: "4px 8px", fontSize: 9, color: "var(--color-text-tertiary)" }}>
+                                    {ov.previousBy || "?"} · {ov.previousAt ? new Date(ov.previousAt).toLocaleDateString("tr-TR") : "?"}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
               )}
             </div>
           )}
