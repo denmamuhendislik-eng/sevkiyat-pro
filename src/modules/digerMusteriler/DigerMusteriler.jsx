@@ -732,18 +732,16 @@ function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
         background: multi ? 'rgba(199,210,254,0.06)' : 'transparent',
         marginBottom: 2, borderRadius: '0 4px 4px 0',
       }}>
-        {multi && (
-          <div style={{
-            fontSize: 10, color: '#64748b', padding: '3px 10px', fontWeight: 500,
-          }}>Belge {g.belgeNo} · {g.items.length} satır</div>
-        )}
-        {g.items.map(o => renderOrderRow(o, currentWeek, isLateContext, ctx, !multi))}
+        <div style={{
+          fontSize: 10, color: '#64748b', padding: '3px 10px', fontWeight: 500,
+        }}>Belge {g.belgeNo}{multi ? ` · ${g.items.length} satır` : ''}</div>
+        {g.items.map(o => renderOrderRow(o, currentWeek, isLateContext, ctx))}
       </div>
     );
   });
 }
 
-function renderOrderRow(o, currentWeek, isLateContext, ctx, showBelgeInline = false) {
+function renderOrderRow(o, currentWeek, isLateContext, ctx) {
   const { canEdit, openPicker, planOverrides, bomSet } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
@@ -770,15 +768,6 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx, showBelgeInline = fa
         fontSize: 10, fontWeight: 600, minWidth: 30, textAlign: 'center',
         background: badge.bg, color: badge.fg,
       }}>{badge.label}</span>
-      {showBelgeInline && o.belgeNo && (
-        <span
-          title={`Belge No ${o.belgeNo}`}
-          style={{
-            fontSize: 10, color: '#78716c', fontFamily: 'ui-monospace, monospace',
-            whiteSpace: 'nowrap', minWidth: 48,
-          }}
-        >#{o.belgeNo}</span>
-      )}
       <span style={{
         fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11,
         minWidth: 170, color: '#1c1917',
