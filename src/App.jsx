@@ -561,6 +561,189 @@ export default function App() {
     setEditOrderPid(null);
   };
 
+  // v21 (23 Nis 2026): Yeni Türkçe VIO format desteği — auto-detect + detaylı parser + history kaydı.
+  // Eski CODE/QUANTITY format processVioFile içinde aynen çalışmaya devam eder (fallback).
+  const detectVioFormat = (rows) => {
+    for (let i = 0; i < Math.min(15, rows.length); i++) {
+      const r = (rows[i] || []).map(v => String(v || '').toLocaleLowerCase('tr-TR').trim());
+      if (r.some(v => v === 'stok kodu') && r.some(v => v.includes('orijinal miktar'))) return 'new';
+      if (r.some(v => v.includes('code')) && r.some(v => v.includes('quantity') || v.includes('qty'))) return 'old';
+    }
+    return null;
+  };
+
+  // appData/vioImportHistory nested-map doc — Seviye 1 izolasyon (yeni doc, mevcut yearsData dokunulmaz)
+  const saveVioImportHistory = async (entry) => {
+    if (!db) return;
+    const importId = entry.importedAt.replace(/[:.T]/g, '-');
+    await setDoc(doc(db, 'appData', 'vioImportHistory'), { [importId]: entry }, { merge: true });
+  };
+
+  const parseNewVioFormat = (rows, filename) => {
+    // cols dinamik olarak walk içinde "Tarih" header satırı görüldüğünde doldurulur.
+    // Multi-customer raporlarda bu satır her müşteri bloğunda tekrar eder → her seferinde cols yeniden kurulur.
+    // Walk'u 0'dan başlatıyoruz ki "Müşteri" başlık satırı (header'dan önce) atlanmasın.
+    let cols = null;
+
+    // pNum — v18.16 pattern (string + number desteği)
+    const pNumVio = (v) => {
+      if (v === '' || v == null) return 0;
+      if (typeof v === 'number') return isNaN(v) ? 0 : v;
+      const s = String(v).trim();
+      if (!s) return 0;
+      const n = parseFloat(s.replace(/\./g, '').replace(',', '.'));
+      return isNaN(n) ? 0 : n;
+    };
+    // parseSerialDate — parseAkibetExcel (App.jsx:7002) pattern (Excel serial + DD.MM.YYYY)
+    const parseSerialDateVio = (v) => {
+      if (v === '' || v == null) return '';
+      const s = String(v).trim();
+      if (!s) return '';
+      const m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+      if (m) return m[3] + '-' + m[2].padStart(2, '0') + '-' + m[1].padStart(2, '0');
+      const n = Number(s);
+      if (!isNaN(n) && n > 25000 && n < 100000) {
+        const d = new Date((n - 25569) * 86400 * 1000);
+        if (!isNaN(d.getTime())) return d.toISOString().substring(0, 10);
+      }
+      return '';
+    };
+
+    let currentCustomer = '', currentCustomerName = '';
+    const matched = [], unmatched = [];
+    const detailRows = [];
+
+    const nameLookup = {};
+    products.forEach(p => {
+      const tokens = p.nameTR.split(/\s+/);
+      const key = tokens[0].toUpperCase().replace(/[,]/g, '.');
+      if (!nameLookup[key]) nameLookup[key] = [];
+      nameLookup[key].push(p);
+      if (tokens.length >= 2) {
+        const key2 = (tokens[0] + ' ' + tokens[1]).toUpperCase().replace(/[,]/g, '.');
+        if (!nameLookup[key2]) nameLookup[key2] = [];
+        nameLookup[key2].push(p);
+      }
+    });
+
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r) continue;
+      const c0 = String(r[0] || '').trim();
+
+      // Multi-customer header ("Müşteri 120-XXXX AD")
+      if (c0.startsWith('Müşteri')) {
+        const m = c0.match(/Müşteri\s+(\S+)\s+(.+)/);
+        if (m) { currentCustomer = m[1].trim(); currentCustomerName = m[2].trim(); }
+        continue;
+      }
+      // Kolon başlık satırı — cols'u (yeniden) kur (her müşteri bloğunda bir)
+      if (c0 === 'Tarih') {
+        cols = {};
+        r.forEach((cell, ci) => {
+          const h = String(cell || '').toLocaleLowerCase('tr-TR').trim();
+          if (h === 'tarih') cols.orderDate = ci;
+          else if (h === 'belge no') cols.belgeNo = ci;
+          else if (h === 'stok kodu') cols.stokKodu = ci;
+          else if (h === 'stok adı' || h === 'stok adi') cols.stokAdi = ci;
+          else if (h === 'teslim tarihi') cols.teslimTarihi = ci;
+          else if (h === 'brm') cols.brm = ci;
+          else if (h.includes('orijinal miktar')) cols.orijinalMiktar = ci;
+          else if (h.includes('sevk edilen')) cols.sevkEdilen = ci;
+          else if (h.includes('kalan miktar')) cols.kalanMiktar = ci;
+          else if (h.includes('dv.fiyat') || h.includes('dv fiyat')) cols.dvFiyat = ci;
+          else if (h === 'fiyat') cols.fiyat = ci;
+          else if (h === 'grup adı' || h === 'grup adi') cols.grupAdi = ci;
+          else if (h.includes('toplam bedel')) cols.toplamBedel = ci;
+        });
+        continue;
+      }
+
+      // Data satırı — cols henüz kurulmadıysa atla (metadata/başlık bölgesi)
+      if (!cols || cols.stokKodu === undefined) continue;
+
+      const code = String(r[cols.stokKodu] || '').trim();
+      if (!code || code === 'Stok Kodu') continue;
+      const qty = pNumVio(r[cols.kalanMiktar]);
+      if (qty <= 0) continue;
+
+      // Detail — tüm kolonlar saklanır (history için)
+      const detail = {
+        customerCode: currentCustomer,
+        customerName: currentCustomerName,
+        orderDate: parseSerialDateVio(r[cols.orderDate]),
+        belgeNo: String(r[cols.belgeNo] || '').trim(),
+        stokKodu: code,
+        stokAdi: String(r[cols.stokAdi] || '').trim(),
+        teslimTarihi: parseSerialDateVio(r[cols.teslimTarihi]),
+        brm: String(r[cols.brm] || '').trim(),
+        orijinalMiktar: pNumVio(r[cols.orijinalMiktar]),
+        sevkEdilen: pNumVio(r[cols.sevkEdilen]),
+        kalanMiktar: pNumVio(r[cols.kalanMiktar]),
+        dvFiyat: pNumVio(r[cols.dvFiyat]),
+        fiyat: pNumVio(r[cols.fiyat]),
+        grupAdi: String(r[cols.grupAdi] || '').trim(),
+        toplamBedel: pNumVio(r[cols.toplamBedel]),
+      };
+      detailRows.push(detail);
+
+      // Product matching — eski format ile aynı pattern
+      let pid = VIO_REVERSE[code];
+      if (!pid) {
+        const byVio = products.find(pr => pr.vioCode === code);
+        if (byVio) pid = byVio.id;
+      }
+      if (pid) {
+        const p = products.find(pr => pr.id === pid);
+        matched.push({ pid, code, qty, name: p?.nameTR || code, nameEN: p?.nameEN || '', kg: p?.kg || 0, matchType: 'code' });
+      } else {
+        // İsim fallback — eski format'ın aynısı
+        const descUp = detail.stokAdi.toUpperCase().replace(/[,]/g, '.');
+        const descTokens = descUp.split(/\s+/).filter(t => t.length > 0);
+        let nameMatch = null;
+        if (descTokens.length >= 2) {
+          const key2 = descTokens[0] + ' ' + descTokens[1];
+          if (nameLookup[key2]?.length === 1) nameMatch = nameLookup[key2][0];
+        }
+        if (!nameMatch && descTokens.length >= 1) {
+          if (nameLookup[descTokens[0]]?.length === 1) nameMatch = nameLookup[descTokens[0]][0];
+        }
+        if (!nameMatch) {
+          const codeToken = code.toUpperCase();
+          if (nameLookup[codeToken]?.length === 1) nameMatch = nameLookup[codeToken][0];
+        }
+        if (!nameMatch && descTokens.length > 0 && descTokens[0].length >= 4) {
+          const candidates = products.filter(p => p.nameTR.toUpperCase().replace(/[,]/g, '.').startsWith(descTokens[0]));
+          if (candidates.length === 1) nameMatch = candidates[0];
+        }
+        if (nameMatch) {
+          matched.push({ pid: nameMatch.id, code, qty, name: nameMatch.nameTR, nameEN: nameMatch.nameEN || '', kg: nameMatch.kg || 0, matchType: 'name', originalCode: code, expectedCode: VIO_CODES[nameMatch.id] || '?' });
+        } else {
+          unmatched.push({ code, qty, desc: detail.stokAdi, nameTR: '', nameEN: detail.stokAdi, kg: '', approved: false });
+        }
+      }
+    }
+
+    // combRules cascade — eski format ile birebir aynı logic
+    const cascadeMap = {};
+    matched.forEach(m => {
+      combRules.filter(r => r.parent === m.pid).forEach(rule => {
+        rule.children.forEach(childId => {
+          if (!cascadeMap[childId]) {
+            const childP = products.find(pr => pr.id === childId);
+            cascadeMap[childId] = { pid: childId, name: childP?.nameTR || `#${childId}`, code: childP?.vioCode || VIO_CODES[childId] || '—', qty: 0, parents: [] };
+          }
+          cascadeMap[childId].qty += m.qty;
+          cascadeMap[childId].parents.push({ pid: m.pid, name: m.name, qty: m.qty });
+        });
+      });
+    });
+    const cascadeItems = Object.values(cascadeMap);
+
+    setImportData({ matched, unmatched, cascadeItems, detailRows, filename, format: 'new' });
+    setImportNewProducts(unmatched.map(u => ({ ...u })));
+  };
+
   const processVioFile = (file) => {
     if(!file) return;
     const reader = new FileReader();
@@ -568,6 +751,13 @@ export default function App() {
       const wb = XLSX.read(evt.target.result, {type:"array"});
       const ws = wb.Sheets[wb.SheetNames[0]];
       const rows = XLSX.utils.sheet_to_json(ws, {header:1});
+      // Auto-detect: yeni Türkçe VIO format'ı mı?
+      const detectedFormat = detectVioFormat(rows);
+      if (detectedFormat === 'new') {
+        parseNewVioFormat(rows, file?.name || 'unknown.xlsx');
+        return;
+      }
+      // Eski format (CODE/QUANTITY) — aşağıdaki mevcut kod aynen çalışır
       // Find header row with CODE/DESCRIPTION/QUANTITY
       let headerIdx = -1;
       for(let i=0;i<Math.min(10,rows.length);i++){
@@ -756,7 +946,7 @@ export default function App() {
     XLSX.writeFile(wb, `VIO_Import_Onizleme_${importYear}_${dateStr}.xlsx`);
   };
 
-  const executeImport = () => {
+  const executeImport = async () => {
     if(!importData||!allowedYears.includes(importYear)) return;
     setYearsData(prev=>{
       const y={...(prev[importYear]||{containers:[],orders:{},carryOver:{},quantities:{}})};
@@ -775,6 +965,28 @@ export default function App() {
       });
       return{...prev,[importYear]:{...y,orders}};
     });
+    // v21: Yeni format için detaylı import history'ye yaz (Seviye 1 izolasyon — yeni doc)
+    if (importData.format === 'new' && importData.detailRows?.length > 0) {
+      try {
+        const totalBedel = importData.detailRows.reduce((s, d) => s + (d.toplamBedel || 0), 0);
+        await saveVioImportHistory({
+          importedAt: new Date().toISOString(),
+          filename: importData.filename || 'unknown.xlsx',
+          importedBy: authUser?.email || userRole || 'bilinmiyor',
+          year: importYear,
+          rowCount: importData.detailRows.length,
+          matchedCount: importData.matched.length,
+          unmatchedCount: importData.unmatched.length,
+          cascadeCount: importData.cascadeItems?.length || 0,
+          totalBedel,
+          currency: 'TL',
+          rows: importData.detailRows,
+        });
+      } catch (e) {
+        console.error('vioImportHistory kaydı başarısız:', e);
+        // Kayıt hatası yearsData yazımını bozmaz — alert'e eklemeyelim, sessizce log
+      }
+    }
     const nameMatchCount = importData.matched.filter(m => m.matchType === "name").length;
     alert(`${importData.matched.length} ürün siparişi ${importYear} yılına aktarıldı!${nameMatchCount > 0 ? `\n⚠ ${nameMatchCount} ürün isim eşleşmesi ile bulundu (kod farklı).` : ""}`);
     setImportData(null);setImportNewProducts([]);
