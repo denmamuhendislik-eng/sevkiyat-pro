@@ -157,9 +157,6 @@ export default function App() {
   // v21 Aşama 2: VIO Import tarihçesi — appData/vioImportHistory doc (yeni format için detaylı audit)
   const [vioImportHistory, setVioImportHistory] = useState({});
   const [vioHistoryExpanded, setVioHistoryExpanded] = useState({});
-  // v21: VIO Import tarihçesi — appData/vioImportHistory doc (yeni format için)
-  const [vioImportHistory, setVioImportHistory] = useState({});
-  const [vioHistoryExpanded, setVioHistoryExpanded] = useState({});
   // Packing states
   const [packingCid, setPackingCid] = useState(null); // which container is being packed
   const [pallets, setPallets] = useState([]); // array of pallet objects
