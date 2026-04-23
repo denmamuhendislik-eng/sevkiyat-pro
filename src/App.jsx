@@ -6540,23 +6540,27 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         const opObj = { opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null };
         totalOps++;
 
-        // Assign to parent part: most recent part at level N-1, fallback to same level N
-        let ownerLevel = level - 1;
-        let ownerIdx = partStack[ownerLevel];
-        if (ownerIdx === undefined) {
-          // Fallback: try same level (some BOMs have op at same indent as part)
-          ownerIdx = partStack[level];
-        }
-        if (ownerIdx === undefined && level > 0) {
-          // Fallback: try any lower level
-          for (let lv = level - 2; lv >= 0; lv--) {
-            if (partStack[lv] !== undefined) { ownerIdx = partStack[lv]; break; }
-          }
+        // Op owner resolution: seviye-1'den aşağı doğru ara, RAW/BUY part'ları atla.
+        // Hammadde/satın-alma op sahibi olamaz; op'lar üretilen ürüne (MAKE/MAKE+FASON/FASON/PRODUCT) aittir.
+        // FIX 23 Nis 2026: önceki kod aynı level'daki RAW/BUY part'a op atıyordu —
+        // "hammadde + hammaddesiz op" yapılarında (151-0006 örneği) op'lar yanlış part'a
+        // (RAW) kaydırılıyordu. Etkilenen BOM'lar: 152-0148, 152-0812, 152-0128.
+        let ownerIdx;
+        for (let lv = level - 1; lv >= 0; lv--) {
+          const idx = partStack[lv];
+          if (idx === undefined) continue;
+          const p = parts[idx];
+          if (!p) continue;
+          if (p.supplyType === "RAW" || p.supplyType === "BUY") continue;
+          ownerIdx = idx;
+          break;
         }
         if (ownerIdx !== undefined && parts[ownerIdx]) {
           parts[ownerIdx].operations.push(opObj);
         } else {
-          // No parent part yet — buffer for assignment to next part
+          // MAKE/FASON parent bulunamadı — orphan buffer'a. Walk sonunda synthetic root
+          // oluşuyorsa orphan'lar ona atanır; sonraki MAKE part gelirse oraya aktarılmaz
+          // (current kod synthetic root fallback'ına güveniyor, ki test'te 151-0006 için doğru).
           orphanOps.push(opObj);
         }
 
