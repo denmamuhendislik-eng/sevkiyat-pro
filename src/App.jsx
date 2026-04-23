@@ -154,6 +154,9 @@ export default function App() {
   const [importYear, setImportYear] = useState(new Date().getFullYear());
   const [importNewProducts, setImportNewProducts] = useState([]);
   const [vioDragOver, setVioDragOver] = useState(false);
+  // v21 Aşama 2: VIO Import tarihçesi — appData/vioImportHistory doc (yeni format için detaylı audit)
+  const [vioImportHistory, setVioImportHistory] = useState({});
+  const [vioHistoryExpanded, setVioHistoryExpanded] = useState({});
   // Packing states
   const [packingCid, setPackingCid] = useState(null); // which container is being packed
   const [pallets, setPallets] = useState([]); // array of pallet objects
@@ -213,6 +216,17 @@ export default function App() {
       setPage("planning");
     }
   }, [userRole, page]);
+
+  // v21 Aşama 2: VIO Import tarihçesi listener — appData/vioImportHistory (read-only, Seviye 1 izolasyon)
+  useEffect(() => {
+    if (!db) return;
+    const ref = doc(db, "appData", "vioImportHistory");
+    const unsub = onSnapshot(ref,
+      snap => { setVioImportHistory(snap.exists() ? snap.data() : {}); },
+      err => { console.error("vioImportHistory listener:", err); setVioImportHistory({}); }
+    );
+    return () => unsub();
+  }, []);
 
   // Listen to Firestore data changes
   useEffect(() => {
@@ -2609,8 +2623,89 @@ ${el.innerHTML}
             {!importData&&<div style={{textAlign:"center",padding:40,color:"var(--color-text-tertiary)"}}>
               <div style={{fontSize:36,marginBottom:10}}>📥</div>
               <div style={{fontSize:13}}>VIO'dan export aldığınız Excel dosyasını yükleyin</div>
-              <div style={{fontSize:11,marginTop:6}}>Dosyada CODE ve QUANTITY sütunları olmalıdır</div>
+              <div style={{fontSize:11,marginTop:6}}>Desteklenen formatlar: eski (CODE / QUANTITY) · yeni (Stok Kodu / Orijinal Miktar — 13 kolon, multi-müşteri)</div>
             </div>}
+
+            {/* v21 Aşama 2: Son Yüklemeler — VIO Import tarihçesi (yeni format için) */}
+            <div style={{marginTop:24,paddingTop:20,borderTop:"1px solid var(--color-border-tertiary)"}}>
+              <h4 style={{fontSize:13,fontWeight:600,marginBottom:10,color:"var(--color-text-primary)"}}>
+                📋 Son Yüklemeler <span style={{fontSize:11,fontWeight:400,color:"var(--color-text-tertiary)"}}>({Object.keys(vioImportHistory || {}).length})</span>
+              </h4>
+              {Object.keys(vioImportHistory || {}).length === 0 ? (
+                <div style={{padding:14,textAlign:"center",color:"var(--color-text-tertiary)",fontSize:11,border:"1px dashed var(--color-border-tertiary)",borderRadius:8}}>
+                  Henüz yükleme geçmişi yok. Yeni format Excel yükleyip "Siparişleri Aktar" dediğinde burada listelenir. (Eski format için tarihçe tutulmaz — sadece yeni format detaylı audit log yazar.)
+                </div>
+              ) : (
+                <div>
+                  {Object.entries(vioImportHistory || {})
+                    .sort(([,a], [,b]) => (b?.importedAt || "").localeCompare(a?.importedAt || ""))
+                    .map(([id, entry]) => {
+                      const exp = !!vioHistoryExpanded[id];
+                      const ts = entry?.importedAt ? new Date(entry.importedAt) : null;
+                      const tsLabel = ts && !isNaN(ts.getTime())
+                        ? `${ts.toLocaleDateString("tr-TR")} ${ts.toLocaleTimeString("tr-TR", {hour:"2-digit", minute:"2-digit"})}`
+                        : "—";
+                      const totalBedelStr = (entry?.totalBedel || 0).toLocaleString("tr-TR", {maximumFractionDigits:0});
+                      return (
+                        <div key={id} style={{border:"1px solid var(--color-border-tertiary)",borderRadius:8,marginBottom:6,overflow:"hidden"}}>
+                          <div
+                            onClick={() => setVioHistoryExpanded(prev => ({...prev, [id]: !prev[id]}))}
+                            style={{padding:"8px 12px",cursor:"pointer",display:"flex",alignItems:"center",gap:12,fontSize:11,background:exp?"var(--color-background-secondary)":"transparent",flexWrap:"wrap"}}
+                          >
+                            <span style={{fontSize:10,color:"var(--color-text-tertiary)",width:12}}>{exp ? "▼" : "▶"}</span>
+                            <span style={{fontWeight:500,minWidth:110}}>{tsLabel}</span>
+                            <span style={{fontFamily:"monospace",color:"var(--color-text-secondary)",flex:1,minWidth:120,textOverflow:"ellipsis",overflow:"hidden",whiteSpace:"nowrap"}} title={entry?.filename}>{entry?.filename || "—"}</span>
+                            <span style={{color:"var(--color-text-tertiary)",minWidth:44}}>{entry?.year || "—"}</span>
+                            <span style={{color:"var(--color-text-secondary)",minWidth:68}}>{entry?.rowCount || 0} satır</span>
+                            <span style={{fontWeight:500,minWidth:90,textAlign:"right",fontVariantNumeric:"tabular-nums"}}>{totalBedelStr} {entry?.currency || "TL"}</span>
+                            <span style={{fontSize:9,color:"#16A34A",minWidth:90}}>✓ {entry?.matchedCount || 0} eşleşen</span>
+                            {(entry?.unmatchedCount || 0) > 0 && <span style={{fontSize:9,color:"#BA7517"}}>⚠ {entry.unmatchedCount} tanınmayan</span>}
+                            {entry?.importedBy && <span style={{fontSize:9,color:"var(--color-text-tertiary)"}}>· {entry.importedBy}</span>}
+                          </div>
+                          {exp && entry?.rows && entry.rows.length > 0 && (
+                            <div style={{padding:"8px 12px",background:"var(--color-background-primary)",borderTop:"1px solid var(--color-border-tertiary)",overflowX:"auto"}}>
+                              <table style={{width:"100%",borderCollapse:"collapse",fontSize:10,minWidth:900}}>
+                                <thead>
+                                  <tr style={{borderBottom:"1px solid var(--color-border-tertiary)",color:"var(--color-text-tertiary)"}}>
+                                    <th style={{textAlign:"left",padding:"4px 6px"}}>Müşteri</th>
+                                    <th style={{textAlign:"left",padding:"4px 6px"}}>Belge No</th>
+                                    <th style={{textAlign:"left",padding:"4px 6px"}}>Sip.Tarih</th>
+                                    <th style={{textAlign:"left",padding:"4px 6px"}}>Teslim</th>
+                                    <th style={{textAlign:"left",padding:"4px 6px"}}>Stok Kodu</th>
+                                    <th style={{textAlign:"left",padding:"4px 6px"}}>Ad</th>
+                                    <th style={{textAlign:"right",padding:"4px 6px"}}>Kalan</th>
+                                    <th style={{textAlign:"right",padding:"4px 6px"}}>Fiyat</th>
+                                    <th style={{textAlign:"right",padding:"4px 6px"}}>Dv.Fiyat</th>
+                                    <th style={{textAlign:"left",padding:"4px 6px"}}>Grup</th>
+                                    <th style={{textAlign:"right",padding:"4px 6px"}}>Toplam Bedel</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {entry.rows.map((r, ri) => (
+                                    <tr key={ri} style={{borderBottom:"1px solid var(--color-border-tertiary)"}}>
+                                      <td style={{padding:"3px 6px"}} title={r?.customerName}>{r?.customerCode || "—"}</td>
+                                      <td style={{padding:"3px 6px",fontFamily:"monospace"}}>{r?.belgeNo || "—"}</td>
+                                      <td style={{padding:"3px 6px"}}>{r?.orderDate || "—"}</td>
+                                      <td style={{padding:"3px 6px"}}>{r?.teslimTarihi || "—"}</td>
+                                      <td style={{padding:"3px 6px",fontFamily:"monospace"}}>{r?.stokKodu || "—"}</td>
+                                      <td style={{padding:"3px 6px",maxWidth:220,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}} title={r?.stokAdi}>{r?.stokAdi || "—"}</td>
+                                      <td style={{padding:"3px 6px",textAlign:"right",fontVariantNumeric:"tabular-nums"}}>{r?.kalanMiktar || 0} {r?.brm || ""}</td>
+                                      <td style={{padding:"3px 6px",textAlign:"right",fontVariantNumeric:"tabular-nums"}}>{(r?.fiyat || 0).toLocaleString("tr-TR", {maximumFractionDigits:2})}</td>
+                                      <td style={{padding:"3px 6px",textAlign:"right",color:"var(--color-text-secondary)",fontVariantNumeric:"tabular-nums"}}>{r?.dvFiyat ? r.dvFiyat.toLocaleString("tr-TR", {maximumFractionDigits:2}) : "—"}</td>
+                                      <td style={{padding:"3px 6px",fontSize:9,color:"var(--color-text-secondary)"}}>{r?.grupAdi || "—"}</td>
+                                      <td style={{padding:"3px 6px",textAlign:"right",fontWeight:500,fontVariantNumeric:"tabular-nums"}}>{(r?.toplamBedel || 0).toLocaleString("tr-TR", {maximumFractionDigits:0})}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                </div>
+              )}
+            </div>
           </div>}
           {page==="import"&&!isAdmin&&<div style={{textAlign:"center",padding:40,color:"var(--color-text-tertiary)"}}>
             <div style={{fontSize:36,marginBottom:10}}>🔒</div>
