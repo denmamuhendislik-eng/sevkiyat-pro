@@ -5209,6 +5209,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const [bomSearch, setBomSearch] = useState("");
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  // bomImportConfirm: { mode: 'new-overwrite' | 'override-protect', modelCode, prevCount, prevOps, newCount, newOps, overrideCount, opTimeDetail, resolve }
+  // window.confirm yerine inline modal — Chrome dialog suppression'dan bağımsız.
+  const [bomImportConfirm, setBomImportConfirm] = useState(null);
   const [wcEdit, setWcEdit] = useState(null);
   const [faEdit, setFaEdit] = useState(null);
   const [mesImporting, setMesImporting] = useState(false);
@@ -7042,37 +7045,47 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         }
 
         // Faz 2.1d: mevcut BOM için her zaman onay iste. Override varsa koru/sıfırla ayrımı.
+        // FIX 24 Nis 2026: window.confirm Chrome dialog suppression'a takılıyordu — inline modal ile değiştirildi.
         let keepOverrides = true;
         if (existingModel) {
           if (overrideCount === 0 && opTimeCount === 0) {
-            // Manuel değişiklik yok — basit "üzerine yazılsın mı" onayı
             const prevCount = existingModel.partCount || existingModel.parts?.length || 0;
             const prevOps = existingModel.opCount || 0;
-            const msg = [
-              `${result.modelCode} zaten mevcut.`,
-              `• Önceki: ${prevCount} parça, ${prevOps} op`,
-              `• Yeni: ${result.partCount} parça, ${result.opCount} op`,
-              "",
-              "Üzerine yazılsın mı?",
-              "(İptal = mevcut BOM dokunulmaz)"
-            ].join("\n");
-            if (!confirm(msg)) {
+            const ok = await new Promise((resolve) => {
+              setBomImportConfirm({
+                mode: "new-overwrite",
+                modelCode: result.modelCode,
+                prevCount, prevOps,
+                newCount: result.partCount, newOps: result.opCount,
+                resolve
+              });
+            });
+            setBomImportConfirm(null);
+            if (!ok) {
               setImporting(false);
               setImportResult(null);
               return;
             }
           } else {
-            // Manuel değişiklik var — override koruma
-            const opDetail = opTimeCount > 0 ? `• ${opTimeCount} operasyonda süre tanımlı` + (mesOpCount > 0 && manualOpCount > 0 ? ` (${mesOpCount} MES + ${manualOpCount} manuel)` : mesOpCount > 0 ? ` (${mesOpCount} MES)` : ` (${manualOpCount} manuel)`) : "";
-            const msg = [
-              `${result.modelCode} zaten mevcut.`,
-              overrideCount > 0 ? `• ${overrideCount} parçada supply type override var` : "",
-              opDetail,
-              "",
-              "Bu değişiklikler korunsun mu?",
-              "(İptal = sıfırla, Tamam = koru)"
-            ].filter(Boolean).join("\n");
-            keepOverrides = confirm(msg);
+            const opTimeDetail = opTimeCount > 0
+              ? `${opTimeCount} operasyonda süre tanımlı` +
+                (mesOpCount > 0 && manualOpCount > 0 ? ` (${mesOpCount} MES + ${manualOpCount} manuel)` : mesOpCount > 0 ? ` (${mesOpCount} MES)` : ` (${manualOpCount} manuel)`)
+              : "";
+            const decision = await new Promise((resolve) => {
+              setBomImportConfirm({
+                mode: "override-protect",
+                modelCode: result.modelCode,
+                overrideCount, opTimeDetail,
+                resolve
+              });
+            });
+            setBomImportConfirm(null);
+            if (decision === "cancel") {
+              setImporting(false);
+              setImportResult(null);
+              return;
+            }
+            keepOverrides = decision === "keep";
           }
         }
 
@@ -10023,6 +10036,47 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                   ↳ Korunan: {importResult.overridesKept > 0 && `${importResult.overridesKept} supply type override`}{importResult.overridesKept > 0 && importResult.opTimesKept > 0 && " · "}{importResult.opTimesKept > 0 && `${importResult.opTimesKept} operasyon süresi`}
                 </span>
               )}
+            </div>
+          )}
+
+          {/* BOM Import Confirm Modal — window.confirm yerine (Chrome suppression fix) */}
+          {bomImportConfirm && (
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 9999, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+              <div style={{ background: "var(--color-background-primary)", borderRadius: 12, padding: 24, maxWidth: 480, width: "100%", boxShadow: "0 10px 40px rgba(0,0,0,0.2)" }}>
+                <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 12 }}>
+                  {bomImportConfirm.modelCode} zaten mevcut
+                </div>
+                {bomImportConfirm.mode === "new-overwrite" && (
+                  <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 20, color: "var(--color-text-secondary)" }}>
+                    <div>• Önceki: <b>{bomImportConfirm.prevCount}</b> parça, <b>{bomImportConfirm.prevOps}</b> op</div>
+                    <div>• Yeni: <b>{bomImportConfirm.newCount}</b> parça, <b>{bomImportConfirm.newOps}</b> op</div>
+                    <div style={{ marginTop: 12 }}>Üzerine yazılsın mı?</div>
+                  </div>
+                )}
+                {bomImportConfirm.mode === "override-protect" && (
+                  <div style={{ fontSize: 13, lineHeight: 1.6, marginBottom: 20, color: "var(--color-text-secondary)" }}>
+                    <div>Bu BOM'da manuel değişiklikler var:</div>
+                    {bomImportConfirm.overrideCount > 0 && <div>• <b>{bomImportConfirm.overrideCount}</b> parçada supply type override</div>}
+                    {bomImportConfirm.opTimeDetail && <div>• {bomImportConfirm.opTimeDetail}</div>}
+                    <div style={{ marginTop: 12 }}>Yeni BOM yüklenirken bu değişiklikler korunsun mu?</div>
+                  </div>
+                )}
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", flexWrap: "wrap" }}>
+                  {bomImportConfirm.mode === "new-overwrite" && (
+                    <>
+                      <button onClick={() => bomImportConfirm.resolve(false)} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--color-border-primary)", background: "var(--color-background-secondary)", cursor: "pointer", fontSize: 13 }}>İptal</button>
+                      <button onClick={() => bomImportConfirm.resolve(true)} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "var(--color-background-info)", color: "white", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>Üzerine Yaz</button>
+                    </>
+                  )}
+                  {bomImportConfirm.mode === "override-protect" && (
+                    <>
+                      <button onClick={() => bomImportConfirm.resolve("cancel")} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--color-border-primary)", background: "var(--color-background-secondary)", cursor: "pointer", fontSize: 13 }}>İptal</button>
+                      <button onClick={() => bomImportConfirm.resolve("reset")} style={{ padding: "8px 14px", borderRadius: 6, border: "1px solid var(--color-border-primary)", background: "var(--color-background-secondary)", cursor: "pointer", fontSize: 13 }}>Sıfırla</button>
+                      <button onClick={() => bomImportConfirm.resolve("keep")} style={{ padding: "8px 14px", borderRadius: 6, border: "none", background: "#22c55e", color: "white", cursor: "pointer", fontSize: 13, fontWeight: 500 }}>Koru</button>
+                    </>
+                  )}
+                </div>
+              </div>
             </div>
           )}
 
