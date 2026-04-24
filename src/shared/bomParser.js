@@ -69,13 +69,17 @@ export function parseBomExcel(workbook, bomModels = {}) {
       totalOps++;
 
       // Op owner resolution: seviye-1'den aşağı doğru ara, RAW/BUY part'ları atla.
+      // FIX 24 Nis 2026: Cross-BOM override dosyada MAKE olan parçayı BUY yapıyordu, op'lar
+      // bu parçayı atlayıp synthetic root'a düşüyordu. Owner kararı artık _fileSupplyType
+      // (dosyadaki orijinal) üzerinden — override op yerleşimini bozmaz.
       let ownerIdx;
       for (let lv = level - 1; lv >= 0; lv--) {
         const idx = partStack[lv];
         if (idx === undefined) continue;
         const p = parts[idx];
         if (!p) continue;
-        if (p.supplyType === "RAW" || p.supplyType === "BUY") continue;
+        const origType = p._fileSupplyType || p.supplyType;
+        if (origType === "RAW" || origType === "BUY") continue;
         ownerIdx = idx;
         break;
       }
@@ -118,8 +122,10 @@ export function parseBomExcel(workbook, bomModels = {}) {
     let supplyType = "MAKE";
     if (prefix === "150") supplyType = "RAW";
     else if (prefix === "157") supplyType = "BUY";
+    const fileSupplyType = supplyType;
 
-    // Global tutarlılık: bu stok kodu için başka BOM'larda manuel override varsa onu kullan
+    // Global tutarlılık: bu stok kodu için başka BOM'larda manuel override varsa onu kullan.
+    // _fileSupplyType dosyadaki orijinali tutar — op owner resolution override'dan bağımsız kalır.
     const existingOverride = Object.values(bomModels || {})
       .flatMap((m) => m?.parts || [])
       .find((p) => p.stockCode === stockCode && p._autoSupplyType);
@@ -128,7 +134,7 @@ export function parseBomExcel(workbook, bomModels = {}) {
     const partIdx = parts.length;
     parts.push({
       stockCode, stockName, level, qty,
-      unit: col3 || "AD", supplyType, parentIdx: null,
+      unit: col3 || "AD", supplyType, _fileSupplyType: fileSupplyType, parentIdx: null,
       operations: []
     });
 
@@ -172,6 +178,9 @@ export function parseBomExcel(workbook, bomModels = {}) {
       else if (hasFason) p.supplyType = "MAKE+FASON";
     }
   }
+
+  // _fileSupplyType geçici field — Firestore'a yazılmasın
+  for (const p of parts) delete p._fileSupplyType;
 
   const wcResult = {};
   for (const [code, wc] of Object.entries(detectedWCs)) {
