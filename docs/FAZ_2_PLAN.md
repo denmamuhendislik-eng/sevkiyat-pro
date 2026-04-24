@@ -125,6 +125,20 @@ Aşama 2.1 kod implementasyonu başladı: `feat/faz2-1-motor-adaptor` branch'ı.
 - Unmapped warning `<details>` ile accordion
 - BOM Import confirm: yeni BOM'da sessiz, mevcut BOM'da "üzerine yazılsın mı" onayı, override varsa koruma ayrımı
 
+### ✅ Ek düzeltmeler (PR #13 — akşam oturumu)
+
+**Parser cross-BOM override bug:**
+- AC-9111-0077 root'ta yanlış 5 op görünüyordu (beklenen 2)
+- Kök sebep: cross-BOM override MAKE parçayı BUY yapıyor → op owner resolution skip ediyor → orphan → synthetic root
+- Fix: `_fileSupplyType` geçici field, op owner resolution dosyadaki orijinal supplyType'a göre karar verir
+- Override user intent korunur ama op yerleşimini etkilemez
+
+**BOM import confirm modal:**
+- `window.confirm` Chrome dialog suppression'a takılıyordu — kullanıcı farkında olmadan override korunuyordu
+- İnline React modal (Promise + state)
+- Override'lı BOM: **Koru / Sıfırla / İptal** (3 buton)
+- Yeni BOM: **Üzerine Yaz / İptal** (2 buton)
+
 ### ⏳ Beklemede (sonraki oturum)
 
 **Aşama 2.3 — Sipariş Bazlı İhtiyaç paneli:**
