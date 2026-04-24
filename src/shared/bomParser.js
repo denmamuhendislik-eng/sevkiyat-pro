@@ -96,10 +96,16 @@ export function parseBomExcel(workbook, bomModels = {}) {
       continue;
     }
 
-    const codeMatch = col0.match(/^(\d{3}-\d{4}(?:-\d+)?)/);
+    // VIO formatı (150-4449, 152-0104-1) + Aselsan formatı (AC-9111-0077, MM-9111-0753_KNM6,
+    // 5307-0672-0516 — standard vida/somun 4-4-4 rakam). Her sayısal segment 3 veya 4 rakam olabilir.
+    // FIX 24 Nis 2026: Aselsan'da 5307-* prefix vida kodları atlanıyordu (regex 3-4 bekliyor, 5307 4).
+    const codeMatch = col0.match(/^([A-Z]+-[A-Z0-9_-]+|\d{3,4}-\d{3,4}(?:-\d{1,4})?)/i);
     if (!codeMatch) continue;
 
-    const stockCode = codeMatch[1];
+    // "-Rev:AB" veya "-Rev" gibi revizyon suffix'ini kod'tan ayır (Aselsan BOM'larında yaygın).
+    // codeMatch[1] ":" karakterini alamaz (regex \w değil) — "AC-9111-0063-Rev" gibi kesilmiş gelebilir.
+    // İki durumu da yakala: tam "-Rev:XX" veya kesilmiş "-Rev".
+    const stockCode = codeMatch[1].replace(/-Rev(:[A-Z0-9]+)?$/i, "");
     const stockName = col1 || col0.substring(stockCode.length).trim();
     let qty = 1;
     if (col2 !== "" && col2 !== undefined) {

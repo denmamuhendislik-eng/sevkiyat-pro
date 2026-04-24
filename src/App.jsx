@@ -9,6 +9,7 @@ import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import DigerMusteriler from "./modules/digerMusteriler";
 import { parseBomExcel as parseBomExcelModule } from "./shared/bomParser";
+import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
 
 const RAW = {"p": [[1, "REDÜKTÖR DİŞLİ TAKIMLARI C54ST", "SET OF PARTS OF REDUCTION GEAR C54ST.", 575.0, "#3B8BD4"], [2, "REDÜKTÖR DİŞLİ TAKIMLARI C44ST.", "SET OF PARTS OF REDUCTION GEAR C44ST.", 356.0, "#1D9E75"], [3, "REDÜKTÖR DİŞLİ TAKIMLARI C38ST", "SET OF PARTS OF REDUCTION GEAR C38ST.", 210.0, "#D85A30"], [4, "REDÜKTÖR DİŞLİ TAKIMLARI TP32/36", "SET OF PARTS OF REDUCTION GEAR TP32/36", 210.0, "#D4537E"], [5, "REDÜKTÖR DİŞLİ TAKIMLARI TP25/32", "SET OF PARTS OF REDUCTION GEAR TP25/32", 170.0, "#534AB7"], [6, "116521-O 980X817,5X20MM P54EVO SAC SEHPA", "116521-O 950X817,5X20MM P54EVO ST37 LSR CUT", 61.0, "#639922"], [7, "116571-O 725X650X12MM ST37 P34AEVO SAC SEHPA", "116571-O 725X650X12MM ST37 P34A PLATE LSR CUT", 27.0, "#BA7517"], [8, "116572-O 725X650X12MM TP25/32A SAC SEHPA", "116572-O 725X650X12MM TP25/32A ST37 LSR CUT", 26.0, "#E24B4A"], [9, "121297-F BÜKME AYNASI P34EVO", "121297-F BENDING PLATE P34EVO - TP25/32A", 19.5, "#185FA5"], [10, "330910-01 GS52 GÖVDE HAM DÖKÜMÜ", "330910-01 BODY", 7.5, "#0F6E56"], [11, "210174 243,50X78X15MM P54A-P56A-P56BEVO LAMA", "210174 243,50X78X15MM P54A-P56A-P56B EVO LSR CUT", 2.0, "#993C1D"], [12, "210185 290X68X15MM TP32/36 LAMA", "210185 290X68X15MM SHEET METAL TP32/36", 2.0, "#993556"], [13, "210181 222,5X68X12MM TP25/32 LAMA", "210181 222,5X68X12MM SUPPORT", 1.5, "#5F5E5A"], [14, "210184 205X68X12MM P34AEVO LAMA", "210184 205X68X12MM ST37 LSR CUT", 1.2, "#854F0B"], [15, "210180 140X68X15MM TP25/32 - TP32/36 LAMA", "210180 140X68X15MM SHEET METAL TP32/36", 1.0, "#3C3489"], [16, "210189 162,5X68X12MM TP25/32 LAMA", "210189 162,5X68X12MM SUPPORT", 1.0, "#A32D2D"], [17, "210183 70X68X12MM P34AEVO LAMA", "210183 70X68X12MM ST37 LSR CUT", 0.4, "#3B6D11"], [18, "REDÜKTÖR DİŞLİ TAKIMLARI TP42/45", "SET OF PARTS OF REDUCTION GEAR TP42/45", 326.0, "#72243E"], [19, "REDÜKTÖR DİŞLİ TAKIMLARI CAL35", "SET OF PARTS OF REDUCTION GEAR CAL35", 131.0, "#27500A"], [20, "116502 1400X780X15MM P56 B EVO SAC SEHPA", "116502 1400X780X15MM P56 B EVO ST37 LSR CUT", 115.0, "#085041"], [21, "116522 1300X817,5X20MM P56AEVO SAC SEHPA", "116522 1300X817,5X20MM P56AEVO ST37 LSR CUT", 88.0, "#3B8BD4"], [22, "121408-F BÜKME AYNASI P54EVO", "121408-F BENDING PLATE P54EVO", 65.0, "#1D9E75"], [23, "155003 DÖKÜM ŞANZIMAN KAPAĞI P54EVO", "155003 CASTING GEARBOX COVER P54EVO", 61.0, "#D85A30"], [24, "116660-O 940X787,50X15MM P44AEVOTP42/45A SAC SEHPA", "116660-O 940X787,5X15MM P44AEVO - TP42/45A ST37 LSR CUT", 49.0, "#D4537E"], [25, "116602-O 820X697,50X15MM P38AEVOTP32/36A SAC SEHPA", "116602-O 820X697,50X15MM P38AEVO-TP32/36A ST37 LSR CUT", 43.0, "#534AB7"], [26, "155001 DÖKÜM ŞANZIMAN KAPAĞI P54EVO", "155001 CASTING GEARBOX COVER P54EVO", 43.0, "#639922"], [27, "121247-F BÜKME AYNASI P44 EVO", "121247-F BENDING PLATE P44EVO - TP42/45A", 41.5, "#BA7517"], [28, "186050 720X830X12MM CAL35 SAC SEHPA", "186050 720X830X12MM CAL35 ST37 LSR CUT", 40.0, "#E24B4A"], [29, "144004 ŞANZIMAN KAPAĞI P44", "144004 GEARBOX COVER P44", 40.0, "#185FA5"], [30, "116251-O 725X585X12MM ST16EVO SAC SEHPA", "116251-O 725X585X12MM ST16EVO ST37 PLATE LSR CUT.", 33.0, "#0F6E56"], [31, "144002 ŞANZIMAN KAPAĞI P44", "144002 GEARBOX COVER P44", 32.0, "#993C1D"], [32, "133503 DÖKÜM ŞANZIMAN KAPAĞI P38", "133503 CASTING GEARBOX COVER P38", 30.3, "#993556"], [33, "121299-F BÜKME AYNASI P38EVO", "121299-F BENDING PLATE P38EVO - TP32/36A", 27.0, "#5F5E5A"], [34, "133003 DÖKÜM ŞANZIMAN KAPAĞI P34", "133003 CASTING GEARBOX COVER P34", 27.0, "#854F0B"], [35, "240155 GÖVDE 15 MM ST37 LZR KSM", "240155 BODY 15 MM ST37 LSR CUT", 22.0, "#3C3489"], [36, "52010 BAĞLANTI KOLU KOMPLE C54", "52010 CONNECTING ROD COMPLETE C54", 20.0, "#A32D2D"], [37, "133001 DÖKÜM ŞANZIMAN KAPAĞI P34", "133001 CASTING GEARBOX COVER P34-P38", 18.0, "#3B6D11"], [38, "240000 SPİRAL TAKIM DİŞLİSİ", "240000 GEAR FOR SPRIRAL DEVICE", 11.0, "#72243E"], [39, "240030 SPIRAL BÜKME APARATI", "240030 SPIRAL BENDING TOOL", 4.5, "#27500A"], [40, "240141 KAPAK 12 MM ST37 LZR KSM", "240141 COVER 12 MM ST37 LSR CUT", 4.0, "#085041"], [41, "240095 SAC 15MM ST37 LZR KSM", "240095 SHEET 15MM ST37 LSR CUT", 3.0, "#3B8BD4"], [42, "D20,5 TEKER GG20 PİK DÖKÜMÜ", "D20,5-D25,5 CASTING WHEEL", 2.9, "#1D9E75"], [43, "52008 KOL BURCU C54", "52008 CONNECTING ROD BUSH C54", 2.7, "#D85A30"], [44, "52101 BAĞLANTI SACI", "52101 CONNECTION SHEET", 2.7, "#D4537E"], [45, "210173 248X78X15MM P44AEVO LAMA", "210173 248X78X15MM P44A EVO ST37 LSR CUTTING", 2.0, "#534AB7"], [46, "52052 MUHAFAZA KOMPLE C54", "52052 COVER COMPLETE C54", 2.0, "#639922"], [47, "42101 BAĞLANTI SAC PLAKA", "42101 CONNECTION SHEET", 2.0, "#BA7517"], [48, "210187 245X68X15MM P38AEVO LAMA", "210187 245X68X15MM P38A EVO ST37 LSR CUT", 1.75, "#E24B4A"], [49, "36101 BAĞLANTI SAC PLAKA", "36101 CONNECTION PLATE C38", 1.6, "#185FA5"], [50, "116925-04 1,50MM SAC PLAKA", "116925-04 SHEET 1,50MM ST37 LSR CUT", 1.3, "#0F6E56"], [51, "116925-01 1,50MM SAC PLAKA", "116925-01 SHEET 1,50MM ST37 LSR CUT", 1.25, "#993C1D"], [52, "116921-06 1,20MM SAC PLAKA", "116921-06 SHEET 1,20MM GLV LSR CUT", 1.0, "#993556"], [53, "119054 BAĞLANTI SACI P38EVO", "119054 CONNECTION SHEET P38EVO", 0.9, "#5F5E5A"], [54, "210171 98,50X78X15MM P44AEVO LAMA", "210171 98,50X78X15MM P44A EVO ST37 LSR CUTTING", 0.8, "#854F0B"], [55, "119084 210X5MM SAC PLAKA P54EVO", "119084 210X5MM ST37 LSR CUT P54EVO", 0.8, "#3C3489"], [56, "210186 110X68X15MM P38AEVO LAMA", "210186 110X68X15MM P38A EVO ST37 LSR CUT", 0.75, "#A32D2D"], [57, "119061 BAĞLANTI SACI P44EVO", "119061 CONNECTION SHEET P44EVO", 0.7, "#3B6D11"], [58, "52016 KAPLİN DİLİ C54", "52016 COUPLING NIB C54", 0.5, "#72243E"], [59, "800056 98,5X138,5X 5MM ST37 LZR KSM", "800056 100X137X5MM ST37 LSR CUT", 0.5, "#27500A"], [60, "52105 CE KAPLİN KİLİTLEME", "52105 CE COUPLING LOCK", 0.4, "#085041"], [61, "121293 SWİTCH SACI P44EVO", "121293 SWITCH SHEET P44EVO", 0.4, "#3B8BD4"], [62, "121291 198,18X10MM SAC PLAKA P54EVO", "121291 198,18X10MM ST37 LSR CUT P54EVO", 0.4, "#1D9E75"], [63, "121282 SWİTCH SACI P38EVO", "121282 SWITCH SHEET P38EVO", 0.4, "#D85A30"], [64, "240153 50X90X10 MM ST37 LZR KSM", "240153 90X50X10MM ST37 LSR CUT", 0.4, "#D4537E"], [65, "42112 YAY ÜST BASKI SAC PLAKA", "42112 SPRING TOP PUSH", 0.35, "#534AB7"], [66, "42105 KAPLİN KİLİTLEME SAC PLAKA", "42105 COUPLING LOCK SHEET", 0.3, "#639922"], [67, "42016 KAPLİN DİLİ C44", "42016 COUPLING NIB C44", 0.3, "#BA7517"], [68, "121283 SWİTCH SACI P34EVO", "121283 SWITCH SHEET P34EVO", 0.3, "#E24B4A"], [69, "36105 KAPLİN KİLİTLEME SAC PLAKA", "36105 COUPLING PUSH SHEET", 0.2, "#185FA5"], [70, "121287-A SWITCH SACI TP32/36-TP42/45", "121287-A SWITCH SHEET TP32/36-TP42/45", 0.2, "#0F6E56"], [71, "144007 Q105/Q77,5X 5MM ST37 LZR KSM", "144007 Q105/Q77,50X 5MM ST37 LSR CUT", 0.2, "#993C1D"], [72, "52089 CE MUHAFAZA", "52089 CE CASING SHEET C54", 0.2, "#993556"], [73, "223520 65X40X10MM P56BEVO LAMA", "223520 65X40X10MM P56B EVO ST37 LSR CUTTING", 0.17, "#5F5E5A"], [74, "22*14*60 KAMA", "22X14X60 AB CUT KEY", 0.15, "#854F0B"], [75, "121286-A SWİTCH SACI TP25/32", "121286-A SWITCH SHEET TP25/32", 0.15, "#3C3489"], [76, "36016 KAPLİN DİLİ C38", "36016 COUPLING NIB C38", 0.15, "#A32D2D"], [77, "52090 PEDAL KİLİTLEME SAC PLAKA", "52090 PEDAL LOCK", 0.1, "#3B6D11"], [78, "20*12*55 KESİK KAMA", "20X12X55 AB CUT KEY", 0.1, "#72243E"], [79, "52017 KAPLİN DİLİ SAC PLAKA C54", "52017 COUPLING NIB GUIDE PLATE C54", 0.1, "#27500A"], [80, "42017 KAPLİN DİLİ SAC PLAKA C44", "42017 COUPLING NIB GUIDE PLATE C44", 0.1, "#085041"], [81, "121279 SWİTCH SACI TP", "121279 SWITCH SHEET TP", 0.1, "#3B8BD4"], [82, "144010 Q75/Q53,5X 5MM ST37 LZR KSM", "144010 Q75/Q53,50X 5MM ST37 LSR CUT", 0.1, "#1D9E75"], [83, "121294 SWİTCH SACI 4MM", "121294 SWITCH SHEET 4MM", 0.1, "#D85A30"], [84, "42089 CE MUHAFAZA SACI", "42089 CE CASING SHEET C44", 0.1, "#D4537E"], [85, "36089 CE MUHAFAZA SACI", "36089 CE CASING SHEET C38", 0.1, "#534AB7"], [86, "119034-5 40X60X5 MM ST37 LZR KSM", "119034-5 40X60X5 MM ST37 LSR CUT", 0.09, "#639922"], [87, "18*11*50 KESİK KAMA", "18X11X50 AB CUT KEY", 0.08, "#BA7517"], [88, "16*10*60 KAMA", "16X10X60 A FORM KEY", 0.08, "#E24B4A"], [89, "16*10*50 KAMA", "16X10X50 A FORM KEY", 0.07, "#185FA5"], [90, "18*11*45 KESİK KAMA", "18X11X45 AB CUT KEY", 0.07, "#0F6E56"], [91, "52049 M8*65 13 ALTI KÖŞE C38-C44-C54-C74", "52049 M8*65 13 HEXAGONAL C38-C44-C54-C74", 0.06, "#993C1D"], [92, "116921-20 1,20MM SAC PLAKA", "116921-20 SHEET 1,20MM GLV LSR CUT", 0.05, "#993556"], [93, "36017 KAPLİN DİLİ SAC PLAKA C38", "36017 COUPLING NIB GUIDE PLATE C38", 0.05, "#5F5E5A"], [94, "16*10*40 KAMA", "16X10X40 A FORM KEY", 0.05, "#854F0B"], [95, "119034-3 40X60X3 MM SAC PLAKA", "119034-3 40X60X3 MM ST37 LSR CUTTING", 0.05, "#3C3489"], [96, "14*9*36 KAMA", "14X9X36 A FORM KEY", 0.04, "#A32D2D"], [97, "10*8*40 KAMA", "10X8X40 A FORM KEY", 0.03, "#3B6D11"], [98, "119034-2 40X60X2 MM ST37 LZR KSM", "119034-2 40X60X2 MM ST37 LSR CUT", 0.03, "#72243E"], [99, "424242 KAPLİN YAY Q12-L53 1,80MM", "424242 COUPLING SPRING Q12-L53 1,80MM", 0.02, "#27500A"], [100, "8*7*32 KAMA", "8X7X32 A FORM KEY", 0.02, "#085041"], [101, "42122 KOL BAĞLANTI SAC PLAKA", "42122 LEVER CONNECTION SHEET", 0.02, "#3B8BD4"], [102, "C44 MAKİNE KIRILAN YERİNE GÖNDERİLEN", "C44 KIRILAN YERİNE", 356.0, "#1D9E75"], [103, "REDÜKTÖR DİŞLİ TAKIMLARI C74", "S. OF P. OF RED. GEAR P74 (WITHOUT PLATE)", 300.0, "#D85A30"], [104, "1575-02C GGG50 GÖVDE DÖKÜMÜ P74", "1575-02C P74 CASTING GEARBOX", 198.0, "#D4537E"], [105, "121412-F BÜKME AYNASI P74 AHŞAP MODEL", "121412-F BENDING PLATE P74", 180.0, "#534AB7"], [106, "116550-74 1700X1130X25MM P70 SAC SEHPA", "116550-74 1700X1130X25MM P70 ST37 LSR CUT", 173.0, "#639922"], [107, "1575-01C GGG50 GÖVDE DÖKÜMÜ P74", "1575-01C P74 CASTING GEARBOX", 141.0, "#BA7517"], [108, "MEKANİK KESME MODÜLÜ PARÇALARI", "CUTTING MODULE PARTS PROTOTYPE", 130.0, "#E24B4A"], [109, "PLAKA LAZER KESİM ST37", "PLATE LSR CUT 15MM", 92.0, "#185FA5"], [110, "MEKANİK ÇEKME MODÜLÜ PARÇALARI", "MECHANIC PULLING MODULE PARTS PROTOTYPE", 90.0, "#0F6E56"], [111, "MEKANİK DOĞRULTMA MODÜLÜ PARÇALARI", "MECHANIC STRAIGHTENING MODULE PARTS PROTOTYPE", 70.0, "#993C1D"], [112, "186001 GGG50 GÖVDE DÖKÜMÜ CAL35", "186001 GGG50 BODY CASTING CAL35", 65.0, "#993556"], [113, "121259-F BÜKME AYNASI P38", "121259-F BENDING PLATE P38", 27.0, "#5F5E5A"], [114, "320631-G DAYAMA GÖNYESİ P74 AHŞAP MODEL", "320631-G CHECKING BLOCK P74", 25.0, "#854F0B"], [115, "186002 GGG50 GÖVDE DÖKÜMÜ CAL35", "186002 GGG50 BODY CASTING CAL35", 21.0, "#3C3489"], [116, "400120 BAĞLANTI KOLU KOMPLE TP42/45", "400120 CONNECTING ROD COMPLETE TP42/45", 16.0, "#A32D2D"], [117, "52011 EKSANTRİK MİL C54", "52011 ECCENTRIC SHAFT C54", 16.0, "#3B6D11"], [118, "186009 R27,5 ORTA DİŞLİ CAL35", "186009 R27,5 GEAR CAL35", 11.5, "#72243E"], [119, "42015 4140 KOMPLE KAPLİN DÖKÜMÜ C44", "42015 COMPLETE COUPLING NIB SUPPORT C44", 11.0, "#27500A"], [120, "186006 ORTA DİŞLİ CAL35", "186006 INTERMEDIUM GEAR CAL35", 9.5, "#085041"], [121, "360030 ANA MİL TP32/36", "360030 CENTRAL SHAFT TP32/36", 7.5, "#3B8BD4"], [122, "186032 GG25 GÖVDE DÖKÜMÜ CAL35", "186032 GG25 BODY CASTING CAL35", 7.0, "#1D9E75"], [123, "52013 MİL DİŞLİ C54", "52013 PINION GEAR C54", 6.5, "#D85A30"], [124, "250030 ANA MİL TP25/32", "250030 CENTRAL SHAFT TP25/32", 6.0, "#D4537E"], [125, "186005 ANA MİL CAL35", "186005 CENTRAL CHAFT CAL35", 4.0, "#534AB7"], [126, "119338-C42 109X94X70MM ST37 OKS.KESİM", "119338-C42 109X94X70MM ST37 OXY.CUTTING", 4.0, "#639922"], [127, "186007 MİL DİŞLİ CAL35", "186007 PINION GEAR CAL35", 2.7, "#BA7517"], [128, "250150 EKSANTRİK MİL TP25/32", "250150 ECCENTRIC SHAFT TP25/32", 1.9, "#E24B4A"], [129, "42052 MUHAFAZA KOMPLE C44", "42052 COMPLETE COVER C44", 1.4, "#185FA5"], [130, "214620-C42 Q40X135MM C45 MİL", "214620-C42 Q40X135MM C45 SHAFT", 1.4, "#0F6E56"], [131, "116925-03 1,50MM SAC PLAKA", "116925-03 PLATE 1,50MM ST37 LSR CUT", 1.4, "#993C1D"], [132, "116921-07 1,20MM SAC PLAKA", "116921-07 SHEET 1,20MM GLV LSR CUT", 1.25, "#993556"], [133, "42086 CE BAĞLANTI KOL SACI KOMPLE", "42086 CE SHEET CONNECTION LEVER COMPL.", 1.2, "#5F5E5A"], [134, "116925-05 1,50MM SAC PLAKA", "116925-05 SHEET 1,50MM ST37 LSR CUT", 1.1, "#854F0B"], [135, "116921-09 1,20MM SAC PLAKA", "116921-09 SHEET 1,20MM GLV LSR CUT", 1.0, "#3C3489"], [136, "186051 Q79,5XQ45X55MM-M24 RG5 BRONZ", "186051 Q79,5XQ45X55MM-M24 RG5 BRONZ", 1.0, "#A32D2D"], [137, "52035 KOMPLE DİL BASKI LAMASI C54", "52035 COMPLETE NIB PRESS BAR C54", 0.9, "#3B6D11"], [138, "6212 2RS RULMAN", "6212 2RS BEARING", 0.8, "#72243E"], [139, "250200 Q80-Q60-37 RING TP25/32", "250200 Q80-Q60-37 RING TP25/32", 0.6, "#27500A"], [140, "129180 KAPLİN KİLİTLEME DİLİ C52", "129180 COUPLING NIB C52", 0.45, "#085041"], [141, "52112 YAY ÜST BASKI SAC PLAKA", "52112 SPRING PUSHING PART", 0.4, "#3B8BD4"], [142, "129170 KİLİTLEME KAMASI C42", "129170 COUPLING NIB  C42", 0.4, "#1D9E75"], [143, "52007 CUSN12 YARIM BRONZ DÖKÜMÜ C54", "52007 HALF SUPPORT BRONZ C54", 0.3, "#D85A30"], [144, "LZR KSM 121287-A SWITCH SACI TP32/36-TP42/45", "LSR CUT 121287-A SWITCH SHEET TP32/36-45/45", 0.2, "#D4537E"], [145, "42007 CUSN12 YARIM YATAK BRONZ DÖKÜMÜ C44", "42007 HALF SUPPORT BRONZ C44", 0.15, "#534AB7"], [146, "LZR KSM 121286-A SWİTCH SACI TP25/32", "LSR CUT 121286-A SWITCH SHEET TP25/32", 0.15, "#639922"], [147, "186008 Q85/Q55,5 X 2,5MM RING CAL35", "186008 Q85/Q55,5X2,5MM CAL35", 0.1, "#BA7517"], [148, "36098 SW17 UZATMA", "36098 SW17 EXTEND", 0.1, "#E24B4A"], [149, "ORİNG TP25/32-TP32/36-TP42-45", "ORING TP25/32-TP32/36-TP42/45", 0.1, "#185FA5"], [150, "PLAKA LAZER KESİM ST37", "PLATE LSR CUT 6MM CRNI", 0.1, "#0F6E56"], [151, "75*100*10 KEÇE", "75*100*10 OILSEAL", 0.1, "#993C1D"], [152, "900004 5MM SAC PLAKA", "900004 SHEET 5MM ST37 LSR CUT", 0.05, "#993556"], [153, "52122 KOL BAĞLANTI SAC PLAKA", "52122 CE LEVER CONNECTION", 0.03, "#5F5E5A"], [154, "42112 YAY ÜST BASKI SAC PLAKA", "42112 SPRING TOP PUSH CE", 0.02, "#854F0B"], [155, "119358 3MM ST37 SAC PLAKA", "119358 3MM ST37 LSR CUT", 0.02, "#3C3489"], [156, "900004 5MM SAC PLAKA", "900004 SHEET 5MM ST37 LSR CUT", 0.01, "#A32D2D"], [157, "52050 D18 MUHAFAZA MİLİ C44-C54", "52050 D18 COVER SHAFT C44-C54", 0.5, "#3B6D11"], [158, "52014 HELİS ORTA DİŞLİ C54", "52014 HELIX INTERMEDIUM GEAR C54", 17.0, "#72243E"], [159, "42014 HELİS ORTA DİŞLİ C44", "42014 HELIX INTERMEDIUM GEAR C44", 10.4, "#27500A"], [160, "52012 ORTA MİL DİŞLİ C54", "52012 INTERMEDIUM PINION GEAR C54", 7.6, "#085041"], [161, "52013 MİL DİŞLİ C54", "52013 PINION GEAR C54", 6.5, "#3B8BD4"], [162, "42013 MİL DİŞLİ C44", "42013 PINION GEAR C44", 4.2, "#1D9E75"], [163, "195155 DAYAMA GÖNYESİ ST16", "195155 CHECKING BLOCK ST16", 4.0, "#D85A30"], [164, "36014 HELİS ORTA DİŞLİ C38", "36014 HELIX INTERMEDIUM GEAR C38", 3.5, "#D4537E"], [165, "36012 ORTA MİL DİŞLİ C38", "36012 INTERMEDIUM PINION GEAR C38", 2.3, "#534AB7"], [166, "36013 MİL DİŞLİ C38", "36013 PINION GEAR C38", 1.8, "#639922"], [167, "36026 GG30 ARKA KAPAK YATAĞI DÖKÜMÜ C38", "36026 REAR COVER SUPPORT C38", 1.6, "#BA7517"], [168, "42008 KOL BURCU C44", "42008 CONNECTING ROD BUSH C44", 1.5, "#E24B4A"], [169, "36020 GG30 ÖN KAPAK YATAĞI DÖKÜMÜ C38", "36020 FRON COVER SUPPORT C38", 1.3, "#185FA5"], [170, "52046 STANDART MUHAFAZA SACI C54", "52046 STANDARD COVER SHEET C54", 0.4, "#0F6E56"], [171, "194610 D18 MOTOR MİLİ", "194610 D18 MOTOR SHAFT", 0.4, "#993C1D"], [172, "42105 KAPLİN KİLİTLEME SAC PLAKA", "42105 COUPLING LOCK SHEET PLATE", 0.3, "#993556"], [173, "ÇEKO (BOSTİK) 888 SİYAH SİLİKON 280 ML.", "ÇEKO (BOSTİK) 888 BLACK SEALANT 280ML.", 0.3, "#5F5E5A"], [174, "109202 KOL TOPUZU LAMASI C38-C44-C54-C74", "109202 LEVER HOLD C38-C44-C54-C74", 0.3, "#854F0B"], [175, "72089 CE MUHAFAZA SACI", "72089 CE COVER", 0.25, "#3C3489"], [176, "121287-A SWITCH SACI TP32/36-TP42/45", "121287-A SWITCH SHEET TP32/36-TP42/45 (10MM)", 0.15, "#A32D2D"], [177, "22*14*60 KAMA", "22*14*60 CUT KEY", 0.15, "#3B6D11"], [178, "42089 CE MUHAFAZA SACI", "42089 CE COVER", 0.1, "#72243E"], [179, "36007 CUSN12 YARIM BRONZ DÖKÜMÜ C38", "36007 HALF SUPPORT BRONZ C38", 0.1, "#27500A"], [180, "52121 15*3 MM SAC PLAKA", "52121 15*3 SHEET", 0.01, "#085041"]], "y": {"2024": [[["c24-1", "2024-01-12", true], ["c24-2", "2024-01-25", true], ["c24-3", "2024-02-06", true], ["c24-4", "2024-02-16", true], ["c24-5", "2024-02-28", true], ["c24-6", "2024-03-08", true], ["c24-7", "2024-03-19", true], ["c24-8", "2024-03-29", true], ["c24-9", "2024-04-05", true], ["c24-10", "2024-04-26", true], ["c24-11", "2024-05-07", true], ["c24-12", "2024-05-17", true], ["c24-13", "2024-05-28", true], ["c24-14", "2024-06-07", true], ["c24-15", "2024-06-13", true], ["c24-16", "2024-06-28", true], ["c24-17", "2024-07-09", true], ["c24-18", "2024-07-16", true], ["c24-19", "2024-07-18", true], ["c24-20", "2024-08-20", true], ["c24-21", "2024-08-22", true], ["c24-22", "2024-09-12", true], ["c24-23", "2024-09-24", true], ["c24-24", "2024-10-08", true], ["c24-25", "2024-10-18", true], ["c24-26", "2024-10-30", true], ["c24-27", "2024-11-12", true], ["c24-28", "2024-11-28", true], ["c24-29", "2024-12-24", true]], {"1": 452, "2": 395, "3": 330, "4": 76, "5": 97, "6": 356, "7": 186, "8": 120, "9": 268, "10": 310, "11": 436, "12": 128, "13": 123, "14": 186, "15": 128, "16": 122, "17": 186, "18": 30, "19": 30, "20": 21, "21": 80, "22": 460, "23": 99, "24": 392, "25": 274, "26": 99, "27": 275, "28": 30, "29": 150, "30": 41, "31": 150, "32": 11, "33": 307, "34": 70, "35": 30, "36": 10, "37": 81, "38": 30, "39": 72, "40": 30, "41": 30, "42": 5400, "43": 5, "44": 82, "45": 431, "46": 10, "47": 102, "48": 274, "49": 254, "50": 100, "51": 895, "52": 1019, "53": 20, "54": 392, "55": 80, "56": 274, "57": 30, "58": 110, "59": 10, "60": 50, "61": 80, "62": 100, "63": 50, "64": 35, "65": 310, "66": 100, "67": 50, "68": 20, "69": 200, "70": 600, "71": 70, "72": 50, "73": 84, "74": 500, "75": 1000, "76": 50, "77": 350, "78": 1100, "79": 300, "80": 200, "81": 100, "82": 70, "83": 50, "84": 50, "85": 100, "86": 57, "87": 1000, "88": 50, "89": 50, "90": 1000, "91": 50, "92": 100, "93": 200, "94": 100, "95": 58, "96": 50, "97": 100, "98": 58, "99": 1000, "100": 480, "101": 313}, {}, {"c24-1": {"1": 6, "2": 12, "3": 16, "7": 20, "9": 30, "14": 20, "17": 20, "22": 22, "23": 59, "25": 20, "26": 59, "48": 20, "56": 20}, "c24-2": {"1": 10, "2": 10, "3": 8, "5": 18, "7": 14, "12": 18, "14": 14, "15": 18, "17": 14, "23": 40, "25": 20, "26": 40, "34": 66, "37": 66, "42": 500, "48": 20, "56": 20}, "c24-3": {"1": 12, "2": 12, "3": 20, "6": 20, "10": 51, "11": 20, "22": 40, "29": 20, "31": 25, "32": 11, "34": 4, "37": 15}, "c24-4": {"1": 6, "2": 10, "3": 16, "7": 57, "8": 52, "9": 59, "12": 52, "14": 57, "15": 52, "17": 57, "29": 60, "31": 60, "33": 60, "42": 1200}, "c24-5": {"1": 14, "2": 10, "3": 20, "6": 30, "11": 30, "22": 24, "25": 20, "29": 50, "31": 50, "48": 20, "56": 20}, "c24-6": {"1": 14, "2": 14, "3": 12, "4": 18, "10": 51, "25": 30, "27": 32, "29": 20, "31": 15, "48": 30, "56": 30}, "c24-7": {"1": 14, "2": 12, "3": 16, "5": 9, "9": 50, "22": 40, "42": 900}, "c24-8": {"1": 16, "2": 14, "3": 12, "6": 18, "10": 50, "11": 48, "21": 30, "33": 50}, "c24-9": {"1": 16, "3": 4, "7": 24, "14": 24, "17": 24, "18": 30, "20": 21, "73": 84}, "c24-10": {"1": 18, "2": 18, "3": 8, "22": 40, "24": 15, "25": 29, "45": 15, "48": 29, "54": 15, "56": 29}, "c24-11": {"1": 18, "2": 18, "3": 12, "11": 18, "21": 18, "22": 10, "24": 17, "33": 40, "45": 17, "54": 17}, "c24-12": {"1": 18, "2": 20, "3": 8, "6": 33, "11": 33, "13": 53, "16": 52, "25": 12, "27": 17, "42": 400, "45": 39, "48": 12, "56": 12, "65": 310}, "c24-13": {"1": 18, "2": 20, "3": 12, "8": 20, "9": 40, "10": 50, "25": 23, "42": 400, "48": 23, "56": 23, "59": 10, "86": 57, "95": 58, "98": 58, "101": 313}, "c24-14": {"1": 18, "2": 18, "3": 12, "6": 15, "11": 15, "24": 15, "27": 30, "30": 41, "45": 15, "54": 15}, "c24-15": {"1": 18, "2": 18, "3": 12, "22": 50, "33": 50}, "c24-16": {"1": 18, "2": 18, "3": 8, "6": 15, "7": 22, "8": 44, "11": 15, "14": 22, "17": 22, "22": 2, "24": 15, "42": 400, "45": 15, "51": 297, "52": 306, "54": 15}, "c24-17": {"1": 18, "2": 18, "3": 8, "9": 40, "11": 16, "21": 16, "25": 35, "35": 30, "38": 30, "39": 72, "40": 30, "48": 35, "56": 35, "64": 35}, "c24-18": {"1": 20, "2": 18, "3": 4, "22": 40, "27": 30, "41": 30, "42": 400}, "c24-19": {"1": 18, "2": 16, "3": 8, "6": 30, "11": 30, "22": 20, "24": 27, "27": 30, "45": 27, "54": 27, "72": 50, "84": 50, "85": 100}, "c24-20": {"1": 14, "2": 20, "3": 4, "7": 40, "14": 40, "17": 40, "22": 40, "24": 53, "44": 82, "45": 53, "47": 102, "49": 254, "54": 53}, "c24-21": {"1": 16, "2": 16, "3": 8, "6": 44, "11": 44, "25": 35, "27": 61, "48": 35, "56": 35}, "c24-22": {"1": 16, "2": 20, "3": 8, "10": 60, "22": 20, "24": 50, "45": 50, "46": 10, "50": 100, "51": 299, "52": 411, "54": 50, "58": 60, "79": 200}, "c24-23": {"1": 18, "2": 14, "3": 8, "6": 50, "11": 50, "27": 50, "42": 400, "53": 20, "55": 80, "57": 30, "68": 20, "71": 70, "78": 100, "81": 100, "82": 70, "83": 50}, "c24-24": {"1": 12, "2": 8, "3": 8, "4": 6, "5": 18, "12": 6, "13": 18, "15": 6, "16": 18, "19": 30, "22": 20, "24": 25, "25": 25, "45": 25, "48": 25, "54": 25, "56": 25, "61": 80, "62": 100, "63": 50, "70": 100}, "c24-25": {"1": 10, "2": 12, "3": 20, "4": 12, "12": 12, "15": 12, "22": 45, "24": 25, "25": 25, "27": 25, "45": 25, "48": 25, "54": 25, "56": 25}, "c24-26": {"1": 10, "2": 16, "3": 12, "6": 50, "11": 66, "21": 16, "24": 50, "28": 30, "36": 10, "43": 5, "45": 50, "54": 50, "58": 50, "67": 50, "70": 500, "74": 500, "75": 1000, "76": 50, "78": 1000, "79": 100, "80": 200, "87": 1000, "88": 50, "89": 50, "90": 1000, "91": 50, "93": 200, "94": 100, "96": 50, "97": 100, "99": 1000, "100": 480}, "c24-27": {"1": 10, "2": 10, "3": 12, "4": 6, "5": 18, "9": 45, "12": 6, "13": 18, "15": 6, "16": 18, "22": 47, "33": 50, "42": 400, "51": 299, "52": 302, "92": 100}, "c24-28": {"1": 16, "2": 2, "3": 16, "4": 12, "5": 9, "6": 50, "11": 50, "12": 12, "13": 9, "15": 12, "16": 9, "33": 57, "42": 400, "60": 50, "66": 100, "69": 200, "77": 350}, "c24-29": {"1": 32, "24": 100, "45": 100, "54": 100}}], "2025": [[["c25-1", "2024-12-26", true], ["c25-2", "2024-12-30", true], ["c25-3", "2025-01-16", true], ["c25-4", "2025-01-24", true], ["c25-5", "2025-02-06", true], ["c25-6", "2025-02-18", true], ["c25-7", "2025-02-27", true], ["c25-8", "2025-03-11", true], ["c25-9", "2025-03-19", true], ["c25-10", "2025-03-28", true], ["c25-11", "2025-04-11", true], ["c25-12", "2025-04-24", true], ["c25-13", "2025-04-30", true], ["c25-14", "2025-05-14", true], ["c25-15", "2025-05-22", true], ["c25-16", "2025-06-03", true], ["c25-17", "2025-06-19", true], ["c25-18", "2025-06-30", true], ["c25-19", "2025-07-11", true], ["c25-20", "2025-07-18", true], ["c25-21", "2025-07-25", true], ["c25-22", "2025-08-26", true], ["c25-23", "2025-09-02", true], ["c25-24", "2025-09-11", true], ["c25-25", "2025-09-23", true], ["c25-26", "2025-10-09", true], ["c25-27", "2025-10-17", true], ["c25-28", "2025-11-06", true], ["c25-29", "2025-11-18", true], ["c25-30", "2025-12-02", true]], {"1": 458, "3": 224, "4": 156, "5": 126, "24": 206, "8": 126, "10": 210, "42": 6600, "45": 206, "12": 156, "13": 126, "16": 126, "15": 156, "54": 206, "2": 444, "102": 1, "18": 21, "103": 6, "104": 12, "105": 7, "106": 2, "107": 12, "108": 3, "109": 3, "110": 3, "21": 84, "111": 4, "22": 530, "112": 30, "6": 340, "25": 447, "27": 357, "28": 30, "30": 50, "33": 268, "113": 6, "7": 224, "114": 10, "115": 30, "36": 10, "9": 224, "116": 2, "117": 13, "118": 60, "119": 4, "120": 60, "121": 1, "122": 30, "123": 3, "124": 1, "125": 60, "126": 15, "127": 30, "11": 424, "47": 100, "46": 20, "128": 1, "48": 447, "49": 200, "129": 15, "130": 15, "131": 100, "51": 2120, "50": 100, "132": 110, "133": 10, "14": 224, "134": 50, "52": 2153, "135": 60, "136": 44, "137": 100, "138": 2, "56": 447, "139": 1, "58": 50, "140": 51, "141": 100, "142": 53, "17": 224, "67": 50, "143": 70, "66": 99, "65": 200, "144": 800, "145": 40, "146": 505, "79": 204, "147": 60, "148": 314, "149": 1, "150": 11, "151": 2, "152": 700, "153": 200, "154": 400, "155": 1000, "156": 500}, {"1": 8, "3": 18, "4": 22, "5": 25, "8": 4, "10": 48, "12": 22, "13": 25, "16": 25, "15": 22, "2": 1, "6": 1, "7": 9, "9": 4, "11": 1, "14": 9, "17": 9}, {"c25-1": {"1": 10, "3": 16, "4": 6, "5": 9, "42": 400, "12": 6, "13": 9, "16": 9, "15": 6, "2": 16, "25": 54, "33": 40, "7": 40, "48": 54, "14": 40, "56": 54, "17": 40}, "c25-2": {"1": 20, "3": 8, "2": 16, "22": 57, "9": 50}, "c25-3": {"1": 18, "3": 20, "42": 400, "2": 14, "25": 39, "7": 28, "48": 39, "14": 28, "137": 100, "56": 39, "17": 28, "156": 500}, "c25-4": {"1": 14, "3": 12, "8": 40, "10": 56, "2": 16, "21": 18, "22": 36, "6": 30, "11": 48}, "c25-5": {"1": 12, "3": 16, "4": 12, "24": 45, "42": 400, "45": 45, "12": 12, "15": 12, "54": 45, "2": 18, "7": 21, "46": 20, "14": 21, "17": 21}, "c25-6": {"1": 14, "3": 8, "5": 9, "13": 9, "16": 9, "2": 12, "6": 50, "25": 50, "30": 50, "11": 50, "48": 50, "51": 300, "52": 300, "56": 50}, "c25-7": {"1": 16, "3": 8, "4": 12, "8": 40, "12": 12, "15": 12, "2": 12, "22": 49, "27": 32}, "c25-8": {"1": 8, "3": 8, "24": 50, "42": 400, "45": 50, "54": 50, "2": 4, "103": 6, "104": 12, "105": 7, "106": 2, "107": 12, "108": 3, "109": 3, "110": 3, "111": 4, "33": 40, "7": 46, "114": 10, "121": 1, "126": 15, "130": 15, "51": 300, "132": 10, "14": 46, "134": 5, "52": 300, "135": 10, "17": 46, "150": 11}, "c25-9": {"1": 20, "3": 8, "42": 400, "2": 16, "6": 40, "9": 40, "11": 40}, "c25-10": {"1": 12, "3": 8, "4": 12, "42": 800, "12": 12, "15": 12, "2": 14, "22": 30, "25": 51, "124": 1, "128": 1, "48": 51, "129": 15, "131": 100, "51": 100, "50": 100, "132": 100, "134": 45, "52": 200, "135": 50, "138": 2, "56": 51, "139": 1, "149": 1, "151": 2}, "c25-11": {"1": 18, "3": 12, "5": 9, "24": 33, "42": 450, "45": 33, "13": 9, "16": 9, "54": 33, "2": 8, "22": 27, "7": 51, "14": 51, "17": 51}, "c25-12": {"1": 12, "3": 4, "4": 18, "12": 18, "15": 18, "2": 12, "22": 50, "6": 50, "27": 30, "11": 50}, "c25-13": {"1": 18, "3": 8, "5": 18, "42": 400, "13": 18, "16": 18, "2": 16, "25": 30, "48": 30, "56": 30}, "c25-14": {"1": 16, "3": 4, "4": 18, "8": 49, "42": 400, "12": 18, "15": 18, "2": 16, "27": 10, "33": 35, "136": 44}, "c25-15": {"1": 16, "3": 8, "5": 18, "13": 18, "16": 18, "2": 14, "21": 33, "27": 31, "11": 33, "58": 50, "140": 51, "142": 53, "79": 204}, "c25-16": {"1": 14, "3": 16, "4": 6, "12": 6, "15": 6, "2": 18, "22": 50, "9": 50}, "c25-17": {"1": 16, "3": 4, "5": 18, "42": 400, "13": 18, "16": 18, "2": 12, "6": 30, "25": 50, "27": 20, "11": 30, "48": 50, "56": 50}, "c25-18": {"1": 18, "3": 12, "5": 18, "13": 18, "16": 18, "2": 14, "27": 30, "7": 47, "14": 47, "17": 47}, "c25-19": {"1": 14, "3": 12, "4": 12, "42": 400, "12": 12, "15": 12, "2": 15, "102": 1, "22": 45, "51": 254, "52": 145, "144": 247, "146": 331}, "c25-20": {"1": 10, "3": 12, "5": 18, "13": 18, "16": 18, "2": 24, "6": 32, "33": 50, "113": 6, "11": 32}, "c25-21": {"1": 12, "3": 8, "24": 33, "45": 33, "54": 33, "2": 12, "21": 33, "22": 18, "25": 40, "27": 30, "11": 33, "48": 40, "51": 738, "52": 728, "56": 40}, "c25-22": {"1": 18, "3": 4, "10": 54, "42": 400, "2": 16, "22": 24, "27": 40, "9": 40, "117": 13, "47": 100, "49": 200, "141": 100, "66": 99, "65": 200, "144": 553, "146": 174, "153": 200, "154": 400, "155": 1000}, "c25-23": {"1": 18, "3": 4, "4": 12, "12": 12, "15": 12, "2": 18, "6": 30, "33": 50, "11": 30}, "c25-24": {"1": 14, "5": 9, "24": 39, "42": 400, "45": 39, "13": 9, "16": 9, "54": 39, "2": 12, "112": 30, "25": 40, "27": 40, "115": 30, "122": 30, "48": 40, "56": 40}, "c25-25": {"1": 14, "3": 4, "4": 18, "12": 18, "15": 18, "2": 18, "22": 54, "27": 22, "148": 314}, "c25-26": {"1": 18, "42": 400, "2": 20, "25": 46, "28": 30, "118": 60, "120": 60, "125": 60, "127": 30, "48": 46, "56": 46, "147": 60}, "c25-27": {"1": 10, "3": 4, "4": 18, "10": 60, "12": 18, "15": 18, "2": 24, "6": 30, "27": 45, "36": 10, "119": 4, "11": 30, "133": 10, "67": 50, "143": 70, "145": 40}, "c25-28": {"1": 20, "5": 18, "13": 18, "16": 18, "2": 14, "22": 60, "123": 3}, "c25-29": {"1": 12, "3": 8, "4": 12, "42": 475, "12": 12, "15": 12, "2": 18, "25": 47, "33": 53, "9": 48, "48": 47, "56": 47}, "c25-30": {"1": 6, "4": 18, "12": 18, "15": 18, "2": 6, "18": 21, "22": 30, "6": 49, "27": 27, "116": 2, "11": 49, "51": 428, "52": 480, "152": 700}}], "2026": [[["c26-1", "2025-12-30", true], ["c26-2", "2026-01-15", true], ["c26-3", "2026-01-27", true], ["c26-4", "2026-02-05", true], ["c26-5", "2026-02-17", true], ["c26-6", "2026-03-05", true], ["c26-7", "2026-03-17", true], ["c26-8", "2026-03-26", false], ["c26-9", "2026-03-31", false], ["c26-10", "2026-04-09", false], ["c26-11", "2026-04-17", false], ["c26-12", "2026-04-28", false], ["c26-13", "2026-05-07", false], ["c26-14", "2026-05-14", false], ["c26-15", "2026-05-21", false]], {"1": 336, "2": 514, "3": 332, "4": 128, "5": 92, "21": 117, "22": 397, "6": 318, "24": 465, "25": 266, "27": 438, "33": 196, "7": 135, "42": 6000, "45": 465, "12": 128, "11": 435, "48": 266, "13": 92, "14": 135, "16": 92, "15": 128, "54": 465, "56": 266, "17": 135, "8": 109, "157": 20, "77": 400, "30": 70, "9": 24, "158": 4, "117": 5, "159": 4, "160": 2, "161": 2, "162": 3, "163": 35, "164": 3, "43": 5, "165": 2, "166": 5, "167": 1, "168": 3, "169": 2, "135": 50, "134": 50, "55": 80, "58": 45, "62": 100, "170": 30, "171": 10, "172": 144, "173": 125, "174": 50, "175": 20, "143": 60, "69": 237, "176": 60, "177": 500, "79": 200, "145": 40, "178": 50, "95": 79, "179": 60, "180": 1000}, {"1": 28, "3": 6, "4": 4, "5": 7, "24": 6, "10": 88, "42": 75, "45": 6, "12": 4, "13": 7, "16": 7, "15": 4, "54": 6, "8": 1}, {"c26-1": {"1": 2, "2": 24, "3": 20, "24": 50, "27": 50, "42": 400, "45": 50, "54": 50, "8": 30, "30": 70, "158": 4, "117": 5, "159": 4, "160": 2, "161": 2, "162": 3, "164": 3, "43": 5, "165": 2, "166": 5, "167": 1, "168": 3, "169": 2, "135": 50, "134": 50, "58": 45, "171": 10, "170": 30, "143": 60, "79": 200, "145": 40, "179": 60}, "c26-2": {"1": 10, "2": 22, "3": 16, "6": 30, "24": 36, "25": 32, "27": 30, "45": 36, "11": 30, "48": 32, "54": 36, "56": 32, "170": 30, "174": 50}, "c26-3": {"1": 16, "2": 16, "3": 12, "22": 40, "7": 40, "42": 800, "14": 40, "17": 40}, "c26-4": {"1": 12, "2": 16, "3": 8, "4": 18, "21": 32, "27": 36, "42": 75, "12": 18, "11": 32, "15": 18, "9": 24, "163": 35, "55": 80, "62": 100, "173": 125, "176": 60, "177": 500, "95": 79}, "c26-5": {"1": 8, "2": 14, "3": 12, "4": 18, "24": 40, "25": 40, "33": 50, "42": 400, "45": 40, "12": 18, "48": 40, "15": 18, "54": 40, "56": 40, "8": 40, "180": 1000}, "c26-6": {"1": 16, "2": 12, "3": 12, "5": 9, "22": 30, "6": 32, "25": 39, "11": 32, "48": 39, "13": 9, "16": 9, "56": 39, "175": 20, "178": 50}, "c26-7": {"1": 12, "2": 22, "3": 16, "4": 6, "5": 15, "42": 400, "12": 6, "13": 15, "16": 15, "15": 6, "172": 144, "69": 237}, "c26-8": {"1": 24, "2": 16, "3": 12, "42": 400, "157": 20, "77": 400}, "c26-9": {"1": 6, "2": 14, "3": 8, "4": 18, "21": 30, "25": 55, "27": 40, "7": 50, "42": 400, "12": 18, "11": 30, "48": 55, "14": 50, "15": 18, "56": 55, "17": 50}, "c26-10": {"1": 12, "2": 10, "3": 12, "5": 18, "22": 40, "6": 40, "42": 400, "11": 40, "13": 18, "16": 18, "8": 40}, "c26-11": {"1": 14, "2": 12, "3": 8, "4": 18, "24": 40, "25": 45, "33": 60, "45": 40, "12": 18, "48": 45, "15": 18, "54": 40, "56": 45}, "c26-12": {"1": 14, "2": 22, "3": 12, "24": 40, "27": 40, "42": 400, "45": 40, "54": 40}, "c26-13": {"1": 18, "2": 24, "3": 16, "42": 400}, "c26-14": {"1": 10, "2": 20, "3": 8, "4": 18, "22": 40, "6": 40, "12": 18, "11": 40, "15": 18}, "c26-15": {"1": 10, "2": 20, "3": 4, "5": 18, "24": 60, "27": 60, "42": 400, "45": 60, "13": 18, "16": 18, "54": 60}}], "2027": [[], {}, {}, {}]}};
 
@@ -5202,6 +5203,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const [bomListSort, setBomListSort] = useState("date"); // date | code | partCount
   // v20 MRP Eşleştirme gruplama: eşleşme bekleyen açık, BOM eşleşti ve BUY/direct kapalı
   const [mappingGroupsExpanded, setMappingGroupsExpanded] = useState({ pending: true, bom: false, direct: false });
+  // Faz 2.1d: autoMap preview — null | { exact:[], named:[], missing:[], selections:{pid:bool} }
+  const [autoMapPreview, setAutoMapPreview] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState({});
   const [bomSearch, setBomSearch] = useState("");
   const [importing, setImporting] = useState(false);
@@ -5243,6 +5246,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   // Adım 5 — VIO Stok Raporu State
   const STOCK_DOC = "mrpStock";
   const [stock, setStock] = useState(null);
+  // Faz 2.1: salesOrders + planOverrides — Diğer Müşteriler modülünden gelen satış siparişleri
+  // motor girdisine eklenir. DigerMusteriler'in firestore helper'ları yeniden kullanılır.
+  const [salesOrders, setSalesOrders] = useState({});
+  const [planOverrides, setPlanOverrides] = useState({});
+  // Faz 2.1c: salesOrderStockIndex — products.vioCode ile eşleşmeyen Aselsan stok kodlarına
+  // persistent deterministic pseudo-pid atar (500000+). Motor bunları normal pid gibi görür.
+  // Doc yapısı: { [stokKodu]: pseudoPid:number }. Yeni stok geldiğinde auto-grow (aşağıda useEffect).
+  const [salesOrderStockIndex, setSalesOrderStockIndex] = useState({});
   const [stockImporting, setStockImporting] = useState(false);
   const [stockImportResult, setStockImportResult] = useState(null);
   const [stockSearch, setStockSearch] = useState("");
@@ -5292,6 +5303,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     unsubs.push(onSnapshot(stockRef, snap => {
       if (snap.exists()) setStock(snap.data());
     }, () => {}));
+    // Faz 2.1: Satış siparişleri + plan override'ları — Diğer Müşteriler modülü üzerinden
+    unsubs.push(subscribeSalesOrders(d => setSalesOrders(d || {})));
+    unsubs.push(subscribePlanOverrides(d => setPlanOverrides(d || {})));
+    // Faz 2.1c: salesOrderStockIndex — persistent pseudo-pid mapping
+    const stokIdxRef = doc(db, APP_COL, "salesOrderStockIndex");
+    unsubs.push(onSnapshot(stokIdxRef, snap => {
+      setSalesOrderStockIndex(snap.exists() ? snap.data() : {});
+    }, () => {}));
     // Montaj planı verisi
     const montajRef = doc(db, "montajData", "state");
     unsubs.push(onSnapshot(montajRef, snap => {
@@ -5324,6 +5343,29 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
+
+  // Faz 2.1c: salesOrderStockIndex auto-grow — salesOrders'ta products.vioCode ile
+  // eşleşmeyen yeni stok kodları için pseudo-pid atar (500000+ deterministik sequence).
+  // İlk atanan pid sabit kalır, yeni stoklar max+1 alır. Döngü riski: yeni stok yoksa yazma atlanır.
+  useEffect(() => {
+    if (!db || !canEdit) return;
+    if (!salesOrders || !products) return;
+    const vioSet = new Set((products || []).map(p => p.vioCode).filter(Boolean));
+    const neededStoks = new Set();
+    for (const o of Object.values(salesOrders)) {
+      if (o && o.stokKodu && !vioSet.has(o.stokKodu)) neededStoks.add(o.stokKodu);
+    }
+    const missing = [...neededStoks].filter(s => !(s in (salesOrderStockIndex || {})));
+    if (missing.length === 0) return;
+    let maxPid = 500000;
+    for (const v of Object.values(salesOrderStockIndex || {})) {
+      if (typeof v === "number" && v > maxPid) maxPid = v;
+    }
+    const update = {};
+    missing.sort().forEach((s, i) => { update[s] = maxPid + 1 + i; });
+    setDoc(doc(db, APP_COL, "salesOrderStockIndex"), update, { merge: true })
+      .catch(err => console.warn("salesOrderStockIndex save:", err));
+  }, [db, canEdit, salesOrders, products, salesOrderStockIndex]);
 
   // Save helpers
   const saveBom = async (data) => {
@@ -5775,6 +5817,147 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     return { byProduct, containers: containers.sort((a, b) => a.date.localeCompare(b.date)), totalProducts, totalUnits };
   }, [yearsData, products, expCutoff, expYear]);
 
+  // Faz 2.1: Satış siparişi talebi — salesOrders doc'u → {byProduct, ordersList, unmapped}
+  // Faz 2.1c: products.vioCode ile eşleşmeyen stoklar için salesOrderStockIndex'ten persistent
+  // pseudo-pid (500000+) atanır. Motor bunları normal pid gibi görür, bomMapping ile eşleşme
+  // kullanıcı onayıyla yapılır. unmapped = index henüz atanmamış olanlar (subscribe cycle).
+  // Tarih kaynağı: planOverrides.plannedWeek > teslimTarihi (override motora iner).
+  const salesOrdersDemand = useMemo(() => {
+    if (!products) return { byProduct: {}, ordersList: [], unmapped: [], totalUnits: 0 };
+    const vioToPid = {};
+    for (const p of products) {
+      if (p.vioCode) vioToPid[p.vioCode] = p.id;
+    }
+    const byProduct = {};
+    const ordersList = [];
+    const unmapped = [];
+    for (const [id, o] of Object.entries(salesOrders || {})) {
+      if (!o || typeof o !== "object") continue;
+      // DigerMusteriler parser'ından gelen field adları: kalanMiktar / orijinalMiktar
+      // MRP hesabı kalanMiktar (karşılanmamış) üzerinde çalışır; yoksa orijinalMiktar fallback
+      const qty = Number(o.kalanMiktar || o.orijinalMiktar || 0);
+      if (!qty || qty <= 0) continue;
+      const stok = o.stokKodu || "";
+      const ov = planOverrides?.[id];
+      const effectiveDate = ov?.plannedWeek || o.teslimTarihi || null;
+      const record = {
+        id,
+        stokKodu: stok,
+        stokAdi: o.stokAdi || "",
+        qty,
+        customerCode: o.customerCode || "",
+        customerName: o.customerName || "",
+        belgeNo: o.belgeNo || "",
+        teslimTarihi: o.teslimTarihi || "",
+        effectiveDate,
+        isOverride: !!ov,
+        pid: null,
+        pseudoPid: null,
+      };
+      // Öncelik 1: products.vioCode eşleşmesi (gerçek ürün)
+      let pid = vioToPid[stok];
+      // Öncelik 2: persistent pseudo-pid (auto-grow useEffect tarafından atanır)
+      if (!pid) {
+        const ppid = salesOrderStockIndex?.[stok];
+        if (typeof ppid === "number" && ppid >= 500000) {
+          pid = ppid;
+          record.pseudoPid = ppid;
+        }
+      } else {
+        record.pid = pid;
+      }
+      if (!pid) {
+        // Index henüz atanmadı (subscribe/auto-grow cycle bekleniyor) — unmapped'ta tut
+        unmapped.push(record);
+        continue;
+      }
+      if (!byProduct[pid]) byProduct[pid] = { qty: 0, orders: [] };
+      byProduct[pid].qty += qty;
+      byProduct[pid].orders.push(record);
+      ordersList.push(record);
+    }
+    const totalUnits = Object.values(byProduct).reduce((s, p) => s + p.qty, 0);
+    return { byProduct, ordersList, unmapped, totalUnits };
+  }, [salesOrders, planOverrides, products, salesOrderStockIndex]);
+
+  // Faz 2.1c: salesPseudoProducts — Aselsan stok kodları için "fake product" listesi.
+  // Bu ürünler sadece MRP Hesaplama tab'ında effectiveProducts üzerinden görünür.
+  // Diğer sekmeler (Sevkiyat Planı, Montaj, Dashboard) `products` dizisini kullanır — dokunulmaz.
+  const salesPseudoProducts = useMemo(() => {
+    const result = [];
+    // Stok kodu → ad (salesOrders'tan bir kayıt bulup adı çek)
+    const stokToAd = {};
+    for (const o of Object.values(salesOrders || {})) {
+      if (o?.stokKodu && !stokToAd[o.stokKodu]) stokToAd[o.stokKodu] = o.stokAdi || "";
+    }
+    for (const [stok, pid] of Object.entries(salesOrderStockIndex || {})) {
+      if (typeof pid !== "number" || pid < 500000) continue;
+      const adi = stokToAd[stok] || stok;
+      result.push({
+        id: pid,
+        nameTR: adi,
+        nameEN: adi,
+        vioCode: stok,
+        kg: 0,
+        isSalesPseudo: true,
+      });
+    }
+    return result;
+  }, [salesOrderStockIndex, salesOrders]);
+
+  // Faz 2.1c: effectiveProducts — products + salesPseudoProducts birleşik.
+  // MRP Hesaplama tab'ı içinde (explosion tab) products yerine bu kullanılır, böylece
+  // Aselsan sipariş stokları eşleşme listesinde ve ürün özet kartında görünür.
+  const effectiveProducts = useMemo(() => {
+    return [...(products || []), ...salesPseudoProducts];
+  }, [products, salesPseudoProducts]);
+
+  // Faz 2.1: mergedDemand — konteyner + satış siparişi birleşik motor girdisi.
+  // byProduct seviyesinde kaynak ayrımı korunur (containerQty / salesOrderQty) — Ürün Özet iki kart
+  // ve sipariş bazlı panel için. Motor yine byProduct[pid].qty (toplam) kullanır.
+  // GÜVENLİK: salesOrders boş ise mergedDemand.byProduct === unshippedDemand.byProduct davranışı
+  // (qty, containers, totalUnits birebir aynı). Regression kapı testi böyle sağlanır.
+  const mergedDemand = useMemo(() => {
+    const byProduct = {};
+    // 1) Konteynerler
+    for (const [pid, info] of Object.entries(unshippedDemand.byProduct || {})) {
+      byProduct[pid] = {
+        qty: info.qty || 0,
+        containerQty: info.qty || 0,
+        salesOrderQty: 0,
+        containers: info.containers || [],
+        salesOrders: [],
+      };
+    }
+    // 2) Satış siparişleri — varsa mevcut pid'e ekle, yoksa yeni kayıt
+    for (const [pid, info] of Object.entries(salesOrdersDemand.byProduct || {})) {
+      if (!byProduct[pid]) {
+        byProduct[pid] = {
+          qty: 0,
+          containerQty: 0,
+          salesOrderQty: 0,
+          containers: [],
+          salesOrders: [],
+        };
+      }
+      byProduct[pid].qty += info.qty || 0;
+      byProduct[pid].salesOrderQty += info.qty || 0;
+      byProduct[pid].salesOrders.push(...(info.orders || []));
+    }
+    const totalProducts = Object.keys(byProduct).length;
+    const totalUnits = Object.values(byProduct).reduce((s, p) => s + p.qty, 0);
+    return {
+      byProduct,
+      containers: unshippedDemand.containers || [],
+      ordersList: salesOrdersDemand.ordersList || [],
+      unmappedSalesOrders: salesOrdersDemand.unmapped || [],
+      totalProducts,
+      totalUnits,
+      containerUnits: unshippedDemand.totalUnits || 0,
+      salesOrderUnits: salesOrdersDemand.totalUnits || 0,
+    };
+  }, [unshippedDemand, salesOrdersDemand]);
+
   // BOM Explosion — single-pass recursive, PRODUCT concept removed (v13 refactor)
   // supplyType artık sadece tedarik yöntemi: BUY/RAW/MAKE/FASON/MAKE+FASON
   // Ürün rolü (sevkiyatta bağımsız satılma) ayrı bir boyut — sevkiyat planından türetilir.
@@ -5782,7 +5965,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     if (exploding) return;
     setExploding(true);
     try {
-      const initialDemand = { ...unshippedDemand.byProduct };
+      // Faz 2.1: motor girdisi mergedDemand.byProduct — konteyner + satış siparişi birleşik.
+      // Mevcut davranışa geri dönmek için: salesOrders boş olduğunda mergedDemand.byProduct
+      // unshippedDemand.byProduct ile birebir aynıdır (qty, containers alanları dahil).
+      const initialDemand = { ...mergedDemand.byProduct };
       const grossReq = {};
 
       // Legacy normalization — eski Firestore kayıtlarında "PRODUCT" kalmış olabilir, MAKE gibi davran
@@ -6855,19 +7041,39 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           });
         }
 
-        // If overrides or op times exist, ask user
+        // Faz 2.1d: mevcut BOM için her zaman onay iste. Override varsa koru/sıfırla ayrımı.
         let keepOverrides = true;
-        if (overrideCount > 0 || opTimeCount > 0) {
-          const opDetail = opTimeCount > 0 ? `• ${opTimeCount} operasyonda süre tanımlı` + (mesOpCount > 0 && manualOpCount > 0 ? ` (${mesOpCount} MES + ${manualOpCount} manuel)` : mesOpCount > 0 ? ` (${mesOpCount} MES)` : ` (${manualOpCount} manuel)`) : "";
-          const msg = [
-            `${result.modelCode} zaten mevcut.`,
-            overrideCount > 0 ? `• ${overrideCount} parçada supply type override var` : "",
-            opDetail,
-            "",
-            "Bu değişiklikler korunsun mu?",
-            "(İptal = sıfırla, Tamam = koru)"
-          ].filter(Boolean).join("\n");
-          keepOverrides = confirm(msg);
+        if (existingModel) {
+          if (overrideCount === 0 && opTimeCount === 0) {
+            // Manuel değişiklik yok — basit "üzerine yazılsın mı" onayı
+            const prevCount = existingModel.partCount || existingModel.parts?.length || 0;
+            const prevOps = existingModel.opCount || 0;
+            const msg = [
+              `${result.modelCode} zaten mevcut.`,
+              `• Önceki: ${prevCount} parça, ${prevOps} op`,
+              `• Yeni: ${result.partCount} parça, ${result.opCount} op`,
+              "",
+              "Üzerine yazılsın mı?",
+              "(İptal = mevcut BOM dokunulmaz)"
+            ].join("\n");
+            if (!confirm(msg)) {
+              setImporting(false);
+              setImportResult(null);
+              return;
+            }
+          } else {
+            // Manuel değişiklik var — override koruma
+            const opDetail = opTimeCount > 0 ? `• ${opTimeCount} operasyonda süre tanımlı` + (mesOpCount > 0 && manualOpCount > 0 ? ` (${mesOpCount} MES + ${manualOpCount} manuel)` : mesOpCount > 0 ? ` (${mesOpCount} MES)` : ` (${manualOpCount} manuel)`) : "";
+            const msg = [
+              `${result.modelCode} zaten mevcut.`,
+              overrideCount > 0 ? `• ${overrideCount} parçada supply type override var` : "",
+              opDetail,
+              "",
+              "Bu değişiklikler korunsun mu?",
+              "(İptal = sıfırla, Tamam = koru)"
+            ].filter(Boolean).join("\n");
+            keepOverrides = confirm(msg);
+          }
         }
 
         // Apply overrides and op times to new parts
@@ -13674,10 +13880,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       {activeTab === "explosion" && (() => {
         const modelKeys = Object.keys(bomModels).filter(k => k !== "undefined");
         const modelOptions = modelKeys.map(k => ({ key: k, label: `${bomModels[k].modelCode || k} — ${bomModels[k].modelName || ""}` }));
-        const demand = unshippedDemand;
+        // Faz 2.1c: Bu tab içinde `products` aliası effectiveProducts'a yönlendirilir.
+        // Böylece lookup, filter, find çağrılarının hepsi salesPseudoProducts'ı da görür.
+        // Diğer sekmeler (Sevkiyat Planı, Montaj) scope'ları farklı — orijinal products ile devam eder.
+        const products = effectiveProducts; // eslint-disable-line no-shadow
+        const demand = mergedDemand;
 
-        // Products that have unshipped demand
-        const demandProducts = products ? products.filter(p => demand.byProduct[p.id]) : [];
+        // Products that have unshipped demand (gerçek products + sales pseudo)
+        const demandProducts = products.filter(p => demand.byProduct[p.id]);
         const isMappedUI = (pid) => {
           const m = bomMapping[pid];
           if (!m) return false;
@@ -13730,42 +13940,25 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           const directMatch = bomProductLookup.find(b => b.stockCode === vioCode);
           if (directMatch) return { ...directMatch, matchType: "vioCode" };
 
-          // 2) Name token matching — extract first meaningful token from product name
+          // Faz 2.1d: isim eşleşmesi SIKILAŞTIRILDI.
+          // Eski kurallar (ilk token tek başına, stockName contains) yanlış pozitif üretiyordu:
+          //   "PIM PSZCL KAIDE MERKEZLEME" ≠ "PIM PSZCL MERKEZLEME ARKA TETIK" ama 2 token eşleşiyordu.
+          // Yeni kural: en az İLK 3 TOKEN birebir eşleşmeli — daha az ama daha doğru öneri.
           const prodName = product.nameTR.toUpperCase().replace(/[,]/g, ".");
           const prodTokens = prodName.split(/\s+/).filter(t => t.length >= 2);
-          const firstToken = prodTokens[0] || "";
 
           // Filter: skip raw material parts when product isn't raw material
           const safeLookup = prodHasRaw ? bomProductLookup : bomProductLookup.filter(b => !hasRawPrefix(b.stockName));
 
-          // Try to find BOM part where stockName starts with same token
-          if (firstToken.length >= 3) {
-            // v13: Root (mamul) parçalar öncelikli, sonra diğerleri
-            const nameMatches = safeLookup.filter(b => (b.nameTokens[0] || "") === firstToken);
-            const rootMatch = nameMatches.find(b => b.isRoot);
-            if (rootMatch) return { ...rootMatch, matchType: "nameExact" };
-            if (nameMatches.length > 0) return { ...nameMatches[0], matchType: "nameExact" };
-
-            // stockName contains the first token
-            const containsMatches = safeLookup.filter(b =>
-              b.stockName.toUpperCase().replace(/[,]/g, ".").includes(firstToken) &&
-              (b.isRoot || b.supplyType === "MAKE" || b.supplyType === "BUY" || b.supplyType === "RAW")
-            );
-            const rootContains = containsMatches.find(b => b.isRoot);
-            if (rootContains) return { ...rootContains, matchType: "nameContains" };
-            if (containsMatches.length > 0) return { ...containsMatches[0], matchType: "nameContains" };
-          }
-
-          // 3) Multi-token matching (first 2 tokens)
-          if (prodTokens.length >= 2) {
-            const twoTokens = prodTokens[0] + " " + prodTokens[1];
+          if (prodTokens.length >= 3) {
+            const threeTokens = prodTokens.slice(0, 3).join(" ");
             const multiMatches = safeLookup.filter(b => {
-              const bomTwo = (b.nameTokens[0] || "") + " " + (b.nameTokens[1] || "");
-              return bomTwo === twoTokens;
+              const bomThree = (b.nameTokens || []).slice(0, 3).join(" ");
+              return bomThree === threeTokens;
             });
             const rootMulti = multiMatches.find(b => b.isRoot);
-            if (rootMulti) return { ...rootMulti, matchType: "nameMulti" };
-            if (multiMatches.length > 0) return { ...multiMatches[0], matchType: "nameMulti" };
+            if (rootMulti) return { ...rootMulti, matchType: "name3" };
+            if (multiMatches.length > 0) return { ...multiMatches[0], matchType: "name3" };
           }
 
           return null;
@@ -13800,92 +13993,105 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         const codeDiffCount = productComparison.filter(c => c.codeDiff).length;
         const noBomCount = productComparison.filter(c => c.status === "no_bom").length;
 
-        // Auto-map: fill unmapped products using BOM matching + update names/codes
+        // Faz 2.1d: autoMap — önce ÖNİZLEME hazırlar, yazma YAPMAZ. Uygula butonuyla yazılır.
+        // Kurallar:
+        //   - Tam kod eşleşmesi (vioCode === BOM.modelCode) → "exact", default SEÇİLİ
+        //   - İsim eşleşmesi var + BOM modeli bulundu → "named", default SEÇİLSİZ (riskli)
+        //   - Hiç eşleşme yok veya BOM modeli yok → "missing", otomatik yazma YOK
+        //   - direct:* ASLA otomatik yazılmaz (manuel dropdown'dan seçilmeli)
+        const findModelByCode = (code) => {
+          if (!code) return null;
+          for (const [mk, m] of Object.entries(bomModels)) {
+            if (mk === "undefined" || !m) continue;
+            if (m.modelCode === code) return mk;
+            const first = (m.parts || []).find(pp => pp.level === 0);
+            if (first && first.stockCode === code) return mk;
+          }
+          return null;
+        };
         const autoMap = () => {
-          const newMapping = { ...bomMapping };
-          const productUpdates = []; // { pid, bomCode, bomName } — isimleri güncellenecek ürünler
-          
+          const exact = [];
+          const named = [];
+          const missing = [];
           demandProducts.forEach(p => {
             if (isMappedUI(p.id)) return;
+            const vio = getVioCode(p.id);
             const comp = productComparison.find(c => c.pid === p.id);
-            
-            // 1) Check if BOM model exists for this product
-            let foundModel = null;
-            const codeToCheck = comp?.bomCode || getVioCode(p.id);
-            
-            if (codeToCheck) {
-              Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
-                const first = (m.parts || []).find(pp => pp.level === 0);
-                if (first && first.stockCode === codeToCheck) foundModel = mk;
-                if (m.modelCode === codeToCheck) foundModel = mk;
-              });
-            }
-            // Also try VIO code if bomCode didn't match
-            if (!foundModel && comp?.vioCode) {
-              Object.entries(bomModels).filter(([k]) => k !== "undefined").forEach(([mk, m]) => {
-                const first = (m.parts || []).find(pp => pp.level === 0);
-                if (first && first.stockCode === comp.vioCode) foundModel = mk;
-              });
-            }
 
-            if (foundModel) {
-              newMapping[p.id] = foundModel;
-            } else if (comp?.bomCode) {
-              newMapping[p.id] = "direct:" + comp.bomCode;
-            } else if (codeToCheck) {
-              newMapping[p.id] = "direct:" + codeToCheck;
+            // 1) Tam kod eşleşmesi (güvenli)
+            const exactModel = findModelByCode(vio);
+            if (exactModel) {
+              exact.push({
+                pid: p.id, name: p.nameTR, vio,
+                modelKey: exactModel,
+                bomCode: bomModels[exactModel].modelCode,
+                bomName: bomModels[exactModel].modelName,
+              });
+              return;
             }
-
-            // BOM'da isim veya kod farklıysa güncelleme listesine ekle
-            if (comp?.bomCode && (comp.codeDiff || (comp.bomName && comp.bomName !== p.nameTR))) {
-              productUpdates.push({ pid: p.id, bomCode: comp.bomCode, bomName: comp.bomName });
+            // 2) İsim eşleşmesi → BOM modeli ara (comp.bomCode BOM içinde bir parça olabilir)
+            if (comp?.bomCode) {
+              const namedModel = findModelByCode(comp.bomCode);
+              if (namedModel) {
+                named.push({
+                  pid: p.id, name: p.nameTR, vio,
+                  modelKey: namedModel,
+                  bomCode: comp.bomCode,
+                  bomName: comp.bomName || bomModels[namedModel].modelName,
+                  matchType: comp.bomMatchType || "name",
+                });
+                return;
+              }
             }
+            // 3) Hiç eşleşme yok
+            missing.push({ pid: p.id, name: p.nameTR, vio, hint: comp?.bomCode || null });
           });
-          
+          // Default selections: exact=checked, named=unchecked
+          const selections = {};
+          exact.forEach(e => { selections[e.pid] = true; });
+          named.forEach(n => { selections[n.pid] = false; });
+          setAutoMapPreview({ exact, named, missing, selections });
+        };
+        const applyAutoMap = () => {
+          if (!autoMapPreview) return;
+          const { exact, named, selections } = autoMapPreview;
+          const newMapping = { ...bomMapping };
+          const productUpdates = [];
+          for (const e of exact) {
+            if (selections[e.pid]) newMapping[e.pid] = e.modelKey;
+          }
+          for (const n of named) {
+            if (!selections[n.pid]) continue;
+            newMapping[n.pid] = n.modelKey;
+            // Sadece gerçek ürünler (pid < 500000) için product kod/isim güncellemesi aday
+            if (n.pid < 500000 && n.vio !== n.bomCode) {
+              productUpdates.push({ pid: n.pid, bomCode: n.bomCode, bomName: n.bomName });
+            }
+          }
           saveBomMapping(newMapping);
-          
-          // Ürün isimlerini BOM'a göre güncelle — güvenlik kontrollü
+          // Product update — RAW prefix güvenlik filtresi ile
           if (productUpdates.length > 0) {
-            // Raw material prefix kontrolü — bu tür isimlerle ürün adını değiştirme
             const RAW_NAME_PREFIXES = ["LZR KSM", "LAZER KESİM", "DOĞRULTMA", "HAM DÖKÜM", "LSR CUT"];
             const safeUpdates = productUpdates.filter(u => {
               if (u.bomName) {
-                const hasRaw = RAW_NAME_PREFIXES.some(p => u.bomName.toUpperCase().startsWith(p));
-                const prodHasRaw = RAW_NAME_PREFIXES.some(p => {
+                const hasRaw = RAW_NAME_PREFIXES.some(pfx => u.bomName.toUpperCase().startsWith(pfx));
+                const prodHasRaw = RAW_NAME_PREFIXES.some(pfx => {
                   const pr = products.find(pp => pp.id === u.pid);
-                  return pr && pr.nameTR.toUpperCase().startsWith(p);
+                  return pr && pr.nameTR.toUpperCase().startsWith(pfx);
                 });
-                if (hasRaw && !prodHasRaw) {
-                  console.warn(`PID ${u.pid}: BOM adı '${u.bomName.substring(0,30)}' hammadde prefix'i içeriyor, atlanıyor`);
-                  return false;
-                }
+                if (hasRaw && !prodHasRaw) return false;
               }
               return true;
             });
-            
             if (safeUpdates.length > 0) {
-              const doUpdate = confirm(
-                `${safeUpdates.length} ürünün kodu/ismi BOM'dakinden farklı.\n\n` +
-                safeUpdates.slice(0, 5).map(u => {
-                  const p = products.find(pr => pr.id === u.pid);
-                  const vio = getVioCode(u.pid);
-                  const lines = [`• ${p?.nameTR || ""}`];
-                  if (vio !== u.bomCode) lines.push(`  Kod: ${vio} → ${u.bomCode}`);
-                  if (u.bomName && u.bomName !== p?.nameTR) lines.push(`  İsim: → ${u.bomName}`);
-                  return lines.join("\n");
-                }).join("\n") +
-                (safeUpdates.length > 5 ? `\n... ve ${safeUpdates.length - 5} tane daha` : "") +
-                "\n\nBOM'a göre güncellensin mi?\n(İptal = değişiklik yapılmaz)"
-              );
-              if (doUpdate) {
-                setProducts(prev => prev.map(p => {
-                  const upd = safeUpdates.find(u => u.pid === p.id);
-                  if (upd) return { ...p, ...(upd.bomName ? { nameTR: upd.bomName } : {}), ...(upd.bomCode ? { vioCode: upd.bomCode } : {}) };
-                  return p;
+              setProducts(prev => prev.map(p => {
+                const upd = safeUpdates.find(u => u.pid === p.id);
+                if (upd) return { ...p, ...(upd.bomName ? { nameTR: upd.bomName } : {}), ...(upd.bomCode ? { vioCode: upd.bomCode } : {}) };
+                return p;
               }));
-              }
             }
           }
+          setAutoMapPreview(null);
         };
 
         return (
@@ -14091,6 +14297,138 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                 );
               })()}
             </div>
+
+            {/* Faz 2.1d: autoMap Preview Modal — önce göster, sonra seçilenleri uygula */}
+            {autoMapPreview && (() => {
+              const { exact, named, missing, selections } = autoMapPreview;
+              const selectedExact = exact.filter(e => selections[e.pid]).length;
+              const selectedNamed = named.filter(n => selections[n.pid]).length;
+              const totalSelected = selectedExact + selectedNamed;
+              const toggle = (pid) => setAutoMapPreview(prev => ({
+                ...prev,
+                selections: { ...prev.selections, [pid]: !prev.selections[pid] },
+              }));
+              const toggleAll = (list, val) => setAutoMapPreview(prev => {
+                const s = { ...prev.selections };
+                list.forEach(item => { s[item.pid] = val; });
+                return { ...prev, selections: s };
+              });
+              const th = { padding: "6px 8px", textAlign: "left", fontSize: 10, fontWeight: 500, background: "var(--color-background-secondary)", position: "sticky", top: 0 };
+              const td = { padding: "5px 8px", fontSize: 11, borderTop: "0.5px solid var(--color-border-tertiary)" };
+              return (
+                <div onClick={(e) => { if (e.target === e.currentTarget) setAutoMapPreview(null); }}
+                  style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+                  <div style={{ background: "var(--color-background-primary)", borderRadius: 12, width: "100%", maxWidth: 900, maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+                    {/* Header */}
+                    <div style={{ padding: "14px 20px", borderBottom: "1px solid var(--color-border-secondary)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <h3 style={{ margin: 0, fontSize: 15 }}>🔄 Otomatik Eşleştirme — Önizleme</h3>
+                      <button onClick={() => setAutoMapPreview(null)} style={{ background: "transparent", border: "none", fontSize: 22, cursor: "pointer", color: "var(--color-text-secondary)" }}>×</button>
+                    </div>
+                    {/* Body */}
+                    <div style={{ padding: 16 }}>
+                      {/* Exact matches */}
+                      <div style={{ marginBottom: 16, border: "1px solid #A7F3D0", borderRadius: 8, overflow: "hidden" }}>
+                        <div style={{ padding: "8px 12px", background: "#ECFDF5", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
+                          <span style={{ fontWeight: 600, color: "#065F46" }}>✅ Tam Kod Eşleşmesi ({exact.length}) — güvenli, default seçili</span>
+                          {exact.length > 0 && (
+                            <span style={{ display: "flex", gap: 6, fontSize: 10 }}>
+                              <button onClick={() => toggleAll(exact, true)} style={{ padding: "2px 8px", fontSize: 10, border: "1px solid #065F46", background: "transparent", color: "#065F46", borderRadius: 3, cursor: "pointer" }}>Tümünü seç</button>
+                              <button onClick={() => toggleAll(exact, false)} style={{ padding: "2px 8px", fontSize: 10, border: "1px solid #065F46", background: "transparent", color: "#065F46", borderRadius: 3, cursor: "pointer" }}>Temizle</button>
+                            </span>
+                          )}
+                        </div>
+                        {exact.length === 0 ? (
+                          <div style={{ padding: 12, fontSize: 11, color: "var(--color-text-tertiary)", textAlign: "center" }}>Yok</div>
+                        ) : (
+                          <div style={{ maxHeight: 200, overflowY: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                              <thead><tr>
+                                <th style={{ ...th, width: 30 }}></th>
+                                <th style={th}>Ürün</th>
+                                <th style={th}>Kod → BOM</th>
+                              </tr></thead>
+                              <tbody>
+                                {exact.map(e => (
+                                  <tr key={e.pid}>
+                                    <td style={{ ...td, textAlign: "center" }}>
+                                      <input type="checkbox" checked={!!selections[e.pid]} onChange={() => toggle(e.pid)} />
+                                    </td>
+                                    <td style={td}>{e.name}</td>
+                                    <td style={{ ...td, fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                                      {e.vio} → <b>{e.bomCode}</b> · <span style={{ color: "var(--color-text-secondary)" }}>{e.bomName}</span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                      {/* Named matches */}
+                      <div style={{ marginBottom: 16, border: "1px solid #FDE68A", borderRadius: 8, overflow: "hidden" }}>
+                        <div style={{ padding: "8px 12px", background: "#FEF9C3", display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12 }}>
+                          <span style={{ fontWeight: 600, color: "#854D0E" }}>🟡 İsim Eşleşmesi ({named.length}) — kod farklı, riskli, default KAPALI</span>
+                          {named.length > 0 && (
+                            <span style={{ display: "flex", gap: 6, fontSize: 10 }}>
+                              <button onClick={() => toggleAll(named, true)} style={{ padding: "2px 8px", fontSize: 10, border: "1px solid #854D0E", background: "transparent", color: "#854D0E", borderRadius: 3, cursor: "pointer" }}>Tümünü seç</button>
+                              <button onClick={() => toggleAll(named, false)} style={{ padding: "2px 8px", fontSize: 10, border: "1px solid #854D0E", background: "transparent", color: "#854D0E", borderRadius: 3, cursor: "pointer" }}>Temizle</button>
+                            </span>
+                          )}
+                        </div>
+                        {named.length === 0 ? (
+                          <div style={{ padding: 12, fontSize: 11, color: "var(--color-text-tertiary)", textAlign: "center" }}>Yok</div>
+                        ) : (
+                          <div style={{ maxHeight: 240, overflowY: "auto" }}>
+                            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                              <thead><tr>
+                                <th style={{ ...th, width: 30 }}></th>
+                                <th style={th}>Ürün</th>
+                                <th style={th}>Kod → BOM (isim eşleşti)</th>
+                              </tr></thead>
+                              <tbody>
+                                {named.map(n => (
+                                  <tr key={n.pid}>
+                                    <td style={{ ...td, textAlign: "center" }}>
+                                      <input type="checkbox" checked={!!selections[n.pid]} onChange={() => toggle(n.pid)} />
+                                    </td>
+                                    <td style={td}>{n.name}</td>
+                                    <td style={{ ...td, fontFamily: "var(--font-mono)", fontSize: 10 }}>
+                                      {n.vio || "—"} → <b>{n.bomCode}</b> · <span style={{ color: "var(--color-text-secondary)" }}>{n.bomName}</span>
+                                    </td>
+                                  </tr>
+                                ))}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
+                      {/* Missing */}
+                      <div style={{ marginBottom: 8, border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden" }}>
+                        <div style={{ padding: "8px 12px", background: "var(--color-background-secondary)", fontSize: 12, fontWeight: 600, color: "var(--color-text-secondary)" }}>
+                          ❌ Eşleşme Bulunmadı ({missing.length}) — otomatik yazma YAPILMAYACAK
+                        </div>
+                        {missing.length > 0 && (
+                          <div style={{ padding: "6px 12px", fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                            Bu ürünleri liste üzerinden tek tek BOM seç veya "📦 Doğrudan Talep"e çevir.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    {/* Footer */}
+                    <div style={{ padding: "12px 20px", borderTop: "1px solid var(--color-border-secondary)", display: "flex", justifyContent: "flex-end", gap: 8, background: "var(--color-background-secondary)" }}>
+                      <button onClick={() => setAutoMapPreview(null)}
+                        style={{ padding: "8px 16px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", background: "transparent", color: "var(--color-text-primary)", fontSize: 12, cursor: "pointer" }}>
+                        İptal (hiç yazılmaz)
+                      </button>
+                      <button onClick={applyAutoMap} disabled={totalSelected === 0}
+                        style={{ padding: "8px 16px", borderRadius: 6, border: "none", background: totalSelected === 0 ? "#cbd5e1" : "#7C3AED", color: "#fff", fontSize: 12, fontWeight: 500, cursor: totalSelected === 0 ? "not-allowed" : "pointer" }}>
+                        ✓ {totalSelected} Eşleşmeyi Uygula
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
 
             {/* Container Detail — hangi konteynerler sayılıyor */}
             {demand.containers.length > 0 && (
@@ -14488,9 +14826,20 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
               };
 
               // Per-product summary
+              // Faz 2.2: her ürüne kaynak etiketi (container/salesOrder) ekle — iki karta ayrım için.
+              // mergedDemand.byProduct[pid] içindeki containerQty / salesOrderQty bilgisi kullanılır.
               const productSummary = (() => {
                 const pMap = {};
                 const ds = exp.demandSummary || {};
+                const mdbp = mergedDemand.byProduct || {};
+                const attachDemandOrigin = (obj, pid) => {
+                  const md = mdbp[pid] || {};
+                  obj.containerQty = md.containerQty || 0;
+                  obj.salesOrderQty = md.salesOrderQty || 0;
+                  obj.hasContainer = (md.containerQty || 0) > 0;
+                  obj.hasSalesOrder = (md.salesOrderQty || 0) > 0;
+                  obj.salesOrdersList = md.salesOrders || [];
+                };
                 parts.forEach(r => {
                   (r.sources || []).forEach(s => {
                     const pid = typeof s.pid === "number" ? s.pid : null;
@@ -14507,6 +14856,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                         adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
                         bomDependentTotal: d.bomDependentTotal || 0, bomDependentSources: d.bomDependentSources || [],
                         totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
+                      attachDemandOrigin(pMap[pid], pid);
                     }
                     pMap[pid].totalParts++;
                     if (r.netQty > 0) {
@@ -14530,10 +14880,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                       adjustedNetDemand: d.adjustedNetDemand ?? d.netDemand ?? 0,
                       bomDependentTotal: d.bomDependentTotal || 0, bomDependentSources: d.bomDependentSources || [],
                       totalParts: 0, netOpenParts: 0, buyOpen: 0, makeOpen: 0, fasonOpen: 0, covered: 0 };
+                    attachDemandOrigin(pMap[pid], pid);
                   }
                 });
                 return Object.values(pMap).sort((a, b) => b.netOpenParts - a.netOpenParts || (b.adjustedNetDemand || b.netDemand) - (a.adjustedNetDemand || a.netDemand));
               })();
+
+              // Faz 2.2: kaynak bazlı alt listeler (kart tıklandığında filtreli view)
+              const containerProducts = productSummary.filter(ps => ps.hasContainer);
+              const salesOrderProducts = productSummary.filter(ps => ps.hasSalesOrder);
 
               // ANA ürünler için montaj stok vs VIO stok çapraz kontrolü
               const stockCrossCheck = (() => {
@@ -14567,7 +14922,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                     {[
                       { f: "all", bg: "var(--color-background-secondary)", bl: "#7C3AED", label: "Brüt İhtiyaç", value: exp.totalGross, sub: "kalem" },
                       { f: "net", bg: "#FEF2F2", bl: "#DC2626", label: "Net Açık", value: allNetOpen.length, sub: "kalem", vc: "#DC2626" },
-                      { f: "products", bg: "#F5F3FF", bl: "#7C3AED", label: "📦 Ürün Özet", value: productSummary.length, sub: "ürün", vc: "#7C3AED" },
+                      { f: "containerProducts", bg: "#F5F3FF", bl: "#7C3AED", label: "📦 Konteyner", value: containerProducts.length, sub: "ürün", vc: "#7C3AED" },
+                      { f: "salesOrderProducts", bg: "#ECFEFF", bl: "#0891B2", label: "🤝 Sipariş", value: salesOrderProducts.length, sub: "ürün", vc: "#0891B2" },
                       { f: "buy", bg: "#EFF6FF", bl: "#2563EB", label: "🛒 Satınalma", value: buyParts.length, sub: `${Object.keys(rawGroups).length + Object.keys(buyGroups).length} kategori`, vc: "#2563EB" },
                       { f: "make", bg: "#F0FDF4", bl: "#1D9E75", label: "🏭 Üretim", value: makeParts.length, sub: "kalem", vc: "#1D9E75" },
                       { f: "fason", bg: "#FFF7ED", bl: "#C2410C", label: "🚚 Fason", value: fasonParts.length, sub: "kalem", vc: "#C2410C" },
@@ -14582,9 +14938,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
 
                   {/* Warnings */}
                   {exp.unmappedProducts.length > 0 && (
-                    <div style={{ padding: "8px 14px", background: "#FEE2E2", borderRadius: 8, border: "1px solid #FECACA", marginBottom: 10, fontSize: 11, color: "#DC2626" }}>
-                      ⚠ Eşleştirilmemiş: {exp.unmappedProducts.map(pid => products?.find(p => p.id === pid)?.nameTR || pid).join(", ")}
-                    </div>
+                    <details style={{ marginBottom: 10, background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: 8, overflow: "hidden" }}>
+                      <summary style={{ cursor: "pointer", padding: "8px 14px", fontSize: 11, color: "#DC2626", fontWeight: 500, userSelect: "none" }}>
+                        ⚠ Eşleştirilmemiş ({exp.unmappedProducts.length} ürün) — aç
+                      </summary>
+                      <div style={{ padding: "0 14px 10px", fontSize: 11, color: "#DC2626", maxHeight: 200, overflowY: "auto" }}>
+                        {exp.unmappedProducts.map(pid => products?.find(p => p.id === pid)?.nameTR || pid).join(", ")}
+                      </div>
+                    </details>
                   )}
                   {exp.pass2Count > 0 && (
                     <div style={{ padding: "6px 14px", background: "#F5F3FF", borderRadius: 8, border: "1px solid #DDD6FE", marginBottom: 10, fontSize: 11, color: "#7C3AED" }}>
@@ -14632,10 +14993,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                     </span>
                   </div>
 
-                  {/* ===== VIEW: Ürün Özet ===== */}
-                  {expFilter === "products" && (
+                  {/* ===== VIEW: Ürün Özet (Konteyner / Sipariş / Tümü) ===== */}
+                  {(expFilter === "products" || expFilter === "containerProducts" || expFilter === "salesOrderProducts") && (() => {
+                    const displayed = expFilter === "containerProducts" ? containerProducts
+                                    : expFilter === "salesOrderProducts" ? salesOrderProducts
+                                    : productSummary;
+                    const viewTitle = expFilter === "containerProducts" ? "📦 Konteyner Kaynaklı Ürünler"
+                                    : expFilter === "salesOrderProducts" ? "🤝 Sipariş Kaynaklı Ürünler"
+                                    : "📦 Ürün Bazlı İhtiyaç Özeti";
+                    const viewColor = expFilter === "salesOrderProducts" ? "#0891B2" : "#7C3AED";
+                    return (
                     <div>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "#7C3AED", marginBottom: 10 }}>📦 Ürün Bazlı İhtiyaç Özeti</div>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: viewColor, marginBottom: 10 }}>{viewTitle}</div>
                       {/* Montaj vs VIO stok uyumsuzluk uyarısı */}
                       {(() => {
                         const mismatches = Object.entries(stockCrossCheck).filter(([, c]) => c.status === "mismatch");
@@ -14676,7 +15045,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                             <th style={{ padding: "8px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
                           </tr></thead>
                           <tbody>
-                            {productSummary.map((ps, i) => {
+                            {displayed.map((ps, i) => {
                               const pct = ps.totalParts > 0 ? Math.round((ps.covered / ps.totalParts) * 100) : 0;
                               const displayNetDemand = ps.adjustedNetDemand ?? ps.netDemand;
                               const isFullyCovered = displayNetDemand === 0;
@@ -14801,7 +15170,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                         <span><span style={{ padding: "1px 5px", borderRadius: 3, background: "#FEF3C7", color: "#92400E", fontSize: 9 }}>⚠ VIO</span> = montaj stok vs VIO stok farkı (&gt;2 uyarı)</span>
                       </div>
                     </div>
-                  )}
+                    );
+                  })()}
 
                   {/* ===== VIEW: Satınalma ===== */}
                   {expFilter === "buy" && (
