@@ -18,6 +18,8 @@ const APP_COL = "appData";
 const STOCK_DOC = "mrpStock";
 const AKIBET_DOC = "mrpAkibet";
 const PURCH_DOC = "mrpPurchase";
+const SALES_ORDERS_DOC = "salesOrders";
+const SHIPMENTS_DOC = "shipments";
 const AUTOMATION_LOG_DOC = "automationLog";
 
 /**
@@ -87,12 +89,115 @@ async function saveReport(db, type, parserResult, fileName) {
   } else if (type === "purchase") {
     docId = PURCH_DOC;
     payload = transformPurchaseForFirestore(parserResult);
+  } else if (type === "salesOrders") {
+    // Özel akış: önce eski salesOrders ile diff hesapla, shipments güncelle, sonra yaz.
+    const diffResult = await saveSalesOrdersWithDiff(db, parserResult);
+    return { docId: SALES_ORDERS_DOC, payload: parserResult.ordersMap || {}, diffMeta: diffResult };
   } else {
     throw new Error(`Bilinmeyen rapor tipi: ${type}`);
   }
 
   await db.collection(APP_COL).doc(docId).set(payload);
   return { docId, payload };
+}
+
+/**
+ * salesOrders + shipments birleşik yazımı — sevk geçmişi diff hesabı.
+ *
+ * VIO sadece aktif siparişleri verir; tam teslim olunca rapordan düşer. Diff:
+ *   1. Eskide var, yenide var, sevkEdilen artmış → "vio-update" event
+ *   2. Eskide var, yenide yok → "vio-removed" final event (kalan miktar tam sevk varsayımı)
+ *   3. Eskide yok, yenide var (sevkEdilen>0) → initial "vio-update" event
+ *
+ * DigerMusteriler.jsx handleFile içindeki logic'in CommonJS aynası — frontend
+ * manuel yükleme ile cloud function mail otomasyonu BİREBİR aynı diff üretir.
+ *
+ * @returns {Promise<{eventCount, salesOrdersCount}>}
+ */
+async function saveSalesOrdersWithDiff(db, parserResult) {
+  const importedAt = new Date().toISOString();
+  const newOrdersMap = parserResult.ordersMap || {};
+
+  // Eski salesOrders + mevcut shipments oku
+  const ordersRef = db.collection(APP_COL).doc(SALES_ORDERS_DOC);
+  const shipmentsRef = db.collection(APP_COL).doc(SHIPMENTS_DOC);
+  const [ordersSnap, shipmentsSnap] = await Promise.all([ordersRef.get(), shipmentsRef.get()]);
+  const oldOrders = ordersSnap.exists ? (ordersSnap.data() || {}) : {};
+  const newShipments = shipmentsSnap.exists ? { ...(shipmentsSnap.data() || {}) } : {};
+
+  let eventCount = 0;
+  const ensureShipmentDoc = (id, o) => {
+    if (!newShipments[id]) {
+      newShipments[id] = {
+        customerCode: o.customerCode || "",
+        customerName: o.customerName || "",
+        stokKodu: o.stokKodu || "",
+        stokAdi: o.stokAdi || "",
+        belgeNo: o.belgeNo || "",
+        orijinalMiktar: o.orijinalMiktar || 0,
+        teslimTarihi: o.teslimTarihi || "",
+        events: [],
+        totalShipped: 0,
+        fullyDelivered: false,
+        firstShipAt: "",
+        finalShipAt: "",
+        lastUpdate: importedAt,
+      };
+    }
+    return newShipments[id];
+  };
+  const pushEvent = (id, event) => {
+    const sh = newShipments[id];
+    sh.events.push(event);
+    sh.totalShipped = event.cumulative;
+    sh.lastUpdate = importedAt;
+    if (!sh.firstShipAt) sh.firstShipAt = event.at;
+    sh.finalShipAt = event.at;
+    if (event.final) sh.fullyDelivered = true;
+    eventCount++;
+  };
+
+  // 1) Eskide var olanları işle
+  for (const [id, oldO] of Object.entries(oldOrders)) {
+    if (!oldO || typeof oldO !== "object") continue;
+    const newO = newOrdersMap[id];
+    if (newO) {
+      const oldShip = Number(oldO.sevkEdilen || 0);
+      const newShip = Number(newO.sevkEdilen || 0);
+      const delta = newShip - oldShip;
+      if (delta > 0) {
+        ensureShipmentDoc(id, newO);
+        pushEvent(id, { at: importedAt, deltaQty: delta, cumulative: newShip, source: "vio-update" });
+      }
+    } else {
+      // VIO'dan kayboldu → kalan miktar tam sevk varsayımı
+      const oldRemaining = Number(oldO.kalanMiktar || 0);
+      if (oldRemaining > 0) {
+        ensureShipmentDoc(id, oldO);
+        const cumulative = Number(oldO.orijinalMiktar || 0);
+        pushEvent(id, { at: importedAt, deltaQty: oldRemaining, cumulative, source: "vio-removed", final: true });
+      } else if (newShipments[id]) {
+        newShipments[id].fullyDelivered = true;
+        newShipments[id].lastUpdate = importedAt;
+      }
+    }
+  }
+  // 2) Yenide olup eskide olmayan siparişler
+  for (const [id, newO] of Object.entries(newOrdersMap)) {
+    if (oldOrders[id]) continue;
+    const newShip = Number(newO.sevkEdilen || 0);
+    if (newShip > 0) {
+      ensureShipmentDoc(id, newO);
+      pushEvent(id, { at: importedAt, deltaQty: newShip, cumulative: newShip, source: "vio-update" });
+    }
+  }
+
+  // Yaz: salesOrders her zaman, shipments sadece event üretildiyse
+  await ordersRef.set(newOrdersMap);
+  if (eventCount > 0) {
+    await shipmentsRef.set(newShipments);
+  }
+  return { eventCount, salesOrdersCount: Object.keys(newOrdersMap).length };
 }
 
 /**
@@ -136,8 +241,11 @@ module.exports = {
   STOCK_DOC,
   AKIBET_DOC,
   PURCH_DOC,
+  SALES_ORDERS_DOC,
+  SHIPMENTS_DOC,
   AUTOMATION_LOG_DOC,
   saveReport,
+  saveSalesOrdersWithDiff,
   appendAutomationLog,
   getLatestAutomationLog,
   transformStockForFirestore,

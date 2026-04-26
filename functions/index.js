@@ -37,7 +37,7 @@ const admin = require("firebase-admin");
 const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
-const { parseStockReport, parseAkibetExcel, parsePurchaseExcel } = require("./parsers");
+const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parseSalesOrdersReport } = require("./parsers");
 const { saveReport, appendAutomationLog } = require("./firestore");
 
 // Firebase Admin tek seferlik init
@@ -65,6 +65,7 @@ function runParser(type, workbook) {
   if (type === "stock") return parseStockReport(workbook);
   if (type === "akibet") return parseAkibetExcel(workbook);
   if (type === "purchase") return parsePurchaseExcel(workbook);
+  if (type === "salesOrders") return parseSalesOrdersReport(workbook);
   throw new Error(`Bilinmeyen tip: ${type}`);
 }
 
@@ -91,6 +92,13 @@ function summarizeResult(type, result) {
       totalParts: result.totalParts,
       totalItems: result.totalItems,
       supplierCount: result.supplierCount,
+    };
+  }
+  if (type === "salesOrders") {
+    return {
+      orderCount: result.orderCount,
+      customerCount: result.customerCount,
+      aggregateCount: result.aggregateCount,
     };
   }
   return {};
@@ -141,7 +149,8 @@ async function runVioImport(source, secrets) {
         const isEmpty =
           (item.type === "stock" && parserResult.totalCodes === 0) ||
           (item.type === "akibet" && parserResult.totalParts === 0) ||
-          (item.type === "purchase" && parserResult.totalParts === 0);
+          (item.type === "purchase" && parserResult.totalParts === 0) ||
+          (item.type === "salesOrders" && parserResult.orderCount === 0);
 
         if (isEmpty) {
           reportResults.push({
@@ -158,9 +167,13 @@ async function runVioImport(source, secrets) {
         }
 
         // Firestore'a yaz
-        await saveReport(db, item.type, parserResult, item.filename);
+        const saveOut = await saveReport(db, item.type, parserResult, item.filename);
 
         const summary = summarizeResult(item.type, parserResult);
+        // salesOrders için diff sayısını da summary'ye ekle
+        if (item.type === "salesOrders" && saveOut?.diffMeta) {
+          summary.shipmentEvents = saveOut.diffMeta.eventCount;
+        }
         reportResults.push({
           type: item.type,
           label: item.label,

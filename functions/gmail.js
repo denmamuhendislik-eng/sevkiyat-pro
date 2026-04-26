@@ -38,6 +38,12 @@ const VIO_REPORTS = [
     subjectMatch: "sipariş kontrol listesi",
     label: "Sipariş Kontrol Listesi (Belge No)",
   },
+  {
+    type: "salesOrders",
+    docName: "salesOrders",
+    subjectMatch: "sipariş raporu toplamlı",
+    label: "Sipariş Raporu Toplamlı (Müşteri Alt Hesaplı)",
+  },
 ];
 
 /**

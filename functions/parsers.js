@@ -607,8 +607,163 @@ function parsePurchaseExcel(workbook) {
   };
 }
 
+// ==================== 4. PARSER — SİPARİŞ RAPORU TOPLAMLI (MÜŞTERİ ALT HESAPLI) ====================
+// Frontend src/modules/digerMusteriler/parser.js'in CommonJS aynası.
+// İki format auto-detect: VIO mail export (3 hücreye yayılmış müşteri başlığı, integer DDMMYYYY tarih)
+// + eski manuel export (tek hücre müşteri başlığı, text DD.MM.YYYY).
+
+function pNumSO(v) {
+  if (v === "" || v === undefined || v === null) return 0;
+  if (typeof v === "number") return isNaN(v) ? 0 : v;
+  const s = String(v).trim();
+  if (!s) return 0;
+  const n = parseFloat(s.replace(/\./g, "").replace(",", "."));
+  return isNaN(n) ? 0 : n;
+}
+
+function parseSerialDateSO(v) {
+  if (v === "" || v === undefined || v === null) return "";
+  if (typeof v === "number" && !isNaN(v)) {
+    // Mail format DDMMYYYY
+    if (v >= 1000000 && v <= 99999999) {
+      const s = String(v).padStart(8, "0");
+      const dd = s.substring(0, 2);
+      const mm = s.substring(2, 4);
+      const yyyy = s.substring(4, 8);
+      const ddN = parseInt(dd), mmN = parseInt(mm), yyyyN = parseInt(yyyy);
+      if (ddN >= 1 && ddN <= 31 && mmN >= 1 && mmN <= 12 && yyyyN >= 2000 && yyyyN <= 2100) {
+        return `${yyyy}-${mm}-${dd}`;
+      }
+    }
+    // Excel serial
+    if (v > 25000 && v < 100000) {
+      const d = new Date((v - 25569) * 86400 * 1000);
+      if (!isNaN(d.getTime())) return d.toISOString().substring(0, 10);
+    }
+    return "";
+  }
+  const s = String(v).trim();
+  if (!s) return "";
+  const m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (m) {
+    const dd = m[1].padStart(2, "0");
+    const mm = m[2].padStart(2, "0");
+    return `${m[3]}-${mm}-${dd}`;
+  }
+  const n = Number(s);
+  if (!isNaN(n)) return parseSerialDateSO(n);
+  return "";
+}
+
+function findHeaderColumnsSO(row) {
+  const cols = {};
+  row.forEach((cell, ci) => {
+    const h = norm(cell);
+    if (!h) return;
+    if (h === "tarih") cols.orderDate = ci;
+    else if (h === "belge no") cols.belgeNo = ci;
+    else if (h === "stok kodu") cols.stokKodu = ci;
+    else if (h === "stok adı" || h === "stok adi") cols.stokAdi = ci;
+    else if (h === "teslim tarihi") cols.teslimTarihi = ci;
+    else if (h === "brm") cols.brm = ci;
+    else if (h.includes("orijinal miktar")) cols.orijinalMiktar = ci;
+    else if (h.includes("sevk edilen")) cols.sevkEdilen = ci;
+    else if (h.includes("kalan miktar")) cols.kalanMiktar = ci;
+    else if (h.includes("dv.fiyat") || h.includes("dv fiyat")) cols.dvFiyat = ci;
+    else if (h === "fiyat") cols.fiyat = ci;
+    else if (h.includes("toplam bedel")) cols.toplamBedel = ci;
+  });
+  return cols;
+}
+
+function detectCustomerHeaderSO(r) {
+  const c0 = String(r[0] || "").trim();
+  if (!c0.startsWith("Müşteri")) return null;
+  if (c0 === "Müşteri") {
+    const code = String(r[1] || "").trim();
+    const name = String(r[3] || r[2] || "").trim();
+    if (code && name) return { code, name };
+  }
+  const m = c0.match(/Müşteri\s+(\S+)\s+(.+)/);
+  if (m) return { code: m[1].trim(), name: m[2].trim() };
+  return null;
+}
+
+function parseSalesOrdersReport(workbook) {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+  const ordersMap = {};
+  const customerSet = new Set();
+  let currentCustomerCode = "";
+  let currentCustomerName = "";
+  let currentCols = null;
+  let aggregateCount = 0;
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const c0 = String(r[0] || "").trim();
+    const cust = detectCustomerHeaderSO(r);
+    if (cust) {
+      currentCustomerCode = cust.code;
+      currentCustomerName = cust.name;
+      customerSet.add(currentCustomerCode);
+      continue;
+    }
+    if (c0 === "Tarih") {
+      currentCols = findHeaderColumnsSO(r);
+      continue;
+    }
+    if (!currentCustomerCode || !currentCols) continue;
+    const belgeNoVal = r[currentCols.belgeNo];
+    const stokKoduVal = r[currentCols.stokKodu];
+    const belgeNo = belgeNoVal !== "" && belgeNoVal !== undefined ? String(belgeNoVal).trim() : "";
+    const stokKodu = stokKoduVal !== "" && stokKoduVal !== undefined ? String(stokKoduVal).trim() : "";
+    if (!belgeNo || !stokKodu || stokKodu === "Stok Kodu") continue;
+    const teslimTarihi = parseSerialDateSO(r[currentCols.teslimTarihi]);
+    const orderDateIso = parseSerialDateSO(r[currentCols.orderDate]);
+    const idKey = teslimTarihi || orderDateIso || `row${i}`;
+    const id = `${belgeNo}_${stokKodu}_${idKey}`;
+    const row = {
+      customerCode: currentCustomerCode,
+      customerName: currentCustomerName,
+      orderDate: orderDateIso,
+      belgeNo,
+      stokKodu,
+      stokAdi: String(r[currentCols.stokAdi] || "").trim(),
+      teslimTarihi,
+      brm: String(r[currentCols.brm] || "").trim(),
+      orijinalMiktar: pNumSO(r[currentCols.orijinalMiktar]),
+      sevkEdilen: pNumSO(r[currentCols.sevkEdilen]),
+      kalanMiktar: pNumSO(r[currentCols.kalanMiktar]),
+      dvFiyat: pNumSO(r[currentCols.dvFiyat]),
+      fiyat: pNumSO(r[currentCols.fiyat]),
+      toplamBedel: pNumSO(r[currentCols.toplamBedel]),
+    };
+    if (ordersMap[id]) {
+      aggregateCount++;
+      ordersMap[id].orijinalMiktar += row.orijinalMiktar;
+      ordersMap[id].sevkEdilen += row.sevkEdilen;
+      ordersMap[id].kalanMiktar += row.kalanMiktar;
+      ordersMap[id].toplamBedel += row.toplamBedel;
+    } else {
+      ordersMap[id] = row;
+    }
+  }
+
+  return {
+    ordersMap,
+    customerCount: customerSet.size,
+    orderCount: Object.keys(ordersMap).length,
+    rowCount: Object.keys(ordersMap).length + aggregateCount,
+    aggregateCount,
+    importedAt: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   parseStockReport,
   parseAkibetExcel,
   parsePurchaseExcel,
+  parseSalesOrdersReport,
 };

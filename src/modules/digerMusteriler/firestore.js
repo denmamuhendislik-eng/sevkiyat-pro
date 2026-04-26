@@ -1,4 +1,4 @@
-import { doc, onSnapshot, setDoc, updateDoc, deleteField } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, updateDoc, deleteField, deleteDoc } from "firebase/firestore";
 import { db } from "../../firebase";
 
 const APP_COL = "appData";
@@ -62,6 +62,16 @@ export async function saveShipments(shipmentsMap, { canEdit }) {
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
   const ref = doc(db, APP_COL, SHIPMENTS_DOC);
   await setDoc(ref, shipmentsMap);
+}
+
+// Geçici — mail formatı parser bug'ından kaynaklı sahte vio-removed event'leri temizlemek için
+// 27 Nisan 2026 hotfix. Yeni mail otomasyonu doğru parser ile çalıştıktan sonra tekrar dolar.
+export async function resetShipments({ canEdit, isAdmin }) {
+  if (!isAdmin) throw new Error("Sıfırlama sadece admin rolüne açık");
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  const ref = doc(db, APP_COL, SHIPMENTS_DOC);
+  await deleteDoc(ref);
 }
 
 // Tek override yazar — planOverrides doc'undaki diğer override'lar korunur (setDoc merge).

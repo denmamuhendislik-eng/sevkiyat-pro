@@ -469,6 +469,9 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       {/* Upload bölümü */}
       <div style={{ marginTop: 20, padding: 12, border: '1px solid #e7e5e4', borderRadius: 8 }}>
         <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Satış Siparişi Yükleme</div>
+        <div style={{ marginBottom: 10, padding: '8px 10px', background: '#fefce8', border: '1px solid #fde047', borderRadius: 6, fontSize: 11, color: '#854d0e', lineHeight: 1.5 }}>
+          ℹ️ <b>Mail otomasyonu aktif</b> — VIO sipariş raporu mailden otomatik yüklenir (4. rapor). Manuel yükleme <b>acil durum</b> içindir; sıradaki mail yüklemesi ile sync olur.
+        </div>
         <input
           ref={fileInputRef}
           type="file"
@@ -489,7 +492,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             opacity: uploading ? 0.6 : 1,
           }}
         >
-          {uploading ? 'Yükleniyor...' : 'Satış Siparişi Excel Yükle'}
+          {uploading ? 'Yükleniyor...' : 'Satış Siparişi Excel Yükle (acil durum)'}
         </button>
         {uploadResult && (
           <div style={{

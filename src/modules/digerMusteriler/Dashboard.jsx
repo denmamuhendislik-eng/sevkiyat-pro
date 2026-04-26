@@ -1,6 +1,7 @@
 import React, { useMemo, useState } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, CartesianGrid } from 'recharts';
 import { useSalesOrders, usePlanOverrides, useBomModels, useShipments } from './hooks';
+import { resetShipments } from './firestore';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { formatMoney } from '../../shared/moneyFormat';
 import { getISOWeek } from '../../shared/weekUtils';
@@ -8,7 +9,8 @@ import { getISOWeek } from '../../shared/weekUtils';
 // Aşama 2.5 — Diğer Müşteriler için yönetici dashboard'ı.
 // Veri kaynakları: salesOrders (aktif siparişler), shipments (sevk geçmişi — VIO diff'inden üretilir).
 // Sevkiyat Bazlı İhtiyaç paneli ve mevcut Dashboard (konteyner) kutsal — bu farklı bir sayfa.
-export default function MusteriDashboard() {
+export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
+  const canEdit = !!(isAdmin || isUretim || isSales);
   const { salesOrders, loaded: ordersLoaded } = useSalesOrders();
   const { planOverrides } = usePlanOverrides();
   const { bomModels } = useBomModels();
@@ -374,8 +376,32 @@ export default function MusteriDashboard() {
         )}
       </div>
 
-      <div style={{ marginTop: 14, fontSize: 10, color: '#a8a29e' }}>
-        Sevk performansı VIO yüklemelerine göre yaklaşık değerdir — gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır.
+      <div style={{ marginTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
+        <div style={{ fontSize: 10, color: '#a8a29e' }}>
+          Sevk performansı VIO yüklemelerine göre yaklaşık değerdir — gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır.
+        </div>
+        {isAdmin && (
+          <button
+            onClick={async () => {
+              if (!confirm('Sevk geçmişi (shipments) tamamen silinsin mi?\n\nBu işlem ALT_RESET için yapılır — bir sonraki VIO yüklemesinde diff sıfırdan başlar.')) return;
+              if (!confirm('EMİN MİSİN? Bu işlem geri alınamaz. Tüm shipment events silinecek.')) return;
+              try {
+                await resetShipments({ canEdit, isAdmin });
+                alert('Shipments doc silindi. Bir sonraki yüklemede sıfırdan tekrar oluşur.');
+              } catch (e) {
+                alert('Sıfırlama başarısız: ' + (e.message || String(e)));
+              }
+            }}
+            style={{
+              padding: '4px 10px', fontSize: 10, borderRadius: 4,
+              border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b',
+              cursor: 'pointer',
+            }}
+            title="Geçici hotfix butonu — mail formatı parser bug'ından oluşan sahte event'leri temizler"
+          >
+            ⚠ Shipments Sıfırla (admin)
+          </button>
+        )}
       </div>
     </div>
   );
