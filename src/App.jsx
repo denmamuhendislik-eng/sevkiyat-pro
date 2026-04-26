@@ -7,7 +7,7 @@ import * as XLSX from "xlsx";
 import QRCode from "qrcode";
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
-import DigerMusteriler from "./modules/digerMusteriler";
+import DigerMusteriler, { MusteriDashboard } from "./modules/digerMusteriler";
 import { parseBomExcel as parseBomExcelModule } from "./shared/bomParser";
 import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
 
@@ -2099,7 +2099,7 @@ ${el.innerHTML}
     XLSX.writeFile(wb, `${isEN?"PackList":"CekiListe"}_${dateStr.replace(/\./g,"")}.xlsx`);
   };
 
-  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"},{id:"mrp",icon:"⚙️",l:"MRP Planlama"},{id:"digerMusteriler",icon:"🤝",l:"Diğer Müşteriler"}];
+  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"},{id:"mrp",icon:"⚙️",l:"MRP Planlama"},{id:"digerMusteriler",icon:"🤝",l:"Diğer Müşteriler"},{id:"musteriDashboard",icon:"📈",l:"Müşteri Dashboard"}];
   const canSeeMRP = isAdmin || isUretim || isSales;
   const canSeeDigerMusteriler = isAdmin || isSales;
 
@@ -2145,7 +2145,8 @@ ${el.innerHTML}
           {nav.filter(n => {
             if (n.id === "mrp" && !canSeeMRP) return false;
             if (n.id === "digerMusteriler" && !canSeeDigerMusteriler) return false;
-            if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler"].includes(n.id)) return false;
+            if (n.id === "musteriDashboard" && !canSeeDigerMusteriler) return false;
+            if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard"].includes(n.id)) return false;
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
           }).map(n=>(
@@ -2985,6 +2986,7 @@ ${el.innerHTML}
 
           {/* ========== DIGER MUSTERILER PAGE ========== */}
           {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
+          {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard />}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
