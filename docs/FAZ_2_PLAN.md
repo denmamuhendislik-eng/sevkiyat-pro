@@ -177,8 +177,13 @@ Aşama 2.1 kod implementasyonu başladı: `feat/faz2-1-motor-adaptor` branch'ı.
 - Aselsan BOM yükleme stabilize bekleniyor — gerçek kullanım sonrası tasarımı netleşir
 - ~600 satır, bir sonraki PR'a
 
-**Faz 1B — Mail otomasyonu 4. rapor:**
-- BOM yükleme stabilize sonrası
+**Faz 1B — Mail otomasyonu 4. rapor:** ✅ Tamam (PR #16, 27 Nis)
+- Sipariş Raporu Toplamlı (Müşteri Alt Hesaplı) cloud function tetiklemeye eklendi
+- Parser auto-detect: mail format (3-hücre müşteri başlığı + integer DDMMYYYY tarih) + eski manuel format
+- Cloud function shipments diff hesabı (functions/firestore.js saveSalesOrdersWithDiff)
+- Manuel yükleme akışı uyarı banner ile kalır (acil durum için)
+- 27 Nis 01:00 sonrası deploy yapıldı, yarın sabah ilk cron tetiklemesi gerçek mail ile test edilecek
+- Geçici hotfix: shipments doc reset butonu Müşteri Dashboard'da (admin-only) — Ömer 27 Nis'te bir kez kullandı, sahte vio-removed event'leri temizlendi. Sonraki PR'da kaldırılacak.
 
 **Dashboard 2. tur (yönetici talebi gelirse):**
 - Müşteri uyum karnesi (müşteri bazlı OTD)
