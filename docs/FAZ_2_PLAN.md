@@ -139,19 +139,55 @@ Aşama 2.1 kod implementasyonu başladı: `feat/faz2-1-motor-adaptor` branch'ı.
 - Override'lı BOM: **Koru / Sıfırla / İptal** (3 buton)
 - Yeni BOM: **Üzerine Yaz / İptal** (2 buton)
 
+### ✅ 26-27 Nisan oturumu — Akibeti Belirsiz + Ürün Özeti + 2.4 + 2.5
+
+**Akibeti Belirsiz (PR #14):**
+- planOverrides[id].status = "deferred" → MRP demand'tan çıkarılır (App.jsx salesOrdersDemand)
+- DigerMusteriler'de Geciken üstünde gri kutu, ⏸ ikon + soluk arka plan
+- Picker modal'da "⏸ Akibeti Belirsiz" / "▶ Tekrar Aktif Et" toggle
+
+**Ürün Özeti view toggle (PR #14):**
+- Toolbar 📋 Sipariş / 🧮 Ürün Özeti
+- Stok bazlı agregasyon tablosu — toplam adet, tutar, sipariş sayısı, müşteri rozetleri, ilk-son teslim
+- Kolon başlığı tıkla → sort
+
+**Aşama 2.4 — Override stale uyarısı (PR #15):**
+- Hook'tan staleOverrides[]
+- Geciken/Belirsiz üstünde sarı accordion: "● VIO Termin Değişti (N sipariş)"
+- Tek-tıkla "↻ VIO'ya Güncelle" → override silinir, ham VIO tarihine döner
+- Satırdaki ● mavi → sarı (uyarı tonu)
+
+**Aşama 2.5 — Sevk geçmişi + Müşteri Dashboard (PR #15):**
+- Yeni Firestore doc: `appData/shipments` (events array, diff'ten üretilir)
+- VIO yüklemesinde otomatik diff hesabı (sevkEdilen artışı + vio-removed final event)
+- Yeni sidebar sekmesi 📈 Müşteri Dashboard:
+  1) Bu ay alınan sipariş (geçen aya % değişim)
+  2) Teslim yükü (bu hafta + 4 hafta)
+  3) Sevk performansı (OTD %, ort. gecikme gün)
+  4) Top 5 müşteri pasta (yıllık bedel)
+  5) Aylık trend (son 6 ay alındı vs sevk)
+  6) Önümüzdeki 6 ay yükü (bizim plan vs müşteri teslim 2 bar)
+  7) Operasyonel uyarılar (geciken / VIO termin / belirsiz / BOM eksik + en eski 5)
+- recharts kütüphanesi (~50KB gzipped)
+
 ### ⏳ Beklemede (sonraki oturum)
 
 **Aşama 2.3 — Sipariş Bazlı İhtiyaç paneli:**
 - v20'deki 4. ana iş, kritik kural: **Sevkiyat Bazlı İhtiyaç asla değiştirilmez**, yeni paralel panel yazılır
-- Mevcut Ürün ↔ BOM Eşleştirme tablosu canlıda kullanılacak, gerçek kullanım sonrası geri bildirim
+- Aselsan BOM yükleme stabilize bekleniyor — gerçek kullanım sonrası tasarımı netleşir
 - ~600 satır, bir sonraki PR'a
-
-**Aşama 2.4 — Override stale uyarısı:**
-- VIO termin değişimi tespit + ● sarı nokta
-- ~80 satır, Aşama 2.3'ten önce yapılabilir
 
 **Faz 1B — Mail otomasyonu 4. rapor:**
 - BOM yükleme stabilize sonrası
+
+**Dashboard 2. tur (yönetici talebi gelirse):**
+- Müşteri uyum karnesi (müşteri bazlı OTD)
+- Sipariş yaşı dağılımı (histogram)
+- Aselsan/Roketsan iş yükü kırılımı
+
+**Sevk yapısı evrim:**
+- İleride Sevkiyat Pro içinden manuel sevk girişi → events[].source = "manual-shipment"
+- Mevcut VIO diff yan yana çalışır, yapı değişmez
 
 **Faz 2 uzun vadeli:**
 - Mapping UI'nın tamamen kaldırılması (products.vioCode otomatik)
