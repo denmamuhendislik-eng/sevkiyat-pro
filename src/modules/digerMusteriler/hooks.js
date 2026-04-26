@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels } from "./firestore";
+import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments } from "./firestore";
 import { getISOWeek } from "../../shared/weekUtils";
 
 export function useSalesOrders() {
@@ -41,6 +41,19 @@ export function useBomModels() {
   return { bomModels, loaded };
 }
 
+export function useShipments() {
+  const [shipments, setShipments] = useState({});
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    const unsub = subscribeShipments((data) => {
+      setShipments(data || {});
+      setLoaded(true);
+    });
+    return unsub;
+  }, []);
+  return { shipments, loaded };
+}
+
 // Siparişleri filter + sort + ISO-hafta gruplama + KPI hesabı
 // Adım 5: override görünümde yok ama hook zaten override-aware — Adım 6'da UI eklendiğinde mantık hazır
 // "Akibeti belirsiz" siparişler ayrı `deferred[]` array'ine düşer (geciken/hafta gruplarına dahil değil) —
@@ -68,7 +81,15 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
         const d = new Date(o.teslimTarihi + "T00:00:00Z");
         if (!isNaN(d.getTime())) week = getISOWeek(d);
       }
-      const row = { id, ...o, effectiveWeek: week, isOverride: !!ov, isDeferred };
+      // Override stale: kullanıcı override yaptı (origWeek kayıtlı) ama VIO'da teslim tarihi
+      // sonradan değişmiş — yeni VIO haftası override'ın yapıldığı haftadan farklı.
+      let vioCurrentWeek = "";
+      if (o.teslimTarihi) {
+        const d = new Date(o.teslimTarihi + "T00:00:00Z");
+        if (!isNaN(d.getTime())) vioCurrentWeek = getISOWeek(d);
+      }
+      const isStale = !!(ov && ov.origWeek && vioCurrentWeek && vioCurrentWeek !== ov.origWeek);
+      const row = { id, ...o, effectiveWeek: week, isOverride: !!ov, isDeferred, isStale, vioCurrentWeek };
       if (isDeferred) {
         deferredRows.push(row);
       } else {
@@ -124,6 +145,10 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
 
     const deferredBedel = deferredRows.reduce((s, o) => s + (o.toplamBedel || 0), 0);
 
+    // Stale override list — VIO termin değişmiş override'lar (filter-aware, deferred dahil değil)
+    const staleOverrides = rows.filter(r => r.isStale);
+    staleOverrides.sort(sortFn);
+
     return {
       late,
       noWeek,
@@ -131,7 +156,8 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
       weekOrder,
       currentWeek,
       deferred: deferredRows,
-      kpi: { totalRows, totalBedel, perCustomer, deferredCount: deferredRows.length, deferredBedel },
+      staleOverrides,
+      kpi: { totalRows, totalBedel, perCustomer, deferredCount: deferredRows.length, deferredBedel, staleCount: staleOverrides.length },
     };
   }, [salesOrders, planOverrides, customerFilter, searchText, sortMode]);
 }

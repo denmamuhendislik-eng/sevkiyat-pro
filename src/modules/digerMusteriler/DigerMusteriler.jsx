@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { useSalesOrders, usePlanOverrides, useBomModels, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
-import { saveSalesOrders, savePlanOverride, removePlanOverride } from './firestore';
+import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
+import { saveSalesOrders, savePlanOverride, removePlanOverride, saveShipments } from './firestore';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween } from '../../shared/weekUtils';
@@ -14,6 +14,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const { salesOrders, loaded: ordersLoaded } = useSalesOrders();
   const { planOverrides, loaded: overridesLoaded } = usePlanOverrides();
   const { bomModels, loaded: bomLoaded } = useBomModels();
+  const { shipments } = useShipments();
 
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
@@ -24,6 +25,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const [sortMode, setSortMode] = useState('date');
   const [lateExpanded, setLateExpanded] = useState(false);
   const [deferredExpanded, setDeferredExpanded] = useState(false);
+  const [staleExpanded, setStaleExpanded] = useState(false);
   // viewMode: 'orders' (default sipariş listesi) | 'products' (stok bazlı agregasyon tablosu)
   const [viewMode, setViewMode] = useState('orders');
   const [productSort, setProductSort] = useState({ col: 'tutar', dir: 'desc' });
@@ -123,11 +125,90 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
       const result = parseSalesOrderExcel(wb);
+      // Sevk geçmişi diff — yeni vs eski salesOrders → shipments events.
+      // VIO sadece aktif siparişleri verir; tam teslim olunca rapordan düşer. Bu yüzden:
+      //   1) sevkEdilen artmışsa (kısmi/tam) → delta event yaz
+      //   2) Sipariş VIO'dan kaybolmuşsa → kalan miktar tam sevk varsayımı, final event
+      const importedAt = new Date().toISOString();
+      const newShipments = { ...shipments };
+      let eventCount = 0;
+      const ensureShipmentDoc = (id, o) => {
+        if (!newShipments[id]) {
+          newShipments[id] = {
+            customerCode: o.customerCode || '',
+            customerName: o.customerName || '',
+            stokKodu: o.stokKodu || '',
+            stokAdi: o.stokAdi || '',
+            belgeNo: o.belgeNo || '',
+            orijinalMiktar: o.orijinalMiktar || 0,
+            teslimTarihi: o.teslimTarihi || '',
+            events: [],
+            totalShipped: 0,
+            fullyDelivered: false,
+            firstShipAt: '',
+            finalShipAt: '',
+            lastUpdate: importedAt,
+          };
+        }
+        return newShipments[id];
+      };
+      const pushEvent = (id, event) => {
+        const sh = newShipments[id];
+        sh.events.push(event);
+        sh.totalShipped = event.cumulative;
+        sh.lastUpdate = importedAt;
+        if (!sh.firstShipAt) sh.firstShipAt = event.at;
+        sh.finalShipAt = event.at;
+        if (event.final) sh.fullyDelivered = true;
+        eventCount++;
+      };
+      // 1) Eskide var olanları işle
+      for (const [id, oldO] of Object.entries(salesOrders || {})) {
+        const newO = result.ordersMap[id];
+        if (newO) {
+          // Hala VIO'da → sevkEdilen değişti mi?
+          const oldShip = Number(oldO.sevkEdilen || 0);
+          const newShip = Number(newO.sevkEdilen || 0);
+          const delta = newShip - oldShip;
+          if (delta > 0) {
+            ensureShipmentDoc(id, newO);
+            pushEvent(id, { at: importedAt, deltaQty: delta, cumulative: newShip, source: 'vio-update' });
+          }
+        } else {
+          // VIO'dan kayboldu → kalan miktar tam sevk varsayımı, final event
+          const oldRemaining = Number(oldO.kalanMiktar || 0);
+          if (oldRemaining > 0) {
+            ensureShipmentDoc(id, oldO);
+            const cumulative = Number(oldO.orijinalMiktar || 0);
+            pushEvent(id, { at: importedAt, deltaQty: oldRemaining, cumulative, source: 'vio-removed', final: true });
+          } else {
+            // Zaten kalanMiktar 0 idi (tam teslim önceden işlendi) — sadece final flag
+            if (newShipments[id]) {
+              newShipments[id].fullyDelivered = true;
+              newShipments[id].lastUpdate = importedAt;
+            }
+          }
+        }
+      }
+      // 2) Yenide olup eskide olmayan siparişler — sevkEdilen > 0 ile geliyorsa initial event yaz
+      for (const [id, newO] of Object.entries(result.ordersMap)) {
+        if (salesOrders[id]) continue;
+        const newShip = Number(newO.sevkEdilen || 0);
+        if (newShip > 0) {
+          ensureShipmentDoc(id, newO);
+          pushEvent(id, { at: importedAt, deltaQty: newShip, cumulative: newShip, source: 'vio-update' });
+        }
+      }
+      // Save: salesOrders + shipments (eğer event üretildiyse)
       await saveSalesOrders(result.ordersMap, { canEdit });
+      if (eventCount > 0) {
+        await saveShipments(newShipments, { canEdit });
+      }
       const extra = result.aggregateCount > 0 ? ` (${result.aggregateCount} duplicate birleştirildi)` : '';
+      const shipExtra = eventCount > 0 ? ` · ${eventCount} sevk hareketi` : '';
       setUploadResult({
         ok: true,
-        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}`,
+        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}${shipExtra}`,
       });
     } catch (e) {
       setUploadResult({ ok: false, message: `✗ Hata: ${e.message || String(e)}` });
@@ -221,6 +302,16 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       setPicker(null);
     } catch (e) {
       alert('Override silme başarısız: ' + (e.message || String(e)));
+    }
+  };
+
+  // VIO Termin Değişti accordion'undan tek-tıkla aksiyon: override silinir → ham VIO tarihine döner.
+  const handleSyncToVio = async (orderId) => {
+    if (!canEdit) return;
+    try {
+      await removePlanOverride(orderId, { canEdit });
+    } catch (e) {
+      alert('VIO senkronizasyonu başarısız: ' + (e.message || String(e)));
     }
   };
 
@@ -601,6 +692,72 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           </div>
 
           {viewMode === 'orders' && (<>
+          {/* VIO Termin Değişti — override stale uyarısı (Aşama 2.4) */}
+          {grouped.staleOverrides.length > 0 && (
+            <div style={{
+              marginTop: 16, padding: 12, borderRadius: 8,
+              background: '#fefce8', border: '1px solid #fde047',
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                fontSize: 13, fontWeight: 500, color: '#854d0e',
+              }} onClick={() => setStaleExpanded(!staleExpanded)}>
+                <span style={{ color: '#ca8a04' }}>●</span>
+                <span>VIO Termin Değişti ({grouped.staleOverrides.length} sipariş)</span>
+                <span style={{ fontSize: 11, color: '#a16207', fontWeight: 400 }}>
+                  — VIO'da teslim tarihi güncellendi, override stale
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11 }}>
+                  {staleExpanded ? 'gizle ▲' : 'aç ▼'}
+                </span>
+              </div>
+              {staleExpanded && (
+                <div style={{ marginTop: 10, background: '#fff', borderRadius: 6, overflow: 'hidden' }}>
+                  {grouped.staleOverrides.map(o => {
+                    const ov = planOverrides[o.id];
+                    return (
+                      <div key={o.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+                        fontSize: 12, borderBottom: '1px solid #f5f5f4',
+                      }}>
+                        <span style={{
+                          padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                          minWidth: 30, textAlign: 'center',
+                          background: customerBadge(o.customerCode).bg,
+                          color: customerBadge(o.customerCode).fg,
+                        }}>{customerBadge(o.customerCode).label}</span>
+                        <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11, minWidth: 170, color: '#1c1917' }}>
+                          {o.stokKodu}
+                        </span>
+                        <span style={{ flex: 1, color: '#44403c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.stokAdi}>
+                          {o.stokAdi}
+                        </span>
+                        <span style={{ fontSize: 11, color: '#78716c' }}>
+                          Override: <b style={{ color: '#c2410c' }}>{ov?.plannedWeek || '—'}</b>
+                          <span style={{ margin: '0 4px' }}>·</span>
+                          VIO yeni: <b style={{ color: '#15803d' }}>{o.vioCurrentWeek}</b>
+                          <span style={{ margin: '0 4px' }}>·</span>
+                          önceki VIO: <span style={{ color: '#a8a29e' }}>{ov?.origWeek}</span>
+                        </span>
+                        <button
+                          onClick={() => handleSyncToVio(o.id)}
+                          disabled={!canEdit}
+                          title="Override'ı sil — sipariş ham VIO tarihine döner"
+                          style={{
+                            padding: '3px 10px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+                            border: '1px solid #15803d', background: '#dcfce7', color: '#166534',
+                            cursor: canEdit ? 'pointer' : 'not-allowed',
+                            opacity: canEdit ? 1 : 0.6,
+                          }}
+                        >↻ VIO'ya Güncelle</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Akibeti belirsiz kutusu — gecikenin üstünde, MRP demand'ına dahil değil */}
           {grouped.deferred.length > 0 && (
             <div style={{
@@ -1040,7 +1197,7 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         {o.effectiveWeek || '—'}
         {o.isOverride && <span style={{ marginLeft: 4, color: '#c2410c' }}>✎</span>}
         {planOverrides?.[o.id]?.note && <span title={planOverrides[o.id].note} style={{ marginLeft: 3, fontSize: 10 }}>💬</span>}
-        {vioChanged && <span title={`VIO teslim değişti: ${override.origWeek} → ${vioCurrentWeek}`} style={{ marginLeft: 3, color: '#2563eb', fontSize: 12, lineHeight: 1 }}>●</span>}
+        {vioChanged && <span title={`VIO teslim değişti: ${override.origWeek} → ${vioCurrentWeek} — üstteki "VIO Termin Değişti" kutusundan güncelle`} style={{ marginLeft: 3, color: '#ca8a04', fontSize: 14, lineHeight: 1, fontWeight: 700 }}>●</span>}
       </button>
       {isLateContext && lateWeeks > 0 && (() => {
         const lc = lateWeeks >= 7 ? { bg: '#fecaca', fg: '#991b1b' }
