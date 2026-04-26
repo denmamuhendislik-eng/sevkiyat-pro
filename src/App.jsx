@@ -2986,7 +2986,7 @@ ${el.innerHTML}
 
           {/* ========== DIGER MUSTERILER PAGE ========== */}
           {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
-          {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard />}
+          {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{
