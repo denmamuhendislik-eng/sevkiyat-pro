@@ -5842,6 +5842,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       if (!qty || qty <= 0) continue;
       const stok = o.stokKodu || "";
       const ov = planOverrides?.[id];
+      // Akibeti belirsiz olarak işaretli siparişler MRP demand'ına dahil edilmez —
+      // müşteri net iptal demedi ama işleme almadığı, viodan silinemeyen siparişler.
+      // ordersList'e de eklenmez; sadece DigerMusteriler "Belirsiz" sekmesinde görünür.
+      if (ov?.status === "deferred") continue;
       const effectiveDate = ov?.plannedWeek || o.teslimTarihi || null;
       const record = {
         id,
