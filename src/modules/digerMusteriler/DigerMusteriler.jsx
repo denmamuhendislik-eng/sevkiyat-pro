@@ -23,11 +23,19 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const [searchText, setSearchText] = useState('');
   const [sortMode, setSortMode] = useState('date');
   const [lateExpanded, setLateExpanded] = useState(false);
+  const [deferredExpanded, setDeferredExpanded] = useState(false);
+  // viewMode: 'orders' (default sipariş listesi) | 'products' (stok bazlı agregasyon tablosu)
+  const [viewMode, setViewMode] = useState('orders');
+  const [productSort, setProductSort] = useState({ col: 'tutar', dir: 'desc' });
 
   // Picker: null | { orderId, anchorX, anchorY, origWeek, currentPlanWeek }
   const [picker, setPicker] = useState(null);
 
   const grouped = useWeekGroupedOrders(salesOrders, planOverrides, { customerFilter, searchText, sortMode });
+
+  const toggleProductSort = (col) => {
+    setProductSort((prev) => prev.col === col ? { col, dir: prev.dir === 'desc' ? 'asc' : 'desc' } : { col, dir: 'desc' });
+  };
 
   const allLoaded = ordersLoaded && overridesLoaded && bomLoaded;
   const rawOrderCount = Object.keys(salesOrders).length;
@@ -63,6 +71,49 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
   const [bomExpanded, setBomExpanded] = useState(false);
   const [noWeekExpanded, setNoWeekExpanded] = useState(false);
+
+  // Ürün bazlı agregasyon — viewMode='products' tablosu için.
+  // Aktif siparişleri (late + noWeek + byWeek) stok kodu bazlı toplar; deferred dahil değil
+  // (deferred ayrı kutuda görünür, MRP demand'ına da dahil değil — semantik tutarlılık).
+  const productSummary = useMemo(() => {
+    const allRows = [...grouped.late, ...grouped.noWeek, ...Object.values(grouped.byWeek).flat()];
+    const byStock = {};
+    for (const r of allRows) {
+      const code = r.stokKodu || '?';
+      if (!byStock[code]) {
+        byStock[code] = {
+          stokKodu: code,
+          stokAdi: r.stokAdi || '',
+          adet: 0,
+          tutar: 0,
+          siparisCount: 0,
+          musteriler: new Set(),
+          ilkTeslim: null,
+          sonTeslim: null,
+          bomMissing: bomSet.size > 0 && !bomSet.has(code),
+        };
+      }
+      const ps = byStock[code];
+      ps.adet += Number(r.kalanMiktar || 0);
+      ps.tutar += Number(r.toplamBedel || 0);
+      ps.siparisCount += 1;
+      if (r.customerCode) ps.musteriler.add(r.customerCode);
+      if (r.teslimTarihi) {
+        if (!ps.ilkTeslim || r.teslimTarihi < ps.ilkTeslim) ps.ilkTeslim = r.teslimTarihi;
+        if (!ps.sonTeslim || r.teslimTarihi > ps.sonTeslim) ps.sonTeslim = r.teslimTarihi;
+      }
+    }
+    const arr = Object.values(byStock).map(p => ({ ...p, musteriler: [...p.musteriler] }));
+    arr.sort((a, b) => {
+      let v = 0;
+      if (productSort.col === 'stokKodu') v = a.stokKodu.localeCompare(b.stokKodu);
+      else if (productSort.col === 'adet') v = a.adet - b.adet;
+      else if (productSort.col === 'tutar') v = a.tutar - b.tutar;
+      else if (productSort.col === 'siparisCount') v = a.siparisCount - b.siparisCount;
+      return productSort.dir === 'desc' ? -v : v;
+    });
+    return arr;
+  }, [grouped, bomSet, productSort]);
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -170,6 +221,49 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       setPicker(null);
     } catch (e) {
       alert('Override silme başarısız: ' + (e.message || String(e)));
+    }
+  };
+
+  // Akibeti belirsiz: müşteri net iptal demediği ama işleme almadığı siparişler.
+  // status: "deferred" set edilir → MRP demand'ına dahil edilmez (App.jsx salesOrdersDemand filtre).
+  // Mevcut plannedWeek/note korunur — kullanıcı "tekrar aktif et" derse motora geri döner.
+  const handleMarkDeferred = async () => {
+    if (!picker) return;
+    const { orderId, origWeek, currentPlanWeek, noteText } = picker;
+    try {
+      await savePlanOverride(orderId, {
+        plannedWeek: currentPlanWeek,
+        origWeek,
+        note: noteText || '',
+        status: 'deferred',
+        by: role,
+        at: new Date().toISOString(),
+      }, { canEdit });
+      setPicker(null);
+    } catch (e) {
+      alert('Akibeti belirsiz işaretleme başarısız: ' + (e.message || String(e)));
+    }
+  };
+
+  const handleUnmarkDeferred = async () => {
+    if (!picker) return;
+    const { orderId, origWeek, currentPlanWeek, noteText } = picker;
+    try {
+      // Eğer sipariş VIO haftasında + not yok ise tamamen sıfırla, aksi takdirde status'u kaldır
+      if (currentPlanWeek === origWeek && !(noteText || '').trim()) {
+        await removePlanOverride(orderId, { canEdit });
+      } else {
+        await savePlanOverride(orderId, {
+          plannedWeek: currentPlanWeek,
+          origWeek,
+          note: noteText || '',
+          by: role,
+          at: new Date().toISOString(),
+        }, { canEdit });
+      }
+      setPicker(null);
+    } catch (e) {
+      alert('Akibeti aktif etme başarısız: ' + (e.message || String(e)));
     }
   };
 
@@ -353,20 +447,45 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 border: '1px solid #d6d3d1', fontSize: 12, outline: 'none',
               }}
             />
-            <select
-              value={sortMode}
-              onChange={(e) => setSortMode(e.target.value)}
-              style={{
-                padding: '6px 10px', borderRadius: 6, border: '1px solid #d6d3d1',
-                fontSize: 12, background: '#fff', cursor: 'pointer',
-              }}
-            >
-              <option value="date">Sıralama: Tarih</option>
-              <option value="price">Sıralama: Tutar</option>
-              <option value="customer">Sıralama: Müşteri</option>
-            </select>
+            {viewMode === 'orders' && (
+              <select
+                value={sortMode}
+                onChange={(e) => setSortMode(e.target.value)}
+                style={{
+                  padding: '6px 10px', borderRadius: 6, border: '1px solid #d6d3d1',
+                  fontSize: 12, background: '#fff', cursor: 'pointer',
+                }}
+              >
+                <option value="date">Sıralama: Tarih</option>
+                <option value="price">Sıralama: Tutar</option>
+                <option value="customer">Sıralama: Müşteri</option>
+              </select>
+            )}
+            <div style={{ display: 'flex', gap: 0, border: '1px solid #d6d3d1', borderRadius: 6, overflow: 'hidden' }}>
+              <button
+                onClick={() => setViewMode('orders')}
+                style={{
+                  padding: '5px 10px', fontSize: 12, border: 'none',
+                  background: viewMode === 'orders' ? '#534AB7' : '#fff',
+                  color: viewMode === 'orders' ? '#fff' : '#44403c',
+                  cursor: 'pointer', fontWeight: viewMode === 'orders' ? 500 : 400,
+                }}
+              >📋 Sipariş</button>
+              <button
+                onClick={() => setViewMode('products')}
+                style={{
+                  padding: '5px 10px', fontSize: 12, border: 'none',
+                  background: viewMode === 'products' ? '#534AB7' : '#fff',
+                  color: viewMode === 'products' ? '#fff' : '#44403c',
+                  cursor: 'pointer', fontWeight: viewMode === 'products' ? 500 : 400,
+                  borderLeft: '1px solid #d6d3d1',
+                }}
+              >🧮 Ürün Özeti</button>
+            </div>
             <div style={{ marginLeft: 'auto', fontSize: 11, color: '#78716c' }}>
-              {grouped.kpi.totalRows} kayıt filtrede · {overrideCount} override
+              {viewMode === 'orders'
+                ? `${grouped.kpi.totalRows} kayıt filtrede · ${overrideCount} override`
+                : `${productSummary.length} ürün · ${grouped.kpi.totalRows} sipariş`}
             </div>
           </div>
 
@@ -481,6 +600,33 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             ))}
           </div>
 
+          {viewMode === 'orders' && (<>
+          {/* Akibeti belirsiz kutusu — gecikenin üstünde, MRP demand'ına dahil değil */}
+          {grouped.deferred.length > 0 && (
+            <div style={{
+              marginTop: 16, padding: 12, borderRadius: 8,
+              background: '#f5f5f4', border: '1px solid #d6d3d1',
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                fontSize: 13, fontWeight: 500, color: '#57534e',
+              }} onClick={() => setDeferredExpanded(!deferredExpanded)}>
+                <span>⏸ Akibeti Belirsiz ({grouped.deferred.length} sipariş · {formatMoney(grouped.kpi.deferredBedel)} TL)</span>
+                <span style={{ fontSize: 11, color: '#78716c' }}>
+                  — MRP demand'ına dahil değil
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11 }}>
+                  {deferredExpanded ? 'gizle ▲' : 'aç ▼'}
+                </span>
+              </div>
+              {deferredExpanded && (
+                <div style={{ marginTop: 10 }}>
+                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Gecikenler kutusu */}
           {grouped.late.length > 0 && (
             <div style={{
@@ -590,6 +736,63 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               ))
             )}
           </div>
+          </>)}
+
+          {viewMode === 'products' && (
+            <div style={{ marginTop: 16, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 8, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: '#f5f5f4', fontSize: 11, color: '#44403c', textAlign: 'left' }}>
+                    <th onClick={() => toggleProductSort('stokKodu')} style={pTh}>Stok Kodu {productSort.col === 'stokKodu' && (productSort.dir === 'desc' ? '▼' : '▲')}</th>
+                    <th style={pTh}>Ad</th>
+                    <th onClick={() => toggleProductSort('adet')} style={{ ...pTh, textAlign: 'right' }}>Toplam Adet {productSort.col === 'adet' && (productSort.dir === 'desc' ? '▼' : '▲')}</th>
+                    <th onClick={() => toggleProductSort('tutar')} style={{ ...pTh, textAlign: 'right' }}>Toplam Tutar {productSort.col === 'tutar' && (productSort.dir === 'desc' ? '▼' : '▲')}</th>
+                    <th onClick={() => toggleProductSort('siparisCount')} style={{ ...pTh, textAlign: 'right' }}>Sip {productSort.col === 'siparisCount' && (productSort.dir === 'desc' ? '▼' : '▲')}</th>
+                    <th style={pTh}>Müşteri</th>
+                    <th style={pTh}>İlk Teslim</th>
+                    <th style={pTh}>Son Teslim</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {productSummary.length === 0 ? (
+                    <tr><td colSpan={8} style={{ padding: 20, textAlign: 'center', color: '#a8a29e' }}>Filtre/aramaya uyan sipariş yok</td></tr>
+                  ) : productSummary.map((p) => {
+                    const tFirst = p.ilkTeslim ? new Date(p.ilkTeslim + 'T00:00:00Z') : null;
+                    const tLast = p.sonTeslim ? new Date(p.sonTeslim + 'T00:00:00Z') : null;
+                    return (
+                      <tr key={p.stokKodu} style={{ borderTop: '1px solid #f5f5f4' }}>
+                        <td style={pTd}>
+                          <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500, color: '#1c1917' }}>
+                            {p.bomMissing && <span title="BOM yok" style={{ color: '#dc2626', marginRight: 4, fontWeight: 700 }}>❓</span>}
+                            {p.stokKodu}
+                          </span>
+                        </td>
+                        <td style={{ ...pTd, color: '#44403c', maxWidth: 280, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={p.stokAdi}>{p.stokAdi}</td>
+                        <td style={{ ...pTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{p.adet}</td>
+                        <td style={{ ...pTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>{formatMoney(p.tutar)} TL</td>
+                        <td style={{ ...pTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#78716c' }}>{p.siparisCount}</td>
+                        <td style={pTd}>
+                          <div style={{ display: 'flex', gap: 3 }}>
+                            {p.musteriler.map(c => {
+                              const b = customerBadge(c);
+                              return (
+                                <span key={c} style={{
+                                  padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                                  background: b.bg, color: b.fg,
+                                }}>{b.label}</span>
+                              );
+                            })}
+                          </div>
+                        </td>
+                        <td style={{ ...pTd, color: '#78716c', fontSize: 11 }}>{tFirst ? formatDateShort(tFirst) : '—'}</td>
+                        <td style={{ ...pTd, color: '#78716c', fontSize: 11 }}>{tLast ? formatDateShort(tLast) : '—'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
 
@@ -645,6 +848,31 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               }}
             >Notu kaydet</button>
           </div>
+          {planOverrides[picker.orderId]?.status === 'deferred' ? (
+            <button
+              onClick={handleUnmarkDeferred}
+              style={{
+                width: '100%', textAlign: 'left', padding: '6px 10px',
+                background: '#ecfdf5', border: '1px solid #a7f3d0', borderRadius: 4,
+                fontSize: 11, color: '#047857', cursor: 'pointer', marginBottom: 6,
+                fontWeight: 500,
+              }}
+            >
+              ▶ Tekrar Aktif Et (demand'a dahil olur)
+            </button>
+          ) : (
+            <button
+              onClick={handleMarkDeferred}
+              style={{
+                width: '100%', textAlign: 'left', padding: '6px 10px',
+                background: '#f5f5f4', border: '1px solid #d6d3d1', borderRadius: 4,
+                fontSize: 11, color: '#57534e', cursor: 'pointer', marginBottom: 6,
+                fontWeight: 500,
+              }}
+            >
+              ⏸ Akibeti Belirsiz (demand'tan çıkar)
+            </button>
+          )}
           {picker.currentPlanWeek !== picker.origWeek && picker.origWeek && (
             <button
               onClick={handleReset}
@@ -691,6 +919,9 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     </div>
   );
 }
+
+const pTh = { padding: '6px 10px', fontWeight: 600, cursor: 'pointer', userSelect: 'none', borderBottom: '1px solid #d6d3d1' };
+const pTd = { padding: '6px 10px' };
 
 function filterBtnStyle(active) {
   return {
@@ -762,7 +993,10 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         display: 'flex', alignItems: 'center', gap: 10, padding: '5px 10px',
         fontSize: 12, borderBottom: '1px solid #f5f5f4',
         cursor: canEdit ? 'grab' : 'default',
+        opacity: o.isDeferred ? 0.55 : 1,
+        background: o.isDeferred ? 'rgba(120,113,108,0.05)' : 'transparent',
       }}>
+      {o.isDeferred && <span title="Akibeti belirsiz — MRP demand'ına dahil değil" style={{ color: '#78716c', fontSize: 12, lineHeight: 1 }}>⏸</span>}
       <span style={{
         display: 'inline-block', padding: '2px 6px', borderRadius: 4,
         fontSize: 10, fontWeight: 600, minWidth: 30, textAlign: 'center',

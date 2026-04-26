@@ -43,6 +43,8 @@ export function useBomModels() {
 
 // Siparişleri filter + sort + ISO-hafta gruplama + KPI hesabı
 // Adım 5: override görünümde yok ama hook zaten override-aware — Adım 6'da UI eklendiğinde mantık hazır
+// "Akibeti belirsiz" siparişler ayrı `deferred[]` array'ine düşer (geciken/hafta gruplarına dahil değil) —
+// MRP demand'ına da girmez (App.jsx salesOrdersDemand filtre).
 export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilter, searchText, sortMode }) {
   return useMemo(() => {
     const q = (searchText || "").trim().toLocaleLowerCase("tr-TR");
@@ -50,6 +52,7 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
 
     // 1) Filter + attach effectiveWeek
     const rows = [];
+    const deferredRows = [];
     for (const [id, o] of Object.entries(salesOrders || {})) {
       if (customerFilter && customerFilter !== "all" && o.customerCode !== customerFilter) continue;
       if (q) {
@@ -57,6 +60,7 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
         if (!hay.includes(q)) continue;
       }
       const ov = planOverrides?.[id];
+      const isDeferred = ov?.status === "deferred";
       let week = "";
       if (ov && ov.plannedWeek) {
         week = ov.plannedWeek;
@@ -64,7 +68,12 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
         const d = new Date(o.teslimTarihi + "T00:00:00Z");
         if (!isNaN(d.getTime())) week = getISOWeek(d);
       }
-      rows.push({ id, ...o, effectiveWeek: week, isOverride: !!ov });
+      const row = { id, ...o, effectiveWeek: week, isOverride: !!ov, isDeferred };
+      if (isDeferred) {
+        deferredRows.push(row);
+      } else {
+        rows.push(row);
+      }
     }
 
     // 2) Sort fn
@@ -98,6 +107,7 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
     }
     late.sort(sortFn);
     noWeek.sort(sortFn);
+    deferredRows.sort(sortFn);
     for (const w of Object.keys(byWeek)) byWeek[w].sort(sortFn);
     const weekOrder = Object.keys(byWeek).sort();
 
@@ -112,13 +122,16 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
       perCustomer[cc].bedel += o.toplamBedel || 0;
     }
 
+    const deferredBedel = deferredRows.reduce((s, o) => s + (o.toplamBedel || 0), 0);
+
     return {
       late,
       noWeek,
       byWeek,
       weekOrder,
       currentWeek,
-      kpi: { totalRows, totalBedel, perCustomer },
+      deferred: deferredRows,
+      kpi: { totalRows, totalBedel, perCustomer, deferredCount: deferredRows.length, deferredBedel },
     };
   }, [salesOrders, planOverrides, customerFilter, searchText, sortMode]);
 }
