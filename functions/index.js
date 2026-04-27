@@ -170,9 +170,10 @@ async function runVioImport(source, secrets) {
         const saveOut = await saveReport(db, item.type, parserResult, item.filename);
 
         const summary = summarizeResult(item.type, parserResult);
-        // salesOrders için diff sayısını da summary'ye ekle
+        // salesOrders için diff sayılarını da summary'ye ekle
         if (item.type === "salesOrders" && saveOut?.diffMeta) {
           summary.shipmentEvents = saveOut.diffMeta.eventCount;
+          summary.cancelledOrders = saveOut.diffMeta.cancelledCount || 0;
         }
         reportResults.push({
           type: item.type,

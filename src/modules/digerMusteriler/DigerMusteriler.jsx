@@ -129,9 +129,13 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       // VIO sadece aktif siparişleri verir; tam teslim olunca rapordan düşer. Bu yüzden:
       //   1) sevkEdilen artmışsa (kısmi/tam) → delta event yaz
       //   2) Sipariş VIO'dan kaybolmuşsa → kalan miktar tam sevk varsayımı, final event
+      // Deferred-aware: planOverrides[id].status === "deferred" → diff'ten muaf,
+      // VIO'dan kaybolursa "cancelled" olarak işaretle (sahte sevk event yazma).
       const importedAt = new Date().toISOString();
       const newShipments = { ...shipments };
+      const overrideUpdates = {};
       let eventCount = 0;
+      let cancelledCount = 0;
       const ensureShipmentDoc = (id, o) => {
         if (!newShipments[id]) {
           newShipments[id] = {
@@ -164,7 +168,20 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       };
       // 1) Eskide var olanları işle
       for (const [id, oldO] of Object.entries(salesOrders || {})) {
+        const ov = planOverrides?.[id];
+        const isDeferred = ov?.status === 'deferred';
         const newO = result.ordersMap[id];
+
+        if (isDeferred) {
+          // Deferred sipariş — diff'ten muaf, sahte sevk event yazma
+          if (!newO) {
+            // VIO'dan kayboldu + deferred → İPTAL
+            overrideUpdates[id] = { ...ov, status: 'cancelled', cancelledAt: importedAt };
+            cancelledCount++;
+          }
+          continue;
+        }
+
         if (newO) {
           // Hala VIO'da → sevkEdilen değişti mi?
           const oldShip = Number(oldO.sevkEdilen || 0);
@@ -199,16 +216,23 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           pushEvent(id, { at: importedAt, deltaQty: newShip, cumulative: newShip, source: 'vio-update' });
         }
       }
-      // Save: salesOrders + shipments (eğer event üretildiyse)
+      // Save: salesOrders + shipments (eğer event üretildiyse) + planOverrides (deferred→cancelled)
       await saveSalesOrders(result.ordersMap, { canEdit });
       if (eventCount > 0) {
         await saveShipments(newShipments, { canEdit });
       }
+      if (cancelledCount > 0) {
+        // Sadece status değişen override'ları merge ile yaz (diğerleri korunur)
+        for (const [orderId, ovData] of Object.entries(overrideUpdates)) {
+          await savePlanOverride(orderId, ovData, { canEdit });
+        }
+      }
       const extra = result.aggregateCount > 0 ? ` (${result.aggregateCount} duplicate birleştirildi)` : '';
       const shipExtra = eventCount > 0 ? ` · ${eventCount} sevk hareketi` : '';
+      const cancelExtra = cancelledCount > 0 ? ` · ${cancelledCount} iptal` : '';
       setUploadResult({
         ok: true,
-        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}${shipExtra}`,
+        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}${shipExtra}${cancelExtra}`,
       });
     } catch (e) {
       setUploadResult({ ok: false, message: `✗ Hata: ${e.message || String(e)}` });

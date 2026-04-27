@@ -20,6 +20,7 @@ const AKIBET_DOC = "mrpAkibet";
 const PURCH_DOC = "mrpPurchase";
 const SALES_ORDERS_DOC = "salesOrders";
 const SHIPMENTS_DOC = "shipments";
+const PLAN_OVERRIDES_DOC = "planOverrides";
 const AUTOMATION_LOG_DOC = "automationLog";
 
 /**
@@ -118,12 +119,20 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   const importedAt = new Date().toISOString();
   const newOrdersMap = parserResult.ordersMap || {};
 
-  // Eski salesOrders + mevcut shipments oku
+  // Eski salesOrders + shipments + planOverrides oku.
+  // planOverrides: deferred-aware diff için — kullanıcı bir siparişi "Akibeti Belirsiz"
+  // işaretlediyse, VIO'dan kaybolması iptal sayılır (sahte sevk event yazılmaz).
   const ordersRef = db.collection(APP_COL).doc(SALES_ORDERS_DOC);
   const shipmentsRef = db.collection(APP_COL).doc(SHIPMENTS_DOC);
-  const [ordersSnap, shipmentsSnap] = await Promise.all([ordersRef.get(), shipmentsRef.get()]);
+  const overridesRef = db.collection(APP_COL).doc(PLAN_OVERRIDES_DOC);
+  const [ordersSnap, shipmentsSnap, overridesSnap] = await Promise.all([
+    ordersRef.get(), shipmentsRef.get(), overridesRef.get()
+  ]);
   const oldOrders = ordersSnap.exists ? (ordersSnap.data() || {}) : {};
   const newShipments = shipmentsSnap.exists ? { ...(shipmentsSnap.data() || {}) } : {};
+  const oldOverrides = overridesSnap.exists ? (overridesSnap.data() || {}) : {};
+  const overrideUpdates = {}; // status değişen override'lar (deferred → cancelled)
+  let cancelledCount = 0;
 
   let eventCount = 0;
   const ensureShipmentDoc = (id, o) => {
@@ -160,7 +169,21 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   // 1) Eskide var olanları işle
   for (const [id, oldO] of Object.entries(oldOrders)) {
     if (!oldO || typeof oldO !== "object") continue;
+    const ov = oldOverrides[id];
+    const isDeferred = ov?.status === "deferred";
     const newO = newOrdersMap[id];
+
+    if (isDeferred) {
+      // Deferred sipariş — diff'ten muaf, sahte sevk event yazma
+      if (!newO) {
+        // VIO'dan kayboldu + deferred idi → İPTAL kabul et, status: "cancelled" + cancelledAt
+        overrideUpdates[id] = { ...ov, status: "cancelled", cancelledAt: importedAt };
+        cancelledCount++;
+      }
+      // else: hala VIO'da, kalanMiktar otomatik güncellenir (salesOrders setDoc), event yazma
+      continue;
+    }
+
     if (newO) {
       const oldShip = Number(oldO.sevkEdilen || 0);
       const newShip = Number(newO.sevkEdilen || 0);
@@ -192,12 +215,16 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     }
   }
 
-  // Yaz: salesOrders her zaman, shipments sadece event üretildiyse
+  // Yaz: salesOrders her zaman, shipments sadece event üretildiyse,
+  // planOverrides sadece deferred→cancelled geçişi olduysa (merge ile diğerleri korunur).
   await ordersRef.set(newOrdersMap);
   if (eventCount > 0) {
     await shipmentsRef.set(newShipments);
   }
-  return { eventCount, salesOrdersCount: Object.keys(newOrdersMap).length };
+  if (cancelledCount > 0) {
+    await overridesRef.set(overrideUpdates, { merge: true });
+  }
+  return { eventCount, cancelledCount, salesOrdersCount: Object.keys(newOrdersMap).length };
 }
 
 /**
