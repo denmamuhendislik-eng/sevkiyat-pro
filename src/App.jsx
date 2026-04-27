@@ -2982,7 +2982,7 @@ ${el.innerHTML}
           {page==="montaj"&&<MontajPlani db={db} yearsData={yearsData} products={products} userRole={userRole} selectedYear={selYear}/>}
 
           {/* ========== MRP PAGE ========== */}
-          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts} initialTab={pendingMrpTab} onConsumeInitialTab={()=>setPendingMrpTab(null)}/>}
+          {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts} initialTab={pendingMrpTab} onConsumeInitialTab={()=>setPendingMrpTab(null)} onNavigateToPage={setPage}/>}
 
           {/* ========== DIGER MUSTERILER PAGE ========== */}
           {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
@@ -5178,7 +5178,7 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 // ============================================================
 // MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
 // ============================================================
-function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts, initialTab, onConsumeInitialTab }) {
+function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts, initialTab, onConsumeInitialTab, onNavigateToPage }) {
   const APP_COL = "appData";
   const BOM_DOC = "bomModels";
   const WC_DOC = "workCenters";
@@ -9467,7 +9467,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         } else {
           bg = "var(--color-background-success, #F0FDF4)"; border = "#86EFAC"; color = "#166534"; icon = "🤖";
           const okCount = (last.results || []).filter(r => r.status === "ok").length;
-          label = `VIO Mail Otomasyonu · ${sourceLbl} ${isToday ? timeStr : dateStr} · ${okCount}/3 rapor başarılı`;
+          const totalCount = (last.results || []).length;
+          label = `VIO Mail Otomasyonu · ${sourceLbl} ${isToday ? timeStr : dateStr} · ${okCount}/${totalCount} rapor başarılı`;
         }
         return (
           <div
@@ -9529,6 +9530,19 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         const stockCount = stock ? Object.keys(stock.parts || {}).length : 0;
         const reqItems = requirements ? Object.values(requirements.levels || {}).reduce((s, l) => s + (l.items?.length || 0), 0) : 0;
 
+        // Satış Siparişi Raporu — salesOrders + automationLog'dan son güncel salesOrders entry tarihi
+        const soOrdersList = salesOrders ? Object.values(salesOrders) : [];
+        const soOrderCount = soOrdersList.length;
+        const soCustomers = new Set(soOrdersList.map(o => o.customerCode).filter(Boolean));
+        const soTotalBedel = soOrdersList.reduce((s, o) => s + (Number(o.toplamBedel) || 0), 0);
+        let soLatest = "";
+        const autoEntries = automationLog?.entries || [];
+        for (let i = autoEntries.length - 1; i >= 0; i--) {
+          const entry = autoEntries[i];
+          const so = (entry?.results || []).find(r => r.type === "salesOrders" && r.status === "ok");
+          if (so) { soLatest = entry.runAt; break; }
+        }
+
         const cards = [
           { id: "bom", title: "Ürün Ağacı (BOM)", icon: "🌳", order: "1",
             loaded: bomKeys.length > 0, date: bomLatest, dep: "İlk yüklenmeli",
@@ -9550,7 +9564,14 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
             loaded: !!purchase, date: purchase?.importedAt, dep: "Günlük güncelle",
             stats: purchase ? `${purchase.totalParts} parça · ${purchase.supplierCount} tedarikçi` : null,
             daily: true, handler: handlePurchaseImport, accept: ".xlsx,.xls" },
-          { id: "req", title: "VIO İhtiyaç Listesi", icon: "📋", order: "6",
+          { id: "salesOrders", title: "Satış Siparişi Raporu (Müşteri Alt Hesaplı)", icon: "🤝", order: "6",
+            loaded: soOrderCount > 0, date: soLatest, dep: "Günlük güncelle (mail)",
+            stats: soOrderCount > 0
+              ? `${soOrderCount} sipariş · ${soCustomers.size} müşteri · ${soTotalBedel >= 1000000 ? (soTotalBedel/1000000).toFixed(1) + "M" : soTotalBedel >= 1000 ? Math.round(soTotalBedel/1000) + "K" : Math.round(soTotalBedel)} TL`
+              : null,
+            daily: true, handler: null, accept: ".xlsx,.xls",
+            note: "Mail otomasyonundan gelir — manuel yükleme acil durum içindir (Diğer Müşteriler tab)" },
+          { id: "req", title: "VIO İhtiyaç Listesi", icon: "📋", order: "7",
             loaded: !!requirements, date: requirements?.importedAt, dep: "Opsiyonel",
             stats: requirements ? `${reqItems} kalem` : null,
             optional: true, handler: handleReqImport, accept: ".xlsx,.xls",
@@ -9711,8 +9732,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                       {c.loaded ? age.text : "Henüz yüklenmedi"}
                     </div>
 
-                    {/* Yükle butonu */}
-                    {canEdit && (
+                    {/* Yükle butonu — handler varsa direkt yükleme; salesOrders gibi handler'sız kartta yönlendirme */}
+                    {canEdit && c.handler && (
                       <div>
                         <button
                           onClick={() => document.getElementById("import-" + c.id).click()}
@@ -9728,6 +9749,19 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                         <input id={"import-" + c.id} type="file" accept={c.accept} style={{ display: "none" }}
                           onChange={(e) => { const f = e.target.files?.[0]; if (f) c.handler(f); e.target.value = ""; }} />
                       </div>
+                    )}
+                    {canEdit && !c.handler && c.id === "salesOrders" && (
+                      <button
+                        onClick={() => onNavigateToPage && onNavigateToPage("digerMusteriler")}
+                        style={{
+                          width: "100%", padding: "6px 0", borderRadius: 6, fontSize: 11, fontWeight: 500, cursor: "pointer",
+                          border: "1px solid var(--color-border-secondary)",
+                          background: "var(--color-background-primary)",
+                          color: "var(--color-text-secondary)"
+                        }}
+                      >
+                        🤝 Diğer Müşteriler'i Aç
+                      </button>
                     )}
                   </div>
                 );
