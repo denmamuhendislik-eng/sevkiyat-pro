@@ -6,6 +6,7 @@ const SALES_ORDERS_DOC = "salesOrders";
 const PLAN_OVERRIDES_DOC = "planOverrides";
 const BOM_MODELS_DOC = "bomModels";
 const SHIPMENTS_DOC = "shipments";
+const AUTOMATION_LOG_DOC = "automationLog";
 
 export function subscribeSalesOrders(callback) {
   if (!db) return () => {};
@@ -62,6 +63,18 @@ export async function saveShipments(shipmentsMap, { canEdit }) {
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
   const ref = doc(db, APP_COL, SHIPMENTS_DOC);
   await setDoc(ref, shipmentsMap);
+}
+
+// Cloud Function çalıştırma log'u — son salesOrders güncelleme zamanını gösteren rozet için.
+// Doc: appData/automationLog = { entries: [{ runAt, source, success, results: [...] }] }
+export function subscribeAutomationLog(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, AUTOMATION_LOG_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? snap.data() : null),
+    (err) => { console.error("automationLog listener:", err); callback(null); }
+  );
 }
 
 // Geçici — mail formatı parser bug'ından kaynaklı sahte vio-removed event'leri temizlemek için
