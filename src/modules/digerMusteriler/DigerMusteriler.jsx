@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
+import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
 import { saveSalesOrders, savePlanOverride, removePlanOverride, saveShipments } from './firestore';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
@@ -15,6 +15,26 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const { planOverrides, loaded: overridesLoaded } = usePlanOverrides();
   const { bomModels, loaded: bomLoaded } = useBomModels();
   const { shipments } = useShipments();
+  const { automationLog } = useAutomationLog();
+
+  // Son salesOrders başarılı çalıştırması — rozet için.
+  // automationLog.entries içinde sondan başa tarayıp salesOrders ok olan en yeni entry'yi bulur.
+  // Manuel yükleme automationLog'a yazılmaz; bu rozet sadece mail otomasyon zamanını yansıtır.
+  const lastSalesUpdate = useMemo(() => {
+    const entries = automationLog?.entries || [];
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      const so = (entry?.results || []).find(r => r.type === 'salesOrders' && r.status === 'ok');
+      if (so) return { runAt: entry.runAt, source: entry.source, summary: so.summary };
+    }
+    // Hiç ok yoksa son entry'i (hata durumu) döndür
+    if (entries.length > 0) {
+      const last = entries[entries.length - 1];
+      const so = (last?.results || []).find(r => r.type === 'salesOrders');
+      if (so) return { runAt: last.runAt, source: last.source, status: so.status, error: so.error };
+    }
+    return null;
+  }, [automationLog]);
 
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
@@ -492,7 +512,58 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
       {/* Upload bölümü */}
       <div style={{ marginTop: 20, padding: 12, border: '1px solid #e7e5e4', borderRadius: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>Satış Siparişi Yükleme</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 500 }}>Satış Siparişi Yükleme</div>
+          {lastSalesUpdate && (() => {
+            const runAt = new Date(lastSalesUpdate.runAt);
+            const ageMin = Math.floor((Date.now() - runAt.getTime()) / 60000);
+            const ageStr = ageMin < 1 ? 'az önce'
+              : ageMin < 60 ? `${ageMin} dk önce`
+              : ageMin < 1440 ? `${Math.floor(ageMin / 60)} sa önce`
+              : `${Math.floor(ageMin / 1440)} gün önce`;
+            const isToday = runAt.toDateString() === new Date().toDateString();
+            const timeStr = runAt.toLocaleTimeString('tr-TR', { hour: '2-digit', minute: '2-digit' });
+            const dateStr = runAt.toLocaleDateString('tr-TR');
+            const sourceLbl = lastSalesUpdate.source?.includes('morning') ? 'Sabah'
+              : lastSalesUpdate.source?.includes('midday') ? 'Öğle'
+              : lastSalesUpdate.source === 'http' ? 'Manuel'
+              : 'Otomatik';
+            const failed = lastSalesUpdate.status && lastSalesUpdate.status !== 'ok';
+            let bg, border, color, dot;
+            if (failed) {
+              bg = '#fef2f2'; border = '#fca5a5'; color = '#b91c1c'; dot = '#dc2626';
+            } else if (ageMin > 1440) {
+              bg = '#fef2f2'; border = '#fca5a5'; color = '#b91c1c'; dot = '#dc2626';
+            } else if (ageMin > 360) {
+              bg = '#fffbeb'; border = '#fcd34d'; color = '#92400e'; dot = '#d97706';
+            } else {
+              bg = '#f0fdf4'; border = '#86efac'; color = '#166534'; dot = '#16a34a';
+            }
+            const orderCount = lastSalesUpdate.summary?.orderCount;
+            const tooltip = `Çalıştırma: ${runAt.toLocaleString('tr-TR')}\nKaynak: ${lastSalesUpdate.source || '—'}` +
+              (orderCount != null ? `\n${orderCount} sipariş yüklendi` : '') +
+              (lastSalesUpdate.summary?.shipmentEvents ? `\n${lastSalesUpdate.summary.shipmentEvents} sevk hareketi` : '') +
+              (lastSalesUpdate.summary?.cancelledOrders ? `\n${lastSalesUpdate.summary.cancelledOrders} iptal` : '') +
+              (lastSalesUpdate.error ? `\nHata: ${lastSalesUpdate.error}` : '');
+            return (
+              <div
+                title={tooltip}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
+                  padding: '3px 8px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                  background: bg, border: `1px solid ${border}`, color,
+                }}
+              >
+                <span style={{ width: 6, height: 6, borderRadius: '50%', background: dot, display: 'inline-block' }} />
+                <span>
+                  {failed ? 'Otomasyon hatası' : `Son güncelleme · ${ageStr}`}
+                  {' · '}
+                  <span style={{ fontWeight: 400 }}>{sourceLbl} {isToday ? timeStr : dateStr}</span>
+                </span>
+              </div>
+            );
+          })()}
+        </div>
         <div style={{ marginBottom: 10, padding: '8px 10px', background: '#fefce8', border: '1px solid #fde047', borderRadius: 6, fontSize: 11, color: '#854d0e', lineHeight: 1.5 }}>
           ℹ️ <b>Mail otomasyonu aktif</b> — VIO sipariş raporu mailden otomatik yüklenir (4. rapor). Manuel yükleme <b>acil durum</b> içindir; sıradaki mail yüklemesi ile sync olur.
         </div>

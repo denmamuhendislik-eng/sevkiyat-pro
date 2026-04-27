@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments } from "./firestore";
+import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments, subscribeAutomationLog } from "./firestore";
 import { getISOWeek } from "../../shared/weekUtils";
 
 export function useSalesOrders() {
@@ -52,6 +52,15 @@ export function useShipments() {
     return unsub;
   }, []);
   return { shipments, loaded };
+}
+
+export function useAutomationLog() {
+  const [automationLog, setAutomationLog] = useState(null);
+  useEffect(() => {
+    const unsub = subscribeAutomationLog((data) => setAutomationLog(data));
+    return unsub;
+  }, []);
+  return { automationLog };
 }
 
 // Siparişleri filter + sort + ISO-hafta gruplama + KPI hesabı
