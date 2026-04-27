@@ -208,6 +208,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     let lateCount = 0, lateBedel = 0;
     let staleCount = 0;
     let deferredCount = 0, deferredBedel = 0;
+    let cancelledCount = 0;
     let bomMissingCount = 0;
     const bomMissingSet = new Set();
     const oldestLate = [];
@@ -239,7 +240,12 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     }
     oldestLate.sort((a, b) => (a.week || '').localeCompare(b.week || ''));
     const top5OldestLate = oldestLate.slice(0, 5);
-    return { lateCount, lateBedel, staleCount, deferredCount, deferredBedel, bomMissingCount, top5OldestLate };
+    // İptal edilenler — VIO'dan kaybolan deferred siparişler. salesOrders'ta artık yok,
+    // sadece planOverrides'ta status:"cancelled" olarak kayıtlı.
+    for (const ov of Object.values(planOverrides || {})) {
+      if (ov?.status === 'cancelled') cancelledCount++;
+    }
+    return { lateCount, lateBedel, staleCount, deferredCount, deferredBedel, bomMissingCount, cancelledCount, top5OldestLate };
   }, [salesOrders, planOverrides, bomSet, currentWeek]);
 
   if (!allLoaded) {
@@ -353,6 +359,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
           <AlertChip label="Geciken" count={ops.lateCount} sub={`${formatMoney(ops.lateBedel)} TL`} color="#dc2626" />
           <AlertChip label="VIO Termin Değişen" count={ops.staleCount} sub="override stale" color="#ca8a04" />
           <AlertChip label="Akibeti Belirsiz" count={ops.deferredCount} sub={`${formatMoney(ops.deferredBedel)} TL askıda`} color="#78716c" />
+          <AlertChip label="İptal Edilen" count={ops.cancelledCount} sub="deferred + VIO'dan kayboldu" color="#475569" />
           <AlertChip label="BOM Eksik Ürün" count={ops.bomMissingCount} sub="MRP'de tanımlı değil" color="#9333ea" />
         </div>
         <div style={{ fontSize: 12, fontWeight: 500, color: '#44403c', marginBottom: 6 }}>En Eski 5 Geciken Sipariş</div>
