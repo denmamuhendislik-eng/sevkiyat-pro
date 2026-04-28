@@ -272,12 +272,25 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
               {orderVolume.bedelChangePct >= 0 ? '↑' : '↓'} %{Math.abs(orderVolume.bedelChangePct).toFixed(1)} (geçen aya göre)
             </span>
           ) : <span style={{ color: '#a8a29e' }}>geçen ay verisi yok</span>}
+          info={
+`Veri kaynağı: salesOrders.orderDate
+
+• Bu ay sipariş = orderDate'i bu ay olan tüm satırlar (deferred dahil)
+• Bedel = toplamBedel (kdv hariç) toplamı
+• Geçen aya göre %: (bu ay − geçen ay) / geçen ay × 100`}
         />
         <KpiCard
           icon="🚚" title="Teslim Yükü"
           primary={`Bu hafta: ${deliveryLoad.thisWeekCount} sipariş`}
           secondary={`${formatMoney(deliveryLoad.thisWeekBedel)} TL`}
           extra={`Önümüzdeki 4 hafta: ${deliveryLoad.next4WeekCount} sipariş · ${formatMoney(deliveryLoad.next4WeekBedel)} TL`}
+          info={
+`Veri kaynağı: salesOrders + planOverrides
+• Effective hafta: override.plannedWeek varsa o, yoksa VIO teslim tarihinden ISO hafta
+• Akibeti Belirsiz olanlar dahil değil
+
+• Bu hafta: aktif siparişlerden effective haftası bu hafta olanlar
+• Önümüzdeki 4 hafta: bu hafta + sonraki 3`}
         />
         <KpiCard
           icon="✅" title="Sevk Performansı"
@@ -286,6 +299,22 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
           extra={shipmentPerf.avgLateDays !== null
             ? `Bu ay ${shipmentPerf.thisMonthEvents} sevk hareketi · ortalama ${shipmentPerf.avgLateDays.toFixed(1)} gün gecikme`
             : `Bu ay ${shipmentPerf.thisMonthEvents} sevk hareketi`}
+          info={
+`Veri kaynağı: shipments doc (VIO yüklemeleri arası diff'ten üretilir)
+
+Her VIO yüklemesinde:
+• sevkEdilen artmış → 'vio-update' event yazılır
+• Sipariş VIO'dan kaybolmuş → 'vio-removed' final event (kalan miktar tam sevk varsayımı)
+• Akibeti Belirsiz işaretliyse → diff'ten muaf, kayboldu ise 'iptal'
+
+Hesaplamalar:
+• %X zamanında = (finalShipAt ≤ teslimTarihi olan tam teslim) / (toplam tam teslim)
+• Tam teslim = fullyDelivered=true sipariş sayısı
+• Gecikmeli = tam teslim ama finalShipAt > teslimTarihi
+• Bu ay sevk hareketi = bu ay tarihli tüm event sayısı
+• Ort. gün gecikme = gecikmeli teslimlerde (finalShipAt − teslimTarihi) ortalaması
+
+⚠ Yaklaşık değer: gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır.`}
         />
       </div>
 
@@ -383,6 +412,58 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
         )}
       </div>
 
+      {/* DEBUG (admin) — shipments doc içeriği, ID şeması bug'ı analizi için */}
+      {isAdmin && Object.keys(shipments || {}).length > 0 && (
+        <div style={{ marginTop: 14, padding: 12, background: '#fffbeb', border: '1px dashed #fde047', borderRadius: 6 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: '#854d0e', marginBottom: 8 }}>
+            🔍 DEBUG: Shipments Doc İçeriği ({Object.keys(shipments).length} entry) — admin only, geçici
+          </div>
+          {Object.entries(shipments).map(([id, sh]) => {
+            const so = salesOrders?.[id];
+            const idStillInVio = !!so;
+            const sameBelgeStokInVio = Object.values(salesOrders || {}).filter(
+              o => o.belgeNo === sh.belgeNo && o.stokKodu === sh.stokKodu
+            );
+            return (
+              <div key={id} style={{ background: '#fff', padding: 10, borderRadius: 4, marginBottom: 8, fontSize: 11, fontFamily: 'ui-monospace, monospace', lineHeight: 1.6 }}>
+                <div><b>ID:</b> {id}</div>
+                <div><b>belgeNo:</b> {sh.belgeNo} · <b>stokKodu:</b> {sh.stokKodu}</div>
+                <div><b>stokAdi:</b> {sh.stokAdi}</div>
+                <div><b>customer:</b> {sh.customerCode} ({sh.customerName})</div>
+                <div><b>teslimTarihi (shipments):</b> <span style={{ color: '#dc2626', fontWeight: 600 }}>{sh.teslimTarihi}</span></div>
+                <div><b>orijinalMiktar:</b> {sh.orijinalMiktar} · <b>totalShipped:</b> {sh.totalShipped} · <b>fullyDelivered:</b> {String(sh.fullyDelivered)}</div>
+                <div><b>finalShipAt:</b> <span style={{ color: '#dc2626', fontWeight: 600 }}>{sh.finalShipAt}</span></div>
+                <div><b>events:</b></div>
+                {(sh.events || []).map((ev, i) => (
+                  <div key={i} style={{ paddingLeft: 16 }}>
+                    [{i}] at={ev.at} · source=<b style={{ color: ev.source === 'vio-removed' ? '#dc2626' : '#16a34a' }}>{ev.source}</b> · deltaQty={ev.deltaQty} · cumulative={ev.cumulative}{ev.final ? ' · FINAL' : ''}
+                  </div>
+                ))}
+                <div style={{ marginTop: 6, padding: 6, background: '#f5f5f4', borderRadius: 3 }}>
+                  <div><b>ID şu an salesOrders'ta var mı?</b> {idStillInVio ? '✅ var' : '❌ yok (kayboldu sayıldı)'}</div>
+                  <div><b>Aynı belgeNo+stokKodu salesOrders'ta:</b> {sameBelgeStokInVio.length} kayıt
+                    {sameBelgeStokInVio.length > 0 && (
+                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
+                        {sameBelgeStokInVio.map(o => (
+                          <li key={o.id || `${o.belgeNo}_${o.stokKodu}_${o.teslimTarihi}`}>
+                            teslimTarihi=<b style={{ color: '#0369a1' }}>{o.teslimTarihi}</b> · sevkEdilen={o.sevkEdilen} / orijinal={o.orijinalMiktar}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  {!idStillInVio && sameBelgeStokInVio.length > 0 && (
+                    <div style={{ marginTop: 4, color: '#dc2626', fontWeight: 600 }}>
+                      ⚠ TESPİT: Aynı belge+stok başka teslim tarihiyle VIO'da var → sahte sevk event! Teslim tarihi VIO'da değişmiş.
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <div style={{ marginTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <div style={{ fontSize: 10, color: '#a8a29e' }}>
           Sevk performansı VIO yüklemelerine göre yaklaşık değerdir — gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır.
@@ -414,12 +495,24 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
   );
 }
 
-function KpiCard({ icon, title, primary, secondary, extra }) {
+function KpiCard({ icon, title, primary, secondary, extra, info }) {
   return (
     <div style={{ background: '#fff', border: '1px solid #e7e5e4', borderRadius: 8, padding: 14 }}>
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
         <span style={{ fontSize: 18 }}>{icon}</span>
         <span style={{ fontSize: 12, fontWeight: 500, color: '#57534e' }}>{title}</span>
+        {info && (
+          <span
+            title={info}
+            style={{
+              marginLeft: 'auto', fontSize: 11, color: '#a8a29e', cursor: 'help',
+              border: '1px solid #d6d3d1', borderRadius: '50%',
+              width: 14, height: 14, display: 'inline-flex',
+              alignItems: 'center', justifyContent: 'center', lineHeight: 1,
+              fontWeight: 600, fontStyle: 'italic', userSelect: 'none',
+            }}
+          >i</span>
+        )}
       </div>
       <div style={{ fontSize: 20, fontWeight: 600, color: '#1c1917', fontVariantNumeric: 'tabular-nums' }}>{primary}</div>
       <div style={{ fontSize: 13, color: '#44403c', marginTop: 2, fontVariantNumeric: 'tabular-nums' }}>{secondary}</div>

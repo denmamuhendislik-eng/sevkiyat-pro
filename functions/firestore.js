@@ -134,6 +134,23 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   const overrideUpdates = {}; // status değişen override'lar (deferred → cancelled)
   let cancelledCount = 0;
 
+  // ID şeması {belgeNo}_{stokKodu}_{teslimTarihi} → VIO'da teslim tarihi güncellenirse
+  // eski ID kaybolur, yeni ID gelir. Sahte vio-removed event yazmamak için (belgeNo, stokKodu)
+  // → yeni ID listesi indeksi kuruyoruz. Eski ID kayıpsa ama aynı belge+stok yeni VIO'da varsa
+  // teslim güncellemesi varsay, event yazma.
+  const newBelgeStokIndex = {};
+  for (const [id, o] of Object.entries(newOrdersMap)) {
+    if (!o || !o.belgeNo || !o.stokKodu) continue;
+    const key = `${o.belgeNo}|${o.stokKodu}`;
+    if (!newBelgeStokIndex[key]) newBelgeStokIndex[key] = [];
+    newBelgeStokIndex[key].push(id);
+  }
+  const hasReplacementInVio = (oldO) => {
+    if (!oldO?.belgeNo || !oldO?.stokKodu) return false;
+    const arr = newBelgeStokIndex[`${oldO.belgeNo}|${oldO.stokKodu}`];
+    return !!(arr && arr.length > 0);
+  };
+
   let eventCount = 0;
   const ensureShipmentDoc = (id, o) => {
     if (!newShipments[id]) {
@@ -176,7 +193,12 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     if (isDeferred) {
       // Deferred sipariş — diff'ten muaf, sahte sevk event yazma
       if (!newO) {
-        // VIO'dan kayboldu + deferred idi → İPTAL kabul et, status: "cancelled" + cancelledAt
+        if (hasReplacementInVio(oldO)) {
+          // Teslim tarihi VIO'da güncellenmiş — iptal değil; eski ID orphan kalır,
+          // override taşıma v2'de eklenecek (kullanıcı yeni ID'ye tekrar deferred işaretleyebilir).
+          continue;
+        }
+        // Gerçekten kayboldu + deferred idi → İPTAL kabul et
         overrideUpdates[id] = { ...ov, status: "cancelled", cancelledAt: importedAt };
         cancelledCount++;
       }
@@ -193,7 +215,12 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
         pushEvent(id, { at: importedAt, deltaQty: delta, cumulative: newShip, source: "vio-update" });
       }
     } else {
-      // VIO'dan kayboldu → kalan miktar tam sevk varsayımı
+      // VIO'dan kayboldu — gerçek kayıp mı yoksa teslim tarihi güncellemesi mi?
+      // Aynı (belgeNo, stokKodu) yeni VIO'da varsa: teslim güncellemesi → sahte event yazma.
+      if (hasReplacementInVio(oldO)) {
+        continue;
+      }
+      // Gerçekten kayboldu → kalan miktar tam sevk varsayımı
       const oldRemaining = Number(oldO.kalanMiktar || 0);
       if (oldRemaining > 0) {
         ensureShipmentDoc(id, oldO);
