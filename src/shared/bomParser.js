@@ -1,5 +1,30 @@
 import * as XLSX from "xlsx";
 
+// Op kodu ≥600 = FASON varsayılanına istisnalar — Aselsan op kodlama konvansiyonunda
+// 600+ aralığında bazı operasyonlar gerçekte iç işlem (kalite kontrol, montaj). Bu liste
+// büyüdükçe tek noktadan güncellenir.
+//   653 — Ölçüm ve Kalite Kontrol (Kalite Kontrol WC)
+//   654 — Son Kontrol ve Paketleme (Kalite Kontrol WC)
+//   665 — Helicoiller Atma (Savunma Montaj WC)
+export const INTERNAL_OP_CODES = new Set(["653", "654", "665"]);
+
+// Aselsan BOM dosyasında bazı satırlarda İş.Mrk yazılmadığı için fallback ataması.
+// İlgili WC tanımları Sevkiyat Pro'da iş merkezleri sekmesinde mevcut olmalı.
+export const INTERNAL_OP_DEFAULTS = {
+  "653": { wcCode: "600", wcName: "KALİTE KONTROL" },
+  "654": { wcCode: "600", wcName: "KALİTE KONTROL" },
+  "665": { wcCode: "301", wcName: "SAVUNMA MONTAJ" },
+};
+
+export function getDefaultWC(opCode) {
+  return INTERNAL_OP_DEFAULTS[String(opCode)] || null;
+}
+
+export function isFasonOp(opCode) {
+  if (INTERNAL_OP_CODES.has(String(opCode))) return false;
+  return parseInt(opCode) >= 600;
+}
+
 // VIO Ürün Ağacı Excel'ini parse eder.
 // bomModels parametresi: mevcut BOM'lardaki _autoSupplyType override'larını global tutarlılık için
 // kullanmak üzere inject edilir (App.jsx'teki eski çağrıda closure'dan okunuyordu — taşırken
@@ -64,6 +89,11 @@ export function parseBomExcel(workbook, bomModels = {}) {
       let wcCode = "", wcName = "";
       const wcMatch = col1.match(/İş\.Mrk:\s*\((\d+)\)\s*(.*)/);
       if (wcMatch) { wcCode = wcMatch[1]; wcName = wcMatch[2].trim(); }
+      // Fallback: Aselsan BOM dosyasında WC yazılmamış iç işlemler için varsayılan ata
+      if (!wcCode) {
+        const def = getDefaultWC(opCode);
+        if (def) { wcCode = def.wcCode; wcName = def.wcName; }
+      }
 
       const opObj = { opCode, opName, wcCode, wcName, setupTime: null, cycleTime: null };
       totalOps++;
@@ -89,7 +119,7 @@ export function parseBomExcel(workbook, bomModels = {}) {
         orphanOps.push(opObj);
       }
 
-      const isFason = parseInt(opCode) >= 600;
+      const isFason = isFasonOp(opCode);
       if (isFason) {
         if (!detectedFason[opCode]) detectedFason[opCode] = { name: opName, count: 0 };
         detectedFason[opCode].count++;
@@ -172,8 +202,8 @@ export function parseBomExcel(workbook, bomModels = {}) {
   for (let i = 0; i < parts.length; i++) {
     const p = parts[i];
     if (p.operations.length > 0 && p.supplyType === "MAKE") {
-      const hasFason = p.operations.some((op) => parseInt(op.opCode) >= 600);
-      const allFason = p.operations.every((op) => parseInt(op.opCode) >= 600);
+      const hasFason = p.operations.some((op) => isFasonOp(op.opCode));
+      const allFason = p.operations.every((op) => isFasonOp(op.opCode));
       if (allFason) p.supplyType = "FASON";
       else if (hasFason) p.supplyType = "MAKE+FASON";
     }
