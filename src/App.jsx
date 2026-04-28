@@ -6306,7 +6306,16 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         return { ...r, stkAmbar, stkUretim, stkFason, stkAvail, bomDependentQty, wipInt, wipFas, wipTotal, openPO, netQty, gap, crossCheck, productionLineStock, productCount: r.sources.length };
       });
 
-      results.sort((a, b) => a.level - b.level || b.netQty - a.netQty);
+      // Sıralama: üretim hattı stoğu olan parçalar (mercek/tik rozetli) üstte —
+      // operatör fiziksel kontrol önceliği. Sonra mevcut level + netQty.
+      // Grup 0: pl var, onaylanmamış (🔍 mercek)
+      // Grup 1: pl var, onaylı (✓ yeşil tik)
+      // Grup 2: pl yok (rozet yok)
+      const plGroup = (r) => {
+        if (!r.productionLineStock || r.productionLineStock.total <= 0) return 2;
+        return plsConfirmedLookup[r.code] ? 1 : 0;
+      };
+      results.sort((a, b) => plGroup(a) - plGroup(b) || a.level - b.level || b.netQty - a.netQty);
 
       // BOM'da tüketilen stok hesabı — BOM bağımlı talep stoğu öncelikle kullanır
       // bomStockUsed[code] = BOM için ayrılan stok (bağımsız talepten önce)
