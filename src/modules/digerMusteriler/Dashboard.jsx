@@ -412,58 +412,6 @@ Hesaplamalar:
         )}
       </div>
 
-      {/* DEBUG (admin) — shipments doc içeriği, ID şeması bug'ı analizi için */}
-      {isAdmin && Object.keys(shipments || {}).length > 0 && (
-        <div style={{ marginTop: 14, padding: 12, background: '#fffbeb', border: '1px dashed #fde047', borderRadius: 6 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: '#854d0e', marginBottom: 8 }}>
-            🔍 DEBUG: Shipments Doc İçeriği ({Object.keys(shipments).length} entry) — admin only, geçici
-          </div>
-          {Object.entries(shipments).map(([id, sh]) => {
-            const so = salesOrders?.[id];
-            const idStillInVio = !!so;
-            const sameBelgeStokInVio = Object.values(salesOrders || {}).filter(
-              o => o.belgeNo === sh.belgeNo && o.stokKodu === sh.stokKodu
-            );
-            return (
-              <div key={id} style={{ background: '#fff', padding: 10, borderRadius: 4, marginBottom: 8, fontSize: 11, fontFamily: 'ui-monospace, monospace', lineHeight: 1.6 }}>
-                <div><b>ID:</b> {id}</div>
-                <div><b>belgeNo:</b> {sh.belgeNo} · <b>stokKodu:</b> {sh.stokKodu}</div>
-                <div><b>stokAdi:</b> {sh.stokAdi}</div>
-                <div><b>customer:</b> {sh.customerCode} ({sh.customerName})</div>
-                <div><b>teslimTarihi (shipments):</b> <span style={{ color: '#dc2626', fontWeight: 600 }}>{sh.teslimTarihi}</span></div>
-                <div><b>orijinalMiktar:</b> {sh.orijinalMiktar} · <b>totalShipped:</b> {sh.totalShipped} · <b>fullyDelivered:</b> {String(sh.fullyDelivered)}</div>
-                <div><b>finalShipAt:</b> <span style={{ color: '#dc2626', fontWeight: 600 }}>{sh.finalShipAt}</span></div>
-                <div><b>events:</b></div>
-                {(sh.events || []).map((ev, i) => (
-                  <div key={i} style={{ paddingLeft: 16 }}>
-                    [{i}] at={ev.at} · source=<b style={{ color: ev.source === 'vio-removed' ? '#dc2626' : '#16a34a' }}>{ev.source}</b> · deltaQty={ev.deltaQty} · cumulative={ev.cumulative}{ev.final ? ' · FINAL' : ''}
-                  </div>
-                ))}
-                <div style={{ marginTop: 6, padding: 6, background: '#f5f5f4', borderRadius: 3 }}>
-                  <div><b>ID şu an salesOrders'ta var mı?</b> {idStillInVio ? '✅ var' : '❌ yok (kayboldu sayıldı)'}</div>
-                  <div><b>Aynı belgeNo+stokKodu salesOrders'ta:</b> {sameBelgeStokInVio.length} kayıt
-                    {sameBelgeStokInVio.length > 0 && (
-                      <ul style={{ margin: '4px 0 0 16px', padding: 0 }}>
-                        {sameBelgeStokInVio.map(o => (
-                          <li key={o.id || `${o.belgeNo}_${o.stokKodu}_${o.teslimTarihi}`}>
-                            teslimTarihi=<b style={{ color: '#0369a1' }}>{o.teslimTarihi}</b> · sevkEdilen={o.sevkEdilen} / orijinal={o.orijinalMiktar}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
-                  {!idStillInVio && sameBelgeStokInVio.length > 0 && (
-                    <div style={{ marginTop: 4, color: '#dc2626', fontWeight: 600 }}>
-                      ⚠ TESPİT: Aynı belge+stok başka teslim tarihiyle VIO'da var → sahte sevk event! Teslim tarihi VIO'da değişmiş.
-                    </div>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       <div style={{ marginTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <div style={{ fontSize: 10, color: '#a8a29e' }}>
           Sevk performansı VIO yüklemelerine göre yaklaşık değerdir — gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır.
