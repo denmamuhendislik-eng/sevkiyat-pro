@@ -981,9 +981,11 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                           Teslim: <b style={{ color: '#44403c' }}>{o.teslimTarihi || '—'}</b>
                         </span>
                         <span style={{ flex: 1, fontSize: 11, color: '#78716c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.note || ''}>
-                          {o.note ? `💬 ${o.note}` : ''}
-                          {o.plannedWeek && ` · plan: ${o.plannedWeek}`}
+                          {o.note ? `💬 ${o.note} · ` : ''}
+                          {o.plannedWeek && `plan: ${o.plannedWeek}`}
+                          {o.origWeek && ` (VIO o an: ${o.origWeek})`}
                           {o.at && ` · ${o.at.substring(0, 10)}`}
+                          {o.by && ` · 👤 ${o.by}`}
                         </span>
                         <button
                           onClick={() => handleOrphanDelete(o.id)}
