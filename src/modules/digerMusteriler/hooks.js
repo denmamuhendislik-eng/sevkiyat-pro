@@ -158,6 +158,29 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
     const staleOverrides = rows.filter(r => r.isStale);
     staleOverrides.sort(sortFn);
 
+    // Plan sırası tutarsızlığı — aynı stokKodu için müşteri teslim sırası ≠ bizim plan sırası.
+    // rows zaten deferred ve filtre-aware. teslim/effectiveWeek olmayanları atla.
+    // Inversion: ardışık iki sipariş için teslim erken olanın plan haftası geç olanınkinden büyük.
+    const byStock = {};
+    for (const o of rows) {
+      if (!o.stokKodu || !o.effectiveWeek || !o.teslimTarihi) continue;
+      (byStock[o.stokKodu] = byStock[o.stokKodu] || []).push(o);
+    }
+    const inconsistentPairs = [];
+    for (const [stokKodu, list] of Object.entries(byStock)) {
+      if (list.length < 2) continue;
+      const sorted = [...list].sort((a, b) => a.teslimTarihi.localeCompare(b.teslimTarihi));
+      for (let i = 0; i < sorted.length - 1; i++) {
+        const earlier = sorted[i];
+        const later = sorted[i + 1];
+        if (earlier.teslimTarihi === later.teslimTarihi) continue; // eşit teslim → tutarsızlık yok
+        if (earlier.effectiveWeek > later.effectiveWeek) {
+          inconsistentPairs.push({ stokKodu, earlier, later });
+        }
+      }
+    }
+    inconsistentPairs.sort((a, b) => (a.stokKodu || '').localeCompare(b.stokKodu || ''));
+
     return {
       late,
       noWeek,
@@ -166,7 +189,8 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
       currentWeek,
       deferred: deferredRows,
       staleOverrides,
-      kpi: { totalRows, totalBedel, perCustomer, deferredCount: deferredRows.length, deferredBedel, staleCount: staleOverrides.length },
+      inconsistentPairs,
+      kpi: { totalRows, totalBedel, perCustomer, deferredCount: deferredRows.length, deferredBedel, staleCount: staleOverrides.length, inconsistentCount: inconsistentPairs.length },
     };
   }, [salesOrders, planOverrides, customerFilter, searchText, sortMode]);
 }

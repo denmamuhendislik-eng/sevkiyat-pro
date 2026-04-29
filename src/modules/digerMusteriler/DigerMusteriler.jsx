@@ -47,6 +47,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const [deferredExpanded, setDeferredExpanded] = useState(false);
   const [staleExpanded, setStaleExpanded] = useState(false);
   const [orphanExpanded, setOrphanExpanded] = useState(false);
+  const [inconsistentExpanded, setInconsistentExpanded] = useState(false);
   // viewMode: 'orders' (default sipariş listesi) | 'products' (stok bazlı agregasyon tablosu)
   const [viewMode, setViewMode] = useState('orders');
   const [productSort, setProductSort] = useState({ col: 'tutar', dir: 'desc' });
@@ -999,6 +1000,102 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                       </div>
                     );
                   })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Plan Sırası Tutarsız — aynı stokKodu için müşteri teslim sırası ile bizim plan
+              sırası uyuşmuyor. Filter-aware (deferred hariç). Tıkla → picker aç. */}
+          {grouped.inconsistentPairs.length > 0 && (
+            <div style={{
+              marginTop: 16, padding: 12, borderRadius: 8,
+              background: '#faf5ff', border: '1px solid #d8b4fe',
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                fontSize: 13, fontWeight: 500, color: '#6b21a8',
+              }} onClick={() => setInconsistentExpanded(!inconsistentExpanded)}>
+                <span>⇅ Plan Sırası Tutarsız ({grouped.inconsistentPairs.length} çift)</span>
+                <span style={{ fontSize: 11, color: '#7e22ce', fontWeight: 400 }}>
+                  — aynı ürün, müşteri teslim sırası ≠ bizim plan sırası
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11 }}>
+                  {inconsistentExpanded ? 'gizle ▲' : 'aç ▼'}
+                </span>
+              </div>
+              {inconsistentExpanded && (
+                <div style={{ marginTop: 10, background: '#fff', borderRadius: 6, overflow: 'hidden' }}>
+                  {grouped.inconsistentPairs.map((p, idx) => (
+                    <div key={`${p.stokKodu}-${p.earlier.id}-${p.later.id}-${idx}`} style={{
+                      padding: '8px 10px', fontSize: 12, borderBottom: '1px solid #f5f5f4',
+                    }}>
+                      <div style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11, color: '#1c1917', marginBottom: 4 }}>
+                        {p.stokKodu}
+                        <span style={{ marginLeft: 8, fontFamily: 'inherit', fontWeight: 400, color: '#78716c' }}>
+                          {p.earlier.stokAdi}
+                        </span>
+                      </div>
+                      {/* Erken teslim, geç plan = sorunlu satır */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '3px 0' }}>
+                        <span style={{
+                          padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                          minWidth: 30, textAlign: 'center',
+                          background: customerBadge(p.earlier.customerCode).bg,
+                          color: customerBadge(p.earlier.customerCode).fg,
+                        }}>{customerBadge(p.earlier.customerCode).label}</span>
+                        <span style={{ fontSize: 11, color: '#44403c', minWidth: 80 }}>
+                          Belge {p.earlier.belgeNo}
+                        </span>
+                        <span style={{ fontSize: 11, color: '#78716c', minWidth: 130 }}>
+                          teslim <b style={{ color: '#15803d' }}>{p.earlier.teslimTarihi}</b>
+                        </span>
+                        <span style={{ fontSize: 11, color: '#78716c', minWidth: 110 }}>
+                          plan <b style={{ color: '#dc2626' }}>{p.earlier.effectiveWeek}</b> ← geç
+                        </span>
+                        <button
+                          onClick={(e) => openPicker(e, p.earlier)}
+                          disabled={!canEdit}
+                          title="Bu siparişin haftasını düzelt"
+                          style={{
+                            padding: '3px 10px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+                            border: '1px solid #7e22ce', background: '#f3e8ff', color: '#6b21a8',
+                            cursor: canEdit ? 'pointer' : 'not-allowed',
+                            opacity: canEdit ? 1 : 0.6, marginLeft: 'auto',
+                          }}
+                        >📅 Düzelt</button>
+                      </div>
+                      {/* Geç teslim, erken plan = referans satır */}
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '3px 0' }}>
+                        <span style={{
+                          padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                          minWidth: 30, textAlign: 'center',
+                          background: customerBadge(p.later.customerCode).bg,
+                          color: customerBadge(p.later.customerCode).fg,
+                        }}>{customerBadge(p.later.customerCode).label}</span>
+                        <span style={{ fontSize: 11, color: '#44403c', minWidth: 80 }}>
+                          Belge {p.later.belgeNo}
+                        </span>
+                        <span style={{ fontSize: 11, color: '#78716c', minWidth: 130 }}>
+                          teslim <b style={{ color: '#dc2626' }}>{p.later.teslimTarihi}</b>
+                        </span>
+                        <span style={{ fontSize: 11, color: '#78716c', minWidth: 110 }}>
+                          plan <b style={{ color: '#15803d' }}>{p.later.effectiveWeek}</b> ← erken
+                        </span>
+                        <button
+                          onClick={(e) => openPicker(e, p.later)}
+                          disabled={!canEdit}
+                          title="Bu siparişin haftasını düzelt"
+                          style={{
+                            padding: '3px 10px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+                            border: '1px solid #7e22ce', background: '#f3e8ff', color: '#6b21a8',
+                            cursor: canEdit ? 'pointer' : 'not-allowed',
+                            opacity: canEdit ? 1 : 0.6, marginLeft: 'auto',
+                          }}
+                        >📅 Düzelt</button>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               )}
             </div>
