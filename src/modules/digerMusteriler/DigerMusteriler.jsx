@@ -61,7 +61,26 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
   const allLoaded = ordersLoaded && overridesLoaded && bomLoaded;
   const rawOrderCount = Object.keys(salesOrders).length;
-  const overrideCount = Object.keys(planOverrides).length;
+  // Override sayım — status kırılımı (deferred/cancelled/active). Filter-bağımsız (tüm doc).
+  // active = status alanı boş veya "deferred"/"cancelled" dışı (manuel hafta override veya sadece not).
+  const overrideBreakdown = useMemo(() => {
+    let deferred = 0, cancelled = 0, active = 0;
+    for (const ov of Object.values(planOverrides || {})) {
+      if (ov?.status === 'deferred') deferred++;
+      else if (ov?.status === 'cancelled') cancelled++;
+      else active++;
+    }
+    return { total: deferred + cancelled + active, deferred, cancelled, active };
+  }, [planOverrides]);
+  const overrideLabel = (() => {
+    const { total, deferred, cancelled, active } = overrideBreakdown;
+    if (total === 0) return '0 override';
+    const parts = [];
+    if (deferred > 0) parts.push(`${deferred} belirsiz`);
+    if (active > 0) parts.push(`${active} not/plan`);
+    if (cancelled > 0) parts.push(`${cancelled} iptal`);
+    return `${total} override (${parts.join(' · ')})`;
+  })();
   const empty = allLoaded && rawOrderCount === 0;
 
   // BOM eksik tespiti — root stok kodları seti
@@ -696,7 +715,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             </div>
             <div style={{ marginLeft: 'auto', fontSize: 11, color: '#78716c' }}>
               {viewMode === 'orders'
-                ? `${grouped.kpi.totalRows} kayıt filtrede · ${overrideCount} override`
+                ? `${grouped.kpi.totalRows} kayıt filtrede · ${overrideLabel}`
                 : `${productSummary.length} ürün · ${grouped.kpi.totalRows} sipariş`}
             </div>
           </div>
@@ -1079,7 +1098,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
         marginTop: 24, padding: 10, border: '1px dashed #e7e5e4', borderRadius: 6,
         fontSize: 11, color: '#78716c', fontFamily: 'ui-monospace, monospace',
       }}>
-        Firestore: {allLoaded ? `${rawOrderCount} ham sipariş · ${overrideCount} override` : 'yükleniyor…'}
+        Firestore: {allLoaded ? `${rawOrderCount} ham sipariş · ${overrideLabel}` : 'yükleniyor…'}
       </div>
 
       {/* Week picker popup */}
