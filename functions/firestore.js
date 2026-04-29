@@ -151,6 +151,28 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     return !!(arr && arr.length > 0);
   };
 
+  // Override migration — VIO'da teslim tarihi değişerek 3-tuple ID'si değişen sipariş için
+  // eski ID'nin planOverrides kaydını yeni ID'ye taşır. Sadece 1-1 replacement durumunda
+  // çalışır (birden fazla aday varsa belirsizlik → orphan bırakılır, kullanıcı UI'dan
+  // müdahale eder). Yeni ID'de zaten override varsa çakışma korunur.
+  // Hem deferred hem diğer override türleri (note, manuel hafta) için aynı şekilde çalışır.
+  let migratedCount = 0;
+  const migrateOverrideIfReplacement = (oldId, oldO) => {
+    const ov = oldOverrides[oldId];
+    if (!ov) return;
+    const arr = newBelgeStokIndex[`${oldO.belgeNo}|${oldO.stokKodu}`] || [];
+    if (arr.length !== 1) return; // belirsizlik — orphan bırak
+    const newId = arr[0];
+    if (oldOverrides[newId] || overrideUpdates[newId] !== undefined) return; // çakışma
+    overrideUpdates[newId] = {
+      ...ov,
+      migratedFrom: oldId,
+      migratedAt: importedAt,
+    };
+    overrideUpdates[oldId] = admin.firestore.FieldValue.delete();
+    migratedCount++;
+  };
+
   let eventCount = 0;
   const ensureShipmentDoc = (id, o) => {
     if (!newShipments[id]) {
@@ -194,8 +216,9 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
       // Deferred sipariş — diff'ten muaf, sahte sevk event yazma
       if (!newO) {
         if (hasReplacementInVio(oldO)) {
-          // Teslim tarihi VIO'da güncellenmiş — iptal değil; eski ID orphan kalır,
-          // override taşıma v2'de eklenecek (kullanıcı yeni ID'ye tekrar deferred işaretleyebilir).
+          // Teslim tarihi VIO'da güncellenmiş — iptal değil. Override'ı yeni ID'ye taşı
+          // (1-1 replacement varsa). Belirsizlik/çakışma varsa orphan kalır.
+          migrateOverrideIfReplacement(id, oldO);
           continue;
         }
         // Gerçekten kayboldu + deferred idi → İPTAL kabul et
@@ -218,6 +241,9 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
       // VIO'dan kayboldu — gerçek kayıp mı yoksa teslim tarihi güncellemesi mi?
       // Aynı (belgeNo, stokKodu) yeni VIO'da varsa: teslim güncellemesi → sahte event yazma.
       if (hasReplacementInVio(oldO)) {
+        // Deferred olmayan override'lar (note / manuel hafta) için de migration çalışır.
+        // ov undefined ise helper kendi içinde no-op döner.
+        migrateOverrideIfReplacement(id, oldO);
         continue;
       }
       // Gerçekten kayboldu → kalan miktar tam sevk varsayımı
@@ -243,15 +269,15 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   }
 
   // Yaz: salesOrders her zaman, shipments sadece event üretildiyse,
-  // planOverrides sadece deferred→cancelled geçişi olduysa (merge ile diğerleri korunur).
+  // planOverrides cancelled geçişi VEYA migration olduysa (merge ile diğerleri korunur).
   await ordersRef.set(newOrdersMap);
   if (eventCount > 0) {
     await shipmentsRef.set(newShipments);
   }
-  if (cancelledCount > 0) {
+  if (Object.keys(overrideUpdates).length > 0) {
     await overridesRef.set(overrideUpdates, { merge: true });
   }
-  return { eventCount, cancelledCount, salesOrdersCount: Object.keys(newOrdersMap).length };
+  return { eventCount, cancelledCount, migratedCount, salesOrdersCount: Object.keys(newOrdersMap).length };
 }
 
 /**
