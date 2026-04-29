@@ -163,10 +163,11 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   }, [planOverrides, salesOrders, allLoaded]);
   const empty = allLoaded && rawOrderCount === 0;
 
-  // Otomatik sıralama önerisi — aynı stokKodu için tüm aktif siparişlerin mevcut hafta
-  // havuzunu koru, kullanıcının yeni seçimini havuza dahil et, teslim tarihine göre yeniden
-  // eşleştir. Kapasite hesabı YAPMAZ — yalnız mevcut yükü tutarlı sıraya sokar.
-  // pendingOrderId/pendingTargetWeek: kullanıcı henüz kaydetmedi, niyetini havuza ekle.
+  // Otomatik sıralama önerisi — kullanıcı seçimi öncelikli forward-fill.
+  // Kullanıcının picker'da seçtiği hafta hedef siparişe ZORLA atanır.
+  // Önceki siparişler (teslim erken): mevcut plan korunur ama targetWeek'i geçemez (tıraşlanır).
+  // Sonraki siparişler (teslim geç): mevcut plan korunur ama önceki planın altına düşmez (yükseltilir).
+  // Kapasite hesabı YAPMAZ — kullanıcının niyeti öncelikli, gerekirse aynı haftaya çoklu sipariş düşer.
   const suggestSortedPlans = (stokKodu, pendingOrderId, pendingTargetWeek) => {
     const items = [];
     for (const [id, o] of Object.entries(salesOrders || {})) {
@@ -180,28 +181,53 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
         if (!isNaN(d.getTime())) week = getISOWeek(d);
       }
       if (!week) continue;
-      // Kullanıcının pending seçimi → havuza onun targetWeek'ini koy (mevcut planın yerine)
-      const currentPlan = (id === pendingOrderId && pendingTargetWeek) ? pendingTargetWeek : week;
-      items.push({ id, belgeNo: o.belgeNo, teslimTarihi: o.teslimTarihi, currentPlan, currentOverride: ov, customerCode: o.customerCode });
+      items.push({ id, belgeNo: o.belgeNo, teslimTarihi: o.teslimTarihi, currentPlan: week, currentOverride: ov, customerCode: o.customerCode });
     }
     if (items.length < 2) return [];
-    // Mevcut hafta dağılımı (sıralı)
-    const planPool = items.map(x => x.currentPlan).sort();
-    // Teslim tarihine göre sırala (tie-breaker: belgeNo)
-    const sortedByTeslim = [...items].sort((a, b) => {
+    const sorted = [...items].sort((a, b) => {
       const t = (a.teslimTarihi || '').localeCompare(b.teslimTarihi || '');
       if (t !== 0) return t;
       return String(a.belgeNo || '').localeCompare(String(b.belgeNo || ''));
     });
-    // Yeniden eşleştir
-    return sortedByTeslim.map((o, i) => ({
+    const targetIdx = sorted.findIndex(x => x.id === pendingOrderId);
+    const newPlans = new Array(sorted.length);
+
+    if (targetIdx >= 0 && pendingTargetWeek) {
+      // Hedef siparişe kullanıcı seçimi — zorla
+      newPlans[targetIdx] = pendingTargetWeek;
+      // Geriye doğru: mevcut plan korunur, ama targetWeek'i geçenler tıraşlanır
+      let cap = pendingTargetWeek;
+      for (let i = targetIdx - 1; i >= 0; i--) {
+        const p = sorted[i].currentPlan;
+        newPlans[i] = (p > cap) ? cap : p;
+        cap = newPlans[i];
+      }
+      // İleriye doğru: mevcut plan korunur, ama bir önceki planın altına düşenler yükseltilir
+      let floor = pendingTargetWeek;
+      for (let i = targetIdx + 1; i < sorted.length; i++) {
+        const p = sorted[i].currentPlan;
+        newPlans[i] = (p < floor) ? floor : p;
+        floor = newPlans[i];
+      }
+    } else {
+      // Pending seçim yoksa: mevcut planları monoton artan hale getir (en az değişimle)
+      let floor = sorted[0].currentPlan;
+      newPlans[0] = floor;
+      for (let i = 1; i < sorted.length; i++) {
+        const p = sorted[i].currentPlan;
+        newPlans[i] = (p < floor) ? floor : p;
+        floor = newPlans[i];
+      }
+    }
+
+    return sorted.map((o, i) => ({
       id: o.id,
       belgeNo: o.belgeNo,
       customerCode: o.customerCode,
       teslimTarihi: o.teslimTarihi,
       oldPlan: o.currentPlan,
-      newPlan: planPool[i],
-      changed: o.currentPlan !== planPool[i],
+      newPlan: newPlans[i],
+      changed: o.currentPlan !== newPlans[i],
       currentOverride: o.currentOverride,
     }));
   };
@@ -1548,13 +1574,13 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                   <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#166534' }}>Önerilen Plan Sıralaması</h3>
                 </div>
                 <p style={{ fontSize: 12, color: '#44403c', margin: '0 0 10px 0', lineHeight: 1.5 }}>
-                  <b>{conflictModal.ourOrder?.stokKodu}</b> ürünü için {conflictModal.suggestions?.length || 0} aktif sipariş — mevcut hafta dağılımı korunarak müşteri teslim sırasına göre yeniden eşleştirildi.
+                  <b>{conflictModal.ourOrder?.stokKodu}</b> ürünü için {conflictModal.suggestions?.length || 0} aktif sipariş — senin seçtiğin <b style={{ color: '#7e22ce' }}>{conflictModal.targetWeek}</b> haftası baz alınarak teslim sırasına göre yeniden hizalandı.
                 </p>
                 <div style={{
                   padding: 8, borderRadius: 6, background: '#fef9c3', border: '1px solid #fde047',
                   fontSize: 11, color: '#854d0e', marginBottom: 12,
                 }}>
-                  ℹ️ Bu öneri mevcut hafta yükünü korur (yeni hafta yaratmaz). <b>Kapasite hesabı yapmaz</b> — tezgah müsaitliğini kontrol etmek size kalmış.
+                  ℹ️ Senin seçimin sabit, önceki teslimliler (varsa) bu haftaya çekilir, sonraki teslimliler ileriye itilir. <b>Kapasite hesabı yapmaz</b> — aynı haftaya çoklu sipariş düşebilir, tezgah müsaitliğini kontrol etmek size kalmış.
                 </div>
                 <div style={{ borderRadius: 6, border: '1px solid #e7e5e4', overflow: 'hidden', marginBottom: 16 }}>
                   <div style={{
