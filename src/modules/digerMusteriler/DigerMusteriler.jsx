@@ -55,6 +55,16 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   // Picker: null | { orderId, anchorX, anchorY, origWeek, currentPlanWeek }
   const [picker, setPicker] = useState(null);
 
+  // ConflictModal: null | { orderId, targetWeek, conflicts, ourOrder, resolve }
+  // window.confirm yerine — birden fazla tetiklenebilen onay akışı için React modal + Promise.
+  const [conflictModal, setConflictModal] = useState(null);
+  const askConflictConfirm = (orderId, targetWeek, conflicts) => {
+    return new Promise((resolve) => {
+      const ourOrder = salesOrders[orderId];
+      setConflictModal({ orderId, targetWeek, conflicts, ourOrder, resolve });
+    });
+  };
+
   const grouped = useWeekGroupedOrders(salesOrders, planOverrides, { customerFilter, searchText, sortMode });
 
   const toggleProductSort = (col) => {
@@ -105,6 +115,41 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       .sort((a, b) => (a.belgeNo || '').localeCompare(b.belgeNo || ''));
   }, [planOverrides, salesOrders, allLoaded]);
   const empty = allLoaded && rawOrderCount === 0;
+
+  // Tutarsızlık tespiti — verilen orderId için targetWeek atanırsa aynı stokKodu'nun
+  // başka aktif siparişleriyle plan sırası bozulur mu? Bozulan satırların listesini döner.
+  // deferred/cancelled hariç. Eşit teslim tarihi → tutarsızlık sayılmaz.
+  const detectConflicts = (orderId, targetWeek) => {
+    const order = salesOrders[orderId];
+    if (!order || !order.stokKodu || !targetWeek || !order.teslimTarihi) return [];
+    const conflicts = [];
+    for (const [otherId, otherO] of Object.entries(salesOrders)) {
+      if (otherId === orderId) continue;
+      if (otherO.stokKodu !== order.stokKodu) continue;
+      if (!otherO.teslimTarihi) continue;
+      if (otherO.teslimTarihi === order.teslimTarihi) continue;
+      const otherOv = planOverrides[otherId];
+      if (otherOv?.status === 'deferred' || otherOv?.status === 'cancelled') continue;
+      let otherWeek = otherOv?.plannedWeek;
+      if (!otherWeek && otherO.teslimTarihi) {
+        const d = new Date(otherO.teslimTarihi + 'T00:00:00Z');
+        if (!isNaN(d.getTime())) otherWeek = getISOWeek(d);
+      }
+      if (!otherWeek) continue;
+      if (order.teslimTarihi < otherO.teslimTarihi) {
+        // Bizim teslim daha erken → planımız da erken olmalı (targetWeek <= otherWeek)
+        if (targetWeek > otherWeek) {
+          conflicts.push({ id: otherId, ...otherO, effectiveWeek: otherWeek, relation: 'we-earlier-but-they-earlier-plan' });
+        }
+      } else {
+        // Bizim teslim daha geç → planımız da geç olmalı (targetWeek >= otherWeek)
+        if (targetWeek < otherWeek) {
+          conflicts.push({ id: otherId, ...otherO, effectiveWeek: otherWeek, relation: 'we-later-but-they-later-plan' });
+        }
+      }
+    }
+    return conflicts;
+  };
 
   // BOM eksik tespiti — root stok kodları seti
   const bomSet = useMemo(() => {
@@ -366,8 +411,16 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
   const handleSelectWeek = async (newWeek) => {
     if (!picker) return;
-    const { orderId, origWeek, noteText } = picker;
+    const { orderId, origWeek, currentPlanWeek, noteText } = picker;
     const note = (noteText || '').trim() ? noteText : '';
+    // Tutarsızlık kontrolü — yalnız hafta gerçekten değişiyorsa
+    if (newWeek && newWeek !== currentPlanWeek) {
+      const conflicts = detectConflicts(orderId, newWeek);
+      if (conflicts.length > 0) {
+        const ok = await askConflictConfirm(orderId, newWeek, conflicts);
+        if (!ok) return; // kullanıcı iptal etti, picker hala açık
+      }
+    }
     try {
       if (newWeek === origWeek && !note) {
         // Seçim VIO haftasıyla eşit VE not boş → override sil, ham tesliye dön
@@ -486,6 +539,15 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     if (!o || !targetWeek) return;
     const origWeek = o.teslimTarihi ? getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z')) : '';
     const existingNote = planOverrides[orderId]?.note || '';
+    // Tutarsızlık kontrolü — drop hedef haftaya gönderilmeden önce
+    const currentWeek = planOverrides[orderId]?.plannedWeek || origWeek;
+    if (targetWeek !== currentWeek) {
+      const conflicts = detectConflicts(orderId, targetWeek);
+      if (conflicts.length > 0) {
+        const ok = await askConflictConfirm(orderId, targetWeek, conflicts);
+        if (!ok) return;
+      }
+    }
     try {
       if (targetWeek === origWeek && !existingNote) {
         await removePlanOverride(orderId, { canEdit });
@@ -1303,6 +1365,80 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       }}>
         Firestore: {allLoaded ? `${rawOrderCount} ham sipariş · ${overrideLabel}` : 'yükleniyor…'}
       </div>
+
+      {/* Conflict modal — Plan sırası tutarsızlığı uyarısı (picker / drag-drop'tan).
+          window.confirm yerine React + Promise pattern (birden fazla tetiklenebilen onay). */}
+      {conflictModal && (
+        <div style={{
+          position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.45)', zIndex: 9999,
+          display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+        }}>
+          <div style={{
+            background: '#fff', borderRadius: 10, padding: 22,
+            maxWidth: 640, width: '100%', boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+            maxHeight: '85vh', overflowY: 'auto',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 22 }}>⇅</span>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#6b21a8' }}>Plan Sırası Tutarsızlığı</h3>
+            </div>
+            <p style={{ fontSize: 13, color: '#44403c', margin: '0 0 14px 0', lineHeight: 1.5 }}>
+              Bu hafta ataması, aynı ürünün başka sipariş(ler)i ile <b>müşteri teslim sırası ≠ bizim plan sırası</b> tutarsızlığına yol açıyor. Yine de devam etmek istiyor musun?
+            </p>
+            <div style={{
+              padding: 10, borderRadius: 6, background: '#faf5ff', border: '1px solid #d8b4fe',
+              fontSize: 12, marginBottom: 10,
+            }}>
+              <div style={{ fontWeight: 600, color: '#6b21a8', marginBottom: 6 }}>Senin siparişin</div>
+              <div style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, color: '#1c1917' }}>
+                {conflictModal.ourOrder?.stokKodu} — {conflictModal.ourOrder?.stokAdi}
+              </div>
+              <div style={{ fontSize: 11, color: '#44403c', marginTop: 4 }}>
+                Belge {conflictModal.ourOrder?.belgeNo} · teslim <b>{conflictModal.ourOrder?.teslimTarihi}</b> · yeni plan <b style={{ color: '#7e22ce' }}>{conflictModal.targetWeek}</b>
+              </div>
+            </div>
+            <div style={{ fontSize: 12, fontWeight: 500, color: '#57534e', marginBottom: 6 }}>
+              Çakışan sipariş{conflictModal.conflicts.length > 1 ? `ler (${conflictModal.conflicts.length})` : ''}:
+            </div>
+            <div style={{ borderRadius: 6, border: '1px solid #e7e5e4', overflow: 'hidden', marginBottom: 16 }}>
+              {conflictModal.conflicts.map((c) => {
+                const weEarlier = c.relation === 'we-earlier-but-they-earlier-plan';
+                return (
+                  <div key={c.id} style={{
+                    padding: '8px 10px', fontSize: 12, borderBottom: '1px solid #f5f5f4', background: '#fff',
+                  }}>
+                    <div style={{ fontSize: 11, color: '#44403c' }}>
+                      Belge <b>{c.belgeNo}</b> · teslim <b style={{ color: weEarlier ? '#dc2626' : '#15803d' }}>{c.teslimTarihi}</b> · plan <b style={{ color: weEarlier ? '#15803d' : '#dc2626' }}>{c.effectiveWeek}</b>
+                    </div>
+                    <div style={{ fontSize: 10, color: '#7e22ce', marginTop: 3 }}>
+                      {weEarlier
+                        ? '↑ Bu siparişin teslimi seninkinden geç AMA planı senin yeni planından erken'
+                        : '↑ Bu siparişin teslimi seninkinden erken AMA planı senin yeni planından geç'}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => { conflictModal.resolve(false); setConflictModal(null); }}
+                style={{
+                  padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                  border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: 'pointer',
+                }}
+              >İptal</button>
+              <button
+                onClick={() => { conflictModal.resolve(true); setConflictModal(null); }}
+                style={{
+                  padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                  border: '1px solid #7e22ce', background: '#7e22ce', color: '#fff', cursor: 'pointer',
+                }}
+              >Yine de Devam Et</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Week picker popup */}
       {picker && (
