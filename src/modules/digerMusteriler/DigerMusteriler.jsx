@@ -7,6 +7,24 @@ import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
+// Sipariş listesinin AD (kalan miktar) + TL (toplam bedel) toplamı.
+// Hafta başlıklarında özet göstermek için.
+function weekTotals(orders) {
+  let ad = 0, tl = 0;
+  for (const o of orders || []) {
+    ad += Number(o.kalanMiktar || 0);
+    tl += Number(o.toplamBedel || 0);
+  }
+  return { ad, tl };
+}
+
+// Override badge'i için kompakt "Wxx" formatı (yıl prefix'i atlanır).
+function shortWeek(isoWeek) {
+  if (!isoWeek) return '—';
+  const m = String(isoWeek).match(/W(\d{1,2})$/);
+  return m ? `W${m[1]}` : isoWeek;
+}
+
 export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigateToMrp }) {
   const canEdit = !!(isAdmin || isUretim || isSales);
   const role = isAdmin ? 'admin' : isSales ? 'satis' : (isUretim ? 'üretim' : 'bilinmiyor');
@@ -1289,7 +1307,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
                 fontSize: 13, fontWeight: 500, color: '#57534e',
               }} onClick={() => setDeferredExpanded(!deferredExpanded)}>
-                <span>⏸ Akibeti Belirsiz ({grouped.deferred.length} sipariş · {formatMoney(grouped.kpi.deferredBedel)} TL)</span>
+                <span>⏸ Akibeti Belirsiz ({grouped.deferred.length} sipariş · {weekTotals(grouped.deferred).ad} AD · {formatMoney(grouped.kpi.deferredBedel)} TL)</span>
                 <span style={{ fontSize: 11, color: '#78716c' }}>
                   — MRP demand'ına dahil değil
                 </span>
@@ -1315,7 +1333,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
                 fontSize: 13, fontWeight: 500, color: '#991b1b',
               }} onClick={() => setLateExpanded(!lateExpanded)}>
-                <span>⚠ Geciken ({grouped.late.length} sipariş)</span>
+                <span>⚠ Geciken ({grouped.late.length} sipariş · {weekTotals(grouped.late).ad} AD · {formatMoney(weekTotals(grouped.late).tl)} TL)</span>
                 <span style={{ fontSize: 11, color: '#b91c1c' }}>
                   — bugün ({grouped.currentWeek}) öncesi teslim
                 </span>
@@ -1360,7 +1378,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           {/* BU HAFTA vurgu */}
           {(grouped.byWeek[grouped.currentWeek]?.length || 0) > 0 && (() => {
             const thisWeek = grouped.byWeek[grouped.currentWeek] || [];
-            const bedel = thisWeek.reduce((s, o) => s + (o.toplamBedel || 0), 0);
+            const { ad, tl } = weekTotals(thisWeek);
             return (
               <div style={{
                 marginTop: 16, padding: 12, borderRadius: 8,
@@ -1369,7 +1387,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 <div style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13, color: '#166534', fontWeight: 500, flexWrap: 'wrap' }}>
                   <span>📅 BU HAFTA ({grouped.currentWeek})</span>
                   <span style={{ fontSize: 12, color: '#15803d', fontWeight: 400 }}>
-                    — {thisWeek.length} sipariş · {formatMoney(bedel)} TL
+                    — {thisWeek.length} sipariş · {ad} AD · {formatMoney(tl)} TL
                   </span>
                   <span style={{ marginLeft: 'auto', fontSize: 11, color: '#166534' }}>sevke hazır olmalı</span>
                 </div>
@@ -1406,7 +1424,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                       fontWeight: w === grouped.currentWeek ? 700 : 400,
                     }}>({weekDiffLabel(w)})</span>
                     <span style={{ marginLeft: 'auto', fontSize: 11, color: '#78716c', fontWeight: 400 }}>
-                      {grouped.byWeek[w].length} sipariş
+                      {(() => {
+                        const { ad, tl } = weekTotals(grouped.byWeek[w]);
+                        return `${grouped.byWeek[w].length} sipariş · ${ad} AD · ${formatMoney(tl)} TL`;
+                      })()}
                     </span>
                   </div>
                   {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
@@ -1885,10 +1906,28 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
           cursor: canEdit ? 'pointer' : 'not-allowed',
           opacity: canEdit ? 1 : 0.6,
           fontVariantNumeric: 'tabular-nums',
-          minWidth: 82, textAlign: 'center',
+          minWidth: 110, textAlign: 'center',
         }}
       >
-        {o.effectiveWeek || '—'}
+        {(() => {
+          // Override aktif + hafta gerçekten değişmiş ise: (origWeek) plan +diff göster
+          const ov = override;
+          if (ov && ov.origWeek && ov.origWeek !== o.effectiveWeek) {
+            const diff = weeksBetween(ov.origWeek, o.effectiveWeek);
+            if (Number.isFinite(diff) && diff !== 0) {
+              const diffStr = diff > 0 ? `+${diff}` : `${diff}`;
+              const diffColor = diff > 0 ? '#b45309' : '#15803d';
+              return (
+                <>
+                  <span style={{ color: '#a8a29e', fontSize: 9, marginRight: 3 }} title={`VIO orijinal: ${ov.origWeek}`}>({shortWeek(ov.origWeek)})</span>
+                  {o.effectiveWeek}
+                  <span style={{ color: diffColor, fontSize: 9, fontWeight: 700, marginLeft: 3 }}>{diffStr}</span>
+                </>
+              );
+            }
+          }
+          return o.effectiveWeek || '—';
+        })()}
         {o.isOverride && <span style={{ marginLeft: 4, color: '#c2410c' }}>✎</span>}
         {planOverrides?.[o.id]?.note && <span title={planOverrides[o.id].note} style={{ marginLeft: 3, fontSize: 10 }}>💬</span>}
         {vioChanged && <span title={`VIO teslim değişti: ${override.origWeek} → ${vioCurrentWeek} — üstteki "VIO Termin Değişti" kutusundan güncelle`} style={{ marginLeft: 3, color: '#ca8a04', fontSize: 14, lineHeight: 1, fontWeight: 700 }}>●</span>}
