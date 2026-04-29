@@ -46,6 +46,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const [lateExpanded, setLateExpanded] = useState(false);
   const [deferredExpanded, setDeferredExpanded] = useState(false);
   const [staleExpanded, setStaleExpanded] = useState(false);
+  const [orphanExpanded, setOrphanExpanded] = useState(false);
   // viewMode: 'orders' (default sipariş listesi) | 'products' (stok bazlı agregasyon tablosu)
   const [viewMode, setViewMode] = useState('orders');
   const [productSort, setProductSort] = useState({ col: 'tutar', dir: 'desc' });
@@ -81,6 +82,27 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     if (cancelled > 0) parts.push(`${cancelled} iptal`);
     return `${total} override (${parts.join(' · ')})`;
   })();
+
+  // Orphan override tespiti — planOverrides'ta olup salesOrders'ta artık olmayan kayıtlar.
+  // Replacement detection (3-tuple ID) yan etkisi: VIO'da teslim tarihi değişince yeni ID üretilir,
+  // eski ID'nin override'ı orphan kalır. Diff sırasında deferred→cancelled çevirme replacement
+  // durumunu yakalamaz. Admin uyarı paneli ile elle temizlenebilir.
+  const orphanOverrides = useMemo(() => {
+    if (!allLoaded) return [];
+    return Object.entries(planOverrides || {})
+      .filter(([id]) => !salesOrders[id])
+      .map(([id, ov]) => {
+        const parts = id.split('_');
+        let belgeNo = id, stokKodu = '', teslimTarihi = '';
+        if (parts.length >= 3) {
+          teslimTarihi = parts[parts.length - 1];
+          stokKodu = parts[parts.length - 2];
+          belgeNo = parts.slice(0, parts.length - 2).join('_');
+        }
+        return { id, belgeNo, stokKodu, teslimTarihi, ...ov };
+      })
+      .sort((a, b) => (a.belgeNo || '').localeCompare(b.belgeNo || ''));
+  }, [planOverrides, salesOrders, allLoaded]);
   const empty = allLoaded && rawOrderCount === 0;
 
   // BOM eksik tespiti — root stok kodları seti
@@ -388,6 +410,18 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       setPicker(null);
     } catch (e) {
       alert('Override silme başarısız: ' + (e.message || String(e)));
+    }
+  };
+
+  // Orphan override silme — admin-only. VIO replacement (3-tuple ID değişimi) sonucu kalan
+  // ölü deferred/cancelled kayıtları temizler. Confirm yeterli (tek tetikli akış).
+  const handleOrphanDelete = async (orderId) => {
+    if (!isAdmin) return;
+    if (!window.confirm(`Bu orphan override silinsin mi?\n\n${orderId}\n\n(salesOrders'ta zaten yok, sadece planOverrides'taki ölü kayıt silinecek.)`)) return;
+    try {
+      await removePlanOverride(orderId, { canEdit });
+    } catch (e) {
+      alert('Orphan silme başarısız: ' + (e.message || String(e)));
     }
   };
 
@@ -890,6 +924,76 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                             opacity: canEdit ? 1 : 0.6,
                           }}
                         >↻ VIO'ya Güncelle</button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Orphan override uyarısı — admin only.
+              salesOrders'ta artık olmayan ama planOverrides'ta hâlâ duran ölü kayıtlar.
+              Replacement detection (3-tuple ID değişimi) sonucu kalan deferred/cancelled. */}
+          {isAdmin && orphanOverrides.length > 0 && (
+            <div style={{
+              marginTop: 16, padding: 12, borderRadius: 8,
+              background: '#fef2f2', border: '1px solid #fecaca',
+            }}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8, cursor: 'pointer',
+                fontSize: 13, fontWeight: 500, color: '#991b1b',
+              }} onClick={() => setOrphanExpanded(!orphanExpanded)}>
+                <span>⚠️ Orphan Override ({orphanOverrides.length} kayıt)</span>
+                <span style={{ fontSize: 11, color: '#b91c1c', fontWeight: 400 }}>
+                  — salesOrders'ta yok, planOverrides'ta ölü kayıt
+                </span>
+                <span style={{ marginLeft: 'auto', fontSize: 11 }}>
+                  {orphanExpanded ? 'gizle ▲' : 'aç ▼'}
+                </span>
+              </div>
+              {orphanExpanded && (
+                <div style={{ marginTop: 10, background: '#fff', borderRadius: 6, overflow: 'hidden' }}>
+                  {orphanOverrides.map(o => {
+                    const statusLabel = o.status === 'deferred' ? 'belirsiz'
+                      : o.status === 'cancelled' ? 'iptal'
+                      : 'not/plan';
+                    const statusColor = o.status === 'deferred' ? '#57534e'
+                      : o.status === 'cancelled' ? '#a8a29e'
+                      : '#c2410c';
+                    return (
+                      <div key={o.id} style={{
+                        display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+                        fontSize: 12, borderBottom: '1px solid #f5f5f4',
+                      }}>
+                        <span style={{
+                          padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                          minWidth: 50, textAlign: 'center',
+                          background: '#fee2e2', color: statusColor,
+                        }}>{statusLabel}</span>
+                        <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11, minWidth: 90, color: '#1c1917' }}>
+                          {o.belgeNo || '—'}
+                        </span>
+                        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 11, minWidth: 140, color: '#44403c' }}>
+                          {o.stokKodu || '—'}
+                        </span>
+                        <span style={{ fontSize: 11, color: '#78716c', minWidth: 90 }}>
+                          Teslim: <b style={{ color: '#44403c' }}>{o.teslimTarihi || '—'}</b>
+                        </span>
+                        <span style={{ flex: 1, fontSize: 11, color: '#78716c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={o.note || ''}>
+                          {o.note ? `💬 ${o.note}` : ''}
+                          {o.plannedWeek && ` · plan: ${o.plannedWeek}`}
+                          {o.at && ` · ${o.at.substring(0, 10)}`}
+                        </span>
+                        <button
+                          onClick={() => handleOrphanDelete(o.id)}
+                          title="Ölü override kaydını sil"
+                          style={{
+                            padding: '3px 10px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+                            border: '1px solid #b91c1c', background: '#fee2e2', color: '#991b1b',
+                            cursor: 'pointer',
+                          }}
+                        >🗑️ Sil</button>
                       </div>
                     );
                   })}
