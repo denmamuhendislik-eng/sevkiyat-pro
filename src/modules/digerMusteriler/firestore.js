@@ -96,6 +96,16 @@ export async function savePlanOverride(orderId, data, { canEdit }) {
   await setDoc(ref, { [orderId]: data }, { merge: true });
 }
 
+// Çoklu override yazımı — atomik (tek setDoc, merge:true). Otomatik sıralama gibi
+// birden fazla override'ı tek seferde yazmak için. Yarım yazım riski yok.
+export async function savePlanOverrides(updatesMap, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok — override sadece admin/üretim rolüne açık");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!updatesMap || Object.keys(updatesMap).length === 0) return;
+  const ref = doc(db, APP_COL, PLAN_OVERRIDES_DOC);
+  await setDoc(ref, updatesMap, { merge: true });
+}
+
 // Tek override siler — diğer override'lar korunur. Doc yoksa sessizce geçer.
 export async function removePlanOverride(orderId, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok — override sadece admin/üretim rolüne açık");
