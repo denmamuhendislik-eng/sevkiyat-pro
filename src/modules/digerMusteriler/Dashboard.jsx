@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useState, useEffect } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend, CartesianGrid } from 'recharts';
 import { useSalesOrders, usePlanOverrides, useBomModels, useShipments } from './hooks';
 import { resetShipments } from './firestore';
@@ -16,6 +16,17 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
   const { bomModels } = useBomModels();
   const { shipments, loaded: shipLoaded } = useShipments();
   const allLoaded = ordersLoaded && shipLoaded;
+
+  // Sevk Performansı modal — KPI kartına tıklayınca açılır.
+  // dateRange: 'thisMonth' | 'last3Months' | 'all', status: 'all' | 'onTime' | 'late'
+  const [shipmentModal, setShipmentModal] = useState(null);
+  // ESC ile kapama
+  useEffect(() => {
+    if (!shipmentModal) return;
+    const onKey = (e) => { if (e.key === 'Escape') setShipmentModal(null); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [shipmentModal]);
 
   const today = useMemo(() => new Date(), []);
   const currentWeek = useMemo(() => getISOWeek(today), [today]);
@@ -293,6 +304,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
 • Önümüzdeki 4 hafta: bu hafta + sonraki 3`}
         />
         <KpiCard
+          onClick={() => setShipmentModal({ dateRange: 'thisMonth', status: 'all' })}
           icon="✅" title="Sevk Performansı"
           primary={shipmentPerf.otdPct !== null ? `%${shipmentPerf.otdPct.toFixed(0)} zamanında` : 'Veri yok'}
           secondary={`${shipmentPerf.totalFullyDelivered} tam teslim · ${shipmentPerf.totalLate} gecikmeli`}
@@ -439,19 +451,233 @@ Hesaplamalar:
           </button>
         )}
       </div>
+
+      {/* Sevk Performansı Detay Modal — KPI kartına tıklayınca açılır.
+          Filtre: tarih aralığı + durum. Sıralama: gecikme büyükten küçüğe (en problemli üstte). */}
+      {shipmentModal && (() => {
+        const last3MonthsCutoff = (() => {
+          const d = new Date(today.getFullYear(), today.getMonth() - 2, 1);
+          return d.toISOString().substring(0, 10);
+        })();
+        const rows = [];
+        for (const [id, sh] of Object.entries(shipments || {})) {
+          if (!sh || !sh.fullyDelivered || !sh.finalShipAt || !sh.teslimTarihi) continue;
+          const finalDate = sh.finalShipAt.substring(0, 10);
+          // Tarih aralığı filtresi
+          if (shipmentModal.dateRange === 'thisMonth') {
+            if (finalDate.substring(0, 7) !== currentMonthKey) continue;
+          } else if (shipmentModal.dateRange === 'last3Months') {
+            if (finalDate < last3MonthsCutoff) continue;
+          }
+          const lateDays = Math.round((new Date(finalDate).getTime() - new Date(sh.teslimTarihi).getTime()) / 86400000);
+          const isLate = lateDays > 0;
+          if (shipmentModal.status === 'onTime' && isLate) continue;
+          if (shipmentModal.status === 'late' && !isLate) continue;
+          rows.push({
+            id,
+            customerCode: sh.customerCode,
+            customerName: sh.customerName,
+            belgeNo: sh.belgeNo,
+            stokKodu: sh.stokKodu,
+            stokAdi: sh.stokAdi,
+            orijinalMiktar: sh.orijinalMiktar,
+            totalShipped: sh.totalShipped,
+            firstShipAt: sh.firstShipAt ? sh.firstShipAt.substring(0, 10) : '',
+            finalShipAt: finalDate,
+            teslimTarihi: sh.teslimTarihi,
+            lateDays,
+            isLate,
+          });
+        }
+        rows.sort((a, b) => b.lateDays - a.lateDays);
+        const totalCount = rows.length;
+        const lateCount = rows.filter(r => r.isLate).length;
+        const onTimeCount = totalCount - lateCount;
+        const avgLate = lateCount > 0 ? rows.filter(r => r.isLate).reduce((s, r) => s + r.lateDays, 0) / lateCount : 0;
+
+        const dateLabel = shipmentModal.dateRange === 'thisMonth' ? 'Bu Ay'
+          : shipmentModal.dateRange === 'last3Months' ? 'Son 3 Ay' : 'Tümü';
+
+        return (
+          <div
+            onClick={(e) => { if (e.target === e.currentTarget) setShipmentModal(null); }}
+            style={{
+              position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+              background: 'rgba(0,0,0,0.45)', zIndex: 9999,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+            }}
+          >
+            <div style={{
+              background: '#fff', borderRadius: 10, padding: 0,
+              maxWidth: 1100, width: '100%', maxHeight: '90vh',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+              display: 'flex', flexDirection: 'column',
+            }}>
+              {/* Başlık + kapat */}
+              <div style={{
+                padding: '16px 20px', borderBottom: '1px solid #e7e5e4',
+                display: 'flex', alignItems: 'center', gap: 12,
+              }}>
+                <span style={{ fontSize: 20 }}>✅</span>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#166534' }}>Sevk Performansı Detay</h3>
+                <span style={{ fontSize: 11, color: '#78716c' }}>
+                  {totalCount} kayıt · {onTimeCount} zamanında · {lateCount} gecikmeli
+                  {lateCount > 0 && ` · ortalama ${avgLate.toFixed(1)} gün gecikme`}
+                </span>
+                <button
+                  onClick={() => setShipmentModal(null)}
+                  style={{
+                    marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
+                    border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: 'pointer',
+                  }}
+                >Kapat ✕</button>
+              </div>
+
+              {/* Filtre satırı */}
+              <div style={{
+                padding: '10px 20px', borderBottom: '1px solid #e7e5e4',
+                display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', fontSize: 12,
+              }}>
+                <span style={{ color: '#57534e', fontWeight: 500 }}>Tarih:</span>
+                {[
+                  { v: 'thisMonth', label: 'Bu Ay' },
+                  { v: 'last3Months', label: 'Son 3 Ay' },
+                  { v: 'all', label: 'Tümü' },
+                ].map(opt => (
+                  <button
+                    key={opt.v}
+                    onClick={() => setShipmentModal({ ...shipmentModal, dateRange: opt.v })}
+                    style={{
+                      padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                      border: '1px solid ' + (shipmentModal.dateRange === opt.v ? '#534AB7' : '#d6d3d1'),
+                      background: shipmentModal.dateRange === opt.v ? '#534AB7' : '#fff',
+                      color: shipmentModal.dateRange === opt.v ? '#fff' : '#44403c',
+                      cursor: 'pointer',
+                    }}
+                  >{opt.label}</button>
+                ))}
+                <span style={{ color: '#57534e', fontWeight: 500, marginLeft: 14 }}>Durum:</span>
+                {[
+                  { v: 'all', label: 'Tümü' },
+                  { v: 'onTime', label: 'Zamanında' },
+                  { v: 'late', label: 'Gecikmeli' },
+                ].map(opt => (
+                  <button
+                    key={opt.v}
+                    onClick={() => setShipmentModal({ ...shipmentModal, status: opt.v })}
+                    style={{
+                      padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                      border: '1px solid ' + (shipmentModal.status === opt.v ? '#534AB7' : '#d6d3d1'),
+                      background: shipmentModal.status === opt.v ? '#534AB7' : '#fff',
+                      color: shipmentModal.status === opt.v ? '#fff' : '#44403c',
+                      cursor: 'pointer',
+                    }}
+                  >{opt.label}</button>
+                ))}
+              </div>
+
+              {/* Tablo */}
+              <div style={{ flex: 1, overflowY: 'auto', padding: '0' }}>
+                {rows.length === 0 ? (
+                  <div style={{ padding: 40, textAlign: 'center', color: '#a8a29e', fontSize: 13 }}>
+                    {dateLabel} aralığında bu filtre ile sevk kaydı yok
+                  </div>
+                ) : (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                    <thead style={{ position: 'sticky', top: 0, background: '#f5f5f4', zIndex: 1 }}>
+                      <tr style={{ fontSize: 10, color: '#57534e', textAlign: 'left' }}>
+                        <th style={shTh}>Müş</th>
+                        <th style={shTh}>Belge</th>
+                        <th style={shTh}>Stok Kodu</th>
+                        <th style={shTh}>Ad</th>
+                        <th style={{ ...shTh, textAlign: 'right' }}>Orjinal</th>
+                        <th style={{ ...shTh, textAlign: 'right' }}>Sevk</th>
+                        <th style={shTh}>İlk Sevk</th>
+                        <th style={shTh}>Son Sevk</th>
+                        <th style={shTh}>Müş. Teslim</th>
+                        <th style={{ ...shTh, textAlign: 'right' }}>Gecikme</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(r => {
+                        const b = customerBadge(r.customerCode);
+                        return (
+                          <tr key={r.id} style={{ borderTop: '1px solid #f5f5f4' }}>
+                            <td style={shTd}>
+                              <span style={{
+                                padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                                background: b.bg, color: b.fg, minWidth: 28, display: 'inline-block', textAlign: 'center',
+                              }}>{b.label}</span>
+                            </td>
+                            <td style={{ ...shTd, fontFamily: 'ui-monospace, monospace' }}>{r.belgeNo}</td>
+                            <td style={{ ...shTd, fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{r.stokKodu}</td>
+                            <td style={{ ...shTd, color: '#44403c', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.stokAdi}>{r.stokAdi}</td>
+                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#78716c' }}>{r.orijinalMiktar}</td>
+                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>{r.totalShipped}</td>
+                            <td style={{ ...shTd, color: '#78716c' }}>{r.firstShipAt}</td>
+                            <td style={shTd}>{r.finalShipAt}</td>
+                            <td style={{ ...shTd, color: '#78716c' }}>{r.teslimTarihi}</td>
+                            <td style={{
+                              ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600,
+                              color: r.isLate ? '#dc2626' : '#16a34a',
+                            }}>
+                              {r.isLate ? `+${r.lateDays} gün` : (r.lateDays === 0 ? 'tam zamanında' : `${r.lateDays} gün önce`)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              {/* Footer not */}
+              <div style={{
+                padding: '8px 20px', borderTop: '1px solid #e7e5e4',
+                fontSize: 10, color: '#a8a29e',
+              }}>
+                ⚠ Yaklaşık değerler: gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır. Replacement detection sonrası kalan eski kayıtlar varsa burada görünebilir.
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
-function KpiCard({ icon, title, primary, secondary, extra, info }) {
+const shTh = { padding: '8px 10px', fontWeight: 600, borderBottom: '1px solid #e7e5e4', fontSize: 10 };
+const shTd = { padding: '6px 10px', fontSize: 11 };
+
+function KpiCard({ icon, title, primary, secondary, extra, info, onClick }) {
+  const clickable = typeof onClick === 'function';
   return (
-    <div style={{ background: '#fff', border: '1px solid #e7e5e4', borderRadius: 8, padding: 14 }}>
+    <div
+      onClick={clickable ? onClick : undefined}
+      style={{
+        background: '#fff', border: '1px solid #e7e5e4', borderRadius: 8, padding: 14,
+        cursor: clickable ? 'pointer' : 'default',
+        transition: 'border-color 0.15s, box-shadow 0.15s',
+      }}
+      onMouseEnter={clickable ? (e) => {
+        e.currentTarget.style.borderColor = '#534AB7';
+        e.currentTarget.style.boxShadow = '0 2px 8px rgba(83,74,183,0.15)';
+      } : undefined}
+      onMouseLeave={clickable ? (e) => {
+        e.currentTarget.style.borderColor = '#e7e5e4';
+        e.currentTarget.style.boxShadow = 'none';
+      } : undefined}
+    >
       <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 8 }}>
         <span style={{ fontSize: 18 }}>{icon}</span>
         <span style={{ fontSize: 12, fontWeight: 500, color: '#57534e' }}>{title}</span>
+        {clickable && (
+          <span style={{ fontSize: 10, color: '#7e22ce', fontWeight: 600 }}>tıkla → detay</span>
+        )}
         {info && (
           <span
             title={info}
+            onClick={(e) => e.stopPropagation()}
             style={{
               marginLeft: 'auto', fontSize: 11, color: '#a8a29e', cursor: 'help',
               border: '1px solid #d6d3d1', borderRadius: '50%',
