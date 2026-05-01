@@ -4,7 +4,7 @@ import { useSalesOrders, usePlanOverrides, useBomModels, useShipments } from './
 import { resetShipments } from './firestore';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { formatMoney } from '../../shared/moneyFormat';
-import { getISOWeek } from '../../shared/weekUtils';
+import { getISOWeek, weeksBetween } from '../../shared/weekUtils';
 
 // Aşama 2.5 — Diğer Müşteriler için yönetici dashboard'ı.
 // Veri kaynakları: salesOrders (aktif siparişler), shipments (sevk geçmişi — VIO diff'inden üretilir).
@@ -180,6 +180,10 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     }
     const map = Object.fromEntries(months.map(m => [m.key, m]));
     let totalPlan = 0, totalMusteri = 0, divergeCount = 0;
+    // Ortalama hafta kayması — plan ile müşteri teslim haftası arası fark.
+    // Pozitif = plan ileride (geç teslimat), negatif = plan geride (erken teslimat).
+    // Sadece sapan siparişler dahil (eşit olanlar ortalamayı sıfıra çekmesin).
+    let totalDriftWeeks = 0, driftCount = 0;
     for (const [id, o] of Object.entries(salesOrders || {})) {
       const ov = planOverrides?.[id];
       if (ov?.status === 'deferred') continue;
@@ -209,9 +213,22 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       const musteriKey = musteriDateStr ? musteriDateStr.substring(0, 7) : '';
       if (map[planKey]) { map[planKey].plan += bedel; map[planKey].planCount++; totalPlan += bedel; }
       if (map[musteriKey]) { map[musteriKey].musteri += bedel; map[musteriKey].musteriCount++; totalMusteri += bedel; }
-      if (planKey && musteriKey && planKey !== musteriKey) divergeCount++;
+      if (planKey && musteriKey && planKey !== musteriKey) {
+        divergeCount++;
+        // Hafta cinsinden kayma hesabı
+        const planWeek = ov?.plannedWeek || (musteriDateStr ? getISOWeek(new Date(musteriDateStr + 'T00:00:00Z')) : '');
+        const musteriWeek = musteriDateStr ? getISOWeek(new Date(musteriDateStr + 'T00:00:00Z')) : '';
+        if (planWeek && musteriWeek) {
+          const diff = weeksBetween(musteriWeek, planWeek);
+          if (Number.isFinite(diff)) {
+            totalDriftWeeks += diff;
+            driftCount++;
+          }
+        }
+      }
     }
-    return { months, totalPlan, totalMusteri, divergeCount };
+    const avgDriftWeeks = driftCount > 0 ? totalDriftWeeks / driftCount : 0;
+    return { months, totalPlan, totalMusteri, divergeCount, avgDriftWeeks, driftCount };
   }, [salesOrders, planOverrides, today]);
 
   // 6) Operasyonel uyarılar
@@ -389,6 +406,18 @@ Hesaplamalar:
               </b></span>
             )}
             {futureLoad.divergeCount > 0 && <span>{futureLoad.divergeCount} siparişte plan ≠ müşteri tarihi</span>}
+            {futureLoad.driftCount > 0 && (
+              <span>
+                Ortalama plan kayması:{' '}
+                <b style={{
+                  color: futureLoad.avgDriftWeeks > 0.05 ? '#dc2626'
+                    : futureLoad.avgDriftWeeks < -0.05 ? '#16a34a' : '#78716c',
+                }}>
+                  {futureLoad.avgDriftWeeks > 0 ? '+' : ''}{futureLoad.avgDriftWeeks.toFixed(1)} hafta
+                  {futureLoad.avgDriftWeeks > 0.05 ? ' (geç)' : futureLoad.avgDriftWeeks < -0.05 ? ' (erken)' : ''}
+                </b>
+              </span>
+            )}
           </div>
         </ChartCard>
       </div>
