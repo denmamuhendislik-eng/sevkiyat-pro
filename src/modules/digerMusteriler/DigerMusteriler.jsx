@@ -66,6 +66,9 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const [staleExpanded, setStaleExpanded] = useState(false);
   const [orphanExpanded, setOrphanExpanded] = useState(false);
   const [inconsistentExpanded, setInconsistentExpanded] = useState(false);
+  // Hafta listesi default kapalı — kullanıcı tıklayarak açar (accordion).
+  const [weekExpanded, setWeekExpanded] = useState({});
+  const toggleWeek = (w) => setWeekExpanded(prev => ({ ...prev, [w]: !prev[w] }));
   // viewMode: 'orders' (default sipariş listesi) | 'products' (stok bazlı agregasyon tablosu)
   const [viewMode, setViewMode] = useState('orders');
   const [productSort, setProductSort] = useState({ col: 'tutar', dir: 'desc' });
@@ -1610,9 +1613,12 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 Filtre/aramaya uyan sipariş yok
               </div>
             ) : (
-              grouped.weekOrder.map(w => (
+              grouped.weekOrder.map(w => {
+                const isOpen = !!weekExpanded[w];
+                return (
                 <div key={w} style={{ marginBottom: 14 }}>
                   <div
+                    onClick={() => toggleWeek(w)}
                     onDragOver={canEdit ? (e) => { e.preventDefault(); e.currentTarget.style.background = '#dcfce7'; } : undefined}
                     onDragLeave={canEdit ? (e) => { e.currentTarget.style.background = '#f5f5f4'; } : undefined}
                     onDrop={canEdit ? (e) => {
@@ -1625,6 +1631,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                     display: 'flex', alignItems: 'center', gap: 10,
                     padding: '6px 10px', background: '#f5f5f4', borderRadius: 6,
                     fontSize: 12, fontWeight: 600, color: '#44403c', marginBottom: 4,
+                    cursor: 'pointer',
                   }}>
                     <span>{weekLabel(w)}</span>
                     <span style={{
@@ -1637,10 +1644,14 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                         return `${grouped.byWeek[w].length} sipariş · ${ad} AD · ${formatMoney(tl)} TL`;
                       })()}
                     </span>
+                    <span style={{ fontSize: 11, color: '#78716c', minWidth: 50, textAlign: 'right' }}>
+                      {isOpen ? 'gizle ▲' : 'aç ▼'}
+                    </span>
                   </div>
-                  {renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
+                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
                 </div>
-              ))
+                );
+              })
             )}
           </div>
           </>)}
