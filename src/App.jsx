@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useCallback, useRef, Fragment } from "rea
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, LineChart, Line, Legend, ReferenceLine } from "recharts";
 import { auth, db } from "./firebase";
 import { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword } from "firebase/auth";
-import { doc, getDoc, setDoc, onSnapshot, getDocs, collection } from "firebase/firestore";
+import { doc, getDoc, setDoc, updateDoc, onSnapshot, getDocs, collection } from "firebase/firestore";
 import * as XLSX from "xlsx";
 import QRCode from "qrcode";
 import jsPDF from "jspdf";
@@ -5205,6 +5205,36 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const [bomListSort, setBomListSort] = useState("date"); // date | code | partCount
   // v20 MRP Eşleştirme gruplama: eşleşme bekleyen açık, BOM eşleşti ve BUY/direct kapalı
   const [mappingGroupsExpanded, setMappingGroupsExpanded] = useState({ pending: true, pendingShipment: true, pendingOrder: false, bom: false, direct: false });
+  // İş Merkezleri tab'ında inline tatil editor için
+  const [newHolidayDateMrp, setNewHolidayDateMrp] = useState("");
+  const [showHolidayList, setShowHolidayList] = useState(false);
+  // Resmi tatiller — sevkiyat tarafıyla ortak (montajData/state doc'undaki capacity.holidays).
+  // Schedule motoru ve mSt iş günü hesabında bu liste kullanılır.
+  const [holidayList, setHolidayList] = useState([]);
+  useEffect(() => {
+    if (!db) return;
+    const ref = doc(db, "montajData", "state");
+    const unsub = onSnapshot(ref, (snap) => {
+      if (!snap.exists()) { setHolidayList([]); return; }
+      const data = snap.data() || {};
+      const list = (data?.capacity?.holidays || [])
+        .map(h => typeof h === "string" ? h : h?.date)
+        .filter(Boolean);
+      setHolidayList(list);
+    }, () => setHolidayList([]));
+    return unsub;
+  }, [db]);
+  const saveHolidayList = async (newList) => {
+    if (!db) return;
+    const ref = doc(db, "montajData", "state");
+    // Dot-notation ile sadece capacity.holidays güncellenir; diğer capacity alanları korunur.
+    try {
+      await updateDoc(ref, { "capacity.holidays": newList });
+    } catch (e) {
+      // Doc henüz yoksa create et
+      await setDoc(ref, { capacity: { holidays: newList } }, { merge: true });
+    }
+  };
   // Faz 2.1d: autoMap preview — null | { exact:[], named:[], missing:[], selections:{pid:bool} }
   const [autoMapPreview, setAutoMapPreview] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState({});
@@ -6944,9 +6974,15 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       }));
 
       if (minDate && maxDate) {
+        // Tatil setini sevkiyat ile ortak holidayList'ten al
+        const holidaySet = new Set(holidayList || []);
         let totalWorkDays = 0;
         let d = new Date(minDate);
-        while (d <= maxDate) { if (!isWeekend(d)) totalWorkDays++; d = addDays(d, 1); }
+        while (d <= maxDate) {
+          const ds = d.toISOString().slice(0, 10);
+          if (!isWeekend(d) && !holidaySet.has(ds)) totalWorkDays++;
+          d = addDays(d, 1);
+        }
 
         for (const [wcCode, wc] of Object.entries(centers)) {
           const machineCount = (wc.machines || []).length;
@@ -10425,7 +10461,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       {activeTab === "wc" && workCenters && (
         <div>
           {/* Global settings */}
-          <div style={{ display: "flex", gap: 16, marginBottom: 16, alignItems: "center", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
+          <div style={{ display: "flex", gap: 16, marginBottom: 16, alignItems: "center", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8, flexWrap: "wrap" }}>
             <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Günlük vardiya:</label>
             <input type="number" value={workCenters.shiftHours || 9} onChange={e => updateWCGlobal("shiftHours", parseFloat(e.target.value) || 9)}
               style={{ width: 50, padding: "4px 6px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 12, textAlign: "center" }}
@@ -10441,7 +10477,67 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
             <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
               = {Math.round((workCenters.shiftHours || 9) * 60 * (workCenters.efficiency || 0.85))} dk/gün efektif
             </span>
+            {/* Resmi tatil rozeti — sevkiyat tarafıyla ortak (montajData/state.capacity.holidays) */}
+            {(() => {
+              const futureCount = holidayList.filter(d => d >= new Date().toISOString().slice(0, 10)).length;
+              return (
+                <button
+                  onClick={() => setShowHolidayList(v => !v)}
+                  style={{ marginLeft: "auto", fontSize: 11, padding: "4px 10px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: showHolidayList ? "var(--color-background-warning)" : "var(--color-background-primary)", color: "var(--color-text-secondary)", cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 6 }}
+                  title="Resmi tatiller — sevkiyat planıyla ortak"
+                >
+                  🏖 {holidayList.length} tatil
+                  {futureCount > 0 && <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>({futureCount} yaklaşan)</span>}
+                  <span style={{ fontSize: 9 }}>{showHolidayList ? "▲" : "▼"}</span>
+                </button>
+              );
+            })()}
           </div>
+          {/* Tatil editor — açıldığında görünür */}
+          {showHolidayList && (
+            <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--color-background-warning)", borderRadius: 8, border: "1px solid var(--color-border-warning)" }}>
+              <div style={{ fontSize: 11, color: "var(--color-text-warning)", marginBottom: 8, fontWeight: 500 }}>
+                Resmi tatiller — bu günlerde kapasite hesabı yapılmaz (sevkiyat planı ile ortak liste)
+              </div>
+              {canEdit && (
+                <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                  <input type="date" value={newHolidayDateMrp} onChange={e => setNewHolidayDateMrp(e.target.value)}
+                    style={{ fontSize: 12, padding: "4px 8px", borderRadius: 4, border: "1px solid var(--color-border-secondary)" }} />
+                  <button
+                    onClick={() => {
+                      if (!newHolidayDateMrp) return;
+                      if (holidayList.includes(newHolidayDateMrp)) { setNewHolidayDateMrp(""); return; }
+                      const newList = [...holidayList, newHolidayDateMrp].sort();
+                      saveHolidayList(newList);
+                      setNewHolidayDateMrp("");
+                    }}
+                    style={{ fontSize: 12, padding: "4px 12px", borderRadius: 4, border: "1px solid var(--color-border-info)", background: "var(--color-background-info)", color: "var(--color-text-info)", cursor: "pointer", fontWeight: 500 }}
+                  >+ Ekle</button>
+                </div>
+              )}
+              {holidayList.length === 0 ? (
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>Tanımlı tatil yok</div>
+              ) : (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {[...holidayList].sort().map(h => {
+                    const isPast = h < new Date().toISOString().slice(0, 10);
+                    return (
+                      <span key={h} style={{ fontSize: 11, background: isPast ? "var(--color-background-secondary)" : "var(--color-background-primary)", color: isPast ? "var(--color-text-tertiary)" : "var(--color-text-warning)", padding: "2px 8px", borderRadius: 4, display: "inline-flex", alignItems: "center", gap: 6, opacity: isPast ? 0.6 : 1, border: "0.5px solid var(--color-border-secondary)" }}>
+                        {new Date(h + "T00:00:00").toLocaleDateString("tr-TR", { day: "2-digit", month: "short", weekday: "short" })}
+                        {canEdit && (
+                          <span
+                            onClick={() => saveHolidayList(holidayList.filter(d => d !== h))}
+                            style={{ cursor: "pointer", fontSize: 13, lineHeight: 1, color: "var(--color-text-tertiary)" }}
+                            title="Sil"
+                          >×</span>
+                        )}
+                      </span>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* BUY/RAW Tedarik Süreleri */}
           <div style={{ marginBottom: 16, padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
@@ -11038,12 +11134,17 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           if (!s || !workCenters?.centers || jobs.length === 0) return {};
           const centers = workCenters.centers;
           const shiftMin = (workCenters.shiftHours || 9) * 60 * (workCenters.efficiency || 0.85);
-          // Toplam iş günü (çizelge aralığı)
+          // Toplam iş günü (çizelge aralığı) — resmi tatiller hariç (holidayList)
+          const holidaySet = new Set(holidayList || []);
           let totalWorkDays = 0;
           if (s.minDate && s.maxDate) {
             let d = new Date(s.minDate);
             const end = new Date(s.maxDate);
-            while (d <= end) { if (d.getDay() !== 0 && d.getDay() !== 6) totalWorkDays++; d = new Date(d); d.setDate(d.getDate() + 1); }
+            while (d <= end) {
+              const ds = d.toISOString().slice(0, 10);
+              if (d.getDay() !== 0 && d.getDay() !== 6 && !holidaySet.has(ds)) totalWorkDays++;
+              d = new Date(d); d.setDate(d.getDate() + 1);
+            }
           }
           if (totalWorkDays === 0) return {};
           const perMachineCap = totalWorkDays * shiftMin;
@@ -11078,6 +11179,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         // Tezgah darboğazı ve yetenek uyarıları (client-side)
         const machBn = Object.entries(mSt).reduce((best, [id, ms]) => (!best || ms.utilization > (mSt[best]?.utilization || 0)) ? id : best, null);
         const capWarnCount = Object.values(mSt).reduce((s, ms) => s + ms.capWarnings, 0);
+
+        // WC bazlı toplam doluluk (plan + WIP) — Darboğaz (Merkez) hesabı bu üzerinden
+        // Server'daki s.bottleneck sadece plan'a bakar; UI tutarlılığı için WIP+plan bazlı yeniden hesap
+        const wcTotalUtil = {};
+        for (const [code, st] of Object.entries(wcSt)) {
+          const machList = (workCenters?.centers?.[code]?.machines || []);
+          const wcWipMin = (wipLoad.byWC[code]?.totalMin || 0)
+                         + machList.reduce((sum, m) => sum + (wipLoad.byMachine[m.id]?.totalMin || 0), 0);
+          const totalLoad = (st.loadMin || 0) + wcWipMin;
+          wcTotalUtil[code] = st.totalCapMin > 0 ? Math.round((totalLoad / st.totalCapMin) * 100) : 0;
+        }
+        const wcBn = Object.entries(wcTotalUtil).reduce((best, [code, u]) => (!best || u > (wcTotalUtil[best] || 0)) ? code : best, null);
 
         // Gantt chart helpers
         const ganttColors = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899","#06B6D4","#84CC16","#F97316","#6366F1"];
@@ -11230,7 +11343,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                 <KPI label="Kaynak" value={s.source === "mrp" ? "🔥 MRP" : "📋 VIO"} sub={`${s.totalReqItems || "?"} ihtiyaç kalemi`} accent={s.source === "mrp" ? "#D97706" : "#2563EB"} />
                 <KPI label="MES Süreli Op" value={opsMES} sub={`${opsInternal > 0 ? Math.round(opsMES/opsInternal*100) : 0}% iç op tanımlı`} accent="#10B981" />
                 <KPI label="Fason Sipariş" value={s.totalFason || 0} sub="Dış operasyon" accent="#F59E0B" />
-                <KPI label="Darboğaz (Merkez)" value={s.bottleneck ? (wcSt[s.bottleneck]?.name || s.bottleneck) : "—"} sub={s.bottleneck ? `%${wcSt[s.bottleneck]?.utilization || 0} doluluk` : ""} accent="#EF4444" />
+                <KPI label="Darboğaz (Merkez)" value={wcBn ? (wcSt[wcBn]?.name || wcBn) : "—"} sub={wcBn ? `%${wcTotalUtil[wcBn] || 0} doluluk (WIP+plan)` : ""} accent="#EF4444" />
                 <KPI label="Darboğaz (Tezgah)" value={machBn ? (mSt[machBn]?.name || machBn) : "—"} sub={machBn ? `%${mSt[machBn]?.utilization || 0} doluluk` : ""} accent="#DC2626" />
                 {capWarnCount > 0 && (
                   <KPI label="Yetenek Uyarısı" value={capWarnCount} sub="Uyumsuz tezgah ataması" accent="#F97316" />
@@ -13112,7 +13225,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
                   {Object.entries(wcSt).sort((a, b) => b[1].utilization - a[1].utilization).map(([code, st]) => {
-                    const isBottleneck = code === s.bottleneck;
+                    const isBottleneck = code === wcBn;
                     const isExpanded = expandedWC === code;
                     // Bu merkezin tezgahları ve WIP yükü
                     const wcMachines = Object.entries(mSt).filter(([, ms]) => ms.wcCode === code).sort((a, b) => b[1].utilization - a[1].utilization);
@@ -13121,20 +13234,27 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                     const wcMachineIds = [...new Set([...wcMachines.map(([id]) => id), ...allWcMachines.map(([id]) => id)])];
                     const hasCapWarns = wcMachines.some(([, ms]) => ms.capWarnings > 0);
                     const wcWip = wipLoad.byWC[code];
-                    const wipMin = (wcWip?.totalMin || 0) + wcMachines.reduce((s, [mId]) => (wipLoad.byMachine[mId]?.totalMin || 0), 0);
+                    const wipMin = (wcWip?.totalMin || 0) + wcMachines.reduce((s, [mId]) => s + (wipLoad.byMachine[mId]?.totalMin || 0), 0);
                     const totalLoad = st.loadMin + wipMin;
                     const totalUtil = st.totalCapMin > 0 ? Math.round((totalLoad / st.totalCapMin) * 100) : 0;
                     const barColor = totalUtil > 90 ? "#EF4444" : totalUtil > 70 ? "#F59E0B" : "#10B981";
                     const plannedPct = st.totalCapMin > 0 ? Math.min(100, Math.round((st.loadMin / st.totalCapMin) * 100)) : 0;
                     const wipPct = st.totalCapMin > 0 ? Math.min(100 - plannedPct, Math.round((wipMin / st.totalCapMin) * 100)) : 0;
+                    // Bug #3 — kapasitesiz WC: tezgah yok ama yük var → yanıltıcı %0 yerine uyarı
+                    const isCapless = (st.machineCount || 0) === 0 && totalLoad > 0;
                     return (
                       <div key={code} style={{
                         borderRadius: 8,
-                        border: isBottleneck ? "1.5px solid #EF4444" : "0.5px solid var(--color-border-tertiary)",
-                        background: isBottleneck ? "#FEF2F2" : "var(--color-background-primary)",
+                        border: isCapless ? "1.5px solid #DC2626" : isBottleneck ? "1.5px solid #EF4444" : "0.5px solid var(--color-border-tertiary)",
+                        background: isCapless ? "#FEF2F2" : isBottleneck ? "#FEF2F2" : "var(--color-background-primary)",
                         overflow: "hidden",
                         gridColumn: isExpanded ? "1 / -1" : undefined
                       }}>
+                        {isCapless && (
+                          <div style={{ background: "#FEE2E2", color: "#991B1B", padding: "5px 10px", fontSize: 10, fontWeight: 500, borderBottom: "0.5px solid #FCA5A5" }}>
+                            ⚠ Kapasite tanımlı değil — {Math.round(totalLoad / 60)}s yük hesaba katılmıyor
+                          </div>
+                        )}
                         {/* WC Header — clickable */}
                         <div
                           onClick={() => setExpandedWC(isExpanded ? null : code)}
@@ -13144,20 +13264,25 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                             <span style={{ fontSize: 12, fontWeight: 500 }}>
                               <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginRight: 4 }}>{isExpanded ? "▼" : "▶"}</span>
                               {st.name || code}
-                              {isBottleneck && <span style={{ fontSize: 9, color: "#EF4444", marginLeft: 6 }}>⚠ DARBOĞAZ</span>}
+                              {isBottleneck && !isCapless && <span style={{ fontSize: 9, color: "#EF4444", marginLeft: 6 }}>⚠ DARBOĞAZ</span>}
                               {hasCapWarns && <span style={{ fontSize: 9, color: "#F97316", marginLeft: 6 }}>⚡ YETENEK</span>}
                             </span>
-                            <span style={{ fontSize: 12, fontWeight: 600, color: barColor }}>%{totalUtil}</span>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: isCapless ? "#9CA3AF" : barColor }}>
+                              {isCapless ? "—" : `%${totalUtil}`}
+                            </span>
                           </div>
-                          <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden", display: "flex" }}>
-                            {wipPct > 0 && <div style={{ height: "100%", width: wipPct + "%", background: "#F59E0B", opacity: 0.6, transition: "width 0.4s ease" }} />}
-                            <div style={{ height: "100%", width: plannedPct + "%", borderRadius: wipPct > 0 ? "0 3px 3px 0" : 3, background: barColor, transition: "width 0.4s ease" }} />
-                          </div>
+                          {!isCapless && (
+                            <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden", display: "flex" }}>
+                              {wipPct > 0 && <div style={{ height: "100%", width: wipPct + "%", background: "#F59E0B", opacity: 0.6, transition: "width 0.4s ease" }} />}
+                              <div style={{ height: "100%", width: plannedPct + "%", borderRadius: wipPct > 0 ? "0 3px 3px 0" : 3, background: barColor, transition: "width 0.4s ease" }} />
+                            </div>
+                          )}
                           <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "var(--color-text-tertiary)" }}>
                             <span>{st.machineCount} tezgah</span>
                             <span>
                               {wipMin > 0 && <span style={{ color: "#D97706", marginRight: 4 }}>{Math.round(wipMin / 60)}s WIP +</span>}
-                              {Math.round(st.loadMin / 60)}s plan / {Math.round(st.totalCapMin / 60)}s kap.
+                              {Math.round(st.loadMin / 60)}s plan
+                              {!isCapless && ` / ${Math.round(st.totalCapMin / 60)}s kap.`}
                             </span>
                           </div>
                         </div>
