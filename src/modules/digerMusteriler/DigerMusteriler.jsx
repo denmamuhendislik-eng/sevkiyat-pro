@@ -145,7 +145,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       const teslimDate = new Date(o.teslimTarihi + 'T00:00:00Z');
       if (isNaN(teslimDate.getTime())) continue;
       const teslimWeek = getISOWeek(teslimDate);
-      const isLate = teslimWeek < startWeek;
+      // "Geciken" = bugünkü haftadan önce teslim isteyen siparişler.
+      // startWeek değil currentWeek baz alınır — sayfadaki "⚠ Geciken (X sipariş)"
+      // kutusu ile aynı tanım (effectiveWeek < currentWeek).
+      const isLate = teslimWeek < grouped.currentWeek;
       if (isLate && !includeLate) continue;
       const currentPlan = ov?.plannedWeek || teslimWeek;
       // KORUMA: Kullanıcı bu siparişi zaten startWeek'ten önce bir haftaya atamışsa
@@ -1803,7 +1806,8 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             </div>
 
             {autoPlanModal.view === 'form' && (() => {
-              // Form'daki anlık geciken sayısı (filtreye göre)
+              // Form'daki anlık geciken sayısı (filtreye göre).
+              // "Geciken" = bugünkü haftadan önce teslim — sayfadaki Geciken kutusu ile aynı tanım.
               let lateCount = 0;
               for (const [id, o] of Object.entries(salesOrders || {})) {
                 if (!o || !o.teslimTarihi) continue;
@@ -1812,7 +1816,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 const ov = planOverrides[id];
                 if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
                 const teslimWeek = getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z'));
-                if (teslimWeek < autoPlanModal.startWeek) lateCount++;
+                if (teslimWeek < grouped.currentWeek) lateCount++;
               }
               const weeklyBudget = autoPlanModal.monthlyBudget / 4;
               return (
