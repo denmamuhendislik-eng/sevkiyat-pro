@@ -4,7 +4,7 @@ import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutoma
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
-import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween } from '../../shared/weekUtils';
+import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
 // Sipariş listesinin AD (kalan miktar) + TL (toplam bedel) toplamı.
@@ -73,6 +73,20 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   // Picker: null | { orderId, anchorX, anchorY, origWeek, currentPlanWeek }
   const [picker, setPicker] = useState(null);
 
+  // Toplu işlemler — Planı Temizle ve Otomatik Plan modal state'leri (admin-only feature).
+  // clearPlanModal: null | { count: silinecek manuel hafta override sayısı, processing: bool }
+  // autoPlanModal: null | { view: 'form'|'preview', startWeek, monthlyBudget, customerFilter,
+  //                          includeLate, suggestions: [], processing: bool }
+  const [clearPlanModal, setClearPlanModal] = useState(null);
+  const [autoPlanModal, setAutoPlanModal] = useState(null);
+
+  // Bir sonraki hafta hesaplama — otomatik plan startWeek default'u için.
+  const nextWeekIso = useMemo(() => {
+    const now = new Date();
+    now.setUTCDate(now.getUTCDate() + 7);
+    return getISOWeek(now);
+  }, []);
+
   // ConflictModal: null | { orderId, targetWeek, conflicts, ourOrder, resolve, view, suggestions }
   // view: 'warning' (default) | 'preview' (otomatik sıralama önerisi)
   // window.confirm yerine — birden fazla tetiklenebilen onay akışı için React modal + Promise.
@@ -91,6 +105,152 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     if (!stokKodu) return;
     const suggestions = suggestSortedPlans(stokKodu, conflictModal.orderId, conflictModal.targetWeek);
     setConflictModal({ ...conflictModal, view: 'preview', suggestions });
+  };
+
+  // === Toplu işlemler — Planı Temizle ===
+  // Sadece manuel hafta override'larını sil. Deferred / cancelled / not'lu kayıtlar korunur.
+  // savePlanOverrides null değer = deleteField() ile atomik silme.
+  const handleClearPlan = async () => {
+    if (!isAdmin || !clearPlanModal) return;
+    setClearPlanModal({ ...clearPlanModal, processing: true });
+    const updates = {};
+    for (const [id, ov] of Object.entries(planOverrides || {})) {
+      if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
+      if ((ov?.note || '').trim()) continue;
+      updates[id] = null; // sil (savePlanOverrides null=deleteField)
+    }
+    try {
+      await savePlanOverrides(updates, { canEdit });
+      setClearPlanModal(null);
+    } catch (e) {
+      alert('Planı temizleme başarısız: ' + (e.message || String(e)));
+      setClearPlanModal({ ...clearPlanModal, processing: false });
+    }
+  };
+
+  // === Toplu işlemler — Otomatik Plan algoritması ===
+  // Müşteri teslim sırası + haftalık bütçe + startWeek + includeLate.
+  // Aktif siparişler (deferred/cancelled hariç, kalanMiktar>0) teslim tarihine göre sıralanır,
+  // her haftaya bütçe sığdığı kadar atanır, sığmayan ileriye kaydırılır.
+  // Tek başına haftalık bütçeyi aşan büyük sipariş tek haftaya zorla yerleştirilir (boş haftada).
+  const computeAutoPlan = ({ startWeek, monthlyBudget, customerFilter, includeLate }) => {
+    const weeklyBudget = monthlyBudget / 4;
+    const orders = [];
+    for (const [id, o] of Object.entries(salesOrders || {})) {
+      if (!o || !o.teslimTarihi) continue;
+      if (Number(o.kalanMiktar || 0) <= 0) continue;
+      if (customerFilter !== 'all' && o.customerCode !== customerFilter) continue;
+      const ov = planOverrides[id];
+      if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
+      const teslimDate = new Date(o.teslimTarihi + 'T00:00:00Z');
+      if (isNaN(teslimDate.getTime())) continue;
+      const teslimWeek = getISOWeek(teslimDate);
+      const isLate = teslimWeek < startWeek;
+      if (isLate && !includeLate) continue;
+      const currentPlan = ov?.plannedWeek || teslimWeek;
+      orders.push({
+        id,
+        stokKodu: o.stokKodu,
+        stokAdi: o.stokAdi,
+        belgeNo: o.belgeNo,
+        customerCode: o.customerCode,
+        teslimTarihi: o.teslimTarihi,
+        teslimWeek,
+        isLate,
+        bedel: Number(o.toplamBedel || 0),
+        kalanMiktar: Number(o.kalanMiktar || 0),
+        currentPlan,
+        currentOverride: ov,
+      });
+    }
+    // Müşteri teslim tarihine göre sırala (erken → geç), tie-breaker belgeNo
+    orders.sort((a, b) => {
+      const t = a.teslimTarihi.localeCompare(b.teslimTarihi);
+      if (t !== 0) return t;
+      return String(a.belgeNo || '').localeCompare(String(b.belgeNo || ''));
+    });
+
+    let cursor = startWeek;
+    let cursorBudget = weeklyBudget;
+    const weeklyDist = {}; // hafta → { count, ad, tl, overflow: bool }
+    const result = [];
+    for (const order of orders) {
+      // Hedef hafta = max(cursor, teslim haftası)
+      const minWeek = (order.teslimWeek > cursor) ? order.teslimWeek : cursor;
+      if (minWeek > cursor) {
+        cursor = minWeek;
+        cursorBudget = weeklyBudget;
+      }
+      // Bütçe yeterli mi? Yoksa boş haftaya kaydır.
+      if (order.bedel > cursorBudget) {
+        if (cursorBudget < weeklyBudget) {
+          // Hafta yarı dolu, sığmıyor → ileri kaydır
+          cursor = nextIsoWeek(cursor);
+          cursorBudget = weeklyBudget;
+        }
+        // cursor temiz hafta — sipariş yerleşir (haftalık bütçeyi aşsa bile zorla)
+      }
+      const newPlan = cursor;
+      result.push({
+        ...order,
+        newPlan,
+        changed: order.currentPlan !== newPlan,
+      });
+      cursorBudget -= order.bedel;
+      // İstatistik
+      if (!weeklyDist[newPlan]) weeklyDist[newPlan] = { count: 0, ad: 0, tl: 0, overflow: false };
+      weeklyDist[newPlan].count++;
+      weeklyDist[newPlan].ad += order.kalanMiktar;
+      weeklyDist[newPlan].tl += order.bedel;
+      if (weeklyDist[newPlan].tl > weeklyBudget) weeklyDist[newPlan].overflow = true;
+    }
+    return { suggestions: result, weeklyDist, weeklyBudget };
+  };
+
+  // Otomatik plan önizlemesi göster
+  const handleAutoPlanPreview = () => {
+    if (!autoPlanModal) return;
+    const { startWeek, monthlyBudget, customerFilter, includeLate } = autoPlanModal;
+    if (!startWeek || !monthlyBudget || monthlyBudget <= 0) {
+      alert('Başlangıç haftası ve aylık bütçe geçerli olmalı.');
+      return;
+    }
+    const { suggestions, weeklyDist, weeklyBudget } = computeAutoPlan({ startWeek, monthlyBudget, customerFilter, includeLate });
+    setAutoPlanModal({ ...autoPlanModal, view: 'preview', suggestions, weeklyDist, weeklyBudget });
+  };
+
+  // Otomatik plan uygula — atomik batch
+  const handleApplyAutoPlan = async () => {
+    if (!autoPlanModal || !autoPlanModal.suggestions) return;
+    const changed = autoPlanModal.suggestions.filter(s => s.changed);
+    if (changed.length === 0) {
+      setAutoPlanModal(null);
+      return;
+    }
+    setAutoPlanModal({ ...autoPlanModal, processing: true });
+    const updates = {};
+    const at = new Date().toISOString();
+    for (const s of changed) {
+      const o = salesOrders[s.id];
+      if (!o) continue;
+      const ov = s.currentOverride;
+      const origWeek = ov?.origWeek || (o.teslimTarihi ? getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z')) : '');
+      updates[s.id] = {
+        plannedWeek: s.newPlan,
+        origWeek,
+        note: ov?.note || '',
+        by: role,
+        at,
+        autoPlan: true,
+      };
+    }
+    try {
+      await savePlanOverrides(updates, { canEdit });
+      setAutoPlanModal(null);
+    } catch (e) {
+      alert('Otomatik plan uygulama başarısız: ' + (e.message || String(e)));
+      setAutoPlanModal({ ...autoPlanModal, processing: false });
+    }
   };
 
   // Önerilen değişiklikleri uygula — atomik batch yazım
@@ -951,6 +1111,47 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             </div>
           </div>
 
+          {/* Toplu işlemler — admin only. Otomatik plan kurma + manuel hafta planlarını temizleme.
+              Geri alınamaz işlemler olduğu için iki onay (modal + uygula). */}
+          {isAdmin && viewMode === 'orders' && (
+            <div style={{ marginTop: 10, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button
+                onClick={() => setAutoPlanModal({
+                  view: 'form',
+                  startWeek: nextWeekIso,
+                  monthlyBudget: 8000000,
+                  customerFilter: 'all',
+                  includeLate: false,
+                  suggestions: null,
+                  processing: false,
+                })}
+                style={{
+                  padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                  border: '1px solid #16a34a', background: '#dcfce7', color: '#166534',
+                  cursor: 'pointer',
+                }}
+                title="Aktif siparişleri haftalık bütçe + müşteri teslim sırasına göre otomatik dağıt"
+              >🤖 Otomatik Plan</button>
+              <button
+                onClick={() => {
+                  let count = 0;
+                  for (const ov of Object.values(planOverrides || {})) {
+                    if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
+                    if ((ov?.note || '').trim()) continue;
+                    count++;
+                  }
+                  setClearPlanModal({ count, processing: false });
+                }}
+                style={{
+                  padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+                  border: '1px solid #b91c1c', background: '#fee2e2', color: '#991b1b',
+                  cursor: 'pointer',
+                }}
+                title="Sadece manuel hafta override'larını sil — deferred / cancelled / not'lu kayıtlar korunur"
+              >🧹 Planı Temizle</button>
+            </div>
+          )}
+
           {/* BOM eksik uyarı */}
           {missingBoms.length > 0 && (
             <div style={{
@@ -1502,6 +1703,355 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       }}>
         Firestore: {allLoaded ? `${rawOrderCount} ham sipariş · ${overrideLabel}` : 'yükleniyor…'}
       </div>
+
+      {/* Planı Temizle modal — admin only, iki onay (modal aç + buton bas).
+          Sadece manuel hafta override'larını siler, deferred / cancelled / not'lu kayıtlar korunur. */}
+      {clearPlanModal && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget && !clearPlanModal.processing) setClearPlanModal(null); }}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.45)', zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+          }}
+        >
+          <div style={{
+            background: '#fff', borderRadius: 10, padding: 22, maxWidth: 540, width: '100%',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 12 }}>
+              <span style={{ fontSize: 22 }}>🧹</span>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#991b1b' }}>Planı Temizle</h3>
+            </div>
+            <p style={{ fontSize: 13, color: '#44403c', margin: '0 0 14px 0', lineHeight: 1.5 }}>
+              <b>{clearPlanModal.count} manuel hafta override</b> silinecek — sipariş ham VIO teslim haftasına döner.
+              Deferred (akibeti belirsiz), iptal edilen ve not içeren kayıtlar <b>korunur</b>.
+            </p>
+            <div style={{
+              padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca',
+              fontSize: 11, color: '#991b1b', marginBottom: 16,
+            }}>
+              ⚠ Bu işlem <b>geri alınamaz</b>. Yanlış uygulamadan emin olmak için Otomatik Plan kurmadan önce dikkat edin.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+              <button
+                onClick={() => setClearPlanModal(null)}
+                disabled={clearPlanModal.processing}
+                style={{
+                  padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                  border: '1px solid #d6d3d1', background: '#fff', color: '#44403c',
+                  cursor: clearPlanModal.processing ? 'not-allowed' : 'pointer',
+                  opacity: clearPlanModal.processing ? 0.6 : 1,
+                }}
+              >İptal</button>
+              <button
+                onClick={handleClearPlan}
+                disabled={clearPlanModal.processing || clearPlanModal.count === 0}
+                style={{
+                  padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                  border: '1px solid #b91c1c', background: '#b91c1c', color: '#fff',
+                  cursor: (clearPlanModal.processing || clearPlanModal.count === 0) ? 'not-allowed' : 'pointer',
+                  opacity: (clearPlanModal.processing || clearPlanModal.count === 0) ? 0.6 : 1,
+                }}
+              >{clearPlanModal.processing ? 'Temizleniyor…' : `🗑️ Temizle (${clearPlanModal.count})`}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Otomatik Plan modal — admin only, iki view (form + preview).
+          Form: startWeek, aylık bütçe, müşteri filtresi, geciken dahil checkbox.
+          Preview: hafta-hafta dağılım + değişen sipariş listesi + uygula. */}
+      {autoPlanModal && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget && !autoPlanModal.processing) setAutoPlanModal(null); }}
+          style={{
+            position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+            background: 'rgba(0,0,0,0.45)', zIndex: 9999,
+            display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+          }}
+        >
+          <div style={{
+            background: '#fff', borderRadius: 10, padding: 0,
+            maxWidth: autoPlanModal.view === 'preview' ? 1000 : 560, width: '100%',
+            boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+            maxHeight: '90vh', display: 'flex', flexDirection: 'column',
+          }}>
+            <div style={{ padding: '16px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: 20 }}>🤖</span>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#166534' }}>
+                {autoPlanModal.view === 'form' ? 'Otomatik Plan Kur' : 'Önerilen Plan — Önizleme'}
+              </h3>
+              {autoPlanModal.view === 'preview' && (
+                <span style={{ fontSize: 11, color: '#78716c' }}>
+                  {autoPlanModal.suggestions?.filter(s => s.changed).length} sipariş değişecek · {autoPlanModal.suggestions?.length} sipariş toplam
+                </span>
+              )}
+              <button
+                onClick={() => setAutoPlanModal(null)}
+                disabled={autoPlanModal.processing}
+                style={{
+                  marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
+                  border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: 'pointer',
+                  opacity: autoPlanModal.processing ? 0.6 : 1,
+                }}
+              >Kapat ✕</button>
+            </div>
+
+            {autoPlanModal.view === 'form' && (() => {
+              // Form'daki anlık geciken sayısı (filtreye göre)
+              let lateCount = 0;
+              for (const [id, o] of Object.entries(salesOrders || {})) {
+                if (!o || !o.teslimTarihi) continue;
+                if (Number(o.kalanMiktar || 0) <= 0) continue;
+                if (autoPlanModal.customerFilter !== 'all' && o.customerCode !== autoPlanModal.customerFilter) continue;
+                const ov = planOverrides[id];
+                if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
+                const teslimWeek = getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z'));
+                if (teslimWeek < autoPlanModal.startWeek) lateCount++;
+              }
+              const weeklyBudget = autoPlanModal.monthlyBudget / 4;
+              return (
+                <div style={{ padding: 20, overflowY: 'auto' }}>
+                  <p style={{ fontSize: 12, color: '#57534e', margin: '0 0 16px 0', lineHeight: 1.5 }}>
+                    Aktif siparişler müşteri teslim sırasına göre, haftalık bütçe sınırına göre otomatik dağıtılır.
+                    Önizleme zorunlu — uygulamadan önce sonucu göreceksin.
+                  </p>
+                  {/* Başlangıç haftası */}
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#44403c', marginBottom: 4 }}>Başlangıç haftası</label>
+                    <input
+                      type="text"
+                      value={autoPlanModal.startWeek}
+                      onChange={(e) => setAutoPlanModal({ ...autoPlanModal, startWeek: e.target.value })}
+                      placeholder="2026-W19"
+                      style={{
+                        padding: '6px 10px', borderRadius: 4, border: '1px solid #d6d3d1',
+                        fontSize: 13, fontFamily: 'ui-monospace, monospace', width: 140,
+                      }}
+                    />
+                    <span style={{ marginLeft: 10, fontSize: 11, color: '#78716c' }}>
+                      Bu haftadan önce hiçbir sipariş plana atanmaz
+                    </span>
+                  </div>
+                  {/* Aylık bütçe */}
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#44403c', marginBottom: 4 }}>Aylık bütçe (TL)</label>
+                    <input
+                      type="number"
+                      value={autoPlanModal.monthlyBudget}
+                      onChange={(e) => setAutoPlanModal({ ...autoPlanModal, monthlyBudget: Number(e.target.value) || 0 })}
+                      style={{
+                        padding: '6px 10px', borderRadius: 4, border: '1px solid #d6d3d1',
+                        fontSize: 13, fontVariantNumeric: 'tabular-nums', width: 200,
+                      }}
+                    />
+                    <span style={{ marginLeft: 10, fontSize: 11, color: '#78716c' }}>
+                      = haftalık ~<b>{formatMoney(weeklyBudget)} TL</b>
+                    </span>
+                  </div>
+                  {/* Müşteri filtresi */}
+                  <div style={{ marginBottom: 14 }}>
+                    <label style={{ display: 'block', fontSize: 12, fontWeight: 500, color: '#44403c', marginBottom: 4 }}>Müşteri filtresi</label>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <button
+                        onClick={() => setAutoPlanModal({ ...autoPlanModal, customerFilter: 'all' })}
+                        style={{
+                          padding: '4px 12px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                          border: '1px solid ' + (autoPlanModal.customerFilter === 'all' ? '#534AB7' : '#d6d3d1'),
+                          background: autoPlanModal.customerFilter === 'all' ? '#534AB7' : '#fff',
+                          color: autoPlanModal.customerFilter === 'all' ? '#fff' : '#44403c',
+                          cursor: 'pointer',
+                        }}
+                      >Tümü</button>
+                      {KNOWN_CUSTOMERS.map(c => (
+                        <button
+                          key={c.code}
+                          onClick={() => setAutoPlanModal({ ...autoPlanModal, customerFilter: c.code })}
+                          style={{
+                            padding: '4px 12px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                            border: '1px solid ' + (autoPlanModal.customerFilter === c.code ? '#534AB7' : '#d6d3d1'),
+                            background: autoPlanModal.customerFilter === c.code ? '#534AB7' : '#fff',
+                            color: autoPlanModal.customerFilter === c.code ? '#fff' : '#44403c',
+                            cursor: 'pointer',
+                          }}
+                        >{c.shortLabel}</button>
+                      ))}
+                    </div>
+                  </div>
+                  {/* Geciken dahil checkbox */}
+                  <div style={{ marginBottom: 18, padding: 10, borderRadius: 6, background: '#fef9c3', border: '1px solid #fde047' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#854d0e', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={autoPlanModal.includeLate}
+                        onChange={(e) => setAutoPlanModal({ ...autoPlanModal, includeLate: e.target.checked })}
+                        style={{ width: 16, height: 16 }}
+                      />
+                      <span>
+                        Geciken siparişleri ({lateCount} sipariş) plana dahil et
+                      </span>
+                    </label>
+                    <div style={{ fontSize: 10, color: '#a16207', marginTop: 6, paddingLeft: 24 }}>
+                      Dahil edilirse: en erken haftaya çekilirler. Edilmezse mevcut planları korunur (manuel olarak değerlendirebilirsin).
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
+                    <button
+                      onClick={() => setAutoPlanModal(null)}
+                      style={{
+                        padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                        border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: 'pointer',
+                      }}
+                    >İptal</button>
+                    <button
+                      onClick={handleAutoPlanPreview}
+                      style={{
+                        padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                        border: '1px solid #16a34a', background: '#16a34a', color: '#fff', cursor: 'pointer',
+                      }}
+                    >🔍 Önizleme Göster</button>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {autoPlanModal.view === 'preview' && (() => {
+              const changed = autoPlanModal.suggestions.filter(s => s.changed);
+              const sortedWeeks = Object.keys(autoPlanModal.weeklyDist || {}).sort();
+              const overflowCount = Object.values(autoPlanModal.weeklyDist || {}).filter(w => w.overflow).length;
+              return (
+                <div style={{ flex: 1, overflowY: 'auto', padding: 20 }}>
+                  {/* Özet */}
+                  <div style={{
+                    padding: 10, borderRadius: 6, background: '#f0fdf4', border: '1px solid #86efac',
+                    fontSize: 12, marginBottom: 14, color: '#166534',
+                  }}>
+                    <b>{changed.length} sipariş</b> mevcut planından değişecek · toplam <b>{autoPlanModal.suggestions.length}</b> sipariş plana atandı
+                    · haftalık bütçe <b>{formatMoney(autoPlanModal.weeklyBudget)} TL</b>
+                    {overflowCount > 0 && (
+                      <span style={{ color: '#b45309', marginLeft: 8 }}>
+                        ⚠ {overflowCount} hafta bütçeyi aşıyor (büyük tek sipariş zorla yerleştirildi)
+                      </span>
+                    )}
+                  </div>
+
+                  {/* Hafta hafta dağılım */}
+                  <div style={{ marginBottom: 16 }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: '#44403c', marginBottom: 6 }}>Haftalık Dağılım</div>
+                    <div style={{ borderRadius: 6, border: '1px solid #e7e5e4', overflow: 'hidden' }}>
+                      <div style={{
+                        display: 'grid', gridTemplateColumns: '90px 1fr 80px 110px 60px',
+                        gap: 8, padding: '6px 10px', fontSize: 10, fontWeight: 600,
+                        background: '#f5f5f4', color: '#57534e',
+                      }}>
+                        <span>Hafta</span>
+                        <span>Yük</span>
+                        <span>Sip</span>
+                        <span>TL</span>
+                        <span>AD</span>
+                      </div>
+                      {sortedWeeks.map(w => {
+                        const d = autoPlanModal.weeklyDist[w];
+                        const pct = Math.min(100, (d.tl / autoPlanModal.weeklyBudget) * 100);
+                        return (
+                          <div key={w} style={{
+                            display: 'grid', gridTemplateColumns: '90px 1fr 80px 110px 60px',
+                            gap: 8, padding: '6px 10px', fontSize: 11, alignItems: 'center',
+                            borderTop: '1px solid #f5f5f4',
+                          }}>
+                            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{w}</span>
+                            <div style={{ height: 8, borderRadius: 4, background: '#f5f5f4', overflow: 'hidden' }}>
+                              <div style={{
+                                height: '100%', width: pct + '%',
+                                background: d.overflow ? '#dc2626' : '#16a34a',
+                              }} />
+                            </div>
+                            <span style={{ fontVariantNumeric: 'tabular-nums' }}>{d.count}</span>
+                            <span style={{ fontVariantNumeric: 'tabular-nums', color: d.overflow ? '#dc2626' : '#44403c', fontWeight: d.overflow ? 600 : 400 }}>
+                              {formatMoney(d.tl)} TL
+                            </span>
+                            <span style={{ fontVariantNumeric: 'tabular-nums', color: '#78716c' }}>{d.ad}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {/* Değişen sipariş listesi */}
+                  {changed.length > 0 && (
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: '#44403c', marginBottom: 6 }}>
+                        Değişecek Siparişler ({changed.length})
+                      </div>
+                      <div style={{ borderRadius: 6, border: '1px solid #e7e5e4', overflow: 'hidden', maxHeight: 320, overflowY: 'auto' }}>
+                        <div style={{
+                          display: 'grid', gridTemplateColumns: '40px 80px 130px 1fr 90px 90px 90px',
+                          gap: 8, padding: '6px 10px', fontSize: 10, fontWeight: 600,
+                          background: '#f5f5f4', color: '#57534e', position: 'sticky', top: 0,
+                        }}>
+                          <span>Müş</span>
+                          <span>Belge</span>
+                          <span>Stok</span>
+                          <span>Ad</span>
+                          <span>Teslim</span>
+                          <span>Eski</span>
+                          <span>Yeni</span>
+                        </div>
+                        {changed.map(s => {
+                          const b = customerBadge(s.customerCode);
+                          return (
+                            <div key={s.id} style={{
+                              display: 'grid', gridTemplateColumns: '40px 80px 130px 1fr 90px 90px 90px',
+                              gap: 8, padding: '5px 10px', fontSize: 11, alignItems: 'center',
+                              borderTop: '1px solid #f5f5f4',
+                            }}>
+                              <span style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: b.bg, color: b.fg, textAlign: 'center' }}>{b.label}</span>
+                              <span style={{ fontFamily: 'ui-monospace, monospace' }}>{s.belgeNo}</span>
+                              <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{s.stokKodu}</span>
+                              <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: '#78716c' }} title={s.stokAdi}>{s.stokAdi}</span>
+                              <span style={{ color: '#78716c' }}>{s.teslimTarihi}</span>
+                              <span style={{ fontFamily: 'ui-monospace, monospace', color: '#dc2626' }}>{s.currentPlan}</span>
+                              <span style={{ fontFamily: 'ui-monospace, monospace', color: '#15803d', fontWeight: 600 }}>{s.newPlan}</span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
+            {autoPlanModal.view === 'preview' && (
+              <div style={{
+                padding: '12px 20px', borderTop: '1px solid #e7e5e4',
+                display: 'flex', gap: 8, justifyContent: 'flex-end',
+              }}>
+                <button
+                  onClick={() => setAutoPlanModal({ ...autoPlanModal, view: 'form' })}
+                  disabled={autoPlanModal.processing}
+                  style={{
+                    padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                    border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: 'pointer',
+                    opacity: autoPlanModal.processing ? 0.6 : 1,
+                  }}
+                >← Geri</button>
+                <button
+                  onClick={handleApplyAutoPlan}
+                  disabled={autoPlanModal.processing || autoPlanModal.suggestions.filter(s => s.changed).length === 0}
+                  style={{
+                    padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                    border: '1px solid #16a34a', background: '#16a34a', color: '#fff',
+                    cursor: autoPlanModal.processing ? 'not-allowed' : 'pointer',
+                    opacity: autoPlanModal.processing ? 0.6 : 1,
+                  }}
+                >{autoPlanModal.processing ? 'Uygulanıyor…' : `✓ Hepsini Uygula (${autoPlanModal.suggestions.filter(s => s.changed).length})`}</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* Conflict modal — iki view: warning (uyarı) + preview (otomatik sıralama önerisi).
           window.confirm yerine React + Promise pattern (birden fazla tetiklenebilen onay). */}

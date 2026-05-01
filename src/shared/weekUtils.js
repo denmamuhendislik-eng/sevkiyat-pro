@@ -31,6 +31,14 @@ export function weeksBetween(w1, w2) {
   return Math.round((m2 - m1) / (7 * 86400000));
 }
 
+// Bir sonraki ISO haftasını döner — yıl sınırı (W52/W53 → ertesi yıl W01) doğru hesaplanır.
+export function nextIsoWeek(week) {
+  const mon = getWeekMonday(week);
+  const next = new Date(mon);
+  next.setUTCDate(mon.getUTCDate() + 7);
+  return getISOWeek(next);
+}
+
 export function formatDateShort(date) {
   const months = ['Oca', 'Şub', 'Mar', 'Nis', 'May', 'Haz', 'Tem', 'Ağu', 'Eyl', 'Eki', 'Kas', 'Ara'];
   return `${date.getUTCDate()} ${months[date.getUTCMonth()]}`;
