@@ -148,6 +148,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       const isLate = teslimWeek < startWeek;
       if (isLate && !includeLate) continue;
       const currentPlan = ov?.plannedWeek || teslimWeek;
+      // KORUMA: Kullanıcı bu siparişi zaten startWeek'ten önce bir haftaya atamışsa
+      // (erken bitirme niyetiyle), otomatik plan dokunmaz — manuel kararı korunur.
+      // Kademeli planlama akışını destekler (rolling forecast).
+      if (currentPlan < startWeek) continue;
       orders.push({
         id,
         stokKodu: o.stokKodu,
