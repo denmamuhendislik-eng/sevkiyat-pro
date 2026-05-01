@@ -5204,7 +5204,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const [bomListSearch, setBomListSearch] = useState("");
   const [bomListSort, setBomListSort] = useState("date"); // date | code | partCount
   // v20 MRP Eşleştirme gruplama: eşleşme bekleyen açık, BOM eşleşti ve BUY/direct kapalı
-  const [mappingGroupsExpanded, setMappingGroupsExpanded] = useState({ pending: true, bom: false, direct: false });
+  const [mappingGroupsExpanded, setMappingGroupsExpanded] = useState({ pending: true, pendingShipment: true, pendingOrder: false, bom: false, direct: false });
   // Faz 2.1d: autoMap preview — null | { exact:[], named:[], missing:[], selections:{pid:bool} }
   const [autoMapPreview, setAutoMapPreview] = useState(null);
   const [expandedNodes, setExpandedNodes] = useState({});
@@ -14383,11 +14383,39 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                           </tr>
                   );
                 };
+                // Pending alt-grupları: ürünün demand kaynağına göre.
+                // Öncelik kuralı: containerQty > 0 → sevkiyat (mixed dahil), aksi halde sipariş.
+                // Toplam = pending.length (tekrar yok).
+                const pendingRows = groupProducts.pending || [];
+                const pendingShipmentRows = pendingRows.filter(r => (mergedDemand.byProduct?.[r.p.id]?.containerQty || 0) > 0);
+                const pendingOrderRows = pendingRows.filter(r => (mergedDemand.byProduct?.[r.p.id]?.containerQty || 0) === 0);
+                const pendingSubMeta = [
+                  { key: "pendingShipment", title: "Sevkiyat demand", icon: "🚢", color: "#9A3412", bg: "#FFF7ED", rows: pendingShipmentRows },
+                  { key: "pendingOrder", title: "Sipariş demand", icon: "📋", color: "#9A3412", bg: "#FFF7ED", rows: pendingOrderRows },
+                ];
+                const renderTable = (rows) => (
+                  <div style={{ maxHeight: 360, overflowY: "auto" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
+                          <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
+                          <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
+                          <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Eşleştirme</th>
+                          <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {rows.map(renderRow)}
+                      </tbody>
+                    </table>
+                  </div>
+                );
                 return (
                   <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                     {groupMeta.map(gm => {
                       const rows = groupProducts[gm.key] || [];
                       const expanded = !!mappingGroupsExpanded[gm.key];
+                      const isPending = gm.key === "pending";
                       return (
                         <div key={gm.key} style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden" }}>
                           <div
@@ -14403,25 +14431,46 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                             <span style={{ fontSize: 14 }}>{gm.icon}</span>
                             <span>{gm.title}</span>
                             <span style={{ fontWeight: 400, opacity: 0.85 }}>({rows.length})</span>
+                            {isPending && rows.length > 0 && (
+                              <span style={{ fontWeight: 400, fontSize: 11, opacity: 0.85 }}>
+                                · 🚢 {pendingShipmentRows.length} sevkiyat · 📋 {pendingOrderRows.length} sipariş
+                              </span>
+                            )}
                             <span style={{ marginLeft: "auto", fontSize: 11, opacity: 0.7 }}>{expanded ? "▲" : "▼"}</span>
                           </div>
-                          {expanded && rows.length > 0 && (
-                            <div style={{ maxHeight: 360, overflowY: "auto" }}>
-                              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                                <thead>
-                                  <tr style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0, zIndex: 1 }}>
-                                    <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>Ürün</th>
-                                    <th style={{ padding: "6px 8px", textAlign: "right", fontWeight: 500, fontSize: 10 }}>Talep</th>
-                                    <th style={{ padding: "6px 8px", textAlign: "left", fontWeight: 500, fontSize: 10 }}>BOM Eşleştirme</th>
-                                    <th style={{ padding: "6px 8px", textAlign: "center", fontWeight: 500, fontSize: 10 }}>Durum</th>
-                                  </tr>
-                                </thead>
-                                <tbody>
-                                  {rows.map(renderRow)}
-                                </tbody>
-                              </table>
+                          {expanded && rows.length > 0 && isPending && (
+                            <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: 8, background: "var(--color-background-secondary)" }}>
+                              {pendingSubMeta.map(sm => {
+                                const subExpanded = !!mappingGroupsExpanded[sm.key];
+                                return (
+                                  <div key={sm.key} style={{ border: "1px solid var(--color-border-secondary)", borderRadius: 6, overflow: "hidden", background: "var(--color-background-primary)" }}>
+                                    <div
+                                      onClick={() => setMappingGroupsExpanded(prev => ({ ...prev, [sm.key]: !prev[sm.key] }))}
+                                      style={{
+                                        padding: "6px 12px", cursor: "pointer",
+                                        display: "flex", alignItems: "center", gap: 8,
+                                        background: sm.bg, borderBottom: subExpanded && sm.rows.length > 0 ? "1px solid var(--color-border-secondary)" : "none",
+                                        fontSize: 11, fontWeight: 600, color: sm.color,
+                                        userSelect: "none",
+                                      }}
+                                    >
+                                      <span style={{ fontSize: 13 }}>{sm.icon}</span>
+                                      <span>{sm.title}</span>
+                                      <span style={{ fontWeight: 400, opacity: 0.85 }}>({sm.rows.length})</span>
+                                      <span style={{ marginLeft: "auto", fontSize: 10, opacity: 0.7 }}>{subExpanded ? "▲" : "▼"}</span>
+                                    </div>
+                                    {subExpanded && sm.rows.length > 0 && renderTable(sm.rows)}
+                                    {subExpanded && sm.rows.length === 0 && (
+                                      <div style={{ padding: 10, fontSize: 11, color: "var(--color-text-tertiary)", textAlign: "center" }}>
+                                        Bu alt-grupta ürün yok.
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
+                          {expanded && rows.length > 0 && !isPending && renderTable(rows)}
                           {expanded && rows.length === 0 && (
                             <div style={{ padding: 14, fontSize: 11, color: "var(--color-text-tertiary)", textAlign: "center" }}>
                               Bu grupta ürün yok.
