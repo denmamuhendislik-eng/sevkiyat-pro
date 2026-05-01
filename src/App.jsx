@@ -5263,6 +5263,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const [selectedJob, setSelectedJob] = useState(null);
   const [schedSource, setSchedSource] = useState("vio"); // "vio" | "mrp"
   const [expandedWC, setExpandedWC] = useState(null); // tezgah detayı açık WC kodu
+  // Doluluk Oranı: çoklu-tezgahlı WC'ler üstte, diğerleri alt panelde (default kapalı)
+  const [showOtherWcs, setShowOtherWcs] = useState(false);
   const [actionPanel, setActionPanel] = useState(null); // aksiyon paneli açık id
   const [partSearch, setPartSearch] = useState(""); // parça arama
   const [shipReqOpen, setShipReqOpen] = useState({}); // sevkiyat ihtiyaç açılır-kapanır
@@ -11190,7 +11192,70 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           const totalLoad = (st.loadMin || 0) + wcWipMin;
           wcTotalUtil[code] = st.totalCapMin > 0 ? Math.round((totalLoad / st.totalCapMin) * 100) : 0;
         }
-        const wcBn = Object.entries(wcTotalUtil).reduce((best, [code, u]) => (!best || u > (wcTotalUtil[best] || 0)) ? code : best, null);
+        // Asıl darboğaz — sadece çoklu tezgahlı WC'ler arasında (tek tezgahlı/kapasitesiz WC'lerde
+        // yüksek doluluk olsa bile operasyonel olarak "asıl" değil)
+        const multiTezgahWcSet = new Set(
+          Object.entries(workCenters?.centers || {})
+            .filter(([, wc]) => (wc.machines || []).length > 1)
+            .map(([code]) => code)
+        );
+        // WC seviyesi asıl darboğaz (Darboğaz (Merkez) KPI'sı bunu kullanır)
+        const wcBn = Object.entries(wcTotalUtil)
+          .filter(([code]) => multiTezgahWcSet.has(code))
+          .reduce((best, [code, u]) => (!best || u > (wcTotalUtil[best] || 0)) ? code : best, null);
+        // Tezgah seviyesi asıl darboğaz (kart başlığı + ana başlık + Darboğaz (Tezgah) KPI'sı)
+        const primaryBn = Object.entries(mSt).reduce((best, [id, ms]) => {
+          if (!multiTezgahWcSet.has(ms.wcCode)) return best;
+          return (!best || ms.utilization > (mSt[best]?.utilization || 0)) ? id : best;
+        }, null);
+
+        // Tezgah Yük Özeti — her tezgahın son op bitişi ve bir sonraki boş iş günü
+        const machineEndDates = {};
+        jobs.forEach(j => j.operations.forEach(op => {
+          if (!op.machineId || op.isFason || !op.endDate) return;
+          if (!machineEndDates[op.machineId] || op.endDate > machineEndDates[op.machineId]) {
+            machineEndDates[op.machineId] = op.endDate;
+          }
+        }));
+        const holidaySetForSummary = new Set(holidayList || []);
+        const nextBizDay = (dateStr) => {
+          if (!dateStr) return null;
+          const d = new Date(dateStr + "T00:00:00Z");
+          d.setUTCDate(d.getUTCDate() + 1);
+          for (let i = 0; i < 365; i++) {
+            const ds = d.toISOString().slice(0, 10);
+            const day = d.getUTCDay();
+            if (day !== 0 && day !== 6 && !holidaySetForSummary.has(ds)) return ds;
+            d.setUTCDate(d.getUTCDate() + 1);
+          }
+          return null;
+        };
+        const fmtTr = (ds) => ds ? new Date(ds + "T00:00:00Z").toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric" }) : "—";
+        // Çizelge ufku özeti — ana başlıkta gösterilir
+        const horizonInfo = (() => {
+          if (!s?.minDate || !s?.maxDate) return null;
+          let count = 0;
+          const d = new Date(s.minDate);
+          const end = new Date(s.maxDate);
+          while (d <= end) {
+            const ds = d.toISOString().slice(0, 10);
+            if (d.getDay() !== 0 && d.getDay() !== 6 && !holidaySetForSummary.has(ds)) count++;
+            d.setDate(d.getDate() + 1);
+          }
+          return { minDate: s.minDate, maxDate: s.maxDate, workDays: count };
+        })();
+        // En erken boş tezgah — sadece çoklu tezgahlı WC'lerin tezgahları arasında
+        const earliestFreeMachine = (() => {
+          let best = null, bestDate = null;
+          for (const [id, ms] of Object.entries(mSt)) {
+            if (!multiTezgahWcSet.has(ms.wcCode)) continue;
+            const lastEnd = machineEndDates[id];
+            const free = nextBizDay(lastEnd);
+            if (!free) continue;
+            if (!bestDate || free < bestDate) { bestDate = free; best = ms; }
+          }
+          return bestDate ? { date: bestDate, machine: best } : null;
+        })();
 
         // Gantt chart helpers
         const ganttColors = ["#3B82F6","#10B981","#F59E0B","#EF4444","#8B5CF6","#EC4899","#06B6D4","#84CC16","#F97316","#6366F1"];
@@ -13217,15 +13282,36 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
             )}
 
             {/* ---- DOLULUK DASHBOARD ---- */}
-            {s && Object.keys(wcSt).length > 0 && (
+            {s && Object.keys(wcSt).length > 0 && (() => {
+              const allEntries = Object.entries(wcSt).sort((a, b) => b[1].utilization - a[1].utilization);
+              // Çoklu tezgahlı (>1) WC'ler üstte; tek tezgahlı + kapasitesiz olanlar alt panelde
+              const primaryEntries = allEntries.filter(([, st]) => (st.machineCount || 0) > 1);
+              const otherEntries = allEntries.filter(([, st]) => (st.machineCount || 0) <= 1);
+              const primaryBnMs = primaryBn ? mSt[primaryBn] : null;
+              return (
               <div style={{ marginBottom: 20 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 13, fontWeight: 500 }}>Doluluk Oranı</span>
                   <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Merkeze tıklayarak tezgah detayını görün</span>
+                  {horizonInfo && (
+                    <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }} title="Çizelge bu aralıkta hesaplanıyor — Doluluk yüzdeleri bu kapasiteye orandır">
+                      · ufuk: {fmtTr(horizonInfo.minDate)} → {fmtTr(horizonInfo.maxDate)} · {horizonInfo.workDays} iş günü
+                    </span>
+                  )}
+                  {earliestFreeMachine && (
+                    <span style={{ fontSize: 11, color: "var(--color-text-success)" }}>
+                      · ⏰ en erken boş: {fmtTr(earliestFreeMachine.date)} ({earliestFreeMachine.machine.name})
+                    </span>
+                  )}
+                  {primaryBnMs && (
+                    <span style={{ marginLeft: "auto", fontSize: 11, color: "#DC2626", fontWeight: 500 }}>
+                      ⚠ Asıl darboğaz: {primaryBnMs.name} <span style={{ fontWeight: 400, color: "var(--color-text-tertiary)" }}>({primaryBnMs.wcName})</span> %{primaryBnMs.utilization}
+                    </span>
+                  )}
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 10 }}>
-                  {Object.entries(wcSt).sort((a, b) => b[1].utilization - a[1].utilization).map(([code, st]) => {
-                    const isBottleneck = code === wcBn;
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(480px, 1fr))", gap: 12 }}>
+                  {primaryEntries.map(([code, st]) => {
+                    const isBottleneck = primaryBnMs?.wcCode === code;
                     const isExpanded = expandedWC === code;
                     // Bu merkezin tezgahları ve WIP yükü
                     const wcMachines = Object.entries(mSt).filter(([, ms]) => ms.wcCode === code).sort((a, b) => b[1].utilization - a[1].utilization);
@@ -13242,49 +13328,101 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                     const wipPct = st.totalCapMin > 0 ? Math.min(100 - plannedPct, Math.round((wipMin / st.totalCapMin) * 100)) : 0;
                     // Bug #3 — kapasitesiz WC: tezgah yok ama yük var → yanıltıcı %0 yerine uyarı
                     const isCapless = (st.machineCount || 0) === 0 && totalLoad > 0;
+                    // Atanmamış WIP — bu WC'de tezgaha bağlanmamış akibet kalemleri
+                    const unassignedWipMin = wcWip?.totalMin || 0;
+                    const unassignedWipCount = wcWip?.count || 0;
+                    const unassignedWipDays = shiftMin > 0 ? +(unassignedWipMin / shiftMin).toFixed(1) : 0;
+                    // Tezgah başı ortalama gün (machineCount > 0); kapasitesizse toplam gün
+                    const mc = Math.max(1, st.machineCount || 0);
+                    const planDays = shiftMin > 0 ? +(st.loadMin / shiftMin / mc).toFixed(1) : 0;
+                    const wipDays = shiftMin > 0 ? +(wipMin / shiftMin / mc).toFixed(1) : 0;
+                    const horizonDays = (st.machineCount > 0 && shiftMin > 0) ? Math.round(st.totalCapMin / shiftMin / st.machineCount) : 0;
+                    const isPrimaryBnHere = primaryBnMs?.wcCode === code;
+                    // En erken boş slot (bu WC içinde)
+                    let wcEarliestFree = null, wcEarliestM = null;
+                    for (const [mId, mss] of wcMachines) {
+                      const free = nextBizDay(machineEndDates[mId]);
+                      if (!free) continue;
+                      if (!wcEarliestFree || free < wcEarliestFree) { wcEarliestFree = free; wcEarliestM = mss; }
+                    }
+                    const accentColor = isCapless ? "#DC2626" : isBottleneck ? "#EF4444" : barColor;
                     return (
                       <div key={code} style={{
                         borderRadius: 8,
-                        border: isCapless ? "1.5px solid #DC2626" : isBottleneck ? "1.5px solid #EF4444" : "0.5px solid var(--color-border-tertiary)",
+                        border: isCapless ? "2px solid #DC2626" : isBottleneck ? "2px solid #EF4444" : "1px solid var(--color-border-tertiary)",
                         background: isCapless ? "#FEF2F2" : isBottleneck ? "#FEF2F2" : "var(--color-background-primary)",
                         overflow: "hidden",
-                        gridColumn: isExpanded ? "1 / -1" : undefined
+                        gridColumn: isExpanded ? "1 / -1" : undefined,
+                        borderLeft: `5px solid ${accentColor}`,
                       }}>
                         {isCapless && (
-                          <div style={{ background: "#FEE2E2", color: "#991B1B", padding: "5px 10px", fontSize: 10, fontWeight: 500, borderBottom: "0.5px solid #FCA5A5" }}>
+                          <div style={{ background: "#FEE2E2", color: "#991B1B", padding: "6px 12px", fontSize: 11, fontWeight: 500, borderBottom: "0.5px solid #FCA5A5" }}>
                             ⚠ Kapasite tanımlı değil — {Math.round(totalLoad / 60)}s yük hesaba katılmıyor
                           </div>
                         )}
                         {/* WC Header — clickable */}
                         <div
                           onClick={() => setExpandedWC(isExpanded ? null : code)}
-                          style={{ padding: "10px 14px", cursor: "pointer", userSelect: "none" }}
+                          style={{ padding: "12px 16px", cursor: "pointer", userSelect: "none" }}
                         >
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-                            <span style={{ fontSize: 12, fontWeight: 500 }}>
-                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginRight: 4 }}>{isExpanded ? "▼" : "▶"}</span>
-                              {st.name || code}
-                              {isBottleneck && !isCapless && <span style={{ fontSize: 9, color: "#EF4444", marginLeft: 6 }}>⚠ DARBOĞAZ</span>}
-                              {hasCapWarns && <span style={{ fontSize: 9, color: "#F97316", marginLeft: 6 }}>⚡ YETENEK</span>}
-                            </span>
-                            <span style={{ fontSize: 12, fontWeight: 600, color: isCapless ? "#9CA3AF" : barColor }}>
+                          {/* Üst satır: WC adı + büyük yüzde */}
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 4 }}>
+                            <div style={{ display: "flex", alignItems: "baseline", gap: 6, minWidth: 0 }}>
+                              <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", flexShrink: 0 }}>{isExpanded ? "▼" : "▶"}</span>
+                              <span style={{ fontSize: 16, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{st.name || code}</span>
+                            </div>
+                            <span style={{ fontSize: 28, fontWeight: 700, color: isCapless ? "#9CA3AF" : barColor, lineHeight: 1, flexShrink: 0, marginLeft: 12 }}>
                               {isCapless ? "—" : `%${totalUtil}`}
                             </span>
                           </div>
-                          {!isCapless && (
-                            <div style={{ height: 6, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden", display: "flex" }}>
-                              {wipPct > 0 && <div style={{ height: "100%", width: wipPct + "%", background: "#F59E0B", opacity: 0.6, transition: "width 0.4s ease" }} />}
-                              <div style={{ height: "100%", width: plannedPct + "%", borderRadius: wipPct > 0 ? "0 3px 3px 0" : 3, background: barColor, transition: "width 0.4s ease" }} />
-                            </div>
-                          )}
-                          <div style={{ display: "flex", justifyContent: "space-between", marginTop: 4, fontSize: 10, color: "var(--color-text-tertiary)" }}>
-                            <span>{st.machineCount} tezgah</span>
-                            <span>
-                              {wipMin > 0 && <span style={{ color: "#D97706", marginRight: 4 }}>{Math.round(wipMin / 60)}s WIP +</span>}
-                              {Math.round(st.loadMin / 60)}s plan
-                              {!isCapless && ` / ${Math.round(st.totalCapMin / 60)}s kap.`}
+                          {/* Subtitle: tezgah sayısı + gün formatı */}
+                          <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>
+                            <span style={{ fontWeight: 500 }}>{st.machineCount} tezgah</span>
+                            <span style={{ marginLeft: 8 }} title="Tezgah başına ortalama iş günü — toplam yük / tezgah sayısı / vardiya">
+                              {wipDays > 0 && <span style={{ color: "#D97706", marginRight: 3, fontWeight: 500 }}>{wipDays}g WIP</span>}
+                              {wipDays > 0 && planDays > 0 && <span style={{ marginRight: 3 }}>+</span>}
+                              {planDays > 0 && <span style={{ fontWeight: 500 }}>{planDays}g plan</span>}
+                              {!isCapless && horizonDays > 0 && <span> / {horizonDays}g ufuk</span>}
+                              {isCapless && <span style={{ color: "#9A3412", fontWeight: 500 }}> (kapasitesiz)</span>}
                             </span>
                           </div>
+                          {/* Bar — kalın */}
+                          {!isCapless && (
+                            <div style={{ height: 10, borderRadius: 5, background: "var(--color-background-secondary)", overflow: "hidden", display: "flex", marginBottom: 10 }}>
+                              {wipPct > 0 && <div style={{ height: "100%", width: wipPct + "%", background: "#F59E0B", opacity: 0.7, transition: "width 0.4s ease" }} />}
+                              <div style={{ height: "100%", width: plannedPct + "%", borderRadius: wipPct > 0 ? "0 5px 5px 0" : 5, background: barColor, transition: "width 0.4s ease" }} />
+                            </div>
+                          )}
+                          {/* DARBOĞAZ — kendi satırı */}
+                          {isPrimaryBnHere && !isCapless && (
+                            <div title={`Asıl darboğaz tezgah: ${primaryBnMs.name} %${primaryBnMs.utilization}`}
+                              style={{ background: "#FEE2E2", color: "#991B1B", padding: "5px 10px", borderRadius: 5, fontSize: 11, fontWeight: 600, marginBottom: 6, display: "inline-block" }}>
+                              ⚠ DARBOĞAZ: {primaryBnMs.name} <span style={{ fontWeight: 500 }}>%{primaryBnMs.utilization}</span>
+                            </div>
+                          )}
+                          {/* Atanmamış WIP — belirgin (planlamacı dikkatini çekecek) + en erken boş yan yana */}
+                          {(unassignedWipCount > 0 || (wcEarliestFree && wcEarliestM)) && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center" }}>
+                              {unassignedWipCount > 0 && (
+                                <span
+                                  title={`Akibet'te bekleyen ${unassignedWipCount} kalem henüz tezgaha atanmamış — yaklaşık ${unassignedWipDays} iş günü yük. Genişletip "Atanmamış WIP" listesinden tezgahlara dağıtın.`}
+                                  style={{ fontSize: 12, color: "#9A3412", background: "#FFEDD5", padding: "4px 10px", borderRadius: 5, border: "1px solid #FB923C", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 4 }}
+                                >
+                                  <span style={{ fontSize: 14 }}>📦</span>
+                                  {unassignedWipCount} atanmamış kalem · {unassignedWipDays}g
+                                </span>
+                              )}
+                              {wcEarliestFree && wcEarliestM && (
+                                <span title={`Bu merkezde en erken boş slot — ${wcEarliestM.name}`}
+                                  style={{ fontSize: 11, color: "var(--color-text-success)", padding: "3px 8px", background: "var(--color-background-success-subtle, #ECFDF5)", borderRadius: 5, border: "0.5px solid #A7F3D0" }}>
+                                  ⏰ en erken: {fmtTr(wcEarliestFree)} ({wcEarliestM.name})
+                                </span>
+                              )}
+                              {hasCapWarns && (
+                                <span style={{ fontSize: 10, color: "#9A3412", background: "#FFF7ED", padding: "2px 8px", borderRadius: 4, border: "0.5px solid #FED7AA", fontWeight: 500 }}>⚡ YETENEK</span>
+                              )}
+                            </div>
+                          )}
                         </div>
 
                         {/* Machine detail — expanded */}
@@ -13329,10 +13467,34 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                                     {wipPctM > 0 && <div style={{ height: "100%", width: wipPctM + "%", background: "#F59E0B", opacity: 0.6 }} />}
                                     <div style={{ height: "100%", width: plannedPctM + "%", background: mColor }} />
                                   </div>
-                                  <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>
-                                    {ms.wipMin > 0 && <span style={{ color: "#D97706", marginRight: 3 }}>{Math.round(ms.wipMin / 60)}s WIP +</span>}
-                                    {Math.round(ms.loadMin / 60)}s plan / {Math.round(ms.totalCapMin / 60)}s kap.
+                                  <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }} title="Tezgaha düşen iş günü — gerçek günler değil, vardiya saatine bölünmüş eşdeğer">
+                                    {(() => {
+                                      const wipG = shiftMin > 0 ? +(ms.wipMin / shiftMin).toFixed(1) : 0;
+                                      const planG = shiftMin > 0 ? +(ms.loadMin / shiftMin).toFixed(1) : 0;
+                                      const totalG = +(wipG + planG).toFixed(1);
+                                      const ufukG = shiftMin > 0 ? Math.round(ms.totalCapMin / shiftMin) : 0;
+                                      return (
+                                        <>
+                                          {wipG > 0 && <span style={{ color: "#D97706", marginRight: 3 }}>{wipG}g WIP</span>}
+                                          {wipG > 0 && planG > 0 && "+ "}
+                                          {planG > 0 && <span style={{ marginRight: 3 }}>{planG}g plan</span>}
+                                          {totalG > 0 && <span style={{ fontWeight: 600, color: "var(--color-text-secondary)" }}>= {totalG}g dolu</span>}
+                                          {ufukG > 0 && <span> / {ufukG}g ufuk</span>}
+                                        </>
+                                      );
+                                    })()}
                                   </div>
+                                  {(() => {
+                                    const lastEnd = machineEndDates[mId];
+                                    const free = nextBizDay(lastEnd);
+                                    if (!lastEnd && !free) return null;
+                                    return (
+                                      <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 1 }}>
+                                        ⏰ son bitiş: <span style={{ color: "var(--color-text-secondary)" }}>{fmtTr(lastEnd)}</span>
+                                        {free && <> · boş slot: <span style={{ color: "var(--color-text-success)" }}>{fmtTr(free)}</span></>}
+                                      </div>
+                                    );
+                                  })()}
                                   {/* Bu tezgaha atanmış WIP işleri */}
                                   {(() => {
                                     const machWip = wipLoad.items.filter(it => it.machineId === mId && !it.isFason);
@@ -13785,8 +13947,72 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                     );
                   })}
                 </div>
+                {/* Diğer iş merkezleri — tek tezgahlı + kapasitesiz, kompakt liste */}
+                {otherEntries.length > 0 && (
+                  <div style={{ marginTop: 10, border: "1px solid var(--color-border-tertiary)", borderRadius: 6, overflow: "hidden", background: "var(--color-background-primary)" }}>
+                    <div
+                      onClick={() => setShowOtherWcs(v => !v)}
+                      style={{ padding: "7px 12px", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8, fontSize: 11, background: "var(--color-background-secondary)" }}
+                    >
+                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{showOtherWcs ? "▼" : "▶"}</span>
+                      <span style={{ fontWeight: 500 }}>Diğer iş merkezleri</span>
+                      <span style={{ color: "var(--color-text-tertiary)" }}>({otherEntries.length})</span>
+                      <span style={{ marginLeft: "auto", fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                        {otherEntries.map(([code, oSt]) => oSt?.name || code).join(" · ")}
+                      </span>
+                    </div>
+                    {showOtherWcs && (
+                      <div>
+                        {otherEntries.map(([code, st]) => {
+                          const wcMachinesO = Object.entries(mSt).filter(([, ms]) => ms.wcCode === code);
+                          const wcWipO = wipLoad.byWC[code];
+                          const wipMinO = (wcWipO?.totalMin || 0) + wcMachinesO.reduce((s, [mId]) => s + (wipLoad.byMachine[mId]?.totalMin || 0), 0);
+                          const totalLoadO = (st.loadMin || 0) + wipMinO;
+                          const totalUtilO = st.totalCapMin > 0 ? Math.round((totalLoadO / st.totalCapMin) * 100) : 0;
+                          const isCaplessO = (st.machineCount || 0) === 0 && totalLoadO > 0;
+                          const mcO = Math.max(1, st.machineCount || 0);
+                          const planDaysO = shiftMin > 0 ? +(st.loadMin / shiftMin / mcO).toFixed(1) : 0;
+                          const wipDaysO = shiftMin > 0 ? +(wipMinO / shiftMin / mcO).toFixed(1) : 0;
+                          const horizonDaysO = (st.machineCount > 0 && shiftMin > 0) ? Math.round(st.totalCapMin / shiftMin / st.machineCount) : 0;
+                          const utilColorO = isCaplessO ? "#9CA3AF" : totalUtilO > 80 ? "#EF4444" : totalUtilO > 50 ? "#F59E0B" : "#10B981";
+                          // Bu WC içinde bir darboğaz uyarısı (operasyonel ana darboğaz değil — kendi içinde)
+                          const isInternalBn = !isCaplessO && totalUtilO > 80;
+                          return (
+                            <div key={code} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", padding: "6px 12px", display: "flex", alignItems: "center", gap: 10, fontSize: 11, flexWrap: "wrap", background: isCaplessO ? "#FEF2F2" : "transparent" }}>
+                              <span style={{ minWidth: 200, fontWeight: 500 }}>
+                                {isCaplessO && <span style={{ marginRight: 4, color: "#DC2626" }}>⚠</span>}
+                                {st.name || code}
+                              </span>
+                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 70 }}>
+                                {st.machineCount} tezgah
+                              </span>
+                              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", minWidth: 200 }} title="Tezgah başına ortalama iş günü">
+                                {wipDaysO > 0 && <span style={{ color: "#D97706" }}>{wipDaysO}g WIP</span>}
+                                {wipDaysO > 0 && planDaysO > 0 && " + "}
+                                {planDaysO > 0 && <span>{planDaysO}g plan</span>}
+                                {!isCaplessO && horizonDaysO > 0 && <span> / {horizonDaysO}g ufuk</span>}
+                                {isCaplessO && <span style={{ color: "#9A3412" }}> (kapasitesiz)</span>}
+                              </span>
+                              <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                {isInternalBn && <span title="Bu WC kendi içinde dolu (asıl darboğaz değil)" style={{ fontSize: 9, color: "#9A3412", background: "#FFF7ED", padding: "1px 6px", borderRadius: 3, border: "0.5px solid #FED7AA" }}>⚠ DARBOĞAZ</span>}
+                                <div style={{ width: 60, height: 5, borderRadius: 3, background: "var(--color-background-secondary)", overflow: "hidden" }}>
+                                  <div style={{ width: Math.min(100, totalUtilO) + "%", height: "100%", background: utilColorO, transition: "width 0.3s ease" }} />
+                                </div>
+                                <span style={{ fontSize: 11, fontWeight: 600, color: utilColorO, minWidth: 36, textAlign: "right" }}>
+                                  {isCaplessO ? "—" : `%${totalUtilO}`}
+                                </span>
+                              </span>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
-            )}
+              );
+            })()}
+
 
             {/* ---- GANTT CHART ---- */}
             {s && ganttDays.length > 0 && machineRows.length > 0 && (
