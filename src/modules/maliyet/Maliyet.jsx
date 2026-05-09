@@ -1,4 +1,5 @@
 import { useState } from "react";
+import MonthlyOverheadsTab from "./MonthlyOverheadsTab";
 
 const TABS = [
   { id: "monthly", icon: "🗓", label: "Aylık Genel Giderler", phase: 2, active: true },
@@ -68,7 +69,7 @@ export default function Maliyet({ isAdmin, isUretim }) {
       </div>
 
       {/* Tab content */}
-      {activeTab === "monthly" && <MonthlyOverheadsTab canEdit={canEdit} />}
+      {activeTab === "monthly" && <MonthlyOverheadsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "machineRates" && <MachineRatesTab canEdit={canEdit} />}
       {activeMeta && !activeMeta.active && (
         <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
@@ -77,17 +78,6 @@ export default function Maliyet({ isAdmin, isUretim }) {
           <div style={{ fontSize: 12 }}>{activeMeta.note || "Bu sekme yakında aktif olacak"}</div>
         </div>
       )}
-    </div>
-  );
-}
-
-// Placeholder component — sonraki adımda doldurulacak
-function MonthlyOverheadsTab() {
-  return (
-    <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
-      <div style={{ fontSize: 32, marginBottom: 10 }}>🗓</div>
-      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Aylık Genel Giderler</div>
-      <div style={{ fontSize: 12 }}>Manuel giriş UI sonraki adımda — kategori/tutar/dağıtım kriteri</div>
     </div>
   );
 }
