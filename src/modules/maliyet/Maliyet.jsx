@@ -1,5 +1,6 @@
 import { useState } from "react";
 import MonthlyOverheadsTab from "./MonthlyOverheadsTab";
+import MachineRatesTab from "./MachineRatesTab";
 
 const TABS = [
   { id: "monthly", icon: "🗓", label: "Aylık Genel Giderler", phase: 2, active: true },
@@ -82,12 +83,3 @@ export default function Maliyet({ isAdmin, isUretim }) {
   );
 }
 
-function MachineRatesTab() {
-  return (
-    <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
-      <div style={{ fontSize: 32, marginBottom: 10 }}>⚙️</div>
-      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Tezgah Dakika Ücretleri</div>
-      <div style={{ fontSize: 12 }}>Aylık genel gider girişi sonrası dağıtım algoritması ile hesaplanacak</div>
-    </div>
-  );
-}

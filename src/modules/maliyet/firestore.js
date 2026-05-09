@@ -3,6 +3,7 @@ import { db } from "../../firebase";
 
 const APP_COL = "appData";
 const LABOR_DOC = "laborCosts";
+const WC_DOC = "workCenters";
 
 // laborCosts doc yapısı:
 // {
@@ -49,4 +50,27 @@ export async function deleteMonthlyOverhead(yearMonth, { canEdit, isAdmin }) {
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
   const ref = doc(db, APP_COL, LABOR_DOC);
   await updateDoc(ref, { [`monthlyOverheads.${yearMonth}`]: deleteField() });
+}
+
+// workCenters subscribe — Maliyet modülü tezgah meta verilerine erişir.
+// MRP modülü ile aynı doc, MRP yazarken merge:true olmasa bile maliyet field'ları
+// state'te korunur (subscribe sayesinde) → setDoc tüm doc'u yazınca dahil olur.
+export function subscribeWorkCenters(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, WC_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? snap.data() : {}),
+    (err) => { console.error("workCenters listener:", err); callback({}); }
+  );
+}
+
+// Tek WC'nin tezgah listesini günceller (machines array dot-notation ile replace).
+// Diğer WC'ler ve top-level field'lar (shiftHours, efficiency, fason vs.) korunur.
+export async function saveMachinesForWc(wcCode, newMachines, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok — tezgah meta düzenleme sadece admin/üretim rolüne açık");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!wcCode) throw new Error("WC kodu gerekli");
+  const ref = doc(db, APP_COL, WC_DOC);
+  await updateDoc(ref, { [`centers.${wcCode}.machines`]: newMachines });
 }
