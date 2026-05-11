@@ -220,6 +220,31 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     }
   };
 
+  // Son içe alım durumu — monthlyOverheads içindeki en geç receivedAt'ten hesaplanır
+  // (useMemo erken return'den ÖNCE — React Hooks rule)
+  const automationStatus = useMemo(() => {
+    const mo = laborData?.monthlyOverheads || {};
+    let lastReceivedAt = null;
+    let monthCount = 0;
+    let lastSource = "";
+    let lastMonth = "";
+    for (const [ym, data] of Object.entries(mo)) {
+      monthCount++;
+      if (data?.receivedAt && (!lastReceivedAt || data.receivedAt > lastReceivedAt)) {
+        lastReceivedAt = data.receivedAt;
+        lastSource = data.source || "";
+        lastMonth = ym;
+      }
+    }
+    if (!lastReceivedAt) return { state: "none", monthCount };
+    const ageDays = (Date.now() - new Date(lastReceivedAt).getTime()) / 86400000;
+    let state;
+    if (ageDays <= 35) state = "ok";
+    else if (ageDays <= 45) state = "warn";
+    else state = "stale";
+    return { state, ageDays, lastReceivedAt, monthCount, lastSource, lastMonth };
+  }, [laborData]);
+
   if (!loaded) {
     return <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-tertiary)" }}>Yükleniyor...</div>;
   }
@@ -229,6 +254,9 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
 
   return (
     <div>
+      {/* Otomasyon durum rozetı */}
+      <OverheadAutomationBadge status={automationStatus} />
+
       {/* Excel yükleme bandı (manuel yedek) */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 500 }}>VIO Hizmet Total Raporu:</span>
@@ -395,6 +423,40 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
 }
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function OverheadAutomationBadge({ status }) {
+  if (status.state === "none") {
+    return (
+      <div style={{ marginBottom: 12, padding: "8px 14px", background: "var(--color-background-secondary)", border: "1px dashed var(--color-border-secondary)", borderRadius: 6, fontSize: 12, color: "var(--color-text-tertiary)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span>📧</span>
+        <span>Henüz Hizmet Total Raporu yüklenmedi. VIO ayda 1 mail göndermesi bekleniyor (ayın 10'u).</span>
+      </div>
+    );
+  }
+  const ageDays = Math.floor(status.ageDays);
+  const ageLabel = ageDays === 0 ? "bugün" : ageDays === 1 ? "1 gün önce" : `${ageDays} gün önce`;
+  const dateStr = new Date(status.lastReceivedAt).toLocaleDateString("tr-TR");
+  const sourceLbl = status.lastSource === "vio-mail" ? "VIO mail" : status.lastSource === "vio-mail-excel" ? "Excel yükleme" : status.lastSource === "manual" ? "Manuel" : status.lastSource;
+  let bg, border, color, icon, label;
+  if (status.state === "ok") {
+    bg = "#F0FDF4"; border = "#86EFAC"; color = "#166534"; icon = "✓";
+    label = `Son içe alım: ${ageLabel} (${dateStr}) · ${status.monthCount} ay verisi · ${sourceLbl}`;
+  } else if (status.state === "warn") {
+    bg = "#FFFBEB"; border = "#FCD34D"; color = "#92400E"; icon = "⚠";
+    label = `Son içe alım: ${ageLabel} (${dateStr}) — mail biraz gecikmiş, kontrol et`;
+  } else {
+    bg = "#FEF2F2"; border = "#FCA5A5"; color = "#B91C1C"; icon = "❌";
+    label = `Son içe alım: ${ageLabel} (${dateStr}) — uzun süredir Hizmet Total Raporu maili gelmiyor, VIO'yu kontrol et!`;
+  }
+  return (
+    <div title={`Son güncelleme: ${new Date(status.lastReceivedAt).toLocaleString("tr-TR")}\nKaynak: ${sourceLbl}\nVerilen ay: ${status.lastMonth}\nVeri kapsamı: ${status.monthCount} ay`}
+      style={{ marginBottom: 12, padding: "8px 14px", background: bg, border: `1px solid ${border}`, borderRadius: 6, fontSize: 12, color, display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 500 }}
+    >
+      <span>{icon}</span>
+      <span>📧 {label}</span>
+    </div>
+  );
+}
 
 function OverheadPreviewPanel({ preview, onUpdateWeight, onSave, onCancel, saving, canEdit }) {
   const months = preview.monthsList || [];

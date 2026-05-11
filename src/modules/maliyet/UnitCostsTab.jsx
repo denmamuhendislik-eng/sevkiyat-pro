@@ -83,6 +83,18 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
     }
   };
 
+  // Otomasyon durumu — unitCosts.lastImport'tan hesaplanır
+  const automationStatus = useMemo(() => {
+    const lastImport = unitCosts?.lastImport;
+    if (!lastImport) return { state: "none" };
+    const ageHours = (Date.now() - new Date(lastImport).getTime()) / 3600000;
+    let state;
+    if (ageHours <= 24) state = "ok";
+    else if (ageHours <= 72) state = "warn";
+    else state = "stale";
+    return { state, ageHours, lastImport };
+  }, [unitCosts]);
+
   // Mevcut kayıtların özeti
   const stored = useMemo(() => {
     const byStock = unitCosts?.byStock || {};
@@ -119,9 +131,12 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
 
   return (
     <div>
+      {/* Otomasyon durum rozetı */}
+      <UnitCostsAutomationBadge status={automationStatus} />
+
       {/* Excel yükleme */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
-        <span style={{ fontSize: 12, fontWeight: 500 }}>VIO Satın Alma Raporu (Toplamlı, Fiyatlı):</span>
+        <span style={{ fontSize: 12, fontWeight: 500 }}>VIO Satın Alma Raporu (Sipariş Kontrol Listesi, Fiyatlı):</span>
         {canEdit && (
           <button
             onClick={() => fileInputRef.current?.click()}
@@ -406,6 +421,39 @@ function StockPartitionsTable({ stocks, totalStocks }) {
           {totalStocks - stocks.length} stok daha var — arama ile filtrele
         </div>
       )}
+    </div>
+  );
+}
+
+function UnitCostsAutomationBadge({ status }) {
+  if (status.state === "none") {
+    return (
+      <div style={{ marginBottom: 12, padding: "8px 14px", background: "var(--color-background-secondary)", border: "1px dashed var(--color-border-secondary)", borderRadius: 6, fontSize: 12, color: "var(--color-text-tertiary)", display: "inline-flex", alignItems: "center", gap: 8 }}>
+        <span>📧</span>
+        <span>Henüz VIO satın alma raporu yüklenmedi. Cron her sabah/öğle/akşam çalıştığında otomatik gelir.</span>
+      </div>
+    );
+  }
+  const hours = status.ageHours;
+  const ageLabel = hours < 1 ? "az önce" : hours < 24 ? `${Math.floor(hours)} sa önce` : `${Math.floor(hours / 24)} gün önce`;
+  const dateStr = new Date(status.lastImport).toLocaleString("tr-TR");
+  let bg, border, color, icon, label;
+  if (status.state === "ok") {
+    bg = "#F0FDF4"; border = "#86EFAC"; color = "#166534"; icon = "✓";
+    label = `Son içe alım: ${ageLabel} · cron otomasyonu aktif`;
+  } else if (status.state === "warn") {
+    bg = "#FFFBEB"; border = "#FCD34D"; color = "#92400E"; icon = "⚠";
+    label = `Son içe alım: ${ageLabel} — son cron çalıştırmadan beri 1+ gün geçti`;
+  } else {
+    bg = "#FEF2F2"; border = "#FCA5A5"; color = "#B91C1C"; icon = "❌";
+    label = `Son içe alım: ${ageLabel} — cron veya mail durmuş olabilir, kontrol et!`;
+  }
+  return (
+    <div title={`Son güncelleme: ${dateStr}`}
+      style={{ marginBottom: 12, padding: "8px 14px", background: bg, border: `1px solid ${border}`, borderRadius: 6, fontSize: 12, color, display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 500 }}
+    >
+      <span>{icon}</span>
+      <span>📧 {label}</span>
     </div>
   );
 }
