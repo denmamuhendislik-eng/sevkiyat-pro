@@ -1,15 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import * as XLSX from "xlsx";
-import { subscribeLaborCosts, saveMonthlyOverhead, deleteMonthlyOverhead, saveMonthlyOverheadsBulk, subscribeCategoryMappings, saveCategoryMappings } from "./firestore";
+import { subscribeLaborCosts, saveMonthlyOverhead, deleteMonthlyOverhead, saveMonthlyOverheadsBulk } from "./firestore";
 import { parseOverheadExcel } from "./overheadParser";
-import { guessWeightKey } from "./categoryMapper";
-
-const WEIGHT_OPTIONS = [
-  { value: "area", label: "Alan (m²)", icon: "📐", hint: "Kira, aydınlatma, ısıtma — alana orantılı" },
-  { value: "power", label: "Kurulu güç (kW)", icon: "⚡", hint: "Elektrik — makine bazlı enerji" },
-  { value: "amortization", label: "Amortisman", icon: "🏭", hint: "Tezgahın satın alma değerine orantılı" },
-  { value: "machineCount", label: "Eşit", icon: "🟰", hint: "Tüm tezgahlara eşit pay (genel personel, sigorta)" },
-];
 
 const todayMonth = () => new Date().toISOString().slice(0, 7);
 const monthLabel = (ym) => {
@@ -27,22 +19,14 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
   // Excel preview state
-  const [excelPreview, setExcelPreview] = useState(null);   // parser çıktısı + override draft
+  const [excelPreview, setExcelPreview] = useState(null);
   const [excelSaving, setExcelSaving] = useState(false);
-  const [savedCategoryMappings, setSavedCategoryMappings] = useState({});
   const fileInputRef = useRef(null);
 
   useEffect(() => {
     const unsub = subscribeLaborCosts((data) => {
       setLaborData(data || {});
       setLoaded(true);
-    });
-    return unsub;
-  }, []);
-
-  useEffect(() => {
-    const unsub = subscribeCategoryMappings((data) => {
-      setSavedCategoryMappings(data?.mappings || {});
     });
     return unsub;
   }, []);
@@ -54,18 +38,7 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: "array" });
       const result = parseOverheadExcel(wb);
-      // Her satır için weightKey tahmin et
-      const enriched = {};
-      for (const [ym, m] of Object.entries(result.byMonth)) {
-        enriched[ym] = {
-          ...m,
-          items: m.items.map(it => {
-            const g = guessWeightKey(it.code, it.name, savedCategoryMappings);
-            return { ...it, weightKey: g.weightKey, weightSource: g.source };
-          }),
-        };
-      }
-      setExcelPreview({ ...result, byMonth: enriched, overrides: {} });
+      setExcelPreview(result);
     } catch (err) {
       alert("Excel okuma hatası: " + err.message);
     } finally {
@@ -73,45 +46,26 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     }
   };
 
-  const updatePreviewItemWeight = (ym, code, newWeightKey) => {
-    setExcelPreview(prev => ({
-      ...prev,
-      byMonth: {
-        ...prev.byMonth,
-        [ym]: {
-          ...prev.byMonth[ym],
-          items: prev.byMonth[ym].items.map(it =>
-            it.code === code ? { ...it, weightKey: newWeightKey, weightSource: "override" } : it
-          ),
-        },
-      },
-      overrides: { ...prev.overrides, [code]: newWeightKey },
-    }));
-  };
-
   const handleSaveExcel = async () => {
     if (!excelPreview || !canEdit) return;
     setExcelSaving(true);
     try {
       const importedAt = new Date().toISOString();
+      const currentMonth = todayMonth(); // "YYYY-MM" — bugünün ayı (kısmi olabilir)
       const updates = {};
-      const newMappings = { ...savedCategoryMappings };
+      const skipped = [];
       for (const [ym, m] of Object.entries(excelPreview.byMonth)) {
-        // Aynı kod birden fazla satırda olabilir aynı ayda? Olabilir (örnek dataset aynı kodlar farklı satırlarda) — bunları birleştir
+        // Bugünün ayı ve sonrası atlanır — kısmi/eksik veri
+        if (ym >= currentMonth) {
+          skipped.push(ym);
+          continue;
+        }
         const merged = {};
         for (const it of m.items) {
-          const key = it.code;
-          if (!merged[key]) {
-            merged[key] = {
-              id: it.code,            // kod = id (aynı kod birleştirilirse stabil id)
-              category: it.name,
-              amount: 0,
-              weightKey: it.weightKey,
-            };
+          if (!merged[it.code]) {
+            merged[it.code] = { id: it.code, category: it.name, amount: 0 };
           }
-          merged[key].amount += Number(it.amount) || 0;
-          // Aynı koda farklı weightKey atanmışsa sonuncuyu al
-          merged[key].weightKey = it.weightKey;
+          merged[it.code].amount += Number(it.amount) || 0;
         }
         const cleanedItems = Object.values(merged).filter(it => it.amount > 0);
         const totalTl = cleanedItems.reduce((s, it) => s + it.amount, 0);
@@ -121,15 +75,15 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
           items: cleanedItems,
           totalTl,
         };
-        // Kategori mapping'ler (override edilmiş veya guess edilmiş kalanlar — saklayalım)
-        for (const it of cleanedItems) {
-          newMappings[it.id] = it.weightKey;
-        }
+      }
+      if (Object.keys(updates).length === 0) {
+        alert("Kaydedilecek tam ay yok — tüm aylar henüz bitmemiş.");
+        setExcelSaving(false);
+        return;
       }
       await saveMonthlyOverheadsBulk(updates, { canEdit });
-      // Mapping'leri kaydet — sonraki yüklemelerde otomatik atansın
-      await saveCategoryMappings(newMappings, { canEdit });
-      alert(`✓ Kayıt tamam:\n${Object.keys(updates).length} ay yazıldı\n${Object.values(updates).reduce((s, m) => s + m.items.length, 0)} kategori-ay kaydı`);
+      const skippedMsg = skipped.length > 0 ? `\n\nAtlanan (henüz tamamlanmamış): ${skipped.join(", ")}` : "";
+      alert(`✓ Kayıt tamam:\n${Object.keys(updates).length} ay yazıldı\n${Object.values(updates).reduce((s, m) => s + m.items.length, 0)} kategori-ay kaydı${skippedMsg}`);
       setExcelPreview(null);
     } catch (err) {
       alert("Kaydetme hatası: " + err.message);
@@ -160,7 +114,6 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
       id: Date.now() + "-" + Math.random().toString(36).slice(2, 6),
       category: "",
       amount: 0,
-      weightKey: "machineCount"
     }]);
     setDirty(true);
   };
@@ -185,7 +138,6 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
           id: it.id,
           category: it.category.trim(),
           amount: Number(it.amount),
-          weightKey: it.weightKey || "machineCount"
         }));
       const monthData = laborData?.monthlyOverheads?.[selectedMonth];
       await saveMonthlyOverhead(selectedMonth, {
@@ -284,7 +236,6 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
       {excelPreview && (
         <OverheadPreviewPanel
           preview={excelPreview}
-          onUpdateWeight={updatePreviewItemWeight}
           onSave={handleSaveExcel}
           onCancel={() => setExcelPreview(null)}
           saving={excelSaving}
@@ -341,10 +292,10 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
 
       {/* Tablo */}
       <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 240px 40px", padding: "8px 12px", fontSize: 11, fontWeight: 500, color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 160px 40px", padding: "8px 12px", fontSize: 11, fontWeight: 500, color: "var(--color-text-secondary)", background: "var(--color-background-secondary)", gap: 8 }}>
+          <span>Kod</span>
           <span>Kategori</span>
           <span style={{ textAlign: "right" }}>Tutar (₺)</span>
-          <span>Dağıtım kriteri</span>
           <span></span>
         </div>
         {draftItems.length === 0 ? (
@@ -352,7 +303,10 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
             Bu ay için gider kalemi yok. {canEdit && "Aşağıdan ekleyebilirsiniz."}
           </div>
         ) : draftItems.map(it => (
-          <div key={it.id} style={{ display: "grid", gridTemplateColumns: "1fr 160px 240px 40px", gap: 8, padding: "6px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", alignItems: "center", fontSize: 12 }}>
+          <div key={it.id} style={{ display: "grid", gridTemplateColumns: "120px 1fr 160px 40px", gap: 8, padding: "6px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", alignItems: "center", fontSize: 12 }}>
+            <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-tertiary)" }}>
+              {it.id && /^\d+/.test(String(it.id)) ? it.id : "—"}
+            </span>
             <input
               value={it.category}
               onChange={e => updateItem(it.id, { category: e.target.value })}
@@ -369,15 +323,6 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
               disabled={!canEdit}
               style={{ padding: "5px 8px", borderRadius: 4, border: "1px solid var(--color-border-tertiary)", fontSize: 12, textAlign: "right", background: canEdit ? "var(--color-background-primary)" : "transparent" }}
             />
-            <select
-              value={it.weightKey || "machineCount"}
-              onChange={e => updateItem(it.id, { weightKey: e.target.value })}
-              disabled={!canEdit}
-              title={WEIGHT_OPTIONS.find(o => o.value === (it.weightKey || "machineCount"))?.hint}
-              style={{ padding: "5px 8px", borderRadius: 4, border: "1px solid var(--color-border-tertiary)", fontSize: 11, background: canEdit ? "var(--color-background-primary)" : "transparent" }}
-            >
-              {WEIGHT_OPTIONS.map(opt => <option key={opt.value} value={opt.value}>{opt.icon} {opt.label}</option>)}
-            </select>
             {canEdit && (
               <button
                 onClick={() => removeItem(it.id)}
@@ -410,13 +355,7 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
 
       {/* Açıklama */}
       <div style={{ marginTop: 18, padding: "10px 14px", background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 6, fontSize: 11, color: "var(--color-text-secondary)", lineHeight: 1.6 }}>
-        <div style={{ fontWeight: 500, marginBottom: 4, color: "var(--color-text-info)" }}>Dağıtım kriteri tezgah dakika maliyetini nasıl etkiler?</div>
-        {WEIGHT_OPTIONS.map(o => (
-          <div key={o.value}>{o.icon} <b>{o.label}</b> — {o.hint}</div>
-        ))}
-        <div style={{ marginTop: 6, color: "var(--color-text-tertiary)", fontStyle: "italic" }}>
-          Bu kriterler tezgah dakika maliyeti hesabında kullanılır. Tezgahların alan/güç/satın alma değerleri İş Merkezleri tab'ından girilir (sonraki adım).
-        </div>
+        Bu sayfada VIO'dan gelen aylık genel gider kalemleri listelenir. Dağıtım politikası ve tezgah-bazlı maaş eşleştirmesi <b>Tezgah Dakika Ücretleri</b> sekmesinden yapılır.
       </div>
     </div>
   );
@@ -458,24 +397,32 @@ function OverheadAutomationBadge({ status }) {
   );
 }
 
-function OverheadPreviewPanel({ preview, onUpdateWeight, onSave, onCancel, saving, canEdit }) {
+function OverheadPreviewPanel({ preview, onSave, onCancel, saving, canEdit }) {
   const months = preview.monthsList || [];
-  const [showAll, setShowAll] = useState(false);
-  const [selectedMonth, setSelMonth] = useState(months[0]);
-  const monthData = preview.byMonth[selectedMonth] || { items: [], totalBorc: 0 };
-  const overrideCount = Object.keys(preview.overrides || {}).length;
+  const currentMonth = todayMonth();
+  // Skip-edilecek aylar (mevcut ay ve sonrası)
+  const isSkipped = (ym) => ym >= currentMonth;
+  const acceptedMonths = months.filter(m => !isSkipped(m));
+  const skippedMonths = months.filter(m => isSkipped(m));
 
-  // Tüm aylardaki tüm öğeleri toplu olarak göster (aynı kod ay bazında merge edilmedi henüz)
+  const [showAll, setShowAll] = useState(false);
+  // Default seçim: en son tamamlanmış ay (kaydedilecek son ay)
+  const [selectedMonth, setSelMonth] = useState(acceptedMonths[acceptedMonths.length - 1] || months[0]);
+  const monthData = preview.byMonth[selectedMonth] || { items: [], totalBorc: 0 };
+  const acceptedTotal = acceptedMonths.reduce((s, m) => s + (preview.byMonth[m]?.totalBorc || 0), 0);
+
   return (
     <div style={{ border: "2px solid var(--color-border-info)", borderRadius: 8, padding: 14, marginBottom: 16, background: "var(--color-background-info-subtle, #EFF6FF)" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: "var(--color-text-info)" }}>📋 Genel Gider Önizlemesi</span>
         <span style={{ fontSize: 11 }}>
-          Yıl: <b>{preview.year}</b> · {months.length} ay · <b>{preview.itemCount}</b> kalem · <b>{preview.uniqueCodeCount}</b> benzersiz kod
+          Yıl: <b>{preview.year}</b> · {acceptedMonths.length}/{months.length} ay alınacak · <b>{preview.itemCount}</b> kalem · <b>{preview.uniqueCodeCount}</b> kod
         </span>
-        <span style={{ fontSize: 12, fontWeight: 600 }}>Genel toplam: {fmt(preview.grandTotal)} ₺</span>
-        {overrideCount > 0 && (
-          <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: "#FEF3C7", color: "#92400E" }}>{overrideCount} kriter override</span>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>Kaydedilecek toplam: {fmt(acceptedTotal)} ₺</span>
+        {skippedMonths.length > 0 && (
+          <span style={{ fontSize: 10, padding: "3px 8px", borderRadius: 4, background: "#FEF3C7", color: "#92400E", fontWeight: 500 }}>
+            ⊘ {skippedMonths.join(", ")} atlanacak (henüz tamamlanmamış)
+          </span>
         )}
         <button onClick={onCancel} style={{ marginLeft: "auto", padding: "4px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", background: "transparent", fontSize: 11, cursor: "pointer" }}>İptal</button>
         {canEdit && (
@@ -489,54 +436,44 @@ function OverheadPreviewPanel({ preview, onUpdateWeight, onSave, onCancel, savin
         )}
       </div>
 
-      {/* Ay tabları */}
+      {/* Ay tabları — skip edilenler üstü çizili */}
       <div style={{ display: "flex", gap: 4, marginBottom: 10, flexWrap: "wrap" }}>
-        {months.map(m => (
-          <button
-            key={m}
-            onClick={() => setSelMonth(m)}
-            style={{
-              padding: "4px 12px", borderRadius: 5, border: "1px solid",
-              borderColor: m === selectedMonth ? "var(--color-text-info)" : "var(--color-border-secondary)",
-              background: m === selectedMonth ? "var(--color-background-info)" : "transparent",
-              color: m === selectedMonth ? "var(--color-text-info)" : "var(--color-text-secondary)",
-              fontSize: 11, fontWeight: m === selectedMonth ? 600 : 400, cursor: "pointer"
-            }}
-          >
-            {m} · {fmt(preview.byMonth[m]?.totalBorc || 0)} ₺
-          </button>
-        ))}
+        {months.map(m => {
+          const skip = isSkipped(m);
+          return (
+            <button
+              key={m}
+              onClick={() => setSelMonth(m)}
+              title={skip ? `${m} henüz tamamlanmamış — kaydedilmeyecek` : ""}
+              style={{
+                padding: "4px 12px", borderRadius: 5, border: "1px solid",
+                borderColor: m === selectedMonth ? "var(--color-text-info)" : skip ? "#FCD34D" : "var(--color-border-secondary)",
+                background: m === selectedMonth ? "var(--color-background-info)" : skip ? "#FFFBEB" : "transparent",
+                color: skip ? "#92400E" : m === selectedMonth ? "var(--color-text-info)" : "var(--color-text-secondary)",
+                fontSize: 11, fontWeight: m === selectedMonth ? 600 : 400, cursor: "pointer",
+                textDecoration: skip ? "line-through" : "none",
+                opacity: skip ? 0.85 : 1,
+              }}
+            >
+              {skip && "⊘ "}{m} · {fmt(preview.byMonth[m]?.totalBorc || 0)} ₺
+            </button>
+          );
+        })}
       </div>
 
       {/* Seçili ay tablosu */}
       <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 6, overflow: "hidden", background: "var(--color-background-primary)" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr 130px 200px 70px", padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr 160px", padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 8 }}>
           <span>Hizmet Kodu</span>
           <span>Hizmet Adı</span>
           <span style={{ textAlign: "right" }}>Borç (₺)</span>
-          <span>Dağıtım Kriteri</span>
-          <span style={{ textAlign: "center" }}>Kaynak</span>
         </div>
         <div style={{ maxHeight: showAll ? "none" : 400, overflowY: "auto" }}>
           {monthData.items.map((it, i) => (
-            <div key={`${it.code}-${i}`} style={{ display: "grid", gridTemplateColumns: "100px 1fr 130px 200px 70px", padding: "5px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", alignItems: "center", fontSize: 11, gap: 8 }}>
+            <div key={`${it.code}-${i}`} style={{ display: "grid", gridTemplateColumns: "100px 1fr 160px", padding: "5px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", alignItems: "center", fontSize: 11, gap: 8 }}>
               <span style={{ fontFamily: "var(--font-mono)", fontSize: 10 }}>{it.code}</span>
               <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{it.name}</span>
               <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 500 }}>{fmt(it.amount)}</span>
-              <select
-                value={it.weightKey}
-                onChange={e => onUpdateWeight(selectedMonth, it.code, e.target.value)}
-                disabled={!canEdit}
-                style={{ padding: "3px 6px", borderRadius: 4, border: "1px solid var(--color-border-secondary)", fontSize: 10, background: it.weightSource === "override" ? "#FEF3C7" : it.weightSource === "saved" ? "#ECFDF5" : "var(--color-background-primary)" }}
-              >
-                <option value="area">📐 Alan</option>
-                <option value="power">⚡ Güç</option>
-                <option value="amortization">🏭 Amortisman</option>
-                <option value="machineCount">🟰 Eşit</option>
-              </select>
-              <span style={{ textAlign: "center", fontSize: 9, color: "var(--color-text-tertiary)" }}>
-                {it.weightSource === "saved" ? "✓ Hatırlandı" : it.weightSource === "guess" ? "Tahmin" : it.weightSource === "override" ? "Düzelt" : "Default"}
-              </span>
             </div>
           ))}
         </div>

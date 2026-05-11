@@ -67,23 +67,25 @@ export async function saveMonthlyOverheadsBulk(updates, { canEdit }) {
   return { written: Object.keys(updates).length };
 }
 
-// Kullanıcı kategori → kriter mapping'lerini kalıcı saklar (tek doc, code → weightKey map).
-// Sonraki yüklemelerde aynı kod gelirse otomatik atanır.
-export function subscribeCategoryMappings(callback) {
+// Dağıtım politikası — 4 ağırlık (satınAlma/alan/kuruluKw/operator) + WC-bazlı maaş mapping
+// Yeni model (eski categoryMappings yerine):
+//   weights: { satinAlma: 0.40, alan: 0.30, kuruluKw: 0.10, operator: 0.20 }  (toplam 1.0)
+//   wcSalaryMapping: { "730101": ["TORNA_CODE", "ISLEME_CODE"], ... }
+export function subscribeOverheadPolicy(callback) {
   if (!db) return () => {};
-  const ref = doc(db, APP_COL, "overheadCategoryMappings");
+  const ref = doc(db, APP_COL, "overheadDistributionPolicy");
   return onSnapshot(
     ref,
     (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
-    (err) => { console.error("categoryMappings listener:", err); callback({}); }
+    (err) => { console.error("overheadPolicy listener:", err); callback({}); }
   );
 }
 
-export async function saveCategoryMappings(mappings, { canEdit }) {
+export async function saveOverheadPolicy(data, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
-  const ref = doc(db, APP_COL, "overheadCategoryMappings");
-  await setDoc(ref, { mappings, updatedAt: new Date().toISOString() }, { merge: false });
+  const ref = doc(db, APP_COL, "overheadDistributionPolicy");
+  await setDoc(ref, { ...data, updatedAt: new Date().toISOString() }, { merge: false });
 }
 
 // Bir ayın verisini siler — diğer aylar korunur.

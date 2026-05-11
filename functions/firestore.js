@@ -406,11 +406,18 @@ async function saveOverheadReport(db, parserResult) {
   }
 
   const importedAt = parserResult.importedAt || new Date().toISOString();
+  // Bugünün ayı — kısmi/eksik olduğu için atlanır (VIO her ayın 10'unda gönderdiğinde o ay henüz bitmemiş)
+  const currentMonth = new Date().toISOString().slice(0, 7);
   const monthlyOverheads = {};
   const updatedMappings = { ...savedMappings };
   let codesGuessed = 0;
+  const skippedMonths = [];
 
   for (const [ym, m] of Object.entries(parserResult.byMonth)) {
+    if (ym >= currentMonth) {
+      skippedMonths.push(ym);
+      continue;
+    }
     // Aynı kod birden çok satırda olursa birleştir (ay içi)
     const merged = {};
     for (const it of m.items) {
@@ -449,6 +456,7 @@ async function saveOverheadReport(db, parserResult) {
     monthsWritten: Object.keys(monthlyOverheads).length,
     codesGuessed,
     totalTl: Object.values(monthlyOverheads).reduce((s, m) => s + (m.totalTl || 0), 0),
+    skippedMonths,
   };
 }
 
