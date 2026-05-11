@@ -44,6 +44,48 @@ export async function saveMonthlyOverhead(yearMonth, data, { canEdit }) {
   }
 }
 
+// Çoklu ay tek yükleme — VIO Hizmet Total Raporu Excel'inden gelen tüm aylar tek seferde yazılır.
+// Mevcut ay verisi üzerine yazılır (kullanıcı kuralı: "üzerine yaz mantıklı").
+export async function saveMonthlyOverheadsBulk(updates, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok — maliyet düzenleme sadece admin/üretim rolüne açık");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!updates || Object.keys(updates).length === 0) return { written: 0 };
+  const ref = doc(db, APP_COL, LABOR_DOC);
+  const dotMap = {};
+  for (const [ym, data] of Object.entries(updates)) {
+    if (!/^\d{4}-\d{2}$/.test(ym)) continue;
+    dotMap[`monthlyOverheads.${ym}`] = data;
+  }
+  try {
+    await updateDoc(ref, dotMap);
+  } catch (e) {
+    // Doc yoksa create
+    const monthlyOverheads = {};
+    for (const [ym, data] of Object.entries(updates)) monthlyOverheads[ym] = data;
+    await setDoc(ref, { monthlyOverheads }, { merge: true });
+  }
+  return { written: Object.keys(updates).length };
+}
+
+// Kullanıcı kategori → kriter mapping'lerini kalıcı saklar (tek doc, code → weightKey map).
+// Sonraki yüklemelerde aynı kod gelirse otomatik atanır.
+export function subscribeCategoryMappings(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "overheadCategoryMappings");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("categoryMappings listener:", err); callback({}); }
+  );
+}
+
+export async function saveCategoryMappings(mappings, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  const ref = doc(db, APP_COL, "overheadCategoryMappings");
+  await setDoc(ref, { mappings, updatedAt: new Date().toISOString() }, { merge: false });
+}
+
 // Bir ayın verisini siler — diğer aylar korunur.
 export async function deleteMonthlyOverhead(yearMonth, { canEdit, isAdmin }) {
   if (!isAdmin) throw new Error("Silme sadece admin rolüne açık");

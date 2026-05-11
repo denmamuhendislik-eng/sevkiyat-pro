@@ -44,6 +44,12 @@ const VIO_REPORTS = [
     subjectMatch: "sipariş raporu toplamlı",
     label: "Sipariş Raporu Toplamlı (Müşteri Alt Hesaplı)",
   },
+  {
+    type: "overhead",
+    docName: "laborCosts",
+    subjectMatch: "hizmet total raporu",
+    label: "Hizmet Total Raporu (Genel Giderler)",
+  },
 ];
 
 /**

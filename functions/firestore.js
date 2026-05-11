@@ -20,6 +20,8 @@ const AKIBET_DOC = "mrpAkibet";
 const PURCH_DOC = "mrpPurchase";
 const SALES_ORDERS_DOC = "salesOrders";
 const UNIT_COSTS_DOC = "unitCosts";
+const LABOR_COSTS_DOC = "laborCosts";
+const OVERHEAD_MAPPINGS_DOC = "overheadCategoryMappings";
 const SHIPMENTS_DOC = "shipments";
 const PLAN_OVERRIDES_DOC = "planOverrides";
 const AUTOMATION_LOG_DOC = "automationLog";
@@ -95,6 +97,10 @@ async function saveReport(db, type, parserResult, fileName) {
     // Özel akış: önce eski salesOrders ile diff hesapla, shipments güncelle, sonra yaz.
     const diffResult = await saveSalesOrdersWithDiff(db, parserResult);
     return { docId: SALES_ORDERS_DOC, payload: parserResult.ordersMap || {}, diffMeta: diffResult };
+  } else if (type === "overhead") {
+    // Özel akış: çoklu ay yazımı + kategori mapping tahmin
+    const overheadOut = await saveOverheadReport(db, parserResult);
+    return { docId: LABOR_COSTS_DOC, payload: null, overheadMeta: overheadOut };
   } else {
     throw new Error(`Bilinmeyen rapor tipi: ${type}`);
   }
@@ -374,6 +380,78 @@ async function saveUnitCostPartitions(db, newPartitions) {
   return { added, skipped, stockCount: Object.keys(byStock).length };
 }
 
+// Genel gider raporu (Hizmet Total) çoklu ay yazımı + kategori mapping akıllı tahmin
+async function saveOverheadReport(db, parserResult) {
+  if (!parserResult?.byMonth || Object.keys(parserResult.byMonth).length === 0) {
+    return { monthsWritten: 0, codesGuessed: 0 };
+  }
+  // Mevcut kategori mapping'lerini çek (saved overrides)
+  const mappingsRef = db.collection(APP_COL).doc(OVERHEAD_MAPPINGS_DOC);
+  const mappingsSnap = await mappingsRef.get();
+  const savedMappings = mappingsSnap.exists ? (mappingsSnap.data()?.mappings || {}) : {};
+
+  // Anahtar kelime tahmin (frontend ile aynı)
+  const KEYWORDS = [
+    { weightKey: "power", words: ["elektrik"] },
+    { weightKey: "area",  words: ["bina", "doğalgaz", "doğal gaz", "su giderleri", "su gideri", "kira", "ısıtma", "isitma", "aydınlatma"] },
+    { weightKey: "amortization", words: ["makine", "demirbaş", "demirbas", "tamir", "bakım", "bakim", "amortisman"] },
+  ];
+  function guessWeight(code, name) {
+    if (savedMappings[code]) return savedMappings[code];
+    const txt = `${code || ""} ${name || ""}`.toLocaleLowerCase("tr-TR");
+    for (const rule of KEYWORDS) {
+      if (rule.words.some(w => txt.includes(w))) return rule.weightKey;
+    }
+    return "machineCount";
+  }
+
+  const importedAt = parserResult.importedAt || new Date().toISOString();
+  const monthlyOverheads = {};
+  const updatedMappings = { ...savedMappings };
+  let codesGuessed = 0;
+
+  for (const [ym, m] of Object.entries(parserResult.byMonth)) {
+    // Aynı kod birden çok satırda olursa birleştir (ay içi)
+    const merged = {};
+    for (const it of m.items) {
+      const key = it.code;
+      if (!merged[key]) {
+        const weightKey = guessWeight(it.code, it.name);
+        if (!savedMappings[it.code]) codesGuessed++;
+        merged[key] = { id: it.code, category: it.name, amount: 0, weightKey };
+      }
+      merged[key].amount += Number(it.amount) || 0;
+    }
+    const items = Object.values(merged).filter(it => it.amount > 0);
+    const totalTl = items.reduce((s, it) => s + it.amount, 0);
+    monthlyOverheads[ym] = {
+      source: "vio-mail",
+      receivedAt: importedAt,
+      items,
+      totalTl,
+    };
+    for (const it of items) updatedMappings[it.id] = it.weightKey;
+  }
+
+  // Tek update — dot-notation ile sadece yeni ayları yaz (diğer aylar korunur)
+  const laborRef = db.collection(APP_COL).doc(LABOR_COSTS_DOC);
+  const dotMap = {};
+  for (const [ym, data] of Object.entries(monthlyOverheads)) dotMap[`monthlyOverheads.${ym}`] = data;
+  try {
+    await laborRef.update(dotMap);
+  } catch (e) {
+    await laborRef.set({ monthlyOverheads }, { merge: true });
+  }
+  // Mapping'leri kaydet
+  await mappingsRef.set({ mappings: updatedMappings, updatedAt: importedAt }, { merge: false });
+
+  return {
+    monthsWritten: Object.keys(monthlyOverheads).length,
+    codesGuessed,
+    totalTl: Object.values(monthlyOverheads).reduce((s, m) => s + (m.totalTl || 0), 0),
+  };
+}
+
 module.exports = {
   APP_COL,
   STOCK_DOC,
@@ -383,9 +461,11 @@ module.exports = {
   SHIPMENTS_DOC,
   AUTOMATION_LOG_DOC,
   UNIT_COSTS_DOC,
+  LABOR_COSTS_DOC,
   saveReport,
   saveSalesOrdersWithDiff,
   saveUnitCostPartitions,
+  saveOverheadReport,
   appendAutomationLog,
   getLatestAutomationLog,
   transformStockForFirestore,

@@ -37,8 +37,8 @@ const admin = require("firebase-admin");
 const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
-const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions } = require("./firestore");
+const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel } = require("./parsers");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport } = require("./firestore");
 
 // Firebase Admin tek seferlik init
 if (!admin.apps.length) {
@@ -66,6 +66,7 @@ function runParser(type, workbook) {
   if (type === "akibet") return parseAkibetExcel(workbook);
   if (type === "purchase") return parsePurchaseExcel(workbook);
   if (type === "salesOrders") return parseSalesOrdersReport(workbook);
+  if (type === "overhead") return parseOverheadExcel(workbook);
   throw new Error(`Bilinmeyen tip: ${type}`);
 }
 
@@ -99,6 +100,15 @@ function summarizeResult(type, result) {
       orderCount: result.orderCount,
       customerCount: result.customerCount,
       aggregateCount: result.aggregateCount,
+    };
+  }
+  if (type === "overhead") {
+    return {
+      year: result.year,
+      monthCount: result.monthsList?.length || 0,
+      itemCount: result.itemCount,
+      uniqueCodeCount: result.uniqueCodeCount,
+      grandTotal: Math.round(result.grandTotal || 0),
     };
   }
   return {};
@@ -150,7 +160,8 @@ async function runVioImport(source, secrets) {
           (item.type === "stock" && parserResult.totalCodes === 0) ||
           (item.type === "akibet" && parserResult.totalParts === 0) ||
           (item.type === "purchase" && parserResult.totalParts === 0) ||
-          (item.type === "salesOrders" && parserResult.orderCount === 0);
+          (item.type === "salesOrders" && parserResult.orderCount === 0) ||
+          (item.type === "overhead" && (parserResult.itemCount === 0 || (parserResult.monthsList?.length || 0) === 0));
 
         if (isEmpty) {
           reportResults.push({
@@ -174,6 +185,10 @@ async function runVioImport(source, secrets) {
         if (item.type === "salesOrders" && saveOut?.diffMeta) {
           summary.shipmentEvents = saveOut.diffMeta.eventCount;
           summary.cancelledOrders = saveOut.diffMeta.cancelledCount || 0;
+        }
+        if (item.type === "overhead" && saveOut?.overheadMeta) {
+          summary.overheadMonthsWritten = saveOut.overheadMeta.monthsWritten;
+          summary.overheadCodesGuessed = saveOut.overheadMeta.codesGuessed;
         }
         // purchase için paralel fiyat çıkarımı → unitCosts FIFO partileri
         if (item.type === "purchase") {
