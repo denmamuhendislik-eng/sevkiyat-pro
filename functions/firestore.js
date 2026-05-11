@@ -19,6 +19,7 @@ const STOCK_DOC = "mrpStock";
 const AKIBET_DOC = "mrpAkibet";
 const PURCH_DOC = "mrpPurchase";
 const SALES_ORDERS_DOC = "salesOrders";
+const UNIT_COSTS_DOC = "unitCosts";
 const SHIPMENTS_DOC = "shipments";
 const PLAN_OVERRIDES_DOC = "planOverrides";
 const AUTOMATION_LOG_DOC = "automationLog";
@@ -316,6 +317,63 @@ async function getLatestAutomationLog(db) {
   return entries.length > 0 ? entries[entries.length - 1] : null;
 }
 
+// unitCosts'a FIFO partilerini merge eder. Aynı belgeNo+date+qty+price kombinasyonu varsa atla.
+async function saveUnitCostPartitions(db, newPartitions) {
+  if (!Array.isArray(newPartitions) || newPartitions.length === 0) {
+    return { added: 0, skipped: 0, stockCount: 0 };
+  }
+  const ref = db.collection(APP_COL).doc(UNIT_COSTS_DOC);
+  const snap = await ref.get();
+  const existing = snap.exists ? (snap.data() || {}) : {};
+  const byStock = { ...(existing.byStock || {}) };
+  let added = 0, skipped = 0;
+  const importStamp = new Date().toISOString();
+
+  for (const p of newPartitions) {
+    if (!p.code) { skipped++; continue; }
+    const slot = byStock[p.code] || { partitions: [], lastImport: null };
+    const isDup = slot.partitions.some(ep =>
+      ep.belgeNo === p.belgeNo &&
+      ep.orderDate === p.orderDate &&
+      ep.originalQty === p.originalQty &&
+      ep.unitPriceTl === p.unitPriceTl
+    );
+    if (isDup) { skipped++; continue; }
+    slot.partitions.push({
+      belgeNo: p.belgeNo || "",
+      orderDate: p.orderDate || null,
+      teslimDate: p.teslimDate || null,
+      name: p.name || "",
+      originalQty: p.originalQty || 0,
+      shippedQty: p.shippedQty || 0,
+      remainingQty: p.remainingQty || 0,
+      unitPriceTl: p.unitPriceTl || 0,
+      unitPriceDvz: p.unitPriceDvz || 0,
+      currency: p.currency || "TRY",
+      currencyGuess: p.currencyGuess || null,
+      supplierCode: p.supplierCode || "",
+      supplier: p.supplier || "",
+      _rawPrice: p._rawPrice || 0,
+      _rawDvzPrice: p._rawDvzPrice || 0,
+      importedAt: importStamp,
+      importSource: "vio-mail",
+    });
+    slot.partitions.sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+    slot.lastImport = importStamp;
+    if (p.name) slot.lastName = p.name;
+    byStock[p.code] = slot;
+    added++;
+  }
+
+  await ref.set({
+    byStock,
+    lastImport: importStamp,
+    importCount: (existing.importCount || 0) + 1,
+  });
+
+  return { added, skipped, stockCount: Object.keys(byStock).length };
+}
+
 module.exports = {
   APP_COL,
   STOCK_DOC,
@@ -324,8 +382,10 @@ module.exports = {
   SALES_ORDERS_DOC,
   SHIPMENTS_DOC,
   AUTOMATION_LOG_DOC,
+  UNIT_COSTS_DOC,
   saveReport,
   saveSalesOrdersWithDiff,
+  saveUnitCostPartitions,
   appendAutomationLog,
   getLatestAutomationLog,
   transformStockForFirestore,

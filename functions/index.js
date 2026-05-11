@@ -37,8 +37,8 @@ const admin = require("firebase-admin");
 const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
-const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parseSalesOrdersReport } = require("./parsers");
-const { saveReport, appendAutomationLog } = require("./firestore");
+const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport } = require("./parsers");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions } = require("./firestore");
 
 // Firebase Admin tek seferlik init
 if (!admin.apps.length) {
@@ -174,6 +174,21 @@ async function runVioImport(source, secrets) {
         if (item.type === "salesOrders" && saveOut?.diffMeta) {
           summary.shipmentEvents = saveOut.diffMeta.eventCount;
           summary.cancelledOrders = saveOut.diffMeta.cancelledCount || 0;
+        }
+        // purchase için paralel fiyat çıkarımı → unitCosts FIFO partileri
+        if (item.type === "purchase") {
+          try {
+            const priceResult = parsePurchaseWithPrices(workbook);
+            const unitOut = await saveUnitCostPartitions(db, priceResult.partitions);
+            summary.unitCostsAdded = unitOut.added;
+            summary.unitCostsSkipped = unitOut.skipped;
+            summary.unitCostsStockCount = unitOut.stockCount;
+            logger.info(`[VIO] unitCosts güncelleme: +${unitOut.added}, atlanan ${unitOut.skipped}`);
+          } catch (priceErr) {
+            // Fiyat parse hatası ana sevkiyat akışını engellemesin
+            logger.warn(`[VIO] unitCosts parse/save uyarısı`, { error: priceErr.message });
+            summary.unitCostsError = priceErr.message;
+          }
         }
         reportResults.push({
           type: item.type,

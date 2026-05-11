@@ -761,9 +761,171 @@ function parseSalesOrdersReport(workbook) {
   };
 }
 
+// ==================== SATIN ALMA + FİYAT (UNIT COSTS) ====================
+//
+// Sipariş Kontrol Listesi (Belge No) raporu — fiyat kolonu eklenmiş versiyon.
+// Aynı email, mevcut parsePurchaseExcel sevkiyat takibi için kullanılır;
+// bu fonksiyon ek olarak fiyat çıkarımı yapar → unitCosts FIFO partileri.
+//
+// Frontend src/modules/maliyet/purchaseParser.js ile birebir aynı mantık.
+
+const HARDCODED_MONTHLY_RATES = {
+  "2024-01": { USD: 30.0, EUR: 32.7 }, "2024-06": { USD: 32.5, EUR: 35.0 },
+  "2024-12": { USD: 35.3, EUR: 37.2 }, "2025-03": { USD: 37.0, EUR: 40.0 },
+  "2025-06": { USD: 39.5, EUR: 43.5 }, "2025-09": { USD: 41.0, EUR: 47.0 },
+  "2025-12": { USD: 42.5, EUR: 49.0 }, "2026-01": { USD: 43.0, EUR: 49.5 },
+  "2026-02": { USD: 43.5, EUR: 50.0 }, "2026-03": { USD: 44.0, EUR: 50.5 },
+  "2026-04": { USD: 44.5, EUR: 51.0 }, "2026-05": { USD: 45.0, EUR: 51.5 },
+};
+
+function getApproxRate(dateStr) {
+  if (!dateStr) {
+    const months = Object.keys(HARDCODED_MONTHLY_RATES).sort();
+    return HARDCODED_MONTHLY_RATES[months[months.length - 1]];
+  }
+  const ym = dateStr.slice(0, 7);
+  if (HARDCODED_MONTHLY_RATES[ym]) return HARDCODED_MONTHLY_RATES[ym];
+  const months = Object.keys(HARDCODED_MONTHLY_RATES).sort();
+  let best = months[0], bestDiff = Infinity;
+  for (const m of months) {
+    const diff = Math.abs(m.localeCompare(ym));
+    if (diff < bestDiff) { bestDiff = diff; best = m; }
+  }
+  return HARDCODED_MONTHLY_RATES[best];
+}
+
+function guessCurrency(ratio, dateStr) {
+  const refRates = getApproxRate(dateStr);
+  if (!ratio || ratio <= 0) return { currency: "TRY", confidence: "high", refRate: null };
+  const usdDiff = Math.abs(ratio - refRates.USD) / refRates.USD;
+  const eurDiff = Math.abs(ratio - refRates.EUR) / refRates.EUR;
+  const pick = usdDiff < eurDiff ? "USD" : "EUR";
+  const pickDiff = Math.min(usdDiff, eurDiff);
+  const confidence = pickDiff < 0.05 ? "high" : pickDiff < 0.15 ? "medium" : "low";
+  return { currency: pick, confidence, refRate: refRates[pick] };
+}
+
+function parsePurchaseWithPrices(workbook) {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+  const findCols = (row) => {
+    const cols = {};
+    row.forEach((cell, ci) => {
+      const h = norm(cell);
+      if (!h) return;
+      if (h === "stok kodu") cols.code = ci;
+      else if (h === "stok adı" || h === "stok adi") cols.name = ci;
+      else if (h === "teslim tarihi") cols.teslim = ci;
+      else if (h === "br") cols.unit = ci;
+      else if (h === "orijinal miktar" || h === "orjinal miktar") cols.original = ci;
+      else if (h === "sevk edilen miktar" || h === "sevkedilen miktar") cols.shipped = ci;
+      else if (h === "kalan miktar") cols.remaining = ci;
+      else if (h === "alt hesap döviz" || h === "alt hesap doviz") cols.altCurrency = ci;
+      else if (h === "dv.fiyat") cols.dvzPrice = ci;
+      else if (h === "satır net dv.fiyatı") cols.netDvzPrice = ci;
+      else if (h === "fiyat") cols.price = ci;
+      else if (h === "satır net fiyatı") cols.netPrice = ci;
+    });
+    return cols;
+  };
+
+  let currentBelgeNo = "", currentOrderDate = "", currentSupplierCode = "", currentSupplier = "";
+  let cols = null;
+  const partitions = [];
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const c0 = String(r[0] || "").trim();
+
+    if (c0 === "No") {
+      currentBelgeNo = r[1] !== "" && r[1] != null ? String(r[1]).trim() : "";
+      currentOrderDate = fmtVioDate(r[4]);
+      currentSupplierCode = String(r[6] || "").trim();
+      currentSupplier = String(r[7] || "").trim().replace(/\s{2,}/g, " ");
+      cols = null;
+      continue;
+    }
+
+    if (norm(c0) === "stok kodu") {
+      cols = findCols(r);
+      continue;
+    }
+
+    if (!cols || !c0) continue;
+    if (!c0.match(/^[\w\d]/)) continue;
+    const cn = norm(c0);
+    if (cn === "no" || cn === "müşteri" || cn === "musteri" || cn === "stok kodu" || cn === "nakliye") continue;
+    if (cn.startsWith("denma") || cn.startsWith("bekleme") || cn.startsWith("rapor") || cn.startsWith("onay") || cn.startsWith("stok/")) continue;
+
+    const code = c0;
+    const original = pNum(r[cols.original]);
+    const remaining = pNum(r[cols.remaining]);
+    if (original <= 0 && remaining <= 0) continue;
+
+    const netPrice = pNum(r[cols.netPrice]);
+    const netDvzPrice = pNum(r[cols.netDvzPrice]);
+    const altCurrency = String(r[cols.altCurrency] || "").trim().toUpperCase();
+    const rawPrice = pNum(r[cols.price]);
+    const rawDvzPrice = pNum(r[cols.dvzPrice]);
+
+    let currency = "TRY";
+    let currencyGuess = null;
+    if (altCurrency === "USD" || altCurrency === "EUR") {
+      currency = altCurrency;
+    } else if (netDvzPrice > 0 || rawDvzPrice > 0) {
+      const ratio = netPrice > 0 && netDvzPrice > 0 ? netPrice / netDvzPrice : 0;
+      const g = guessCurrency(ratio, currentOrderDate);
+      currency = g.currency;
+      currencyGuess = { confidence: g.confidence, refRate: g.refRate, observedRatio: ratio };
+    }
+
+    const usedTl = netPrice > 0 ? netPrice : rawPrice;
+
+    partitions.push({
+      orderDate: currentOrderDate,
+      belgeNo: currentBelgeNo,
+      code,
+      name: String(r[cols.name] || "").trim(),
+      unit: String(r[cols.unit] || "").trim() || "AD",
+      teslimDate: fmtVioDate(r[cols.teslim]),
+      originalQty: original,
+      shippedQty: pNum(r[cols.shipped]),
+      remainingQty: remaining,
+      unitPriceTl: usedTl,
+      unitPriceDvz: netDvzPrice,
+      currency,
+      currencyGuess,
+      supplierCode: currentSupplierCode,
+      supplier: currentSupplier,
+      _rawPrice: rawPrice,
+      _rawDvzPrice: rawDvzPrice,
+    });
+  }
+
+  const suppliers = new Set();
+  const stockCodes = new Set();
+  let totalTl = 0;
+  for (const p of partitions) {
+    suppliers.add(p.supplierCode);
+    stockCodes.add(p.code);
+    totalTl += (p.unitPriceTl || 0) * (p.originalQty || 0);
+  }
+
+  return {
+    partitions,
+    totalParts: partitions.length,
+    supplierCount: suppliers.size,
+    stockCount: stockCodes.size,
+    totalTl,
+    importedAt: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   parseStockReport,
   parseAkibetExcel,
   parsePurchaseExcel,
+  parsePurchaseWithPrices,
   parseSalesOrdersReport,
 };
