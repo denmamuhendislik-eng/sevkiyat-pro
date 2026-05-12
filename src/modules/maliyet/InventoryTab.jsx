@@ -9,17 +9,40 @@ import { calculateInventoryValue, quarterKey, quarterEndDate } from "./inventory
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS } from "./distributionCalc";
 
+// Stok kodu prefix'inden kategori adı türet (VIO grup boş olduğunda fallback)
+function prefixCategoryName(code) {
+  const c = String(code || "").trim();
+  if (!c) return "(Diğer)";
+  // 150- = Döküm/RAW (gri döküm vs.)
+  if (/^150[-]/.test(c)) return "150- Döküm";
+  // 151- = İşlenmiş parçalar (yarı mamul/mamul)
+  if (/^151[-]/.test(c)) return "151- İşlenmiş Parça";
+  // 152- = Sac/Lama
+  if (/^152[-]/.test(c)) return "152- Sac/Lama";
+  // 157- = Standart alım
+  if (/^157[-]/.test(c)) return "157- Standart Alım";
+  // 158- = (varsa)
+  if (/^158[-]/.test(c)) return "158- (Tanımsız)";
+  // MM- = Standart malzeme (cıvata, somun vs.)
+  if (/^MM[-]/i.test(c)) return "MM- Standart Malzeme";
+  // Numerik prefix
+  const m = c.match(/^(\d{3,4})/);
+  if (m) return m[1] + "- (Diğer)";
+  // Alfa prefix
+  const m2 = c.match(/^([A-Z]+)/i);
+  if (m2) return m2[1] + "- (Diğer)";
+  return "(Diğer)";
+}
+
 const GROUP_OPTIONS = [
-  { value: "vioGroup", label: "VIO Grup", getKey: (it) => it.group || "(Atanmamış)" },
+  // VIO grup dolu ise onu, değilse kod prefix'ten türetilen kategori
+  { value: "vioGroup", label: "VIO Grup (otomatik fallback)", getKey: (it) => it.group || prefixCategoryName(it.code) },
   { value: "source", label: "Kaynak (Mamul/Alış/Eksik)", getKey: (it) => {
     if (it.source === "mamul-calc") return "🏭 Mamul / Yarı Mamul";
     if (it.source === "buy-last") return "🛒 Satın Alma (Hammadde/Standart)";
     return "⚠ Birim TL Eksik";
   }},
-  { value: "codePrefix", label: "Stok Kodu Prefix", getKey: (it) => {
-    const m = String(it.code || "").match(/^(\d{3,4}|MM|[A-Z]+)/);
-    return m ? m[1] + "-*" : "(Diğer)";
-  }},
+  { value: "codePrefix", label: "Stok Kodu Prefix", getKey: (it) => prefixCategoryName(it.code) },
   { value: "none", label: "Gruplama Yok", getKey: () => "_all" },
 ];
 
