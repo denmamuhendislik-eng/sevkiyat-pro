@@ -31,6 +31,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
   const [draft, setDraft] = useState(null);
   const [dirty, setDirty] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [kgCleanupCount, setKgCleanupCount] = useState(0);  // toast: kaç override temizlendi
   const fileInputRef = useRef(null);
 
   useEffect(() => { const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, rates: true })); }); return u; }, []);
@@ -305,19 +306,19 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
 
   // KG bazlı op'lar (621/622) için tüm partOverrides'ı toplu temizle —
   // Sheet 1 default fiyatı zaten kullanıyor, parça-özel override gerekmiyor.
+  // confirm() Chrome'da suppress olabildiği için direkt draft'a uygulanır;
+  // kullanıcı Kaydet'e basmadan etki yok, "Geri al" ile iptal edilebilir.
   const removeKgOpOverrides = () => {
     const keysToRemove = Object.keys(draft?.partOverrides || {}).filter(k => DEFAULT_KG_OPS.includes(k.split("_")[0]));
-    if (keysToRemove.length === 0) {
-      alert("Temizlenecek 621/622 override'ı yok.");
-      return;
-    }
-    if (!confirm(`${keysToRemove.length} adet 621/622 override'ı silinecek. Sheet 1 default fiyatı devreye girecek. Devam?`)) return;
+    if (keysToRemove.length === 0) return;
     setDraft(prev => {
       const next = { ...prev.partOverrides };
       keysToRemove.forEach(k => delete next[k]);
       return { ...prev, partOverrides: next };
     });
     setDirty(true);
+    setKgCleanupCount(keysToRemove.length);
+    setTimeout(() => setKgCleanupCount(0), 3500);
   };
 
   const handleSave = async () => {
@@ -583,15 +584,28 @@ function OverridesSection({ draft, removeOverride, canEdit }) {
         <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
           Op default'u geçersiz kılar (örn. talaşlı imalat parça başı farklı)
         </span>
-        {canEdit && Object.keys(draft?.partOverrides || {}).some(k => DEFAULT_KG_OPS.includes(k.split("_")[0])) && (
-          <button
-            onClick={(e) => { e.stopPropagation(); removeKgOpOverrides(); }}
-            title="621 ve 622 KG bazlı op'lar için tüm parça-özel override'ları siler — Sheet 1 default fiyatı devreye girer"
-            style={{ marginLeft: "auto", padding: "4px 10px", borderRadius: 4, border: "1px solid #C2410C", background: "transparent", color: "#C2410C", fontSize: 10, fontWeight: 500, cursor: "pointer" }}
-          >
-            🧹 621/622 override'larını temizle
-          </button>
-        )}
+        {canEdit && (() => {
+          const kgOpKeys = Object.keys(draft?.partOverrides || {}).filter(k => DEFAULT_KG_OPS.includes(k.split("_")[0]));
+          if (kgOpKeys.length === 0 && kgCleanupCount === 0) return null;
+          return (
+            <span style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8 }}>
+              {kgCleanupCount > 0 && (
+                <span style={{ fontSize: 10, color: "#1D9E75", fontWeight: 500 }}>
+                  ✓ {kgCleanupCount} override temizlendi — Kaydet ile uygula
+                </span>
+              )}
+              {kgOpKeys.length > 0 && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); removeKgOpOverrides(); }}
+                  title="621 ve 622 KG bazlı op'lar için tüm parça-özel override'ları draft'tan çıkarır — Sheet 1 default fiyatı devreye girer. Kaydet'e basmadan etki yok."
+                  style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid #C2410C", background: "transparent", color: "#C2410C", fontSize: 10, fontWeight: 500, cursor: "pointer" }}
+                >
+                  🧹 621/622 override'larını temizle ({kgOpKeys.length})
+                </button>
+              )}
+            </span>
+          );
+        })()}
       </div>
       {showSection && (
         <>
