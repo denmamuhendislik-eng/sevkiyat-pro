@@ -9,7 +9,7 @@ const firstToken = (s) => {
   return t ? t.toLocaleLowerCase("tr-TR") : "";
 };
 
-export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, products, salesOrders }) {
+export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, products, salesOrders, catOverrides }) {
   const parts = mrpStock?.parts || {};
   const byStock = unitCosts?.byStock || {};
 
@@ -24,6 +24,20 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
   for (const o of Object.values(salesOrders || {})) {
     if (o?.stokKodu) knownProductCodes.add(String(o.stokKodu).trim());
   }
+
+  // MRP'de manuel atanmış kategori override'ları — stockCode → catKey (raw_dokum, buy_rulman, vs.)
+  // Aşağıdaki CAT_KEY_MAP üzerinden (mainGroup, subCategory) çözümlenir; otomatik regex'e öncelikli.
+  const overrideMap = catOverrides || {};
+  const CAT_KEY_MAP = {
+    raw_dokum: { mainGroup: "⚙️ Hammadde", subCategory: "🔶 Döküm" },
+    raw_dolu: { mainGroup: "⚙️ Hammadde", subCategory: "🔩 Dolu Malzeme" },
+    raw_diger: { mainGroup: "⚙️ Hammadde", subCategory: "📦 Diğer Hammadde" },
+    buy_rulman: { mainGroup: "🛒 Satın Alma", subCategory: "⚙ Rulman / Keçe" },
+    buy_baglanti: { mainGroup: "🛒 Satın Alma", subCategory: "🔧 Bağlantı Elemanı" },
+    buy_lazer: { mainGroup: "🛒 Satın Alma", subCategory: "✂ Lazer Parça" },
+    buy_standart: { mainGroup: "🛒 Satın Alma", subCategory: "🔹 Standart / Yarı Mamül" },
+    buy_diger: { mainGroup: "🛒 Satın Alma", subCategory: "📎 Diğer Satın Alma" },
+  };
 
   // ===== unitCosts (BUY/RAW son alış) lookup tabloları =====
   const nameToCode = {};
@@ -164,18 +178,28 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
     const { price, matchedBy, source } = lookupPrice(code, p.n);
     const value = price * qty;
     if (price <= 0) missingPriceCount++;
-    // Kategori: önce kod, eşleşmezse isim üzerinden (BOM ile VIO stok kodu uyuşmazlığı fallback'i)
-    let mainCat = stockMainCatByCode[code];
-    if (!mainCat) {
-      const nk = normName(p.n);
-      if (nk) mainCat = stockMainCatByName[nk];
+    // Kategori öncelik sırası:
+    // 1. MRP manuel override (kullanıcı niyeti açık)
+    // 2. BOM bazlı tip + isim regex (otomatik)
+    // 3. Mamul fallback (products/salesOrders'da var → BUY/BOM Dışı'sa Mamul'a çek)
+    let mainGroup, subCategory;
+    const ovKey = overrideMap[code];
+    if (ovKey && CAT_KEY_MAP[ovKey]) {
+      mainGroup = CAT_KEY_MAP[ovKey].mainGroup;
+      subCategory = CAT_KEY_MAP[ovKey].subCategory;
+    } else {
+      // BOM'dan ana grup belirle: önce kod, eşleşmezse isim üzerinden
+      let mainCat = stockMainCatByCode[code];
+      if (!mainCat) {
+        const nk = normName(p.n);
+        if (nk) mainCat = stockMainCatByName[nk];
+      }
+      // Mamul fallback — products/salesOrders'ta görünen stoklar BUY/BOM Dışı'dan Mamul'a yükseltilir
+      if (knownProductCodes.has(code) && (mainCat !== "Mamul" && mainCat !== "Yarı Mamul")) {
+        mainCat = "Mamul";
+      }
+      ({ mainGroup, subCategory } = resolveCategory(mainCat, p.n));
     }
-    // Mamul fallback — products veya salesOrders'ta görünen her stok, BOM'da BUY/RAW tipi atanmış
-    // veya hiç BOM'a girmemiş olsa bile mamul kabul edilir (satılan ürün = mamul).
-    if (knownProductCodes.has(code) && (mainCat !== "Mamul" && mainCat !== "Yarı Mamul")) {
-      mainCat = "Mamul";
-    }
-    const { mainGroup, subCategory } = resolveCategory(mainCat, p.n);
     items.push({
       code,
       name: p.n || "",

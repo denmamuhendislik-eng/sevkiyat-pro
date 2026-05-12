@@ -4,7 +4,7 @@ import {
   subscribeInventorySnapshots, saveInventorySnapshot, deleteInventorySnapshot,
   subscribeBomModels, subscribeWorkCenters, subscribeLaborCosts,
   subscribeOverheadPolicy, subscribeFasonRates,
-  subscribeProducts, subscribeSalesOrders,
+  subscribeProducts, subscribeSalesOrders, subscribeBomMapping,
 } from "./firestore";
 import { calculateInventoryValue, quarterKey, quarterEndDate } from "./inventoryCalc";
 import { calculateAllProductCosts } from "./productCostCalc";
@@ -64,7 +64,8 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   const [fasonRates, setFasonRates] = useState({});
   const [products, setProducts] = useState([]);
   const [salesOrders, setSalesOrders] = useState({});
-  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, bom: false, wc: false, labor: false, pol: false, fason: false, prod: false, so: false });
+  const [bomMapping, setBomMapping] = useState({});
+  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, bom: false, wc: false, labor: false, pol: false, fason: false, prod: false, so: false, map: false });
   const [search, setSearch] = useState("");
   const [showMissing, setShowMissing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -88,6 +89,7 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   useEffect(() => { const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, fason: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeProducts(d => { setProducts(Array.isArray(d) ? d : []); setLoaded(p => ({ ...p, prod: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(p => ({ ...p, so: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeBomMapping(d => { setBomMapping(d || {}); setLoaded(p => ({ ...p, map: true })); }); return u; }, []);
 
   const allLoaded = Object.values(loaded).every(Boolean);
 
@@ -109,10 +111,11 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates]);
 
   // Anlık envanter hesap (her render'da fresh)
+  const catOverrides = bomMapping?._catOverrides || {};
   const live = useMemo(() => {
     if (!allLoaded) return null;
-    return calculateInventoryValue({ mrpStock, unitCosts, productCosts, products, salesOrders });
-  }, [allLoaded, mrpStock, unitCosts, productCosts, products, salesOrders]);
+    return calculateInventoryValue({ mrpStock, unitCosts, productCosts, products, salesOrders, catOverrides });
+  }, [allLoaded, mrpStock, unitCosts, productCosts, products, salesOrders, catOverrides]);
 
   // Snapshot listesi (tarih sırasına göre, en yeniden eskiye)
   const snapList = useMemo(() => Object.entries(snapshots)

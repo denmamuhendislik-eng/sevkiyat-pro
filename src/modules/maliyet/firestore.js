@@ -196,6 +196,19 @@ export function subscribeSalesOrders(callback) {
   );
 }
 
+// MRP modülündeki manuel kategori override'ları — App.jsx:5730 (appData/mrpBomMapping)
+// _catOverrides: { stockCode: "raw_dokum" | "buy_rulman" | ... } — kullanıcı isteğiyle
+// otomatik isim regex'inin önüne geçer. READ-ONLY (MRP modülü yazıyor).
+export function subscribeBomMapping(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "mrpBomMapping");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("bomMapping listener:", err); callback({}); }
+  );
+}
+
 // workCenters subscribe — Maliyet modülü tezgah meta verilerine erişir.
 // MRP modülü ile aynı doc, MRP yazarken merge:true olmasa bile maliyet field'ları
 // state'te korunur (subscribe sayesinde) → setDoc tüm doc'u yazınca dahil olur.
