@@ -2,8 +2,26 @@ import { useState, useEffect, useMemo } from "react";
 import {
   subscribeMrpStock, subscribeUnitCosts,
   subscribeInventorySnapshots, saveInventorySnapshot, deleteInventorySnapshot,
+  subscribeBomModels, subscribeWorkCenters, subscribeLaborCosts,
+  subscribeOverheadPolicy, subscribeFasonRates,
 } from "./firestore";
 import { calculateInventoryValue, quarterKey, quarterEndDate } from "./inventoryCalc";
+import { calculateAllProductCosts } from "./productCostCalc";
+import { DEFAULT_WEIGHTS } from "./distributionCalc";
+
+const GROUP_OPTIONS = [
+  { value: "vioGroup", label: "VIO Grup", getKey: (it) => it.group || "(Atanmamış)" },
+  { value: "source", label: "Kaynak (Mamul/Alış/Eksik)", getKey: (it) => {
+    if (it.source === "mamul-calc") return "🏭 Mamul / Yarı Mamul";
+    if (it.source === "buy-last") return "🛒 Satın Alma (Hammadde/Standart)";
+    return "⚠ Birim TL Eksik";
+  }},
+  { value: "codePrefix", label: "Stok Kodu Prefix", getKey: (it) => {
+    const m = String(it.code || "").match(/^(\d{3,4}|MM|[A-Z]+)/);
+    return m ? m[1] + "-*" : "(Diğer)";
+  }},
+  { value: "none", label: "Gruplama Yok", getKey: () => "_all" },
+];
 
 const fmt2 = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 });
@@ -13,23 +31,58 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   const [mrpStock, setMrpStock] = useState({});
   const [unitCosts, setUnitCosts] = useState({});
   const [snapshots, setSnapshots] = useState({});
-  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false });
+  const [bomModels, setBomModels] = useState({});
+  const [workCenters, setWorkCenters] = useState({});
+  const [laborData, setLaborData] = useState({});
+  const [policy, setPolicy] = useState(null);
+  const [fasonRates, setFasonRates] = useState({});
+  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, bom: false, wc: false, labor: false, pol: false, fason: false });
   const [search, setSearch] = useState("");
   const [showMissing, setShowMissing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [selectedSnap, setSelectedSnap] = useState(null);
+  const [groupBy, setGroupBy] = useState("vioGroup");
+  const [expandedGroups, setExpandedGroups] = useState({});
 
   useEffect(() => { const u = subscribeMrpStock(d => { setMrpStock(d || {}); setLoaded(p => ({ ...p, stock: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeUnitCosts(d => { setUnitCosts(d || {}); setLoaded(p => ({ ...p, unit: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeInventorySnapshots(d => { setSnapshots(d?.snapshots || {}); setLoaded(p => ({ ...p, snap: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeBomModels(d => { setBomModels(d || {}); setLoaded(p => ({ ...p, bom: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeWorkCenters(d => { setWorkCenters(d || {}); setLoaded(p => ({ ...p, wc: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeLaborCosts(d => { setLaborData(d || {}); setLoaded(p => ({ ...p, labor: true })); }); return u; }, []);
+  useEffect(() => {
+    const u = subscribeOverheadPolicy(d => {
+      setPolicy(!d || Object.keys(d).length === 0 ? { weights: { ...DEFAULT_WEIGHTS }, wcSalaryMapping: {} } : d);
+      setLoaded(p => ({ ...p, pol: true }));
+    });
+    return u;
+  }, []);
+  useEffect(() => { const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, fason: true })); }); return u; }, []);
 
   const allLoaded = Object.values(loaded).every(Boolean);
 
-  // Anlık hesap (her render'da fresh)
+  // ProductCosts hesap (Mamul/yarı mamul birim TL için) — son tamamlanmış ay
+  const monthlyOverheads = laborData?.monthlyOverheads || {};
+  const monthsAvailable = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
+  const productCostMonth = useMemo(() => {
+    if (monthsAvailable.length === 0) return null;
+    const cur = new Date().toISOString().slice(0, 7);
+    const completed = monthsAvailable.filter(m => m < cur);
+    return completed[0] || monthsAvailable[0];
+  }, [monthsAvailable]);
+
+  const productCosts = useMemo(() => {
+    if (!allLoaded || !productCostMonth) return null;
+    const monthData = monthlyOverheads[productCostMonth];
+    if (!monthData) return null;
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates]);
+
+  // Anlık envanter hesap (her render'da fresh)
   const live = useMemo(() => {
     if (!allLoaded) return null;
-    return calculateInventoryValue({ mrpStock, unitCosts });
-  }, [allLoaded, mrpStock, unitCosts]);
+    return calculateInventoryValue({ mrpStock, unitCosts, productCosts });
+  }, [allLoaded, mrpStock, unitCosts, productCosts]);
 
   // Snapshot listesi (tarih sırasına göre, en yeniden eskiye)
   const snapList = useMemo(() => Object.entries(snapshots)
@@ -51,6 +104,24 @@ export default function InventoryTab({ canEdit, isAdmin }) {
       return it.code.toLocaleLowerCase("tr-TR").includes(q) || (it.name || "").toLocaleLowerCase("tr-TR").includes(q);
     });
   }, [live, search, showMissing]);
+
+  // Gruplama
+  const groupedItems = useMemo(() => {
+    if (groupBy === "none") return null;
+    const opt = GROUP_OPTIONS.find(o => o.value === groupBy);
+    if (!opt) return null;
+    const groups = {};
+    for (const it of filteredItems) {
+      const k = opt.getKey(it);
+      if (!groups[k]) groups[k] = { key: k, items: [], totalValue: 0, totalQty: 0 };
+      groups[k].items.push(it);
+      groups[k].totalValue += it.value;
+      groups[k].totalQty += it.qtyTotal;
+    }
+    return Object.values(groups).sort((a, b) => b.totalValue - a.totalValue);
+  }, [filteredItems, groupBy]);
+
+  const toggleGroup = (key) => setExpandedGroups(prev => ({ ...prev, [key]: !prev[key] }));
 
   const handleTakeSnapshot = async () => {
     if (!canEdit || !live) return;
@@ -201,50 +272,34 @@ export default function InventoryTab({ canEdit, isAdmin }) {
           onChange={e => setSearch(e.target.value)}
           style={{ flex: "1 1 200px", maxWidth: 300, padding: "5px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 11 }}
         />
+        <label style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>Gruplama:</label>
+        <select
+          value={groupBy}
+          onChange={e => setGroupBy(e.target.value)}
+          style={{ padding: "5px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 11 }}
+        >
+          {GROUP_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
         <label style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
           <input type="checkbox" checked={showMissing} onChange={e => setShowMissing(e.target.checked)} />
           Sadece birim TL'si olmayanlar
         </label>
         <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{filteredItems.length} / {live.items.length} satır</span>
+        {productCostMonth && (
+          <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginLeft: "auto" }}>
+            Mamul hesabı: {productCostMonth}
+          </span>
+        )}
       </div>
 
-      <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px 80px 80px 100px 100px 120px 70px", padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 6 }}>
-          <span>Stok Kodu</span>
-          <span>Stok Adı</span>
-          <span style={{ textAlign: "right" }}>Ambar</span>
-          <span style={{ textAlign: "right" }}>Üretim</span>
-          <span style={{ textAlign: "right" }}>Fason</span>
-          <span style={{ textAlign: "right" }}>Toplam</span>
-          <span style={{ textAlign: "right" }}>Birim TL</span>
-          <span style={{ textAlign: "right" }}>Değer TL</span>
-          <span style={{ textAlign: "center" }}>Kaynak</span>
-        </div>
-        <div style={{ maxHeight: 600, overflowY: "auto" }}>
-          {filteredItems.length === 0 ? (
-            <div style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12 }}>
-              {search || showMissing ? "Filtre eşleşmedi" : "Stok kaydı yok"}
-            </div>
-          ) : filteredItems.slice(0, 500).map(it => (
-            <div key={it.code} style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px 80px 80px 100px 100px 120px 70px", padding: "4px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 10, gap: 6, alignItems: "center", background: it.unitPriceTl <= 0 ? "#FFFBEB" : "transparent" }}>
-              <span style={{ fontFamily: "var(--font-mono)" }}>{it.code}</span>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</span>
-              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyAmbar)}</span>
-              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyUretim)}</span>
-              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyFason)}</span>
-              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmt0(it.qtyTotal)}</span>
-              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(it.unitPriceTl)}</span>
-              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: it.value > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{fmt2(it.value)}</span>
-              <span style={{ textAlign: "center", fontSize: 8, color: "var(--color-text-tertiary)" }}>{it.matchedBy}</span>
-            </div>
-          ))}
-          {filteredItems.length > 500 && (
-            <div style={{ padding: 10, textAlign: "center", fontSize: 11, color: "var(--color-text-tertiary)" }}>
-              + {filteredItems.length - 500} satır daha (arama ile daralt)
-            </div>
-          )}
-        </div>
-      </div>
+      <InventoryTable
+        filteredItems={filteredItems}
+        groupedItems={groupedItems}
+        expandedGroups={expandedGroups}
+        toggleGroup={toggleGroup}
+        search={search}
+        showMissing={showMissing}
+      />
 
       <div style={{ marginTop: 10, padding: "8px 14px", background: "var(--color-background-secondary)", borderRadius: 6, fontSize: 10, color: "var(--color-text-tertiary)", lineHeight: 1.6 }}>
         <b>Hesap:</b> Eldeki toplam stok (ambar + üretim + fason + dış) × birim TL (unitCosts son alış). 3 katmanlı eşleşme: kod → isim → ilk token.
@@ -254,6 +309,96 @@ export default function InventoryTab({ canEdit, isAdmin }) {
         <br/>
         Çeyrek snapshot'lar: <b>Mart sonu (Q1), Haziran sonu (Q2), Eylül sonu (Q3), Aralık sonu (Q4)</b>. Manuel anytime Snapshot Al ile alınabilir.
       </div>
+    </div>
+  );
+}
+
+function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGroup, search, showMissing }) {
+  const HEADER = (
+    <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px 80px 80px 100px 100px 120px 90px", padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 6 }}>
+      <span>Stok Kodu</span>
+      <span>Stok Adı</span>
+      <span style={{ textAlign: "right" }}>Ambar</span>
+      <span style={{ textAlign: "right" }}>Üretim</span>
+      <span style={{ textAlign: "right" }}>Fason</span>
+      <span style={{ textAlign: "right" }}>Toplam</span>
+      <span style={{ textAlign: "right" }}>Birim TL</span>
+      <span style={{ textAlign: "right" }}>Değer TL</span>
+      <span style={{ textAlign: "center" }}>Kaynak</span>
+    </div>
+  );
+
+  const renderItem = (it) => (
+    <div key={it.code} style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px 80px 80px 100px 100px 120px 90px", padding: "4px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 10, gap: 6, alignItems: "center", background: it.unitPriceTl <= 0 ? "#FFFBEB" : "transparent" }}>
+      <span style={{ fontFamily: "var(--font-mono)" }}>{it.code}</span>
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyAmbar)}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyUretim)}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyFason)}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmt0(it.qtyTotal)}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(it.unitPriceTl)}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: it.value > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{fmt2(it.value)}</span>
+      <span style={{ textAlign: "center", fontSize: 8, color: it.source === "mamul-calc" ? "var(--color-text-info)" : it.source === "buy-last" ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
+        {it.source === "mamul-calc" ? "🏭 mamul" : it.source === "buy-last" ? "🛒 alış" : it.matchedBy}
+      </span>
+    </div>
+  );
+
+  if (!groupedItems) {
+    // Flat görünüm
+    return (
+      <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+        {HEADER}
+        <div style={{ maxHeight: 600, overflowY: "auto" }}>
+          {filteredItems.length === 0 ? (
+            <div style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12 }}>
+              {search || showMissing ? "Filtre eşleşmedi" : "Stok kaydı yok"}
+            </div>
+          ) : filteredItems.slice(0, 500).map(renderItem)}
+          {filteredItems.length > 500 && (
+            <div style={{ padding: 10, textAlign: "center", fontSize: 11, color: "var(--color-text-tertiary)" }}>
+              + {filteredItems.length - 500} satır daha (arama ile daralt)
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  // Gruplu görünüm
+  return (
+    <div style={{ maxHeight: 700, overflowY: "auto" }}>
+      {groupedItems.length === 0 ? (
+        <div style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12, border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
+          {search || showMissing ? "Filtre eşleşmedi" : "Stok kaydı yok"}
+        </div>
+      ) : groupedItems.map(g => {
+        const isExpanded = expandedGroups[g.key] !== false;  // default açık
+        return (
+          <div key={g.key} style={{ marginBottom: 8, border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+            <div
+              onClick={() => toggleGroup(g.key)}
+              style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "var(--color-background-info-subtle, #EFF6FF)", cursor: "pointer", userSelect: "none" }}
+            >
+              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isExpanded ? "▼" : "▶"}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-info)" }}>{g.key}</span>
+              <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>({g.items.length} kalem · {fmt0(g.totalQty)} adet)</span>
+              <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(g.totalValue)} ₺</span>
+            </div>
+            {isExpanded && (
+              <>
+                {HEADER}
+                {g.items.slice(0, 200).map(renderItem)}
+                {g.items.length > 200 && (
+                  <div style={{ padding: 8, textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                    + {g.items.length - 200} satır daha
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

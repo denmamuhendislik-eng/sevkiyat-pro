@@ -9,11 +9,11 @@ const firstToken = (s) => {
   return t ? t.toLocaleLowerCase("tr-TR") : "";
 };
 
-export function calculateInventoryValue({ mrpStock, unitCosts }) {
+export function calculateInventoryValue({ mrpStock, unitCosts, productCosts }) {
   const parts = mrpStock?.parts || {};
   const byStock = unitCosts?.byStock || {};
 
-  // Lookup tabloları
+  // ===== unitCosts (BUY/RAW son alış) lookup tabloları =====
   const nameToCode = {};
   const tokensToCode = {};
   const stockUnitCost = {};
@@ -35,15 +35,55 @@ export function calculateInventoryValue({ mrpStock, unitCosts }) {
     }
   }
 
-  function lookupPrice(code, name) {
-    if (stockUnitCost[code] != null) return { price: stockUnitCost[code], matchedBy: "code" };
-    const nk = normName(name);
-    if (nk && nameToCode[nk]) return { price: stockUnitCost[nameToCode[nk]], matchedBy: "name" };
-    const tk = firstToken(name);
-    if (tk && tokensToCode[tk] && tokensToCode[tk].length === 1) {
-      return { price: stockUnitCost[tokensToCode[tk][0]], matchedBy: "token" };
+  // ===== productCosts (mamul/yarı mamul hesaplanmış maliyet) lookup =====
+  const calcCostByCode = {};
+  const calcCostByName = {};
+  const calcCostByToken = {};
+  if (productCosts?.byModel) {
+    for (const model of Object.values(productCosts.byModel)) {
+      for (const part of (model.partsList || [])) {
+        if (!part.stockCode || !(part.unitCost > 0)) continue;
+        // Aynı stokKodu birden fazla BOM'da olabilir — max al (en doğru olanı yakalama)
+        if (!calcCostByCode[part.stockCode] || calcCostByCode[part.stockCode] < part.unitCost) {
+          calcCostByCode[part.stockCode] = part.unitCost;
+        }
+        const nm = normName(part.stockName);
+        if (nm && (!calcCostByName[nm] || calcCostByName[nm] < part.unitCost)) {
+          calcCostByName[nm] = part.unitCost;
+        }
+        const tk = firstToken(part.stockName);
+        if (tk && /^\d+/.test(tk) && (!calcCostByToken[tk] || calcCostByToken[tk] < part.unitCost)) {
+          calcCostByToken[tk] = part.unitCost;
+        }
+      }
     }
-    return { price: 0, matchedBy: "miss" };
+  }
+
+  // 2 kaynaklı lookup — önce unitCosts (BUY/RAW), sonra productCosts (MAKE)
+  function lookupPrice(code, name) {
+    // 1. unitCosts kod
+    if (stockUnitCost[code] > 0) return { price: stockUnitCost[code], matchedBy: "code", source: "buy-last" };
+    // 2. productCosts kod (mamul hesap)
+    if (calcCostByCode[code] > 0) return { price: calcCostByCode[code], matchedBy: "code", source: "mamul-calc" };
+    // 3. unitCosts isim
+    const nk = normName(name);
+    if (nk && nameToCode[nk] && stockUnitCost[nameToCode[nk]] > 0) {
+      return { price: stockUnitCost[nameToCode[nk]], matchedBy: "name", source: "buy-last" };
+    }
+    // 4. productCosts isim
+    if (nk && calcCostByName[nk] > 0) {
+      return { price: calcCostByName[nk], matchedBy: "name", source: "mamul-calc" };
+    }
+    // 5. unitCosts token
+    const tk = firstToken(name);
+    if (tk && tokensToCode[tk] && tokensToCode[tk].length === 1 && stockUnitCost[tokensToCode[tk][0]] > 0) {
+      return { price: stockUnitCost[tokensToCode[tk][0]], matchedBy: "token", source: "buy-last" };
+    }
+    // 6. productCosts token
+    if (tk && calcCostByToken[tk] > 0) {
+      return { price: calcCostByToken[tk], matchedBy: "token", source: "mamul-calc" };
+    }
+    return { price: 0, matchedBy: "miss", source: "miss" };
   }
 
   // Stok değer hesabı
@@ -54,7 +94,7 @@ export function calculateInventoryValue({ mrpStock, unitCosts }) {
   for (const [code, p] of Object.entries(parts)) {
     const qty = safeNum(p.t);  // total
     if (qty <= 0) continue;
-    const { price, matchedBy } = lookupPrice(code, p.n);
+    const { price, matchedBy, source } = lookupPrice(code, p.n);
     const value = price * qty;
     if (price <= 0) missingPriceCount++;
     items.push({
@@ -70,6 +110,7 @@ export function calculateInventoryValue({ mrpStock, unitCosts }) {
       unitPriceTl: price,
       value,
       matchedBy,
+      source,
     });
     totalValue += value;
     totalQty += qty;
