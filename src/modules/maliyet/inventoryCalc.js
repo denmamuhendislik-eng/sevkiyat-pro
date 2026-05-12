@@ -9,9 +9,21 @@ const firstToken = (s) => {
   return t ? t.toLocaleLowerCase("tr-TR") : "";
 };
 
-export function calculateInventoryValue({ mrpStock, unitCosts, productCosts }) {
+export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, products, salesOrders }) {
   const parts = mrpStock?.parts || {};
   const byStock = unitCosts?.byStock || {};
+
+  // Bilinen mamul stok kodları — BOM'a girmeden de mamul tespiti için
+  // (örn. "BUY" tipi atanmış ama satılan ürünler, BOM'u yüklenmemiş ürünler).
+  // Kaynak 1: products[].vioCode (sevkiyat planı ürün listesi)
+  // Kaynak 2: salesOrders[].stokKodu (müşteri satış siparişleri)
+  const knownProductCodes = new Set();
+  for (const p of (products || [])) {
+    if (p?.vioCode) knownProductCodes.add(String(p.vioCode).trim());
+  }
+  for (const o of Object.values(salesOrders || {})) {
+    if (o?.stokKodu) knownProductCodes.add(String(o.stokKodu).trim());
+  }
 
   // ===== unitCosts (BUY/RAW son alış) lookup tabloları =====
   const nameToCode = {};
@@ -39,24 +51,79 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts }) {
   const calcCostByCode = {};
   const calcCostByName = {};
   const calcCostByToken = {};
+  // BOM-bazlı kategori — önce ana grup tutulur (Mamul/Yarı Mamul/RAW/BUY), alt kategori
+  // item çözümünde isim regex'i ile türetilir (MRP modülündeki kuralın aynısı, App.jsx:15068).
+  // FASON supplyType non-root = "Yarı Mamul" (fason yaptırılan parçalar yarı mamul niteliğinde).
+  // Aynı stok birden fazla BOM'da görünebilir — en yüksek öncelikli ana grubu tutuyoruz.
+  // Fallback için isim bazlı map de açıyoruz (kod uyuşmazlığı durumunda — örn. BOM "150-0119320 TEKER",
+  // VIO stokta "119320 TEKER" geçiyorsa isimle yakalanır).
+  const stockMainCatByCode = {};
+  const stockMainCatByName = {};
+  const MAIN_PRIORITY = { "Mamul": 5, "Yarı Mamul": 4, "RAW": 3, "BUY": 2 };
   if (productCosts?.byModel) {
     for (const model of Object.values(productCosts.byModel)) {
       for (const part of (model.partsList || [])) {
-        if (!part.stockCode || !(part.unitCost > 0)) continue;
-        // Aynı stokKodu birden fazla BOM'da olabilir — max al (en doğru olanı yakalama)
-        if (!calcCostByCode[part.stockCode] || calcCostByCode[part.stockCode] < part.unitCost) {
-          calcCostByCode[part.stockCode] = part.unitCost;
+        if (!part.stockCode) continue;
+        if (part.unitCost > 0) {
+          // Aynı stokKodu birden fazla BOM'da olabilir — max al (en doğru olanı yakalama)
+          if (!calcCostByCode[part.stockCode] || calcCostByCode[part.stockCode] < part.unitCost) {
+            calcCostByCode[part.stockCode] = part.unitCost;
+          }
+          const nm = normName(part.stockName);
+          if (nm && (!calcCostByName[nm] || calcCostByName[nm] < part.unitCost)) {
+            calcCostByName[nm] = part.unitCost;
+          }
+          const tk = firstToken(part.stockName);
+          if (tk && /^\d+/.test(tk) && (!calcCostByToken[tk] || calcCostByToken[tk] < part.unitCost)) {
+            calcCostByToken[tk] = part.unitCost;
+          }
         }
-        const nm = normName(part.stockName);
-        if (nm && (!calcCostByName[nm] || calcCostByName[nm] < part.unitCost)) {
-          calcCostByName[nm] = part.unitCost;
-        }
-        const tk = firstToken(part.stockName);
-        if (tk && /^\d+/.test(tk) && (!calcCostByToken[tk] || calcCostByToken[tk] < part.unitCost)) {
-          calcCostByToken[tk] = part.unitCost;
+        // Ana kategori tespiti (unitCost > 0 şartı yok — fiyat eksik olsa bile kategori bilinir)
+        const isRoot = (part.parentIdx === null || part.parentIdx === undefined);
+        let mainCat = null;
+        if (isRoot) mainCat = "Mamul";
+        else if (part.supplyType === "MAKE" || part.supplyType === "MAKE+FASON" || part.supplyType === "FASON") mainCat = "Yarı Mamul";
+        else if (part.supplyType === "RAW") mainCat = "RAW";
+        else if (part.supplyType === "BUY") mainCat = "BUY";
+        if (mainCat) {
+          const curC = stockMainCatByCode[part.stockCode];
+          if (!curC || MAIN_PRIORITY[mainCat] > MAIN_PRIORITY[curC]) {
+            stockMainCatByCode[part.stockCode] = mainCat;
+          }
+          const nm = normName(part.stockName);
+          if (nm) {
+            const curN = stockMainCatByName[nm];
+            if (!curN || MAIN_PRIORITY[mainCat] > MAIN_PRIORITY[curN]) {
+              stockMainCatByName[nm] = mainCat;
+            }
+          }
         }
       }
     }
+  }
+
+  // Alt kategori türet — MRP modülündeki isim regex'leri (App.jsx:15080)
+  // Dönüş: { mainGroup, subCategory } — UI'da iki kademeli hiyerarşi için kullanılıyor.
+  function resolveCategory(mainCat, name) {
+    if (!mainCat) return { mainGroup: "❓ BOM Dışı", subCategory: "❓ BOM Dışı" };
+    if (mainCat === "Mamul") return { mainGroup: "🏭 Mamul", subCategory: "🏭 Mamul" };
+    if (mainCat === "Yarı Mamul") return { mainGroup: "🔧 Yarı Mamul", subCategory: "🔧 Yarı Mamul" };
+    const n = String(name || "").toLocaleUpperCase("tr-TR");
+    if (mainCat === "RAW") {
+      let sub = "📦 Diğer Hammadde";
+      if (/DÖKÜM|DÖK\.|GÖVDE DÖKÜM/.test(n)) sub = "🔶 Döküm";
+      else if (/MİL|ÇUBUK|BORU|LAMA|SAC|PLAKA|PROFİL|KÜTÜK|DOLU/.test(n)) sub = "🔩 Dolu Malzeme";
+      return { mainGroup: "⚙️ Hammadde", subCategory: sub };
+    }
+    if (mainCat === "BUY") {
+      let sub = "📎 Diğer Satın Alma";
+      if (/RULMAN|KEÇE|SEGMAN|O-RİNG|CONTA|SİMERİNG|SEAL/.test(n)) sub = "⚙ Rulman / Keçe";
+      else if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ|PRES FİT|NİPEL/.test(n)) sub = "🔧 Bağlantı Elemanı";
+      else if (/LAZER/.test(n)) sub = "✂ Lazer Parça";
+      else if (/YARI MAMÜL|YARI MAMUL|HAZIR|İŞLENMİŞ|MONTAJLI|ALT MONTAJ|KOMPLE|KAPAK|CONTA PLAKA|ELEMAN|ADAPTÖR|MANŞETİ|BAĞLANTI|FLANŞ/.test(n)) sub = "🔹 Standart / Yarı Mamül";
+      return { mainGroup: "🛒 Satın Alma", subCategory: sub };
+    }
+    return { mainGroup: "❓ BOM Dışı", subCategory: "❓ BOM Dışı" };
   }
 
   // 2 kaynaklı lookup — önce unitCosts (BUY/RAW), sonra productCosts (MAKE)
@@ -97,11 +164,25 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts }) {
     const { price, matchedBy, source } = lookupPrice(code, p.n);
     const value = price * qty;
     if (price <= 0) missingPriceCount++;
+    // Kategori: önce kod, eşleşmezse isim üzerinden (BOM ile VIO stok kodu uyuşmazlığı fallback'i)
+    let mainCat = stockMainCatByCode[code];
+    if (!mainCat) {
+      const nk = normName(p.n);
+      if (nk) mainCat = stockMainCatByName[nk];
+    }
+    // Mamul fallback — products veya salesOrders'ta görünen her stok, BOM'da BUY/RAW tipi atanmış
+    // veya hiç BOM'a girmemiş olsa bile mamul kabul edilir (satılan ürün = mamul).
+    if (knownProductCodes.has(code) && (mainCat !== "Mamul" && mainCat !== "Yarı Mamul")) {
+      mainCat = "Mamul";
+    }
+    const { mainGroup, subCategory } = resolveCategory(mainCat, p.n);
     items.push({
       code,
       name: p.n || "",
       unit: p.u || "AD",
       group: p.g || "",
+      mainGroup,
+      category: subCategory,
       qtyAmbar: safeNum(p.a),
       qtyUretim: safeNum(p.r),
       qtyFason: safeNum(p.f),

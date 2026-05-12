@@ -4,6 +4,7 @@ import {
   subscribeInventorySnapshots, saveInventorySnapshot, deleteInventorySnapshot,
   subscribeBomModels, subscribeWorkCenters, subscribeLaborCosts,
   subscribeOverheadPolicy, subscribeFasonRates,
+  subscribeProducts, subscribeSalesOrders,
 } from "./firestore";
 import { calculateInventoryValue, quarterKey, quarterEndDate } from "./inventoryCalc";
 import { calculateAllProductCosts } from "./productCostCalc";
@@ -35,6 +36,8 @@ function prefixCategoryName(code) {
 }
 
 const GROUP_OPTIONS = [
+  // BOM-bazlı detaylı kategori (MRP modülündeki isim regex'leri ile alt kırılım — App.jsx:15080)
+  { value: "bomCategory", label: "BOM Kategorisi (önerilen)", getKey: (it) => it.category || "❓ BOM Dışı" },
   // VIO grup dolu ise onu, değilse kod prefix'ten türetilen kategori
   { value: "vioGroup", label: "VIO Grup (otomatik fallback)", getKey: (it) => it.group || prefixCategoryName(it.code) },
   { value: "source", label: "Kaynak (Mamul/Alış/Eksik)", getKey: (it) => {
@@ -59,12 +62,14 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   const [laborData, setLaborData] = useState({});
   const [policy, setPolicy] = useState(null);
   const [fasonRates, setFasonRates] = useState({});
-  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, bom: false, wc: false, labor: false, pol: false, fason: false });
+  const [products, setProducts] = useState([]);
+  const [salesOrders, setSalesOrders] = useState({});
+  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, bom: false, wc: false, labor: false, pol: false, fason: false, prod: false, so: false });
   const [search, setSearch] = useState("");
   const [showMissing, setShowMissing] = useState(false);
   const [saving, setSaving] = useState(false);
   const [selectedSnap, setSelectedSnap] = useState(null);
-  const [groupBy, setGroupBy] = useState("vioGroup");
+  const [groupBy, setGroupBy] = useState("bomCategory");
   const [expandedGroups, setExpandedGroups] = useState({});
 
   useEffect(() => { const u = subscribeMrpStock(d => { setMrpStock(d || {}); setLoaded(p => ({ ...p, stock: true })); }); return u; }, []);
@@ -81,6 +86,8 @@ export default function InventoryTab({ canEdit, isAdmin }) {
     return u;
   }, []);
   useEffect(() => { const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, fason: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeProducts(d => { setProducts(Array.isArray(d) ? d : []); setLoaded(p => ({ ...p, prod: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(p => ({ ...p, so: true })); }); return u; }, []);
 
   const allLoaded = Object.values(loaded).every(Boolean);
 
@@ -104,8 +111,8 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   // Anlık envanter hesap (her render'da fresh)
   const live = useMemo(() => {
     if (!allLoaded) return null;
-    return calculateInventoryValue({ mrpStock, unitCosts, productCosts });
-  }, [allLoaded, mrpStock, unitCosts, productCosts]);
+    return calculateInventoryValue({ mrpStock, unitCosts, productCosts, products, salesOrders });
+  }, [allLoaded, mrpStock, unitCosts, productCosts, products, salesOrders]);
 
   // Snapshot listesi (tarih sırasına göre, en yeniden eskiye)
   const snapList = useMemo(() => Object.entries(snapshots)
@@ -129,14 +136,44 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   }, [live, search, showMissing]);
 
   // Gruplama
+  // BOM Kategorisi seçildiğinde 2 katmanlı hiyerarşi: ana grup (Mamul/Yarı Mamul/Hammadde/Satın Alma/BOM Dışı)
+  //   → alt gruplar (Döküm, Rulman vs.) → item'lar. Ana grup sırası sabit, içeride alt gruplar değere göre.
+  // Diğer gruplamalar tek katman (eski davranış).
+  const MAIN_GROUP_ORDER = ["🏭 Mamul", "🔧 Yarı Mamul", "⚙️ Hammadde", "🛒 Satın Alma", "❓ BOM Dışı"];
   const groupedItems = useMemo(() => {
     if (groupBy === "none") return null;
+    if (groupBy === "bomCategory") {
+      // İki katmanlı yapı
+      const mains = {};
+      for (const it of filteredItems) {
+        const mk = it.mainGroup || "❓ BOM Dışı";
+        const sk = it.category || "❓ BOM Dışı";
+        if (!mains[mk]) mains[mk] = { key: mk, hierarchical: true, subGroups: {}, totalValue: 0, totalQty: 0, itemCount: 0 };
+        if (!mains[mk].subGroups[sk]) mains[mk].subGroups[sk] = { key: sk, items: [], totalValue: 0, totalQty: 0 };
+        mains[mk].subGroups[sk].items.push(it);
+        mains[mk].subGroups[sk].totalValue += it.value;
+        mains[mk].subGroups[sk].totalQty += it.qtyTotal;
+        mains[mk].totalValue += it.value;
+        mains[mk].totalQty += it.qtyTotal;
+        mains[mk].itemCount += 1;
+      }
+      // Ana grupları sabit sıraya göre, alt grupları değere göre sırala
+      const arr = Object.values(mains).map(m => ({
+        ...m,
+        subGroups: Object.values(m.subGroups).sort((a, b) => b.totalValue - a.totalValue),
+      }));
+      arr.sort((a, b) => {
+        const ia = MAIN_GROUP_ORDER.indexOf(a.key); const ib = MAIN_GROUP_ORDER.indexOf(b.key);
+        return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+      });
+      return arr;
+    }
     const opt = GROUP_OPTIONS.find(o => o.value === groupBy);
     if (!opt) return null;
     const groups = {};
     for (const it of filteredItems) {
       const k = opt.getKey(it);
-      if (!groups[k]) groups[k] = { key: k, items: [], totalValue: 0, totalQty: 0 };
+      if (!groups[k]) groups[k] = { key: k, hierarchical: false, items: [], totalValue: 0, totalQty: 0 };
       groups[k].items.push(it);
       groups[k].totalValue += it.value;
       groups[k].totalQty += it.qtyTotal;
@@ -388,7 +425,7 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
     );
   }
 
-  // Gruplu görünüm
+  // Gruplu görünüm — iki katmanlı (BOM kategorisi) veya tek katmanlı
   return (
     <div style={{ maxHeight: 700, overflowY: "auto" }}>
       {groupedItems.length === 0 ? (
@@ -396,19 +433,63 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
           {search || showMissing ? "Filtre eşleşmedi" : "Stok kaydı yok"}
         </div>
       ) : groupedItems.map(g => {
-        const isExpanded = expandedGroups[g.key] !== false;  // default açık
+        const mainKey = g.key;
+        const isMainExpanded = expandedGroups[mainKey] !== false;  // default açık
+        if (g.hierarchical) {
+          return (
+            <div key={mainKey} style={{ marginBottom: 10, border: "2px solid var(--color-border-secondary)", borderRadius: 8, overflow: "hidden" }}>
+              <div
+                onClick={() => toggleGroup(mainKey)}
+                style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "var(--color-background-secondary)", cursor: "pointer", userSelect: "none", borderBottom: isMainExpanded ? "1px solid var(--color-border-tertiary)" : "none" }}
+              >
+                <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{isMainExpanded ? "▼" : "▶"}</span>
+                <span style={{ fontSize: 14, fontWeight: 700 }}>{mainKey}</span>
+                <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>({g.itemCount} kalem · {g.subGroups.length} alt grup · {fmt0(g.totalQty)} adet)</span>
+                <span style={{ marginLeft: "auto", fontSize: 14, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(g.totalValue)} ₺</span>
+              </div>
+              {isMainExpanded && g.subGroups.map(sg => {
+                const subKey = mainKey + "/" + sg.key;
+                const isSubExpanded = expandedGroups[subKey] !== false;
+                return (
+                  <div key={subKey} style={{ borderTop: "1px solid var(--color-border-tertiary)" }}>
+                    <div
+                      onClick={() => toggleGroup(subKey)}
+                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 14px 6px 28px", background: "var(--color-background-info-subtle, #EFF6FF)", cursor: "pointer", userSelect: "none" }}
+                    >
+                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isSubExpanded ? "▼" : "▶"}</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-info)" }}>{sg.key}</span>
+                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>({sg.items.length} kalem · {fmt0(sg.totalQty)} adet)</span>
+                      <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "var(--color-text-success)" }}>{fmt2(sg.totalValue)} ₺</span>
+                    </div>
+                    {isSubExpanded && (
+                      <>
+                        {HEADER}
+                        {sg.items.slice(0, 200).map(renderItem)}
+                        {sg.items.length > 200 && (
+                          <div style={{ padding: 8, textAlign: "center", fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                            + {sg.items.length - 200} satır daha
+                          </div>
+                        )}
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          );
+        }
         return (
-          <div key={g.key} style={{ marginBottom: 8, border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
+          <div key={mainKey} style={{ marginBottom: 8, border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
             <div
-              onClick={() => toggleGroup(g.key)}
+              onClick={() => toggleGroup(mainKey)}
               style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: "var(--color-background-info-subtle, #EFF6FF)", cursor: "pointer", userSelect: "none" }}
             >
-              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isExpanded ? "▼" : "▶"}</span>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-info)" }}>{g.key}</span>
+              <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isMainExpanded ? "▼" : "▶"}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-info)" }}>{mainKey}</span>
               <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>({g.items.length} kalem · {fmt0(g.totalQty)} adet)</span>
               <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(g.totalValue)} ₺</span>
             </div>
-            {isExpanded && (
+            {isMainExpanded && (
               <>
                 {HEADER}
                 {g.items.slice(0, 200).map(renderItem)}

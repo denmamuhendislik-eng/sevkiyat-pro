@@ -172,6 +172,30 @@ export function subscribeBomModels(callback) {
   );
 }
 
+// Mamul tespiti için yardımcı subscribe'lar:
+// - products: appData/state doc'unun products array'i (vioCode → kayıtlı mamul listesi)
+// - salesOrders: müşteri satış siparişlerindeki stokKodu (BOM dışı satılan mamuller — örn. yedek parçalar)
+// Envanter kategorisi BUY/BOM Dışı çıkan ama satılıyor olan stokları "Mamul" olarak işaretler.
+export function subscribeProducts(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "state");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data()?.products || []) : []),
+    (err) => { console.error("products listener:", err); callback([]); }
+  );
+}
+
+export function subscribeSalesOrders(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "salesOrders");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("salesOrders listener:", err); callback({}); }
+  );
+}
+
 // workCenters subscribe — Maliyet modülü tezgah meta verilerine erişir.
 // MRP modülü ile aynı doc, MRP yazarken merge:true olmasa bile maliyet field'ları
 // state'te korunur (subscribe sayesinde) → setDoc tüm doc'u yazınca dahil olur.
