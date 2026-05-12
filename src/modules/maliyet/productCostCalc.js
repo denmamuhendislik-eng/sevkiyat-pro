@@ -128,6 +128,10 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
         directLookup = lookupPartCost(part);
       }
 
+      // BOM'da child miktarı — App.jsx explosion ile aynı pattern: p.qty
+      // (BOM modeline göre 'qty' field'ı kullanılır, varsa 'qtyPerParent' fallback)
+      const childQty = (c) => safeNum(c.p.qty) || safeNum(c.p.qtyPerParent) || 1;
+
       if (children.length === 0) {
         // Yaprak parça
         if (isBuyType) {
@@ -157,8 +161,7 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
           // MAKE veya BUY ama direkt fiyat yok → child'lardan recursive
           for (const c of children) {
             const cCost = calcPart(c.i, visited);
-            const qty = safeNum(c.p.qtyPerParent) || 1;
-            material += cCost.unitCost * qty;
+            material += cCost.unitCost * childQty(c);
           }
           source = isBuyType ? "buy-via-children" : "make-recursive";
         }
@@ -183,7 +186,7 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
         level: part.level,
         parentIdx: part.parentIdx,
         supplyType: part.supplyType,
-        qtyPerParent: safeNum(part.qtyPerParent) || 1,
+        qtyPerParent: safeNum(part.qty) || safeNum(part.qtyPerParent) || 1,
         materialCost: material,
         laborCost: labor,
         unitCost: total,
