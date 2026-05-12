@@ -36,6 +36,9 @@ function getRowStatus(part) {
   if (sType === "FASON") {
     const src = part.source || "";
     if (src.includes("fason-rate-missing")) return "missing";
+    // FASON parçada fason ücreti zorunlu (parça komple fasonda yapılıyor) —
+    // BOM'da fason op tanımsızsa fasonCost 0 olur, bunu eksik say.
+    if ((part.fasonCost || 0) <= 0) return "missing";
     if (src.includes("no-weight")) return "partial";
     return part.unitCost > 0 ? "ok" : "missing";
   }
@@ -71,6 +74,9 @@ function explainStatus(part) {
   if (part.laborOpWcAvg > 0) reasons.push(`${part.laborOpWcAvg} op WC ortalaması (tahmin) ⚠`);
   if (part.laborOpDefault > 0) reasons.push(`${part.laborOpDefault} op 5dk global default ⚠`);
   const src = part.source || "";
+  if (sType === "FASON" && (part.fasonCost || 0) <= 0 && !src.includes("fason-rate-missing")) {
+    reasons.push("FASON tipi ama BOM'da fason op tanımsız → fason ücreti hesaplanmadı ✗");
+  }
   if (src.includes("fason-rate-missing")) reasons.push("Fason ücreti tanımsız ✗");
   if (src.includes("no-weight")) reasons.push("Parça ağırlığı yok (KG bazlı fason) ⚠");
   if (src.includes("children-ignored")) reasons.push("BOM children görmezden gelindi (BUY)");
