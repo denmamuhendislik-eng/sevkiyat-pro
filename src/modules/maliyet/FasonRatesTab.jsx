@@ -42,10 +42,11 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     });
   }, [fasonRates, dirty]);
 
-  // BOM'da fason op geçen parçaları + op kodlarını topla
-  const { fasonOpsFromBom, fasonPartsFromBom } = useMemo(() => {
-    const ops = new Map();   // opCode → { name, count }
-    const parts = new Map(); // stokKodu → { name, count }
+  // BOM'da fason op geçen parçaları + op kodlarını + (op,parça) çiftlerini topla
+  const { fasonOpsFromBom, fasonPartsFromBom, fasonOpPartCombos } = useMemo(() => {
+    const ops = new Map();      // opCode → { name, count }
+    const parts = new Map();    // stokKodu → { name, count }
+    const combos = new Map();   // "opCode_stockCode" → { opCode, opName, partCode, partName }
     for (const [mk, model] of Object.entries(bomModels || {})) {
       if (mk === "undefined") continue;
       for (const p of (model.parts || [])) {
@@ -54,10 +55,17 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
           if (isFasonOpCode(op.opCode)) {
             hasAnyFason = true;
             const codeStr = String(op.opCode);
-            const existing = ops.get(codeStr) || { name: op.opName || op.name || `Op ${codeStr}`, count: 0 };
+            const opName = op.opName || op.name || `Op ${codeStr}`;
+            const existing = ops.get(codeStr) || { name: opName, count: 0 };
             existing.count++;
-            if (op.opName || op.name) existing.name = op.opName || op.name;
+            if (op.opName || op.name) existing.name = opName;
             ops.set(codeStr, existing);
+            if (p.stockCode) {
+              const comboKey = `${codeStr}_${p.stockCode}`;
+              if (!combos.has(comboKey)) {
+                combos.set(comboKey, { opCode: codeStr, opName, partCode: p.stockCode, partName: p.stockName || "" });
+              }
+            }
           }
         }
         if (hasAnyFason && p.stockCode) {
@@ -68,7 +76,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         }
       }
     }
-    return { fasonOpsFromBom: ops, fasonPartsFromBom: parts };
+    return { fasonOpsFromBom: ops, fasonPartsFromBom: parts, fasonOpPartCombos: combos };
   }, [bomModels]);
 
   // ==================== ŞABLON İNDİRME ====================
@@ -118,19 +126,36 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     ws2["!cols"] = [{ wch: 14 }, { wch: 45 }, { wch: 10 }];
     XLSX.utils.book_append_sheet(wb, ws2, SHEET_WEIGHT);
 
-    // Sheet 3: Parça-Özel Override (mevcut override'lar + boş başlık)
-    const overrideRows = [["Op Kodu", "Stok Kodu", "Stok Adı", "Birim (AD/KG)", "TL/Birim", "Not"]];
-    Object.entries(draft?.partOverrides || {}).forEach(([key, v]) => {
+    // Sheet 3: Parça-Özel Override — BOM'da fason geçen TÜM (op,parça) çiftleri listelenir.
+    // Kullanıcı parça-özel fiyat olanları doldurur, boş bırakılanlar Sheet 1 op default'u kullanır.
+    const overrideRows = [["Op Kodu", "Op Adı", "Stok Kodu", "Stok Adı", "Birim (AD/KG)", "TL/Birim", "Not"]];
+    // Mevcut override'lar + BOM'dan gelen tüm çiftleri birleştir
+    const allKeys = new Set([
+      ...fasonOpPartCombos.keys(),
+      ...Object.keys(draft?.partOverrides || {}),
+    ]);
+    const sortedKeys = [...allKeys].sort((a, b) => {
+      // Önce op kodu, sonra stok kodu
+      const [aOp, aPart] = a.split("_");
+      const [bOp, bPart] = b.split("_");
+      return aOp.localeCompare(bOp) || aPart.localeCompare(bPart);
+    });
+    for (const key of sortedKeys) {
+      const combo = fasonOpPartCombos.get(key);
+      const existing = draft?.partOverrides?.[key];
       const [opCode, stockCode] = key.split("_");
       overrideRows.push([
-        opCode, stockCode, v.name || "",
-        v.unit || "AD",
-        v.unitPriceTl || "",
-        v.note || "",
+        opCode,
+        combo?.opName || existing?.opName || "",
+        stockCode,
+        combo?.partName || existing?.name || "",
+        existing?.unit || "AD",
+        existing?.unitPriceTl || "",
+        existing?.note || "",
       ]);
-    });
+    }
     const ws3 = XLSX.utils.aoa_to_sheet(overrideRows);
-    ws3["!cols"] = [{ wch: 10 }, { wch: 14 }, { wch: 45 }, { wch: 14 }, { wch: 12 }, { wch: 30 }];
+    ws3["!cols"] = [{ wch: 10 }, { wch: 30 }, { wch: 14 }, { wch: 40 }, { wch: 14 }, { wch: 12 }, { wch: 30 }];
     XLSX.utils.book_append_sheet(wb, ws3, SHEET_OVERRIDE);
 
     const fileName = `fason_ucret_sablonu_${new Date().toISOString().slice(0,10)}.xlsx`;
@@ -180,21 +205,28 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         }
       }
 
-      // Sheet 3: Parça-Özel Override
+      // Sheet 3: Parça-Özel Override (kolonlar: Op Kodu, Op Adı, Stok Kodu, Stok Adı, Birim, TL/Birim, Not)
+      // Eski format (6 kolon: Op Adı yok) geri uyumlu — header'a göre tespit et
       if (wb.Sheets[SHEET_OVERRIDE]) {
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[SHEET_OVERRIDE], { header: 1, defval: "" });
+        const header = (rows[0] || []).map(h => String(h || "").trim().toLocaleLowerCase("tr-TR"));
+        // Yeni format kontrolü: 2. kolon "op adı"
+        const isNewFormat = header[1] && header[1].includes("op") && header[1].includes("ad");
         for (let i = 1; i < rows.length; i++) {
           const r = rows[i];
           const opCode = String(r[0] || "").trim();
-          const stockCode = String(r[1] || "").trim();
+          const stockCode = String(r[isNewFormat ? 2 : 1] || "").trim();
           if (!opCode || !stockCode) continue;
-          const price = Number(r[4]);
-          if (!(price > 0)) continue;
+          const stockName = String(r[isNewFormat ? 3 : 2] || "").trim();
+          const unit = String(r[isNewFormat ? 4 : 3] || "AD").trim().toUpperCase() === "KG" ? "KG" : "AD";
+          const price = Number(r[isNewFormat ? 5 : 4]);
+          const note = String(r[isNewFormat ? 6 : 5] || "").trim();
+          if (!(price > 0)) continue;  // boş satır → atla (op default kullanılır)
           partOverrides[`${opCode}_${stockCode}`] = {
-            name: String(r[2] || "").trim(),
-            unit: String(r[3] || "AD").trim().toUpperCase() === "KG" ? "KG" : "AD",
+            name: stockName,
+            unit,
             unitPriceTl: price,
-            note: String(r[5] || "").trim(),
+            note,
           };
         }
       }
