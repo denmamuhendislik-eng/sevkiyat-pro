@@ -113,9 +113,11 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
       const bomInfo = fasonOpsFromBom.get(opCode) || {};
       const existing = draft?.opDefaults?.[opCode] || {};
       const name = existing.name || wcInfo.name || bomInfo.name || "";
+      // Default birim: 621 (Sementasyon) ve 622 (Islah) → KG, diğerleri AD
+      const defaultUnit = DEFAULT_KG_OPS.includes(opCode) ? "KG" : "AD";
       opRows.push([
         opCode, name,
-        existing.unit || "AD",
+        existing.unit || defaultUnit,
         existing.unitPriceTl || "",
         existing.note || "",
       ]);
