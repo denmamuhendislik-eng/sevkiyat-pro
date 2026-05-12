@@ -21,6 +21,63 @@ const SUPPLY_COLORS = {
   "MAKE+FASON": "#D97706", FASON: "#C2410C", PRODUCT: "#1D9E75",
 };
 
+// Maliyet veri kalitesi durumu — parça satır rengi + filtre için
+const STATUS_COLORS = {
+  ok:      { bar: "#22C55E", bg: "rgba(34, 197, 94, 0.06)",  emoji: "🟢", label: "Tam" },
+  partial: { bar: "#F59E0B", bg: "rgba(245, 158, 11, 0.07)", emoji: "🟡", label: "Kısmi" },
+  missing: { bar: "#DC2626", bg: "rgba(220, 38, 38, 0.06)",  emoji: "🔴", label: "Eksik" },
+};
+
+function getRowStatus(part) {
+  const sType = part.supplyType;
+  if (sType === "BUY" || sType === "RAW") {
+    return part.unitCost > 0 ? "ok" : "missing";
+  }
+  if (sType === "FASON") {
+    const src = part.source || "";
+    if (src.includes("fason-rate-missing")) return "missing";
+    if (src.includes("no-weight")) return "partial";
+    return part.unitCost > 0 ? "ok" : "missing";
+  }
+  // MAKE / MAKE+FASON / PRODUCT
+  const def = part.laborOpDefault || 0;
+  const wcAvg = part.laborOpWcAvg || 0;
+  if (def > 0 || wcAvg > 0) return "partial";
+  if ((part.unitCost || 0) === 0 && (part.materialCost || 0) === 0) return "missing";
+  return "ok";
+}
+
+// Parent zincirinde BUY/RAW varsa true — bu parça maliyete dahil değil (children-ignored)
+function isParentBypassed(parts, partIdx) {
+  let cur = parts[partIdx];
+  while (cur && cur.parentIdx !== null && cur.parentIdx !== undefined) {
+    const parent = parts[cur.parentIdx];
+    if (!parent) break;
+    if (parent.supplyType === "BUY" || parent.supplyType === "RAW") return true;
+    cur = parent;
+  }
+  return false;
+}
+
+function explainStatus(part) {
+  const reasons = [];
+  const sType = part.supplyType;
+  if (sType === "BUY" || sType === "RAW") {
+    if (part.unitCost > 0) reasons.push(`Alış fiyatı: ${fmt2(part.unitCost)} TL ✓`);
+    else reasons.push("Alış fiyatı yok ✗");
+  }
+  if (part.laborOpMes > 0) reasons.push(`${part.laborOpMes} op MES verisi ✓`);
+  if (part.laborOpManual > 0) reasons.push(`${part.laborOpManual} op manuel WC default ✓`);
+  if (part.laborOpWcAvg > 0) reasons.push(`${part.laborOpWcAvg} op WC ortalaması (tahmin) ⚠`);
+  if (part.laborOpDefault > 0) reasons.push(`${part.laborOpDefault} op 5dk global default ⚠`);
+  const src = part.source || "";
+  if (src.includes("fason-rate-missing")) reasons.push("Fason ücreti tanımsız ✗");
+  if (src.includes("no-weight")) reasons.push("Parça ağırlığı yok (KG bazlı fason) ⚠");
+  if (src.includes("children-ignored")) reasons.push("BOM children görmezden gelindi (BUY)");
+  if (src.includes("ops-fason-skip")) reasons.push("İçsel op'lar atlandı (FASON)");
+  return reasons.length > 0 ? reasons.join(" · ") : "—";
+}
+
 export default function ProductCostsTab({ canEdit, isAdmin }) {
   const [bomModels, setBomModels] = useState({});
   const [workCenters, setWorkCenters] = useState({});
@@ -108,6 +165,25 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
       avgCost: costed > 0 ? totalRootCost / costed : 0,
       withoutCost: models.length - costed,
     };
+  }, [calc]);
+
+  // Model bazlı status özeti — sol panelde badge ve detayda parçalama için
+  const modelStatusCounts = useMemo(() => {
+    const counts = {};
+    if (!calc?.byModel) return counts;
+    for (const [key, model] of Object.entries(calc.byModel)) {
+      let ok = 0, partial = 0, missing = 0;
+      const list = model.partsList || [];
+      for (const part of list) {
+        if (isParentBypassed(list, part.idx)) continue;
+        const s = getRowStatus(part);
+        if (s === "ok") ok++;
+        else if (s === "partial") partial++;
+        else missing++;
+      }
+      counts[key] = { ok, partial, missing };
+    }
+    return counts;
   }, [calc]);
 
   if (!allLoaded) {
@@ -202,6 +278,17 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
                       {(m.rootFason || 0) > 0 && <> · Fas: {fmt0(m.rootFason)}</>}
                     </div>
                   )}
+                  {(() => {
+                    const cnt = modelStatusCounts[m.modelKey];
+                    if (!cnt || (cnt.ok + cnt.partial + cnt.missing) === 0) return null;
+                    return (
+                      <div style={{ fontSize: 9, marginTop: 3, display: "flex", gap: 6 }} title={`${cnt.missing} eksik · ${cnt.partial} kısmi · ${cnt.ok} tam veri`}>
+                        {cnt.missing > 0 && <span style={{ color: STATUS_COLORS.missing.bar, fontWeight: 600 }}>🔴{cnt.missing}</span>}
+                        {cnt.partial > 0 && <span style={{ color: STATUS_COLORS.partial.bar, fontWeight: 600 }}>🟡{cnt.partial}</span>}
+                        {cnt.ok > 0 && <span style={{ color: STATUS_COLORS.ok.bar }}>🟢{cnt.ok}</span>}
+                      </div>
+                    );
+                  })()}
                 </div>
               );
             })}
@@ -210,27 +297,39 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
 
         {/* SAĞ: seçili BOM detayı */}
         {selectedModel && calc?.byModel?.[selectedModel] && (
-          <ModelDetailPanel model={calc.byModel[selectedModel]} wcRateAvg={calc.wcRateAvg} stockUnitCost={calc.stockUnitCost} onClose={() => setSelectedModel(null)} />
+          <ModelDetailPanel
+            model={calc.byModel[selectedModel]}
+            wcRateAvg={calc.wcRateAvg}
+            stockUnitCost={calc.stockUnitCost}
+            statusCounts={modelStatusCounts[selectedModel]}
+            onClose={() => setSelectedModel(null)}
+          />
         )}
       </div>
     </div>
   );
 }
 
-function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, onClose }) {
+function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClose }) {
   const [showZero, setShowZero] = useState(true);
   const [searchPart, setSearchPart] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");  // all | ok | partial | missing
   const parts = model.partsList || [];
   const filtered = useMemo(() => {
     const q = searchPart.trim().toLocaleLowerCase("tr-TR");
     return parts.filter(p => {
       if (!showZero && (p.unitCost || 0) <= 0) return false;
+      if (statusFilter !== "all") {
+        const bypassed = isParentBypassed(parts, p.idx);
+        if (bypassed) return false;  // bypassed satırlar filtrede yer almaz
+        if (getRowStatus(p) !== statusFilter) return false;
+      }
       if (!q) return true;
       const code = (p.stockCode || "").toLocaleLowerCase("tr-TR");
       const name = (p.stockName || "").toLocaleLowerCase("tr-TR");
       return code.includes(q) || name.includes(q);
     });
-  }, [parts, showZero, searchPart]);
+  }, [parts, showZero, searchPart, statusFilter]);
 
   return (
     <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden" }}>
@@ -262,12 +361,40 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, onClose }) {
           <input type="checkbox" checked={showZero} onChange={e => setShowZero(e.target.checked)} />
           0 ₺ olanları göster
         </label>
+        {statusCounts && (statusCounts.ok + statusCounts.partial + statusCounts.missing) > 0 && (
+          <div style={{ display: "inline-flex", gap: 4, marginLeft: "auto" }}>
+            {[
+              { k: "all", label: "Hepsi", count: statusCounts.ok + statusCounts.partial + statusCounts.missing, color: "var(--color-text-secondary)" },
+              { k: "missing", label: "🔴 Eksik", count: statusCounts.missing, color: STATUS_COLORS.missing.bar },
+              { k: "partial", label: "🟡 Kısmi", count: statusCounts.partial, color: STATUS_COLORS.partial.bar },
+              { k: "ok", label: "🟢 Tam", count: statusCounts.ok, color: STATUS_COLORS.ok.bar },
+            ].map(b => {
+              const active = statusFilter === b.k;
+              return (
+                <button
+                  key={b.k}
+                  onClick={() => setStatusFilter(b.k)}
+                  style={{
+                    padding: "3px 8px", borderRadius: 4, cursor: "pointer", fontSize: 10, fontWeight: active ? 600 : 500,
+                    border: `1px solid ${active ? b.color : "var(--color-border-tertiary)"}`,
+                    background: active ? b.color + "22" : "transparent",
+                    color: active ? b.color : "var(--color-text-secondary)",
+                  }}
+                >
+                  {b.label} ({b.count})
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       <div style={{ overflowX: "auto", maxHeight: 700, overflowY: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
           <thead style={{ position: "sticky", top: 0, background: "var(--color-background-secondary)", zIndex: 1 }}>
             <tr>
+              <th style={{ padding: "5px 4px", textAlign: "center", fontWeight: 500, width: 6 }}></th>
+              <th style={{ padding: "5px 4px", textAlign: "center", fontWeight: 500, width: 18 }}></th>
               <th style={{ padding: "5px 8px", textAlign: "left", fontWeight: 500 }}>L</th>
               <th style={{ padding: "5px 8px", textAlign: "left", fontWeight: 500 }}>Stok Kodu</th>
               <th style={{ padding: "5px 8px", textAlign: "left", fontWeight: 500 }}>Stok Adı</th>
@@ -284,8 +411,25 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, onClose }) {
             {filtered.map(p => {
               const indent = (p.level || 0) * 12;
               const isRoot = p.idx === model.rootIdx;
+              const bypassed = isParentBypassed(parts, p.idx);
+              const status = bypassed ? null : getRowStatus(p);
+              const sc = status ? STATUS_COLORS[status] : null;
+              const tooltip = bypassed
+                ? "BUY parent altında — hesaba dahil değil ⊘"
+                : explainStatus(p);
+              const rowBg = isRoot
+                ? "var(--color-background-info-subtle, #EFF6FF)"
+                : (sc?.bg || "transparent");
               return (
-                <tr key={p.idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: isRoot ? "var(--color-background-info-subtle, #EFF6FF)" : "transparent" }}>
+                <tr
+                  key={p.idx}
+                  title={tooltip}
+                  style={{ borderTop: "0.5px solid var(--color-border-tertiary)", background: rowBg, opacity: bypassed ? 0.5 : 1 }}
+                >
+                  <td style={{ padding: 0, background: sc?.bar || "transparent", width: 4 }}></td>
+                  <td style={{ padding: "3px 2px", textAlign: "center", fontSize: 10 }}>
+                    {bypassed ? <span title="BUY parent altında — hesaba dahil değil">⊘</span> : (sc ? sc.emoji : "")}
+                  </td>
                   <td style={{ padding: "4px 8px", color: "var(--color-text-tertiary)" }}>L{p.level ?? "?"}</td>
                   <td style={{ padding: "4px 8px", fontFamily: "var(--font-mono)", paddingLeft: 8 + indent }}>
                     {isRoot && "⭐ "}{p.stockCode}
@@ -310,12 +454,9 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, onClose }) {
       </div>
 
       <div style={{ padding: "8px 14px", background: "var(--color-background-secondary)", fontSize: 10, color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
-        <b>Kaynak kodu açıklaması:</b><br/>
-        <code>buy-last-price</code> — BUY/RAW için unitCosts son alış fiyatı kullanıldı<br/>
-        <code>buy-no-cost</code> — BUY/RAW ama unitCosts'ta kayıt yok (0 hesaplandı)<br/>
-        <code>make-recursive</code> — Alt parçaların maliyetinden hesaplandı<br/>
-        <code>make-leaf</code> — MAKE ama alt parça yok (sadece operasyon işçiliği)<br/>
-        <code>fason-tbd</code> — Fason ücreti henüz tanımlı değil
+        <b>Durum:</b> 🟢 Tam (MES + manuel veri) · 🟡 Kısmi (WC ortalaması veya 5dk default kullanıldı, ya da KG fason ağırlık eksik) · 🔴 Eksik (alış fiyatı yok / fason ücreti tanımsız / unitCost 0) · ⊘ BUY parent altı (hesaba dahil değil)<br/>
+        <b>Kaynak kodu açıklaması:</b>
+        <code>buy-by-code</code>, <code>make-recursive</code>, <code>fason-children</code>, <code>+labor(mes:N,man:N,wcAvg:N,def:N)</code> — Satır üzerine hover ile detay tooltip
       </div>
     </div>
   );
