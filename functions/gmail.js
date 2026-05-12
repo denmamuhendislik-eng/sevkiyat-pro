@@ -49,6 +49,10 @@ const VIO_REPORTS = [
     docName: "laborCosts",
     subjectMatch: "hizmet total raporu",
     label: "Hizmet Total Raporu (Genel Giderler)",
+    // VIO bu raporu ayda bir gönderiyor — günlük cron yoksa fail saymıyoruz.
+    // Lookback 35 gün (840 saat) tampon, mail gerçekten 1 aydır gelmediyse uyarı yine var.
+    lookbackHours: 35 * 24,
+    monthly: true,
   },
 ];
 
@@ -183,14 +187,21 @@ async function fetchAllVioReports(auth, lookbackHours = 24) {
 
   for (const report of VIO_REPORTS) {
     try {
-      const msg = await findLatestMessage(gmail, report.subjectMatch, lookbackHours);
+      const reportLookback = report.lookbackHours || lookbackHours;
+      const msg = await findLatestMessage(gmail, report.subjectMatch, reportLookback);
       if (!msg) {
+        // Monthly raporlar (örn. hizmet total) için fail değil "no_recent_monthly" — overallSuccess'i bozmaz
+        const status = report.monthly ? "no_recent_monthly" : "not_found";
+        const days = Math.round(reportLookback / 24);
+        const error = report.monthly
+          ? `Son ${days} günde "${report.subjectMatch}" yok (ayda bir gönderilen rapor — beklenen davranış)`
+          : `Son ${reportLookback} saatte "${report.subjectMatch}" subject'li mail bulunamadı`;
         results.push({
           type: report.type,
           docName: report.docName,
           label: report.label,
-          status: "not_found",
-          error: `Son ${lookbackHours} saatte "${report.subjectMatch}" subject'li mail bulunamadı`,
+          status,
+          error,
         });
         continue;
       }

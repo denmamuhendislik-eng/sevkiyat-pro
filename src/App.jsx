@@ -9539,22 +9539,25 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         const sourceLbl = last.source?.includes("morning") ? "Sabah" : last.source?.includes("midday") ? "Öğle" : last.source === "http" ? "Manuel" : "Otomatik";
         // Status: success + 6 saatten yeni → yeşil; success + eski → sarı; fail → kırmızı
         let bg, border, color, icon, label;
+        // "no_recent_monthly" = ayda bir gönderilen rapor (overhead/hizmet total) için mail yok →
+        // hata değil, beklenen davranış. okCount sayımında "ok" gibi sayılır.
+        const isOkOrMonthly = (r) => r.status === "ok" || r.status === "no_recent_monthly";
         if (!last.success) {
           bg = "var(--color-background-error, #FEF2F2)"; border = "#FCA5A5"; color = "#B91C1C"; icon = "❌";
-          const failed = (last.results || []).filter(r => r.status !== "ok").map(r => r.label).join(", ");
+          const failed = (last.results || []).filter(r => !isOkOrMonthly(r)).map(r => r.label).join(", ");
           label = `Otomasyon hatası · ${isToday ? timeStr : dateStr} · ${failed || "Bilinmeyen hata"}`;
         } else if (ageMin > 360) {
           bg = "var(--color-background-warning, #FFFBEB)"; border = "#FCD34D"; color = "#92400E"; icon = "⚠️";
           label = `VIO Mail Otomasyonu: Son güncelleme ${ageStr} (${isToday ? timeStr : dateStr})`;
         } else {
           bg = "var(--color-background-success, #F0FDF4)"; border = "#86EFAC"; color = "#166534"; icon = "🤖";
-          const okCount = (last.results || []).filter(r => r.status === "ok").length;
+          const okCount = (last.results || []).filter(isOkOrMonthly).length;
           const totalCount = (last.results || []).length;
           label = `VIO Mail Otomasyonu · ${sourceLbl} ${isToday ? timeStr : dateStr} · ${okCount}/${totalCount} rapor başarılı`;
         }
         return (
           <div
-            title={`Çalıştırma: ${runAt.toLocaleString("tr-TR")}\nKaynak: ${last.source || "—"}\n` + (last.results || []).map(r => `${r.status === "ok" ? "✓" : "✗"} ${r.label}${r.error ? ": " + r.error : ""}`).join("\n")}
+            title={`Çalıştırma: ${runAt.toLocaleString("tr-TR")}\nKaynak: ${last.source || "—"}\n` + (last.results || []).map(r => `${r.status === "ok" ? "✓" : r.status === "no_recent_monthly" ? "⏸" : "✗"} ${r.label}${r.error ? ": " + r.error : ""}`).join("\n")}
             style={{ marginBottom: 16, padding: "8px 12px", background: bg, border: `1px solid ${border}`, borderRadius: 6, fontSize: 12, color, display: "inline-flex", alignItems: "center", gap: 8, fontWeight: 500 }}
           >
             <span>{icon}</span>

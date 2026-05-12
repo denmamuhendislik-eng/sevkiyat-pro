@@ -145,8 +145,13 @@ async function runVioImport(source, secrets) {
           status: item.status,
           error: item.error,
         });
-        overallSuccess = false;
-        logger.warn(`[VIO] ${item.label}: ${item.status}`, { error: item.error });
+        // Monthly rapor (ayda bir VIO tarafından gönderilen) için mail yokluğu fail sayılmaz
+        if (item.status !== "no_recent_monthly") {
+          overallSuccess = false;
+          logger.warn(`[VIO] ${item.label}: ${item.status}`, { error: item.error });
+        } else {
+          logger.info(`[VIO] ${item.label}: ${item.status} (monthly — beklenen)`);
+        }
         continue;
       }
 
