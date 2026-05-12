@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { subscribeWorkCenters, saveMachinesForWc, subscribeLaborCosts, subscribeOverheadPolicy, saveOverheadPolicy } from "./firestore";
+import { subscribeWorkCenters, saveMachinesForWc, saveWcManualCycle, subscribeLaborCosts, subscribeOverheadPolicy, saveOverheadPolicy, subscribeBomModels } from "./firestore";
 import { calculateMachineRates, DEFAULT_WEIGHTS, suggestWcSalaryMapping } from "./distributionCalc";
 
 const todayMonth = () => new Date().toISOString().slice(0, 7);
@@ -33,6 +33,10 @@ export default function MachineRatesTab({ canEdit }) {
   const [savingPolicy, setSavingPolicy] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(todayMonth());
   const [showMappingEditor, setShowMappingEditor] = useState(false);
+  // BOM ortalaması referans değer (manuel input boş ise gösterilir)
+  const [bomModels, setBomModels] = useState({});
+  // WC bazlı manuel cycle input drafts (kaydedilmemiş değişiklikler)
+  const [cycleDrafts, setCycleDrafts] = useState({});
 
   useEffect(() => {
     const unsub = subscribeLaborCosts((d) => setLaborData(d || {}));
@@ -57,6 +61,45 @@ export default function MachineRatesTab({ canEdit }) {
     });
     return unsub;
   }, []);
+  useEffect(() => {
+    const unsub = subscribeBomModels((d) => setBomModels(d || {}));
+    return unsub;
+  }, []);
+
+  // BOM'dan WC bazlı ortalama cycle süresi — productCostCalc.js'deki hesabın aynısı.
+  // UI'da "BOM ort: X dk" referans olarak gösterilir.
+  const wcAvgCycle = useMemo(() => {
+    const sums = {};
+    for (const mk of Object.keys(bomModels)) {
+      if (mk === "undefined") continue;
+      for (const p of (bomModels[mk]?.parts || [])) {
+        for (const op of (p.operations || [])) {
+          if (op.wcCode && op.cycleTime > 0) {
+            if (!sums[op.wcCode]) sums[op.wcCode] = { total: 0, count: 0 };
+            sums[op.wcCode].total += op.cycleTime;
+            sums[op.wcCode].count++;
+          }
+        }
+      }
+    }
+    const out = {};
+    for (const [wc, s] of Object.entries(sums)) {
+      out[wc] = Math.round((s.total / s.count) * 100) / 100;
+    }
+    return out;
+  }, [bomModels]);
+
+  const handleSaveCycle = async (code, raw) => {
+    if (!canEdit) return;
+    const trimmed = String(raw ?? "").trim();
+    const val = trimmed === "" ? null : Number(trimmed);
+    try {
+      await saveWcManualCycle(code, val, { canEdit });
+      setCycleDrafts(prev => { const { [code]: _, ...rest } = prev; return rest; });
+    } catch (e) {
+      alert("Manuel cycle kaydı hatası: " + e.message);
+    }
+  };
 
   // Tüm WC'leri göster — tezgahsız olanlarda "+ Yardımcı ekipman ekle" butonu
   const wcEntries = useMemo(() => {
@@ -203,6 +246,35 @@ export default function MachineRatesTab({ canEdit }) {
               <div style={{ padding: "8px 14px", background: "var(--color-background-secondary)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
                 <span style={{ fontWeight: 600, fontSize: 13 }}>{wc.name || code}</span>
                 <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>({machines.length} tezgah)</span>
+                {/* Manuel default cycle (dk) — BOM'da süre girilmemiş op'lar için */}
+                {(() => {
+                  const stored = wc.manualCycleMin;
+                  const draft = cycleDrafts[code];
+                  const value = draft !== undefined ? draft : (stored != null ? String(stored) : "");
+                  const bomAvg = wcAvgCycle[code];
+                  const isDirty = draft !== undefined && draft !== (stored != null ? String(stored) : "");
+                  return (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11, color: "var(--color-text-secondary)" }}>
+                      <span title="Bu WC'deki op'larda cycleTime girilmemişse maliyet hesabında bu değer kullanılır. Boş bırakırsan BOM ortalaması, o da yoksa 5 dk default kullanılır.">⏱ Manuel cycle:</span>
+                      <input
+                        type="number"
+                        step="0.1"
+                        min="0"
+                        placeholder={bomAvg > 0 ? `boş = ${bomAvg}` : "boş = 5"}
+                        value={value}
+                        disabled={!canEdit}
+                        onChange={e => setCycleDrafts(prev => ({ ...prev, [code]: e.target.value }))}
+                        onBlur={() => { if (isDirty) handleSaveCycle(code, value); }}
+                        onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                        style={{ width: 70, padding: "3px 6px", fontSize: 11, borderRadius: 3, border: "1px solid " + (isDirty ? "#1D9E75" : "var(--color-border-tertiary)") }}
+                      />
+                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>dk</span>
+                      {bomAvg > 0 && (
+                        <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }} title="BOM'daki süreli op'ların ortalaması">(BOM ort: {bomAvg})</span>
+                      )}
+                    </span>
+                  );
+                })()}
                 {isEmpty && canEdit && (
                   <button
                     onClick={() => handleAddVirtual(code)}

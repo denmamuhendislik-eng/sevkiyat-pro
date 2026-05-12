@@ -54,17 +54,50 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
   }
 
   // 1. Tezgah dakika ücretlerini hesapla → WC bazında ortalama
+  // YRD (sanal) ekipmanlar dahil — kullanıcı tam da bu WC'de gerçek tezgah olmadığında
+  // maliyet hesaplanabilsin diye YRD ekliyor. Dışarda bırakırsak o WC'de cycle × 0 = 0 olur
+  // ve KAYNAK gibi sadece sanal ekipmanı olan WC'lerde işçilik hep sıfır çıkar.
   const ratesCalc = calculateMachineRates({ monthData, policy, workCenters });
   const wcRateSum = {};
   for (const m of ratesCalc.machines) {
-    if (m.isVirtual) continue;  // YRD'ler üretimde işlemiyor, ortalamaya katma
+    const rate = ratesCalc.machinePay[m.id]?.ratePerMin || 0;
+    if (rate <= 0) continue;  // Ücreti hesaplanmamış makinaları geç
     if (!wcRateSum[m.wcCode]) wcRateSum[m.wcCode] = { sum: 0, count: 0 };
-    wcRateSum[m.wcCode].sum += ratesCalc.machinePay[m.id]?.ratePerMin || 0;
+    wcRateSum[m.wcCode].sum += rate;
     wcRateSum[m.wcCode].count++;
   }
   const wcRateAvg = {};
   for (const [code, v] of Object.entries(wcRateSum)) {
     wcRateAvg[code] = v.count > 0 ? v.sum / v.count : 0;
+  }
+
+  // 1b. BOM'dan WC bazlı ortalama cycle süresi (cycleTime girilmemiş op'lar için fallback) —
+  // mantık App.jsx:8548 ile birebir aynı (orada çizelgeleme için kullanılıyor, burada maliyet için).
+  // İŞLEME MERKEZİ ve TORNA gibi yoğun WC'lerde gerçek MES verileri çok → güvenilir ortalama çıkar.
+  const wcAvgCycle = {};
+  const wcCycleSums = {};
+  for (const mk of Object.keys(bomModels)) {
+    if (mk === "undefined") continue;
+    for (const p of (bomModels[mk]?.parts || [])) {
+      for (const op of (p.operations || [])) {
+        if (op.wcCode && op.cycleTime > 0) {
+          if (!wcCycleSums[op.wcCode]) wcCycleSums[op.wcCode] = { total: 0, count: 0 };
+          wcCycleSums[op.wcCode].total += op.cycleTime;
+          wcCycleSums[op.wcCode].count++;
+        }
+      }
+    }
+  }
+  for (const [wc, s] of Object.entries(wcCycleSums)) {
+    wcAvgCycle[wc] = Math.round((s.total / s.count) * 100) / 100;
+  }
+  const DEFAULT_CYCLE_MIN = 5;  // MRP App.jsx:6698 ile tutarlı global default
+
+  // Kullanıcı manuel WC default override'ları — workCenters/centers/{wc}/manualCycleMin
+  const wcManualCycle = {};
+  for (const [code, wc] of Object.entries(workCenters?.centers || {})) {
+    const v = Number(wc?.manualCycleMin);
+    if (v > 0) wcManualCycle[code] = v;
   }
 
   // 2. Birim BUY/RAW maliyetler — unitCosts son alış fiyatı (en geç orderDate'li parti)
@@ -167,12 +200,25 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
       // (BOM modeline göre 'qty' field'ı kullanılır, varsa 'qtyPerParent' fallback)
       const childQty = (c) => safeNum(c.p.qty) || safeNum(c.p.qtyPerParent) || 1;
 
-      if (children.length === 0) {
-        // Yaprak parça
-        if (isBuyType) {
-          material = directLookup?.cost || 0;
-          source = material > 0 ? "buy-by-" + directLookup.matchedBy : "buy-no-cost";
-        } else if (sType === "FASON") {
+      // Material hesabı — supplyType'a göre dallan
+      // BUY/RAW: bitmiş satın alma → sadece directLookup.cost. Children ve operations
+      // BOM'da olsa bile dikkate alınmaz (eskiden MAKE iken kalmış olabilirler).
+      // MAKE/MAKE+FASON/PRODUCT: children'dan recursive (varsa) veya leaf'te directLookup.
+      // FASON (parça düzeyinde): material 0, fason ücreti aşağıda.
+      if (isBuyType) {
+        material = directLookup?.cost || 0;
+        if (material > 0) {
+          source = "buy-by-" + directLookup.matchedBy;
+        } else {
+          source = "buy-no-cost";
+        }
+        if (children.length > 0) {
+          // BOM'da eski MAKE'ten kalan alt parçalar var — görmezden gelindi
+          source += " (children-ignored)";
+        }
+      } else if (children.length === 0) {
+        // Yaprak parça (MAKE/FASON)
+        if (sType === "FASON") {
           material = 0;
           source = "fason-tbd";
         } else if (sType === "MAKE" || sType === "MAKE+FASON" || sType === "PRODUCT") {
@@ -187,35 +233,65 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
           source = "leaf-unknown-type";
         }
       } else {
-        // Üst parça — children var
-        if (isBuyType && directLookup?.cost > 0) {
-          // BUY/RAW'ın kendi fiyatı varsa kullan (child'lar yardımcı bilgi)
-          material = directLookup.cost;
-          source = "buy-direct-by-" + directLookup.matchedBy;
-        } else {
-          // MAKE veya BUY ama direkt fiyat yok → child'lardan recursive
-          for (const c of children) {
-            const cCost = calcPart(c.i, visited);
-            material += cCost.unitCost * childQty(c);
-          }
-          source = isBuyType ? "buy-via-children" : "make-recursive";
+        // Üst parça — children'dan recursive topla (hem MAKE hem FASON için)
+        // FASON parçada hammadde bizden gidiyor → child material'i biz ödüyoruz, sadece içsel
+        // işçilik fasonda yapıldığı için atlanır (aşağıda).
+        for (const c of children) {
+          const cCost = calcPart(c.i, visited);
+          material += cCost.unitCost * childQty(c);
         }
+        source = sType === "FASON" ? "fason-children" : "make-recursive";
       }
 
       // İşçilik + Fason — bu parçanın operasyonları
-      for (const op of part.operations || []) {
-        if (isFasonOp(op)) {
-          // Fason op — fason ücreti ekle
-          const f = calcFasonOpCost(op.opCode, part.stockCode, fasonRates);
-          fason += f.cost;
-          fasonSources.push(f.source);
-        } else {
-          // İçsel op — tezgah dakika ücretiyle hesap
-          const cycle = safeNum(op.cycleTime);
-          if (cycle <= 0) continue;
-          const wcCode = op.wcCode || op.workCenter;
-          const rate = wcRateAvg[wcCode] || 0;
-          labor += cycle * rate;
+      // BUY/RAW: tüm op'lar atlanır (bitmiş satın alma → işçilik/fason satın alma fiyatına dahil).
+      // FASON (tam fason): parça komple fasonda yapılıyor → içsel op'lar atlanır (fasonda yapılır),
+      //   yalnız fason op'lar (opCode ≥600) ücretlendirilir. Hammadde child'lardan toplanır (yukarıda).
+      // MAKE / MAKE+FASON: hem içsel hem fason op'lar normal işlenir.
+      let opMesCount = 0, opManualCount = 0, opWcAvgCount = 0, opDefaultCount = 0;
+      let opIgnoredBuy = 0;
+      let opIgnoredFasonInternal = 0;
+      if (isBuyType) {
+        opIgnoredBuy = (part.operations || []).length;
+      } else {
+        const isPureFason = sType === "FASON";
+        for (const op of part.operations || []) {
+          if (isFasonOp(op)) {
+            // Fason op — her tip parça için ücretlendirilir (FASON dahil, MAKE+FASON dahil)
+            const f = calcFasonOpCost(op.opCode, part.stockCode, fasonRates);
+            fason += f.cost;
+            fasonSources.push(f.source);
+          } else {
+            // İçsel op — FASON tipi parçada atla (komple fasonda yapılıyor, içsel iş yok)
+            if (isPureFason) {
+              opIgnoredFasonInternal++;
+              continue;
+            }
+            // Tezgah dakika ücretiyle hesap. 4 katmanlı cycle resolve:
+            //   1) op.cycleTime > 0 (MES'ten gerçek süre)
+            //   2) wcManualCycle[wcCode] (kullanıcı manuel override — MachineRatesTab)
+            //   3) wcAvgCycle[wcCode] (BOM'daki diğer op'ların WC ortalaması)
+            //   4) DEFAULT_CYCLE_MIN (global 5dk, MRP ile tutarlı)
+            const wcCode = op.wcCode || op.workCenter;
+            // wcCode boş ise op atla — hangi tezgahta yapıldığı bilinmediği için ücret hesaplanamaz
+            if (!wcCode) continue;
+            const rawCycle = safeNum(op.cycleTime);
+            let cycle = rawCycle;
+            if (rawCycle > 0) {
+              opMesCount++;
+            } else if (wcManualCycle[wcCode] > 0) {
+              cycle = wcManualCycle[wcCode];
+              opManualCount++;
+            } else if (wcAvgCycle[wcCode] > 0) {
+              cycle = wcAvgCycle[wcCode];
+              opWcAvgCount++;
+            } else {
+              cycle = DEFAULT_CYCLE_MIN;
+              opDefaultCount++;
+            }
+            const rate = wcRateAvg[wcCode] || 0;
+            labor += cycle * rate;
+          }
         }
       }
 
@@ -225,6 +301,18 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
       if (fasonSources.length > 0) {
         const uniqFason = [...new Set(fasonSources)];
         finalSource += " +" + uniqFason.join("+");
+      }
+      // İşçilik veri kalitesi audit'i — kaç op MES/manuel/WC ortalaması/global default kullandı
+      if (opManualCount > 0 || opWcAvgCount > 0 || opDefaultCount > 0) {
+        finalSource += ` +labor(mes:${opMesCount},man:${opManualCount},wcAvg:${opWcAvgCount},def:${opDefaultCount})`;
+      }
+      if (opIgnoredBuy > 0) {
+        // BUY parça olmasına rağmen BOM'da operasyon kayıtları var — atlandığı için audit'e geç
+        finalSource += ` +ops-ignored:${opIgnoredBuy}`;
+      }
+      if (opIgnoredFasonInternal > 0) {
+        // FASON parçada içsel op kayıtları var (eskiden MAKE iken kalmış olabilir) — atlandı
+        finalSource += ` +ops-fason-skip:${opIgnoredFasonInternal}`;
       }
       partCost[idx] = {
         idx,
@@ -241,6 +329,10 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
         source: finalSource,
         childCount: children.length,
         opCount: (part.operations || []).length,
+        laborOpMes: opMesCount,
+        laborOpManual: opManualCount,
+        laborOpWcAvg: opWcAvgCount,
+        laborOpDefault: opDefaultCount,
       };
       return partCost[idx];
     };
@@ -303,9 +395,22 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     };
   }
 
+  // Veri kalitesi toplamı — kaç op MES/manuel/WC ortalaması/global default kullandı
+  let totalOpMes = 0, totalOpManual = 0, totalOpWcAvg = 0, totalOpDefault = 0;
+  for (const model of Object.values(byModel)) {
+    for (const part of (model.partsList || [])) {
+      totalOpMes += part.laborOpMes || 0;
+      totalOpManual += part.laborOpManual || 0;
+      totalOpWcAvg += part.laborOpWcAvg || 0;
+      totalOpDefault += part.laborOpDefault || 0;
+    }
+  }
+
   return {
     byModel,
     wcRateAvg,
+    wcAvgCycle,
+    wcManualCycle,
     stockUnitCost,
     ratesCalcSummary: ratesCalc.summary,
     summary: {
@@ -313,6 +418,10 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
       stockCount: Object.keys(stockUnitCost).length,
       wcCount: Object.keys(wcRateAvg).length,
       stocksWithoutCost: 0, // hesaplanacak
+      laborOpMes: totalOpMes,
+      laborOpManual: totalOpManual,
+      laborOpWcAvg: totalOpWcAvg,
+      laborOpDefault: totalOpDefault,
     },
   };
 }

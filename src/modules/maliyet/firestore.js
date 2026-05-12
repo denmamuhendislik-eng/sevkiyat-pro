@@ -232,6 +232,17 @@ export async function saveMachinesForWc(wcCode, newMachines, { canEdit }) {
   await updateDoc(ref, { [`centers.${wcCode}.machines`]: newMachines });
 }
 
+// WC bazlı manuel default cycle süresi (dk). BOM'da cycleTime girilmemiş op'lar için kullanılır.
+// 0 veya null → temizle (BOM ortalamasına veya global default'a düşsün).
+export async function saveWcManualCycle(wcCode, minutes, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!wcCode) throw new Error("WC kodu gerekli");
+  const ref = doc(db, APP_COL, WC_DOC);
+  const val = (minutes === null || minutes === "" || Number(minutes) <= 0) ? deleteField() : Number(minutes);
+  await updateDoc(ref, { [`centers.${wcCode}.manualCycleMin`]: val });
+}
+
 // unitCosts — stok kodu bazında FIFO parti tarihçesi
 // Yapı: { byStock: { [stokKodu]: { partitions: [...], lastImport, ... } }, lastImport, importCount }
 export function subscribeUnitCosts(callback) {
