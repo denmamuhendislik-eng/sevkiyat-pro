@@ -119,6 +119,48 @@ export async function saveFasonRates(data, { canEdit }) {
   await setDoc(ref, { ...data, updatedAt: new Date().toISOString() }, { merge: false });
 }
 
+// MRP stok raporu subscribe — envanter değer hesabı için
+export function subscribeMrpStock(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "mrpStock");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("mrpStock listener:", err); callback({}); }
+  );
+}
+
+// Envanter snapshot'ları — çeyrek bazlı (manuel + otomatik cron)
+// Yapı: { snapshots: { "2026-Q1": { takenAt, source, totalValue, ... }, ... } }
+export function subscribeInventorySnapshots(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "inventorySnapshots");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("inventorySnapshots listener:", err); callback({}); }
+  );
+}
+
+export async function saveInventorySnapshot(quarterKey, snapshotData, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  const ref = doc(db, APP_COL, "inventorySnapshots");
+  try {
+    await updateDoc(ref, { [`snapshots.${quarterKey}`]: snapshotData });
+  } catch (e) {
+    await setDoc(ref, { snapshots: { [quarterKey]: snapshotData } }, { merge: true });
+  }
+}
+
+export async function deleteInventorySnapshot(quarterKey, { canEdit, isAdmin }) {
+  if (!isAdmin) throw new Error("Silme sadece admin rolüne açık");
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  const ref = doc(db, APP_COL, "inventorySnapshots");
+  await updateDoc(ref, { [`snapshots.${quarterKey}`]: deleteField() });
+}
+
 // BOM modelleri subscribe (read-only) — mamul maliyet hesabı için
 export function subscribeBomModels(callback) {
   if (!db) return () => {};
