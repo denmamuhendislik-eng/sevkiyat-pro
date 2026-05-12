@@ -116,7 +116,13 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     const parts = slot.partitions || [];
     if (parts.length === 0) continue;
     const sorted = [...parts].sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
-    const last = sorted[sorted.length - 1];
+    // En son tarihli partiden geriye doğru tara — fiyatı > 0 olan ilk partiyi al.
+    // (VIO'da bazı partiler fiyatsız geliyor; eskiden son parti 0 ise fiyatı bulamıyorduk.)
+    let lastWithPrice = null;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      if (safeNum(sorted[i].unitPriceTl) > 0) { lastWithPrice = sorted[i]; break; }
+    }
+    const last = lastWithPrice || sorted[sorted.length - 1];
     stockUnitCost[code] = safeNum(last.unitPriceTl);
     const name = slot.lastName || last.name || "";
     if (name) {

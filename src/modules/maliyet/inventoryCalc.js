@@ -47,7 +47,13 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
     const partitions = slot.partitions || [];
     if (partitions.length === 0) continue;
     const sorted = [...partitions].sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
-    const last = sorted[sorted.length - 1];
+    // En son tarihli partiden geriye doğru tara — fiyatı > 0 olan ilk partiyi al
+    // (VIO'da fiyatsız partiler gelebiliyor, kör son parti almak 0 fiyata düşürürdü).
+    let lastWithPrice = null;
+    for (let i = sorted.length - 1; i >= 0; i--) {
+      if (safeNum(sorted[i].unitPriceTl) > 0) { lastWithPrice = sorted[i]; break; }
+    }
+    const last = lastWithPrice || sorted[sorted.length - 1];
     stockUnitCost[code] = safeNum(last.unitPriceTl);
     const name = slot.lastName || last.name || "";
     if (name) {
