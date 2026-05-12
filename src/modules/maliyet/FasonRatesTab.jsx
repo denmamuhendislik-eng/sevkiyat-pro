@@ -429,6 +429,8 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         draft={draft}
         removeOverride={removeOverride}
         canEdit={canEdit}
+        removeKgOpOverrides={removeKgOpOverrides}
+        kgCleanupCount={kgCleanupCount}
       />
     </div>
   );
@@ -569,7 +571,7 @@ function WeightsSection({ fasonPartsFromBom, draft, updateWeight, canEdit, kgBas
   );
 }
 
-function OverridesSection({ draft, removeOverride, canEdit }) {
+function OverridesSection({ draft, removeOverride, canEdit, removeKgOpOverrides, kgCleanupCount }) {
   const overrides = Object.entries(draft.partOverrides || {});
   const [showSection, setShowSection] = useState(overrides.length > 0);
 
