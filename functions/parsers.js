@@ -805,6 +805,41 @@ function guessCurrency(ratio, dateStr) {
   return { currency: pick, confidence, refRate: refRates[pick] };
 }
 
+// ISO tarih parse — frontend purchaseParser.js parseVioDate ile birebir aynı output (YYYY-MM-DD).
+// fmtVioDate (DD.MM.YYYY) burada KULLANILMAZ — duplicate kontrolü için frontend ile tutarlı olmalı.
+function parseVioDateIso(v) {
+  if (v === "" || v === undefined || v === null) return null;
+  if (typeof v === "number") {
+    if (v > 25000 && v < 100000) {
+      const d = new Date((v - 25569) * 86400 * 1000);
+      if (!isNaN(d.getTime())) return d.toISOString().slice(0, 10);
+    }
+    const s = String(v).padStart(8, "0");
+    const dd = s.substring(0, 2);
+    const mm = s.substring(2, 4);
+    const yyyy = s.substring(4, 8);
+    const y = Number(yyyy);
+    if (y >= 2000 && y <= 2100) return `${yyyy}-${mm}-${dd}`;
+  }
+  const s = String(v).trim();
+  if (!s) return null;
+  if (/^\d{7,8}$/.test(s)) {
+    const padded = s.padStart(8, "0");
+    const dd = padded.substring(0, 2);
+    const mm = padded.substring(2, 4);
+    const yyyy = padded.substring(4, 8);
+    const y = Number(yyyy);
+    if (y >= 2000 && y <= 2100) return `${yyyy}-${mm}-${dd}`;
+  }
+  const m = s.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})$/);
+  if (m) {
+    const dd = m[1].padStart(2, "0");
+    const mm = m[2].padStart(2, "0");
+    return `${m[3]}-${mm}-${dd}`;
+  }
+  return null;
+}
+
 function parsePurchaseWithPrices(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
@@ -840,7 +875,7 @@ function parsePurchaseWithPrices(workbook) {
 
     if (c0 === "No") {
       currentBelgeNo = r[1] !== "" && r[1] != null ? String(r[1]).trim() : "";
-      currentOrderDate = fmtVioDate(r[4]);
+      currentOrderDate = parseVioDateIso(r[4]);
       currentSupplierCode = String(r[6] || "").trim();
       currentSupplier = String(r[7] || "").trim().replace(/\s{2,}/g, " ");
       cols = null;
@@ -888,7 +923,7 @@ function parsePurchaseWithPrices(workbook) {
       code,
       name: String(r[cols.name] || "").trim(),
       unit: String(r[cols.unit] || "").trim() || "AD",
-      teslimDate: fmtVioDate(r[cols.teslim]),
+      teslimDate: parseVioDateIso(r[cols.teslim]),
       originalQty: original,
       shippedQty: pNum(r[cols.shipped]),
       remainingQty: remaining,
