@@ -99,29 +99,32 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
   const handleDownloadTemplate = () => {
     const wb = XLSX.utils.book_new();
 
-    // Sheet 1: Op Ücretleri
+    // Sheet 1: Op Ücretleri — sadece KG bazlı op'lar (DEFAULT_KG_OPS: 621/622).
+    // Bu op'lar tüm parçalar için aynı TL/kg fiyatı ile yönetiliyor, parça-özel override
+    // gerekmiyor. Diğer fason op'lar (dişli açım, kaynak fason vb.) genelde AD bazlı ve
+    // parça-özel fiyatlanıyor → Sheet 3'te yönetilir.
     const opRows = [["Op Kodu", "Op Adı", "Birim (AD/KG)", "TL/Birim", "Not"]];
-    // workCenters.fason'dan tüm fason op'ları al
     const wcFasonOps = workCenters?.fason || {};
     const allOpCodes = new Set([
       ...Object.keys(wcFasonOps).filter(c => isFasonOpCode(c)),
       ...fasonOpsFromBom.keys(),
       ...Object.keys(draft?.opDefaults || {}),
     ]);
-    [...allOpCodes].sort().forEach(opCode => {
-      const wcInfo = wcFasonOps[opCode] || {};
-      const bomInfo = fasonOpsFromBom.get(opCode) || {};
-      const existing = draft?.opDefaults?.[opCode] || {};
-      const name = existing.name || wcInfo.name || bomInfo.name || "";
-      // Default birim: 621 (Sementasyon) ve 622 (Islah) → KG, diğerleri AD
-      const defaultUnit = DEFAULT_KG_OPS.includes(opCode) ? "KG" : "AD";
-      opRows.push([
-        opCode, name,
-        existing.unit || defaultUnit,
-        existing.unitPriceTl || "",
-        existing.note || "",
-      ]);
-    });
+    [...allOpCodes]
+      .filter(opCode => DEFAULT_KG_OPS.includes(opCode))
+      .sort()
+      .forEach(opCode => {
+        const wcInfo = wcFasonOps[opCode] || {};
+        const bomInfo = fasonOpsFromBom.get(opCode) || {};
+        const existing = draft?.opDefaults?.[opCode] || {};
+        const name = existing.name || wcInfo.name || bomInfo.name || "";
+        opRows.push([
+          opCode, name,
+          existing.unit || "KG",
+          existing.unitPriceTl || "",
+          existing.note || "",
+        ]);
+      });
     const ws1 = XLSX.utils.aoa_to_sheet(opRows);
     ws1["!cols"] = [{ wch: 10 }, { wch: 35 }, { wch: 14 }, { wch: 12 }, { wch: 30 }];
     XLSX.utils.book_append_sheet(wb, ws1, SHEET_OP);
@@ -144,20 +147,21 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     ws2["!cols"] = [{ wch: 14 }, { wch: 45 }, { wch: 10 }];
     XLSX.utils.book_append_sheet(wb, ws2, SHEET_WEIGHT);
 
-    // Sheet 3: Parça-Özel Override — BOM'da fason geçen TÜM (op,parça) çiftleri listelenir.
-    // Kullanıcı parça-özel fiyat olanları doldurur, boş bırakılanlar Sheet 1 op default'u kullanır.
+    // Sheet 3: Parça-Özel Override — KG bazlı op'lar (621/622) hariç tüm (op,parça) çiftleri.
+    // 621/622 Sheet 1'deki tek default ile yönetildiği için override gerekmiyor, çıkartıldı.
+    // Diğer fason op'lar (dişli açım, kaynak fason vs.) parça-özel fiyatlanıyor → burada.
     const overrideRows = [["Op Kodu", "Op Adı", "Stok Kodu", "Stok Adı", "Birim (AD/KG)", "TL/Birim", "Not"]];
-    // Mevcut override'lar + BOM'dan gelen tüm çiftleri birleştir
     const allKeys = new Set([
       ...fasonOpPartCombos.keys(),
       ...Object.keys(draft?.partOverrides || {}),
     ]);
-    const sortedKeys = [...allKeys].sort((a, b) => {
-      // Önce op kodu, sonra stok kodu
-      const [aOp, aPart] = a.split("_");
-      const [bOp, bPart] = b.split("_");
-      return aOp.localeCompare(bOp) || aPart.localeCompare(bPart);
-    });
+    const sortedKeys = [...allKeys]
+      .filter(key => !DEFAULT_KG_OPS.includes(key.split("_")[0]))
+      .sort((a, b) => {
+        const [aOp, aPart] = a.split("_");
+        const [bOp, bPart] = b.split("_");
+        return aOp.localeCompare(bOp) || aPart.localeCompare(bPart);
+      });
     for (const key of sortedKeys) {
       const combo = fasonOpPartCombos.get(key);
       const existing = draft?.partOverrides?.[key];
@@ -167,7 +171,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         combo?.opName || existing?.opName || "",
         stockCode,
         combo?.partName || existing?.name || "",
-        existing?.unit || "AD",
+        existing?.unit || (DEFAULT_KG_OPS.includes(opCode) ? "KG" : "AD"),
         existing?.unitPriceTl || "",
         existing?.note || "",
       ]);
@@ -193,6 +197,8 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
       const partOverrides = {};
 
       // Sheet 1: Op Ücretleri
+      // Birim hücresi boş veya tanınmayan değer ise DEFAULT_KG_OPS'a göre fallback
+      // (621/622 → KG, diğerleri AD). Kullanıcı bilinçli "AD"/"KG" yazarsa onu kullanır.
       if (wb.Sheets[SHEET_OP]) {
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[SHEET_OP], { header: 1, defval: "" });
         for (let i = 1; i < rows.length; i++) {
@@ -201,9 +207,14 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
           if (!code || !isFasonOpCode(code)) continue;
           const price = Number(r[3]);
           if (!(price > 0)) continue;  // boş fiyat → atla
+          const rawUnit = String(r[2] || "").trim().toUpperCase();
+          let unit;
+          if (rawUnit === "KG") unit = "KG";
+          else if (rawUnit === "AD") unit = "AD";
+          else unit = DEFAULT_KG_OPS.includes(code) ? "KG" : "AD";
           opDefaults[code] = {
             name: String(r[1] || "").trim(),
-            unit: String(r[2] || "AD").trim().toUpperCase() === "KG" ? "KG" : "AD",
+            unit,
             unitPriceTl: price,
             note: String(r[4] || "").trim(),
           };
@@ -236,7 +247,11 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
           const stockCode = String(r[isNewFormat ? 2 : 1] || "").trim();
           if (!opCode || !stockCode) continue;
           const stockName = String(r[isNewFormat ? 3 : 2] || "").trim();
-          const unit = String(r[isNewFormat ? 4 : 3] || "AD").trim().toUpperCase() === "KG" ? "KG" : "AD";
+          const rawUnit = String(r[isNewFormat ? 4 : 3] || "").trim().toUpperCase();
+          let unit;
+          if (rawUnit === "KG") unit = "KG";
+          else if (rawUnit === "AD") unit = "AD";
+          else unit = DEFAULT_KG_OPS.includes(opCode) ? "KG" : "AD";  // boş → opCode'a göre default
           const price = Number(r[isNewFormat ? 5 : 4]);
           const note = String(r[isNewFormat ? 6 : 5] || "").trim();
           if (!(price > 0)) continue;  // boş satır → atla (op default kullanılır)
