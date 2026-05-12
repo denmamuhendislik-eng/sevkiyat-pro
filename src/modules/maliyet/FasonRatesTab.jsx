@@ -8,6 +8,7 @@ import {
 const SHEET_OP = "Op_Ucretleri";
 const SHEET_WEIGHT = "Parca_Agirliklari";
 const SHEET_OVERRIDE = "Parca_Ozel_Ucretler";
+const SHEET_COMPLETE = "Komple_FASON";  // BOM'da fason op tanımsız supplyType=FASON parçalar
 
 // KG bazlı fason op'lar — bu op'lardan geçen parçaların ağırlığı bilinmeli.
 // Diğer fason'lar (talaşlı, dişli açımı, balans, büküm, kaplama vs.) AD/parça-özel.
@@ -45,6 +46,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
       opDefaults: { ...(fasonRates?.opDefaults || {}) },
       partWeights: { ...(fasonRates?.partWeights || {}) },
       partOverrides: { ...(fasonRates?.partOverrides || {}) },
+      fasonComplete: { ...(fasonRates?.fasonComplete || {}) },
     });
   }, [fasonRates, dirty]);
 
@@ -59,10 +61,13 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
 
   // BOM'da fason op geçen parçaları + op kodlarını + (op,parça) çiftlerini topla
   // fasonPartsFromBom: SADECE KG-bazlı op'lardan geçen parçalar (ağırlık gerekli olanlar)
-  const { fasonOpsFromBom, fasonPartsFromBom, fasonOpPartCombos } = useMemo(() => {
-    const ops = new Map();      // opCode → { name, count }
-    const parts = new Map();    // stokKodu → { name, count }  ← sadece KG-bazlı op'tan geçenler
-    const combos = new Map();   // "opCode_stockCode" → { opCode, opName, partCode, partName }
+  // fasonCompletePartsFromBom: supplyType=FASON parçalar (BOM'da fason op tanımsız olabilir,
+  // komple fason fiyat tablosunda yönetilir — Sheet 4)
+  const { fasonOpsFromBom, fasonPartsFromBom, fasonOpPartCombos, fasonCompletePartsFromBom } = useMemo(() => {
+    const ops = new Map();
+    const parts = new Map();
+    const combos = new Map();
+    const completeParts = new Map();   // stokKodu → { name, count } ← supplyType=FASON parçalar
     for (const [mk, model] of Object.entries(bomModels || {})) {
       if (mk === "undefined") continue;
       for (const p of (model.parts || [])) {
@@ -84,16 +89,22 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
             if (kgBasedOps.has(codeStr)) hasKgBasedFason = true;
           }
         }
-        // Parça ağırlık tablosuna sadece KG-bazlı fason op'tan geçen parçaları al
         if (hasKgBasedFason && p.stockCode) {
           const existing = parts.get(p.stockCode) || { name: p.stockName || "", count: 0 };
           existing.count++;
           if (p.stockName) existing.name = p.stockName;
           parts.set(p.stockCode, existing);
         }
+        // Komple FASON parçalar — supplyType=FASON, BOM'da fason op olup olmaması fark etmez
+        if (p.supplyType === "FASON" && p.stockCode) {
+          const existing = completeParts.get(p.stockCode) || { name: p.stockName || "", count: 0 };
+          existing.count++;
+          if (p.stockName) existing.name = p.stockName;
+          completeParts.set(p.stockCode, existing);
+        }
       }
     }
-    return { fasonOpsFromBom: ops, fasonPartsFromBom: parts, fasonOpPartCombos: combos };
+    return { fasonOpsFromBom: ops, fasonPartsFromBom: parts, fasonOpPartCombos: combos, fasonCompletePartsFromBom: completeParts };
   }, [bomModels, kgBasedOps]);
 
   // ==================== ŞABLON İNDİRME ====================
@@ -181,6 +192,27 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     ws3["!cols"] = [{ wch: 10 }, { wch: 30 }, { wch: 14 }, { wch: 40 }, { wch: 14 }, { wch: 12 }, { wch: 30 }];
     XLSX.utils.book_append_sheet(wb, ws3, SHEET_OVERRIDE);
 
+    // Sheet 4: Komple FASON — supplyType=FASON parçalar için doğrudan AD fiyat.
+    // BOM'da fason op tanımsız olsa bile bu tablodan fiyat okunabilir.
+    const completeRows = [["Stok Kodu", "Stok Adı", "TL/AD", "Not"]];
+    const completeKeys = new Set([
+      ...fasonCompletePartsFromBom.keys(),
+      ...Object.keys(draft?.fasonComplete || {}),
+    ]);
+    [...completeKeys].sort().forEach(code => {
+      const bomInfo = fasonCompletePartsFromBom.get(code) || {};
+      const existing = draft?.fasonComplete?.[code] || {};
+      completeRows.push([
+        code,
+        existing.name || bomInfo.name || "",
+        existing.unitPriceTl || "",
+        existing.note || "",
+      ]);
+    });
+    const ws4 = XLSX.utils.aoa_to_sheet(completeRows);
+    ws4["!cols"] = [{ wch: 14 }, { wch: 45 }, { wch: 12 }, { wch: 30 }];
+    XLSX.utils.book_append_sheet(wb, ws4, SHEET_COMPLETE);
+
     const fileName = `fason_ucret_sablonu_${new Date().toISOString().slice(0,10)}.xlsx`;
     XLSX.writeFile(wb, fileName);
   };
@@ -265,14 +297,33 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         }
       }
 
+      // Sheet 4: Komple FASON — supplyType=FASON parçalar için doğrudan AD fiyat
+      const fasonComplete = {};
+      if (wb.Sheets[SHEET_COMPLETE]) {
+        const rows = XLSX.utils.sheet_to_json(wb.Sheets[SHEET_COMPLETE], { header: 1, defval: "" });
+        for (let i = 1; i < rows.length; i++) {
+          const r = rows[i];
+          const code = String(r[0] || "").trim();
+          if (!code) continue;
+          const price = Number(r[2]);
+          if (!(price > 0)) continue;
+          fasonComplete[code] = {
+            name: String(r[1] || "").trim(),
+            unitPriceTl: price,
+            note: String(r[3] || "").trim(),
+          };
+        }
+      }
+
       // Mevcutla birleştir (yüklenen değerler üzerine yazılır)
       setDraft({
         opDefaults: { ...(draft?.opDefaults || {}), ...opDefaults },
         partWeights: { ...(draft?.partWeights || {}), ...partWeights },
         partOverrides: { ...(draft?.partOverrides || {}), ...partOverrides },
+        fasonComplete: { ...(draft?.fasonComplete || {}), ...fasonComplete },
       });
       setDirty(true);
-      alert(`✓ Yüklendi:\n${Object.keys(opDefaults).length} op default\n${Object.keys(partWeights).length} parça ağırlığı\n${Object.keys(partOverrides).length} parça override\n\n"Kaydet" ile Firestore'a yaz.`);
+      alert(`✓ Yüklendi:\n${Object.keys(opDefaults).length} op default\n${Object.keys(partWeights).length} parça ağırlığı\n${Object.keys(partOverrides).length} parça override\n${Object.keys(fasonComplete).length} komple fason\n\n"Kaydet" ile Firestore'a yaz.`);
     } catch (err) {
       alert("Excel okuma hatası: " + err.message);
     } finally {
@@ -303,6 +354,21 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     });
     setDirty(true);
   };
+  const updateComplete = (code, patch) => {
+    setDraft(prev => {
+      const cur = { ...((prev.fasonComplete || {})[code] || {}), ...patch };
+      return { ...prev, fasonComplete: { ...(prev.fasonComplete || {}), [code]: cur } };
+    });
+    setDirty(true);
+  };
+  const removeComplete = (code) => {
+    setDraft(prev => {
+      const next = { ...(prev.fasonComplete || {}) };
+      delete next[code];
+      return { ...prev, fasonComplete: next };
+    });
+    setDirty(true);
+  };
 
   // KG bazlı op'lar (621/622) için tüm partOverrides'ı toplu temizle —
   // Sheet 1 default fiyatı zaten kullanıyor, parça-özel override gerekmiyor.
@@ -330,12 +396,16 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         opDefaults: {},
         partWeights: {},
         partOverrides: { ...draft.partOverrides },
+        fasonComplete: {},
       };
       for (const [code, v] of Object.entries(draft.opDefaults)) {
         if (Number(v.unitPriceTl) > 0) cleaned.opDefaults[code] = { ...v, unitPriceTl: Number(v.unitPriceTl) };
       }
       for (const [code, v] of Object.entries(draft.partWeights)) {
         if (Number(v.kg) > 0) cleaned.partWeights[code] = { ...v, kg: Number(v.kg) };
+      }
+      for (const [code, v] of Object.entries(draft.fasonComplete || {})) {
+        if (Number(v.unitPriceTl) > 0) cleaned.fasonComplete[code] = { ...v, unitPriceTl: Number(v.unitPriceTl) };
       }
       await saveFasonRates(cleaned, { canEdit });
       setDirty(false);
@@ -352,6 +422,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
       opDefaults: { ...(fasonRates?.opDefaults || {}) },
       partWeights: { ...(fasonRates?.partWeights || {}) },
       partOverrides: { ...(fasonRates?.partOverrides || {}) },
+      fasonComplete: { ...(fasonRates?.fasonComplete || {}) },
     });
     setDirty(false);
   };
@@ -431,6 +502,14 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         canEdit={canEdit}
         removeKgOpOverrides={removeKgOpOverrides}
         kgCleanupCount={kgCleanupCount}
+      />
+
+      <CompleteSection
+        fasonCompletePartsFromBom={fasonCompletePartsFromBom}
+        draft={draft}
+        updateComplete={updateComplete}
+        removeComplete={removeComplete}
+        canEdit={canEdit}
       />
     </div>
   );
@@ -634,6 +713,84 @@ function OverridesSection({ draft, removeOverride, canEdit, removeKgOpOverrides,
                 <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 500 }}>{fmt2(v.unitPriceTl)}</span>
                 {canEdit && (
                   <button onClick={() => removeOverride(key)} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "var(--color-text-tertiary)" }} title="Sil">✕</button>
+                )}
+              </div>
+            );
+          })}
+        </>
+      )}
+    </div>
+  );
+}
+
+function CompleteSection({ fasonCompletePartsFromBom, draft, updateComplete, removeComplete, canEdit }) {
+  const allCodes = useMemo(() => {
+    const set = new Set([
+      ...fasonCompletePartsFromBom.keys(),
+      ...Object.keys(draft?.fasonComplete || {}),
+    ]);
+    return [...set].sort();
+  }, [fasonCompletePartsFromBom, draft?.fasonComplete]);
+  const filledCount = Object.values(draft?.fasonComplete || {}).filter(v => Number(v.unitPriceTl) > 0).length;
+  const [showSection, setShowSection] = useState(allCodes.length > 0);
+
+  if (allCodes.length === 0) return null;
+
+  return (
+    <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", marginTop: 12 }}>
+      <div
+        onClick={() => setShowSection(v => !v)}
+        style={{ padding: "8px 14px", background: "var(--color-background-secondary)", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}
+      >
+        <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{showSection ? "▼" : "▶"}</span>
+        <span style={{ fontSize: 12, fontWeight: 600 }}>🎁 Komple FASON ({filledCount} / {allCodes.length})</span>
+        <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+          supplyType=FASON parçalar için doğrudan TL/AD fiyatı — BOM'da fason op tanımsız parçalar burada yönetilir
+        </span>
+      </div>
+      {showSection && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "130px 1fr 110px 1fr 40px", padding: "6px 12px", background: "var(--color-background-primary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 8 }}>
+            <span>Stok Kodu</span>
+            <span>Stok Adı</span>
+            <span style={{ textAlign: "right" }}>TL/AD</span>
+            <span>Not</span>
+            <span></span>
+          </div>
+          {allCodes.map(code => {
+            const bomInfo = fasonCompletePartsFromBom.get(code) || {};
+            const existing = (draft?.fasonComplete || {})[code] || {};
+            const filled = Number(existing.unitPriceTl) > 0;
+            return (
+              <div key={code} style={{ display: "grid", gridTemplateColumns: "130px 1fr 110px 1fr 40px", padding: "4px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 11, gap: 8, alignItems: "center", background: filled ? "transparent" : "#FFFBEB" }}>
+                <span style={{ fontFamily: "var(--font-mono)" }}>{code}</span>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={bomInfo.name || existing.name}>{existing.name || bomInfo.name || ""}</span>
+                <input
+                  type="number"
+                  min="0"
+                  step="0.01"
+                  value={existing.unitPriceTl ?? ""}
+                  disabled={!canEdit}
+                  onChange={e => updateComplete(code, { name: existing.name || bomInfo.name || "", unitPriceTl: e.target.value === "" ? "" : Number(e.target.value) })}
+                  placeholder="—"
+                  style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid " + (filled ? "var(--color-border-tertiary)" : "#FCD34D"), fontSize: 11, textAlign: "right", background: filled ? "var(--color-background-primary)" : "#FFFBEB" }}
+                />
+                <input
+                  type="text"
+                  value={existing.note || ""}
+                  disabled={!canEdit}
+                  onChange={e => updateComplete(code, { name: existing.name || bomInfo.name || "", note: e.target.value })}
+                  placeholder="opsiyonel"
+                  style={{ padding: "4px 8px", borderRadius: 4, border: "1px solid var(--color-border-tertiary)", fontSize: 11, background: "var(--color-background-primary)" }}
+                />
+                {canEdit && filled && (
+                  <button
+                    onClick={() => removeComplete(code)}
+                    title="Bu komple fason kaydını sil"
+                    style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 14, color: "var(--color-text-tertiary)", padding: 0 }}
+                  >
+                    ✕
+                  </button>
                 )}
               </div>
             );

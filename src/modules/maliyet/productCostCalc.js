@@ -301,6 +301,17 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
         }
       }
 
+      // FASON parça için komple fason ücreti fallback — BOM'da fason op tanımlı değilse
+      // (opCode ≥600 yok), kullanıcı "Komple FASON" tablosunda parça-bazlı AD fiyat tanımlamış
+      // olabilir. fasonRates.fasonComplete[stockCode] varsa onu fason'a ekle.
+      if (sType === "FASON" && fason === 0 && fasonRates?.fasonComplete?.[part.stockCode]) {
+        const completeFee = Number(fasonRates.fasonComplete[part.stockCode].unitPriceTl) || 0;
+        if (completeFee > 0) {
+          fason = completeFee;
+          fasonSources.push("fason-complete-by-code");
+        }
+      }
+
       const total = material + labor + fason;
       // Fason kaynaklarını source'a ekle (audit için)
       let finalSource = source;
