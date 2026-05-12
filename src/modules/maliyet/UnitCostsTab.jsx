@@ -79,15 +79,25 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
       code: "", name: "", unitPriceTl: "", currency: "TRY",
       orderDate: new Date().toISOString().slice(0, 10),
       originalQty: "", supplier: "",
+      priceUnit: "AD", weightPerPiece: "",
     });
   };
 
   const handleManualSave = async () => {
     if (!manualForm || !canEdit || manualSaving) return;
     const code = (manualForm.code || "").trim();
-    const price = Number(manualForm.unitPriceTl);
+    const rawPrice = Number(manualForm.unitPriceTl);
     if (!code) { alert("Stok kodu zorunlu"); return; }
-    if (!(price > 0)) { alert("Birim TL fiyat sıfırdan büyük olmalı"); return; }
+    if (!(rawPrice > 0)) { alert("Birim fiyat sıfırdan büyük olmalı"); return; }
+    // KG bazlı fiyat girilmişse parça ağırlığı ile çarpıp AD fiyata çeviriyoruz.
+    // Sebep: downstream hesaplar (productCostCalc, inventoryCalc) AD bazında çalışır,
+    // VIO da Satır Net Fiyatı ile AD'ye çevirip yazıyor — manuel kayıt aynı formatta olmalı.
+    let price = rawPrice;
+    if (manualForm.priceUnit === "KG") {
+      const w = Number(manualForm.weightPerPiece);
+      if (!(w > 0)) { alert("KG bazlı fiyat girdin — parça ağırlığı (kg/AD) zorunlu"); return; }
+      price = rawPrice * w;
+    }
     setManualSaving(true);
     try {
       const partition = {
@@ -529,9 +539,17 @@ function ManualPartitionModal({ form, setForm, onSave, saving, onClose }) {
             <input
               type="number" min="0" step="0.01"
               value={form.unitPriceTl} onChange={e => upd("unitPriceTl", e.target.value)}
-              placeholder="TL"
+              placeholder={form.priceUnit === "KG" ? "TL/KG" : "TL/AD"}
               style={{ flex: 1, padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
             />
+            <select
+              value={form.priceUnit} onChange={e => upd("priceUnit", e.target.value)}
+              title="Fiyat birimi — KG seçersen aşağıdaki parça ağırlığını da gir, sistem AD fiyatına çevirir"
+              style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+            >
+              <option value="AD">TL / Adet</option>
+              <option value="KG">TL / KG</option>
+            </select>
             <select
               value={form.currency} onChange={e => upd("currency", e.target.value)}
               style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
@@ -541,6 +559,25 @@ function ManualPartitionModal({ form, setForm, onSave, saving, onClose }) {
               <option value="EUR">EUR (€)</option>
             </select>
           </div>
+          {form.priceUnit === "KG" && (
+            <>
+              <label>Parça Ağırlığı (kg/AD) *</label>
+              <input
+                type="number" min="0" step="0.001"
+                value={form.weightPerPiece} onChange={e => upd("weightPerPiece", e.target.value)}
+                placeholder="örn. 2,5"
+                style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #FCD34D", background: "#FFFBEB", fontSize: 12 }}
+              />
+              <span></span>
+              <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                {Number(form.unitPriceTl) > 0 && Number(form.weightPerPiece) > 0 ? (
+                  <>= <b style={{ color: "var(--color-text-success)" }}>{(Number(form.unitPriceTl) * Number(form.weightPerPiece)).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL/AD</b> olarak kaydedilecek</>
+                ) : (
+                  <i>KG fiyat × parça ağırlığı = AD fiyat (hesap için)</i>
+                )}
+              </div>
+            </>
+          )}
           <label>Miktar (opsiyonel)</label>
           <input
             type="number" min="0" step="1"
