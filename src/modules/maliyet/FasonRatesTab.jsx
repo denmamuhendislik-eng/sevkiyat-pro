@@ -9,6 +9,11 @@ const SHEET_OP = "Op_Ucretleri";
 const SHEET_WEIGHT = "Parca_Agirliklari";
 const SHEET_OVERRIDE = "Parca_Ozel_Ucretler";
 
+// KG bazlı fason op'lar — bu op'lardan geçen parçaların ağırlığı bilinmeli.
+// Diğer fason'lar (talaşlı, dişli açımı, balans, büküm, kaplama vs.) AD/parça-özel.
+// Not: Kullanıcı Sheet 1'de op birim KG seçerse de o op KG-bazlı sayılır (dinamik).
+const DEFAULT_KG_OPS = ["621", "622"];  // Sementasyon, Islah
+
 const fmt2 = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Fason op tespiti (opCode ≥600 ve istisnalar değil — App.jsx ve productCostCalc ile aynı)
@@ -42,18 +47,27 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     });
   }, [fasonRates, dirty]);
 
+  // KG-bazlı fason op listesi: default + Sheet 1'de KG seçili op'lar
+  const kgBasedOps = useMemo(() => {
+    const set = new Set(DEFAULT_KG_OPS);
+    for (const [code, def] of Object.entries(draft?.opDefaults || {})) {
+      if (def.unit === "KG") set.add(code);
+    }
+    return set;
+  }, [draft]);
+
   // BOM'da fason op geçen parçaları + op kodlarını + (op,parça) çiftlerini topla
+  // fasonPartsFromBom: SADECE KG-bazlı op'lardan geçen parçalar (ağırlık gerekli olanlar)
   const { fasonOpsFromBom, fasonPartsFromBom, fasonOpPartCombos } = useMemo(() => {
     const ops = new Map();      // opCode → { name, count }
-    const parts = new Map();    // stokKodu → { name, count }
+    const parts = new Map();    // stokKodu → { name, count }  ← sadece KG-bazlı op'tan geçenler
     const combos = new Map();   // "opCode_stockCode" → { opCode, opName, partCode, partName }
     for (const [mk, model] of Object.entries(bomModels || {})) {
       if (mk === "undefined") continue;
       for (const p of (model.parts || [])) {
-        let hasAnyFason = false;
+        let hasKgBasedFason = false;
         for (const op of (p.operations || [])) {
           if (isFasonOpCode(op.opCode)) {
-            hasAnyFason = true;
             const codeStr = String(op.opCode);
             const opName = op.opName || op.name || `Op ${codeStr}`;
             const existing = ops.get(codeStr) || { name: opName, count: 0 };
@@ -66,9 +80,11 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
                 combos.set(comboKey, { opCode: codeStr, opName, partCode: p.stockCode, partName: p.stockName || "" });
               }
             }
+            if (kgBasedOps.has(codeStr)) hasKgBasedFason = true;
           }
         }
-        if (hasAnyFason && p.stockCode) {
+        // Parça ağırlık tablosuna sadece KG-bazlı fason op'tan geçen parçaları al
+        if (hasKgBasedFason && p.stockCode) {
           const existing = parts.get(p.stockCode) || { name: p.stockName || "", count: 0 };
           existing.count++;
           if (p.stockName) existing.name = p.stockName;
@@ -77,7 +93,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
       }
     }
     return { fasonOpsFromBom: ops, fasonPartsFromBom: parts, fasonOpPartCombos: combos };
-  }, [bomModels]);
+  }, [bomModels, kgBasedOps]);
 
   // ==================== ŞABLON İNDİRME ====================
   const handleDownloadTemplate = () => {
@@ -371,6 +387,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
         draft={draft}
         updateWeight={updateWeight}
         canEdit={canEdit}
+        kgBasedOps={kgBasedOps}
       />
 
       <OverridesSection
@@ -437,7 +454,7 @@ function OpDefaultsSection({ allOpCodes, wcFasonOps, fasonOpsFromBom, draft, upd
   );
 }
 
-function WeightsSection({ fasonPartsFromBom, draft, updateWeight, canEdit }) {
+function WeightsSection({ fasonPartsFromBom, draft, updateWeight, canEdit, kgBasedOps }) {
   const [search, setSearch] = useState("");
   const [showOnlyMissing, setShowOnlyMissing] = useState(false);
 
@@ -461,6 +478,9 @@ function WeightsSection({ fasonPartsFromBom, draft, updateWeight, canEdit }) {
     <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", marginBottom: 14 }}>
       <div style={{ padding: "8px 14px", background: "var(--color-background-secondary)", display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
         <span style={{ fontSize: 12, fontWeight: 600 }}>⚖️ Parça Ağırlıkları ({allParts.length} parça)</span>
+        <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+          Sadece KG-bazlı fason op'lardan geçen parçalar: {[...(kgBasedOps || [])].join(", ")}
+        </span>
         {missingCount > 0 && (
           <span style={{ fontSize: 10, padding: "2px 8px", borderRadius: 4, background: "#FEF3C7", color: "#92400E", fontWeight: 500 }}>
             ⚠ {missingCount} parçada ağırlık yok
