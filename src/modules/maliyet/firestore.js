@@ -97,6 +97,28 @@ export async function deleteMonthlyOverhead(yearMonth, { canEdit, isAdmin }) {
   await updateDoc(ref, { [`monthlyOverheads.${yearMonth}`]: deleteField() });
 }
 
+// Fason ücretleri — geçici tablo (fason takip modülü gelene kadar)
+// Yapı:
+//   opDefaults: { [opCode]: { name, unit: "AD"|"KG", unitPriceTl, note } }
+//   partWeights: { [stokKodu]: { kg, name } }
+//   partOverrides: { "opCode_stokKodu": { unit, unitPriceTl, name, note } }
+export function subscribeFasonRates(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "fasonRates");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("fasonRates listener:", err); callback({}); }
+  );
+}
+
+export async function saveFasonRates(data, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  const ref = doc(db, APP_COL, "fasonRates");
+  await setDoc(ref, { ...data, updatedAt: new Date().toISOString() }, { merge: false });
+}
+
 // BOM modelleri subscribe (read-only) — mamul maliyet hesabı için
 export function subscribeBomModels(callback) {
   if (!db) return () => {};

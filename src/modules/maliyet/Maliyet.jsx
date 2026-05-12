@@ -2,12 +2,14 @@ import { useState } from "react";
 import MonthlyOverheadsTab from "./MonthlyOverheadsTab";
 import MachineRatesTab from "./MachineRatesTab";
 import UnitCostsTab from "./UnitCostsTab";
+import FasonRatesTab from "./FasonRatesTab";
 import ProductCostsTab from "./ProductCostsTab";
 
 const TABS = [
   { id: "monthly", icon: "🗓", label: "Aylık Genel Giderler", phase: 2, active: true },
   { id: "machineRates", icon: "⚙️", label: "Tezgah Dakika Ücretleri", phase: 2, active: true },
   { id: "unitCosts", icon: "🏷", label: "Birim Maliyetler", phase: 1, active: true },
+  { id: "fasonRates", icon: "🔧", label: "Fason Ücretleri", phase: 3, active: true, note: "Geçici tablo — fason takip modülü gelene kadar" },
   { id: "productCosts", icon: "📦", label: "Mamul Maliyetleri", phase: 3, active: true },
   { id: "shipmentCosts", icon: "🚛", label: "Sevkiyat Maliyetleri", phase: 4, active: false, note: "Faz 4 — FIFO bazlı" },
   { id: "inventory", icon: "📚", label: "Envanter Değeri", phase: 4, active: false, note: "Faz 4 — 3 aylık dönem" },
@@ -75,6 +77,7 @@ export default function Maliyet({ isAdmin, isUretim }) {
       {activeTab === "monthly" && <MonthlyOverheadsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "machineRates" && <MachineRatesTab canEdit={canEdit} />}
       {activeTab === "unitCosts" && <UnitCostsTab canEdit={canEdit} isAdmin={isAdmin} />}
+      {activeTab === "fasonRates" && <FasonRatesTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeMeta && !activeMeta.active && (
         <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>

@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import {
   subscribeBomModels, subscribeWorkCenters, subscribeUnitCosts,
-  subscribeLaborCosts, subscribeOverheadPolicy,
+  subscribeLaborCosts, subscribeOverheadPolicy, subscribeFasonRates,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS } from "./distributionCalc";
@@ -27,7 +27,8 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
   const [unitCosts, setUnitCosts] = useState({});
   const [laborData, setLaborData] = useState({});
   const [policy, setPolicy] = useState(null);
-  const [loaded, setLoaded] = useState({ bom: false, wc: false, unit: false, labor: false, pol: false });
+  const [fasonRates, setFasonRates] = useState({});
+  const [loaded, setLoaded] = useState({ bom: false, wc: false, unit: false, labor: false, pol: false, fason: false });
   const [selectedMonth, setSelectedMonth] = useState(todayMonth());
   const [selectedModel, setSelectedModel] = useState(null);
   const [searchModel, setSearchModel] = useState("");
@@ -55,6 +56,10 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
     });
     return u;
   }, []);
+  useEffect(() => {
+    const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, fason: true })); });
+    return u;
+  }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
   const monthsAvailable = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
@@ -74,8 +79,8 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
   const allLoaded = Object.values(loaded).every(Boolean);
   const calc = useMemo(() => {
     if (!allLoaded) return null;
-    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy });
-  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy]);
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy, fasonRates]);
 
   const modelsList = useMemo(() => {
     if (!calc?.byModel) return [];
@@ -193,7 +198,8 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
                   </div>
                   {m.rootCost > 0 && (
                     <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>
-                      Malz: {fmt0(m.rootMaterial)} ₺ · İşç: {fmt0(m.rootLabor)} ₺
+                      Malz: {fmt0(m.rootMaterial)} · İşç: {fmt0(m.rootLabor)}
+                      {(m.rootFason || 0) > 0 && <> · Fas: {fmt0(m.rootFason)}</>}
                     </div>
                   )}
                 </div>
@@ -236,7 +242,8 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, onClose }) {
         <div style={{ textAlign: "right" }}>
           <div style={{ fontSize: 18, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(model.rootCost)} ₺</div>
           <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
-            Malz: {fmt2(model.rootMaterial)} ₺ + İşç: {fmt2(model.rootLabor)} ₺
+            Malz: {fmt2(model.rootMaterial)} + İşç: {fmt2(model.rootLabor)}
+            {(model.rootFason || 0) > 0 && <> + Fas: {fmt2(model.rootFason)}</>} ₺
           </div>
         </div>
         <button onClick={onClose} style={{ padding: "4px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", background: "transparent", fontSize: 11, cursor: "pointer" }}>Kapat</button>
@@ -268,6 +275,7 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, onClose }) {
               <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Op</th>
               <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Malzeme</th>
               <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>İşçilik</th>
+              <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Fason</th>
               <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Birim TL</th>
               <th style={{ padding: "5px 8px", textAlign: "left", fontWeight: 500 }}>Kaynak</th>
             </tr>
@@ -291,6 +299,7 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, onClose }) {
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{p.opCount || 0}</td>
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.materialCost)}</td>
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.laborCost)}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: (p.fasonCost || 0) > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{fmt2(p.fasonCost)}</td>
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: isRoot ? 700 : 500 }}>{fmt2(p.unitCost)}</td>
                   <td style={{ padding: "4px 8px", fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.source}</td>
                 </tr>

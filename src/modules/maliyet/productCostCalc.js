@@ -11,8 +11,41 @@ import { calculateMachineRates } from "./distributionCalc";
 
 function safeNum(v) { const n = Number(v); return isNaN(n) ? 0 : n; }
 
+// Fason op tespiti: opCode ≥600 ve istisnalar değil (memory: project_mrp_fason_istisnalar)
+function isFasonOp(op) {
+  if (op.isFason) return true;
+  const code = Number(op.opCode);
+  if (isNaN(code)) return false;
+  return code >= 600 && ![653, 654, 665].includes(code);
+}
+
+// Bir parçanın bir fason op'u için maliyet hesabı
+function calcFasonOpCost(opCode, partCode, fasonRates) {
+  if (!fasonRates) return { cost: 0, source: "fason-rate-missing" };
+  // 1. Parça-özel override (en yüksek öncelik)
+  const overrideKey = `${opCode}_${partCode}`;
+  const override = fasonRates.partOverrides?.[overrideKey];
+  if (override && override.unitPriceTl > 0) {
+    if (override.unit === "KG") {
+      const kg = fasonRates.partWeights?.[partCode]?.kg || 0;
+      if (kg > 0) return { cost: override.unitPriceTl * kg, source: "fason-override-kg" };
+      return { cost: 0, source: "fason-override-kg-no-weight" };
+    }
+    return { cost: override.unitPriceTl, source: "fason-override-ad" };
+  }
+  // 2. Op default
+  const opDef = fasonRates.opDefaults?.[opCode];
+  if (!opDef || !(opDef.unitPriceTl > 0)) return { cost: 0, source: "fason-rate-missing" };
+  if (opDef.unit === "KG") {
+    const kg = fasonRates.partWeights?.[partCode]?.kg || 0;
+    if (kg > 0) return { cost: opDef.unitPriceTl * kg, source: "fason-default-kg" };
+    return { cost: 0, source: "fason-default-kg-no-weight" };
+  }
+  return { cost: opDef.unitPriceTl, source: "fason-default-ad" };
+}
+
 // Tüm BOM modelleri için maliyet hesabı.
-export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy }) {
+export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates }) {
   if (!bomModels || Object.keys(bomModels).length === 0) {
     return { byModel: {}, wcRateAvg: {}, stockUnitCost: {}, summary: { error: "BOM modeli yok" } };
   }
@@ -111,6 +144,8 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
 
       let material = 0;
       let labor = 0;
+      let fason = 0;
+      const fasonSources = [];
       let source = "unknown";
 
       // Çocukları bul
@@ -167,18 +202,30 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
         }
       }
 
-      // İşçilik — bu parçanın operasyonları (her parça kendi op'larıyla işlenir)
+      // İşçilik + Fason — bu parçanın operasyonları
       for (const op of part.operations || []) {
-        const cycle = safeNum(op.cycleTime);
-        if (cycle <= 0) continue;
-        const wcCode = op.wcCode || op.workCenter;
-        // Fason op için ücret yok (henüz)
-        if (op.isFason || (op.opCode && Number(op.opCode) >= 600 && ![653, 654, 665].includes(Number(op.opCode)))) continue;
-        const rate = wcRateAvg[wcCode] || 0;
-        labor += cycle * rate;
+        if (isFasonOp(op)) {
+          // Fason op — fason ücreti ekle
+          const f = calcFasonOpCost(op.opCode, part.stockCode, fasonRates);
+          fason += f.cost;
+          fasonSources.push(f.source);
+        } else {
+          // İçsel op — tezgah dakika ücretiyle hesap
+          const cycle = safeNum(op.cycleTime);
+          if (cycle <= 0) continue;
+          const wcCode = op.wcCode || op.workCenter;
+          const rate = wcRateAvg[wcCode] || 0;
+          labor += cycle * rate;
+        }
       }
 
-      const total = material + labor;
+      const total = material + labor + fason;
+      // Fason kaynaklarını source'a ekle (audit için)
+      let finalSource = source;
+      if (fasonSources.length > 0) {
+        const uniqFason = [...new Set(fasonSources)];
+        finalSource += " +" + uniqFason.join("+");
+      }
       partCost[idx] = {
         idx,
         stockCode: part.stockCode,
@@ -189,10 +236,11 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
         qtyPerParent: safeNum(part.qty) || safeNum(part.qtyPerParent) || 1,
         materialCost: material,
         laborCost: labor,
+        fasonCost: fason,
         unitCost: total,
-        source,
+        source: finalSource,
         childCount: children.length,
-        opCount: (part.operations || []).filter(o => safeNum(o.cycleTime) > 0).length,
+        opCount: (part.operations || []).length,
       };
       return partCost[idx];
     };
@@ -212,17 +260,42 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     if (rootIdx === undefined) continue;
     const rootInfo = partCost[rootIdx] || {};
 
+    // Recursive toplam — root için tüm child'lardaki labor+fason'u da topla (zaten unitCost'a dahil ama
+    // ayrı kolonlarda görebilmek için: her parça için kendi labor/fason'unu çocuklarınkiyle topla)
+    function rollupTotals(idx) {
+      const node = partCost[idx];
+      if (!node) return { mat: 0, lab: 0, fas: 0 };
+      const childIndices = parts.map((p, i) => i).filter(i => parts[i].parentIdx === idx);
+      let mat = node.materialCost || 0;
+      let lab = node.laborCost || 0;
+      let fas = node.fasonCost || 0;
+      // Eğer üst parça children'a sahipse, child'ların labor+fason'unu da topla (mat zaten recursive zaten)
+      // Wait — material zaten recursive (child unitCost × qty). Ama labor/fason değil — sadece bu parça için.
+      // Root toplamı için child'ların labor+fason'unu da topla.
+      if (childIndices.length > 0 && (node.supplyType === "MAKE" || node.supplyType === "MAKE+FASON" || !node.supplyType)) {
+        for (const ci of childIndices) {
+          const childRoll = rollupTotals(ci);
+          const childQty = safeNum(parts[ci].qty) || safeNum(parts[ci].qtyPerParent) || 1;
+          lab += childRoll.lab * childQty;
+          fas += childRoll.fas * childQty;
+        }
+      }
+      return { mat, lab, fas };
+    }
+    const rollup = rollupTotals(rootIdx);
+
     byModel[modelKey] = {
       modelKey,
       modelCode: model.modelCode,
       modelName: model.modelName,
       rootIdx,
       rootCost: rootInfo.unitCost || 0,
-      rootMaterial: rootInfo.materialCost || 0,
-      rootLabor: rootInfo.laborCost || 0,
+      rootMaterial: rollup.mat,
+      rootLabor: rollup.lab,
+      rootFason: rollup.fas,
       rootStockCode: parts[rootIdx]?.stockCode,
       rootStockName: parts[rootIdx]?.stockName,
-      partCosts: partCost,  // hızlı erişim
+      partCosts: partCost,
       partsList: parts.map((p, i) => ({
         idx: i,
         ...partCost[i],
