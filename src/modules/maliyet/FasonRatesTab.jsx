@@ -303,6 +303,23 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     setDirty(true);
   };
 
+  // KG bazlı op'lar (621/622) için tüm partOverrides'ı toplu temizle —
+  // Sheet 1 default fiyatı zaten kullanıyor, parça-özel override gerekmiyor.
+  const removeKgOpOverrides = () => {
+    const keysToRemove = Object.keys(draft?.partOverrides || {}).filter(k => DEFAULT_KG_OPS.includes(k.split("_")[0]));
+    if (keysToRemove.length === 0) {
+      alert("Temizlenecek 621/622 override'ı yok.");
+      return;
+    }
+    if (!confirm(`${keysToRemove.length} adet 621/622 override'ı silinecek. Sheet 1 default fiyatı devreye girecek. Devam?`)) return;
+    setDraft(prev => {
+      const next = { ...prev.partOverrides };
+      keysToRemove.forEach(k => delete next[k]);
+      return { ...prev, partOverrides: next };
+    });
+    setDirty(true);
+  };
+
   const handleSave = async () => {
     if (!canEdit || !draft) return;
     setSaving(true);
@@ -566,6 +583,15 @@ function OverridesSection({ draft, removeOverride, canEdit }) {
         <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
           Op default'u geçersiz kılar (örn. talaşlı imalat parça başı farklı)
         </span>
+        {canEdit && Object.keys(draft?.partOverrides || {}).some(k => DEFAULT_KG_OPS.includes(k.split("_")[0])) && (
+          <button
+            onClick={(e) => { e.stopPropagation(); removeKgOpOverrides(); }}
+            title="621 ve 622 KG bazlı op'lar için tüm parça-özel override'ları siler — Sheet 1 default fiyatı devreye girer"
+            style={{ marginLeft: "auto", padding: "4px 10px", borderRadius: 4, border: "1px solid #C2410C", background: "transparent", color: "#C2410C", fontSize: 10, fontWeight: 500, cursor: "pointer" }}
+          >
+            🧹 621/622 override'larını temizle
+          </button>
+        )}
       </div>
       {showSection && (
         <>
