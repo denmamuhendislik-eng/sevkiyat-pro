@@ -16,6 +16,8 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
   const [saving, setSaving] = useState(false);
   const [searchStock, setSearchStock] = useState("");
   const [showPreviewAll, setShowPreviewAll] = useState(false);
+  const [manualForm, setManualForm] = useState(null);  // null | { code, name, unitPriceTl, currency, orderDate, supplier }
+  const [manualSaving, setManualSaving] = useState(false);
   const fileInputRef = useRef(null);
 
   useEffect(() => {
@@ -69,6 +71,55 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
       alert("Kaydetme hatası: " + e.message);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openManualForm = () => {
+    setManualForm({
+      code: "", name: "", unitPriceTl: "", currency: "TRY",
+      orderDate: new Date().toISOString().slice(0, 10),
+      originalQty: "", supplier: "",
+    });
+  };
+
+  const handleManualSave = async () => {
+    if (!manualForm || !canEdit || manualSaving) return;
+    const code = (manualForm.code || "").trim();
+    const price = Number(manualForm.unitPriceTl);
+    if (!code) { alert("Stok kodu zorunlu"); return; }
+    if (!(price > 0)) { alert("Birim TL fiyat sıfırdan büyük olmalı"); return; }
+    setManualSaving(true);
+    try {
+      const partition = {
+        belgeNo: "MANUEL-" + Date.now().toString(36),
+        orderDate: manualForm.orderDate || new Date().toISOString().slice(0, 10),
+        code,
+        name: (manualForm.name || "").trim(),
+        unit: "AD",
+        originalQty: Number(manualForm.originalQty) || 0,
+        shippedQty: 0,
+        remainingQty: Number(manualForm.originalQty) || 0,
+        unitPriceTl: price,
+        unitPriceDvz: 0,
+        currency: manualForm.currency || "TRY",
+        currencyGuess: null,
+        supplierCode: "",
+        supplier: (manualForm.supplier || "").trim() || "Manuel kayıt",
+        _rawPrice: price,
+        _rawDvzPrice: 0,
+        _has2ndUnitDiscrepancy: false,
+      };
+      const res = await saveUnitCostPartitions(unitCosts, [partition], { canEdit });
+      if (res.added > 0) {
+        alert("✓ Manuel parti eklendi");
+        setManualForm(null);
+      } else {
+        alert("Bu parti zaten kayıtlı (duplicate)");
+      }
+    } catch (e) {
+      alert("Hata: " + e.message);
+    } finally {
+      setManualSaving(false);
     }
   };
 
@@ -138,12 +189,21 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16, flexWrap: "wrap", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
         <span style={{ fontSize: 12, fontWeight: 500 }}>VIO Satın Alma Raporu (Sipariş Kontrol Listesi, Fiyatlı):</span>
         {canEdit && (
-          <button
-            onClick={() => fileInputRef.current?.click()}
-            style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid var(--color-border-info)", background: "var(--color-background-info)", color: "var(--color-text-info)", cursor: "pointer", fontSize: 12, fontWeight: 500 }}
-          >
-            📤 Excel yükle
-          </button>
+          <>
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid var(--color-border-info)", background: "var(--color-background-info)", color: "var(--color-text-info)", cursor: "pointer", fontSize: 12, fontWeight: 500 }}
+            >
+              📤 Excel yükle
+            </button>
+            <button
+              onClick={openManualForm}
+              title="VIO'dan gelmeyen parça için manuel birim fiyat ekle"
+              style={{ padding: "6px 14px", borderRadius: 6, border: "1px dashed var(--color-border-info)", background: "transparent", color: "var(--color-text-info)", cursor: "pointer", fontSize: 12, fontWeight: 500 }}
+            >
+              + Manuel parti
+            </button>
+          </>
         )}
         <input
           ref={fileInputRef}
@@ -180,6 +240,17 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
           canEdit={canEdit}
           showAll={showPreviewAll}
           setShowAll={setShowPreviewAll}
+        />
+      )}
+
+      {/* Manuel parti ekleme modal */}
+      {manualForm && (
+        <ManualPartitionModal
+          form={manualForm}
+          setForm={setManualForm}
+          onSave={handleManualSave}
+          saving={manualSaving}
+          onClose={() => setManualForm(null)}
         />
       )}
 
@@ -421,6 +492,85 @@ function StockPartitionsTable({ stocks, totalStocks }) {
           {totalStocks - stocks.length} stok daha var — arama ile filtrele
         </div>
       )}
+    </div>
+  );
+}
+
+function ManualPartitionModal({ form, setForm, onSave, saving, onClose }) {
+  const upd = (k, v) => setForm(prev => ({ ...prev, [k]: v }));
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+      style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}
+    >
+      <div style={{ background: "var(--color-background-primary)", borderRadius: 10, width: "100%", maxWidth: 520, padding: 18, boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <h3 style={{ margin: 0, fontSize: 14, fontWeight: 600 }}>+ Manuel Birim Maliyet Partisi</h3>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "var(--color-text-tertiary)" }}>×</button>
+        </div>
+        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 12 }}>
+          VIO'dan gelmeyen parça için manuel parti kaydı. FIFO sırasında diğer partilerle birlikte değerlendirilir.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10, alignItems: "center", fontSize: 12 }}>
+          <label>Stok Kodu *</label>
+          <input
+            value={form.code} onChange={e => upd("code", e.target.value)}
+            placeholder="örn. 151-0234"
+            style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+          />
+          <label>Stok Adı</label>
+          <input
+            value={form.name} onChange={e => upd("name", e.target.value)}
+            placeholder="örn. 52030 VOLANT C54"
+            style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+          />
+          <label>Birim Fiyat *</label>
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              type="number" min="0" step="0.01"
+              value={form.unitPriceTl} onChange={e => upd("unitPriceTl", e.target.value)}
+              placeholder="TL"
+              style={{ flex: 1, padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+            />
+            <select
+              value={form.currency} onChange={e => upd("currency", e.target.value)}
+              style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+            >
+              <option value="TRY">TRY (₺)</option>
+              <option value="USD">USD ($)</option>
+              <option value="EUR">EUR (€)</option>
+            </select>
+          </div>
+          <label>Miktar (opsiyonel)</label>
+          <input
+            type="number" min="0" step="1"
+            value={form.originalQty} onChange={e => upd("originalQty", e.target.value)}
+            placeholder="kalan miktar — boş bırakılırsa 0"
+            style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+          />
+          <label>Tarih</label>
+          <input
+            type="date" value={form.orderDate} onChange={e => upd("orderDate", e.target.value)}
+            style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+          />
+          <label>Tedarikçi</label>
+          <input
+            value={form.supplier} onChange={e => upd("supplier", e.target.value)}
+            placeholder="opsiyonel"
+            style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+          />
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+          <button onClick={onClose} style={{ padding: "6px 14px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", background: "transparent", fontSize: 12, cursor: "pointer" }}>İptal</button>
+          <button
+            onClick={onSave}
+            disabled={saving}
+            style={{ padding: "6px 16px", borderRadius: 5, border: "1px solid #1D9E75", background: "#1D9E75", color: "white", fontWeight: 500, fontSize: 12, cursor: saving ? "default" : "pointer" }}
+          >
+            {saving ? "Kaydediliyor..." : "✓ Kaydet"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

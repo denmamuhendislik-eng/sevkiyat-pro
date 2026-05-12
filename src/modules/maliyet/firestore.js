@@ -97,6 +97,17 @@ export async function deleteMonthlyOverhead(yearMonth, { canEdit, isAdmin }) {
   await updateDoc(ref, { [`monthlyOverheads.${yearMonth}`]: deleteField() });
 }
 
+// BOM modelleri subscribe (read-only) — mamul maliyet hesabı için
+export function subscribeBomModels(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "bomModels");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("bomModels listener:", err); callback({}); }
+  );
+}
+
 // workCenters subscribe — Maliyet modülü tezgah meta verilerine erişir.
 // MRP modülü ile aynı doc, MRP yazarken merge:true olmasa bile maliyet field'ları
 // state'te korunur (subscribe sayesinde) → setDoc tüm doc'u yazınca dahil olur.
