@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import * as XLSX from "xlsx";
 import {
   subscribeBomModels, subscribeWorkCenters, subscribeUnitCosts,
   subscribeLaborCosts, subscribeOverheadPolicy, subscribeFasonRates,
@@ -322,6 +323,31 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClo
   const [searchPart, setSearchPart] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");  // all | ok | partial | missing
   const parts = model.partsList || [];
+
+  // Eksik BUY/RAW kalemleri için Excel şablonu indir — UnitCostsTab'a toplu yüklemeye hazır
+  const handleExportMissing = () => {
+    const missingBuyRaw = parts.filter(p => {
+      const sType = p.supplyType;
+      if (sType !== "BUY" && sType !== "RAW") return false;
+      if (isParentBypassed(parts, p.idx)) return false;
+      return (p.unitCost || 0) <= 0;
+    });
+    if (missingBuyRaw.length === 0) {
+      alert("Eksik BUY/RAW kalemi yok 👍");
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    const rows = [["Stok Kodu", "Stok Adı", "Tip", "TL/Birim *", "Birim (AD/KG)", "Ağırlık (kg/AD, KG için)", "Tarih (YYYY-MM-DD)", "Tedarikçi", "Not"]];
+    missingBuyRaw.forEach(p => {
+      rows.push([p.stockCode || "", p.stockName || "", p.supplyType, "", "AD", "", today, "", ""]);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [{ wch: 14 }, { wch: 40 }, { wch: 8 }, { wch: 12 }, { wch: 14 }, { wch: 18 }, { wch: 14 }, { wch: 20 }, { wch: 25 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Eksik_Birim_Maliyetler");
+    const fileName = `eksik_birim_maliyet_${(model.modelCode || "BOM").replace(/[^a-zA-Z0-9-]/g, "_")}_${today}.xlsx`;
+    XLSX.writeFile(wb, fileName);
+  };
   const filtered = useMemo(() => {
     const q = searchPart.trim().toLocaleLowerCase("tr-TR");
     return parts.filter(p => {
@@ -368,8 +394,17 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClo
           <input type="checkbox" checked={showZero} onChange={e => setShowZero(e.target.checked)} />
           0 ₺ olanları göster
         </label>
+        {statusCounts?.missing > 0 && (
+          <button
+            onClick={handleExportMissing}
+            title="Bu modeldeki BUY/RAW eksik kalemleri Excel olarak indir — UnitCostsTab'tan toplu yüklenebilir"
+            style={{ marginLeft: "auto", padding: "3px 10px", borderRadius: 4, fontSize: 10, fontWeight: 500, border: "1px solid #DC2626", background: "transparent", color: "#DC2626", cursor: "pointer" }}
+          >
+            📥 Eksik Excel İndir
+          </button>
+        )}
         {statusCounts && (statusCounts.ok + statusCounts.partial + statusCounts.missing) > 0 && (
-          <div style={{ display: "inline-flex", gap: 4, marginLeft: "auto" }}>
+          <div style={{ display: "inline-flex", gap: 4, marginLeft: statusCounts?.missing > 0 ? 0 : "auto" }}>
             {[
               { k: "all", label: "Hepsi", count: statusCounts.ok + statusCounts.partial + statusCounts.missing, color: "var(--color-text-secondary)" },
               { k: "missing", label: "🔴 Eksik", count: statusCounts.missing, color: STATUS_COLORS.missing.bar },

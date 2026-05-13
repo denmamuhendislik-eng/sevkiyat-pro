@@ -18,7 +18,9 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
   const [showPreviewAll, setShowPreviewAll] = useState(false);
   const [manualForm, setManualForm] = useState(null);  // null | { code, name, unitPriceTl, currency, orderDate, supplier }
   const [manualSaving, setManualSaving] = useState(false);
+  const [bulkSaving, setBulkSaving] = useState(false);
   const fileInputRef = useRef(null);
+  const bulkFileInputRef = useRef(null);
 
   useEffect(() => {
     const unsub = subscribeUnitCosts((data) => {
@@ -144,6 +146,76 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
     }
   };
 
+  // Toplu Excel yükleme — ProductCostsTab'tan inen "eksik fiyat şablonunu" doldurup yükler.
+  // Kolonlar: Stok Kodu | Stok Adı | Tip | TL/Birim | Birim (AD/KG) | Ağırlık | Tarih | Tedarikçi | Not
+  const handleBulkUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !canEdit) { e.target.value = ""; return; }
+    setBulkSaving(true);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const sheet = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+      const partitions = [];
+      let skipped = 0;
+      let kgWithoutWeight = 0;
+      const today = new Date().toISOString().slice(0, 10);
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        const code = String(r[0] || "").trim();
+        const name = String(r[1] || "").trim();
+        const rawPrice = Number(r[3]);
+        if (!code || !(rawPrice > 0)) { skipped++; continue; }
+        const unit = String(r[4] || "AD").trim().toUpperCase() === "KG" ? "KG" : "AD";
+        const weight = Number(r[5]);
+        let price = rawPrice;
+        if (unit === "KG") {
+          if (!(weight > 0)) { kgWithoutWeight++; skipped++; continue; }
+          price = rawPrice * weight;
+        }
+        const orderDate = String(r[6] || today).trim() || today;
+        const supplier = String(r[7] || "").trim() || "Manuel kayıt (toplu)";
+        partitions.push({
+          belgeNo: `MANUEL-BULK-${Date.now().toString(36)}-${i}`,
+          orderDate,
+          code,
+          name,
+          unit: "AD",
+          originalQty: 0,
+          shippedQty: 0,
+          remainingQty: 0,
+          unitPriceTl: price,
+          unitPriceDvz: 0,
+          currency: "TRY",
+          currencyGuess: null,
+          supplierCode: "",
+          supplier,
+          _rawPrice: rawPrice,
+          _rawDvzPrice: 0,
+          _has2ndUnitDiscrepancy: false,
+        });
+      }
+      if (partitions.length === 0) {
+        alert(`Eklenecek satır yok.\nAtlanan: ${skipped}${kgWithoutWeight > 0 ? ` (${kgWithoutWeight} satır KG ama ağırlık eksik)` : ""}`);
+        return;
+      }
+      const res = await saveUnitCostPartitions(unitCosts, partitions, { canEdit });
+      const lines = [
+        `✓ ${res.added} parti eklendi`,
+        res.skipped > 0 ? `${res.skipped} duplicate atlandı` : null,
+        skipped > 0 ? `${skipped} satır boş/eksik (Excel'de TL/Birim girilmemiş)` : null,
+        kgWithoutWeight > 0 ? `${kgWithoutWeight} satırda KG birim ama ağırlık eksik` : null,
+      ].filter(Boolean);
+      alert(lines.join("\n"));
+    } catch (err) {
+      alert("Toplu yükleme hatası: " + err.message);
+    } finally {
+      setBulkSaving(false);
+      e.target.value = "";
+    }
+  };
+
   // Otomasyon durumu — unitCosts.lastImport'tan hesaplanır
   const automationStatus = useMemo(() => {
     const lastImport = unitCosts?.lastImport;
@@ -213,6 +285,21 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
             >
               + Manuel parti
             </button>
+            <button
+              onClick={() => bulkFileInputRef.current?.click()}
+              disabled={bulkSaving}
+              title="ProductCostsTab'tan inen 'Eksik Excel' şablonunu doldurup buraya yükle — toplu parti ekleme"
+              style={{ padding: "6px 14px", borderRadius: 6, border: "1px solid #C2410C", background: "transparent", color: "#C2410C", cursor: bulkSaving ? "default" : "pointer", fontSize: 12, fontWeight: 500 }}
+            >
+              {bulkSaving ? "Yükleniyor..." : "📤 Toplu Excel Yükle"}
+            </button>
+            <input
+              ref={bulkFileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              onChange={handleBulkUpload}
+              style={{ display: "none" }}
+            />
           </>
         )}
         <input
