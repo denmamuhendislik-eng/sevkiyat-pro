@@ -97,6 +97,52 @@ export async function deleteMonthlyOverhead(yearMonth, { canEdit, isAdmin }) {
   await updateDoc(ref, { [`monthlyOverheads.${yearMonth}`]: deleteField() });
 }
 
+// ==================== STOK SARF HAREKETLERİ (kesici takım, kesme yağı vs.) ====================
+// laborCosts.monthlySupplies.{ay} → ayrı veri akışı, ayrı dağıtım (talaşlı imalat WC'leri)
+// items: [{ code, name, kg, amountTl, unitCost }]
+// totalTl: aylık toplam (Ciro Bedeli toplamı)
+// Hizmet Total ile karışmasın diye ayrı field.
+
+export async function saveMonthlySupplies(yearMonth, data, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!yearMonth || !/^\d{4}-\d{2}$/.test(yearMonth)) throw new Error("Geçersiz ay formatı: " + yearMonth);
+  const ref = doc(db, APP_COL, LABOR_DOC);
+  try {
+    await updateDoc(ref, { [`monthlySupplies.${yearMonth}`]: data });
+  } catch (e) {
+    await setDoc(ref, { monthlySupplies: { [yearMonth]: data } }, { merge: true });
+  }
+}
+
+export async function saveMonthlySuppliesBulk(updates, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!updates || Object.keys(updates).length === 0) return { written: 0 };
+  const ref = doc(db, APP_COL, LABOR_DOC);
+  const dotMap = {};
+  for (const [ym, data] of Object.entries(updates)) {
+    if (!/^\d{4}-\d{2}$/.test(ym)) continue;
+    dotMap[`monthlySupplies.${ym}`] = data;
+  }
+  try {
+    await updateDoc(ref, dotMap);
+  } catch (e) {
+    const monthlySupplies = {};
+    for (const [ym, data] of Object.entries(updates)) monthlySupplies[ym] = data;
+    await setDoc(ref, { monthlySupplies }, { merge: true });
+  }
+  return { written: Object.keys(updates).length };
+}
+
+export async function deleteMonthlySupplies(yearMonth, { canEdit, isAdmin }) {
+  if (!isAdmin) throw new Error("Silme sadece admin rolüne açık");
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  const ref = doc(db, APP_COL, LABOR_DOC);
+  await updateDoc(ref, { [`monthlySupplies.${yearMonth}`]: deleteField() });
+}
+
 // Fason ücretleri — geçici tablo (fason takip modülü gelene kadar)
 // Yapı:
 //   opDefaults: { [opCode]: { name, unit: "AD"|"KG", unitPriceTl, note } }

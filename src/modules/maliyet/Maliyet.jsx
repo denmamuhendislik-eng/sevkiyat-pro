@@ -5,9 +5,11 @@ import UnitCostsTab from "./UnitCostsTab";
 import FasonRatesTab from "./FasonRatesTab";
 import ProductCostsTab from "./ProductCostsTab";
 import InventoryTab from "./InventoryTab";
+import SuppliesTab from "./SuppliesTab";
 
 const TABS = [
   { id: "monthly", icon: "🗓", label: "Aylık Genel Giderler", phase: 2, active: true },
+  { id: "supplies", icon: "🛢", label: "Stok Sarf Hareketleri", phase: 2, active: true, note: "Kesici takım, kesme yağı, PPE vs. — talaşlı imalat WC'lerine dağıtılır" },
   { id: "machineRates", icon: "⚙️", label: "Tezgah Dakika Ücretleri", phase: 2, active: true },
   { id: "unitCosts", icon: "🏷", label: "Birim Maliyetler", phase: 1, active: true },
   { id: "fasonRates", icon: "🔧", label: "Fason Ücretleri", phase: 3, active: true, note: "Geçici tablo — fason takip modülü gelene kadar" },
@@ -76,6 +78,7 @@ export default function Maliyet({ isAdmin, isUretim }) {
 
       {/* Tab content */}
       {activeTab === "monthly" && <MonthlyOverheadsTab canEdit={canEdit} isAdmin={isAdmin} />}
+      {activeTab === "supplies" && <SuppliesTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "machineRates" && <MachineRatesTab canEdit={canEdit} />}
       {activeTab === "unitCosts" && <UnitCostsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "fasonRates" && <FasonRatesTab canEdit={canEdit} isAdmin={isAdmin} />}
