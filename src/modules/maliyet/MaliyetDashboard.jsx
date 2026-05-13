@@ -1,10 +1,14 @@
 import { useState, useEffect, useMemo } from "react";
-import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend } from "recharts";
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import {
   subscribeInventorySnapshots, subscribeMrpStock, subscribeUnitCosts,
-  subscribeLaborCosts,
+  subscribeLaborCosts, subscribeBomModels, subscribeWorkCenters,
+  subscribeOverheadPolicy, subscribeFasonRates, subscribeProducts,
+  subscribeSalesOrders, subscribeBomMapping,
 } from "./firestore";
 import { calculateInventoryValue, monthLabel } from "./inventoryCalc";
+import { calculateAllProductCosts } from "./productCostCalc";
+import { DEFAULT_WEIGHTS } from "./distributionCalc";
 import { fmtMoneyNum, getRatesForDate, CURRENCY_SYMBOLS } from "./currency";
 
 const fmt2 = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -16,20 +20,63 @@ export default function MaliyetDashboard({ currency = "TRY", rates = null, curre
   const [unitCosts, setUnitCosts] = useState({});
   const [snapshots, setSnapshots] = useState({});
   const [laborData, setLaborData] = useState({});
-  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, labor: false });
+  // InventoryTab ile aynı tam hesap için ek subscribe'lar (mamul/yarı mamul fallback)
+  const [bomModels, setBomModels] = useState({});
+  const [workCenters, setWorkCenters] = useState({});
+  const [policy, setPolicy] = useState(null);
+  const [fasonRates, setFasonRates] = useState({});
+  const [products, setProducts] = useState([]);
+  const [salesOrders, setSalesOrders] = useState({});
+  const [bomMapping, setBomMapping] = useState({});
+  const [loaded, setLoaded] = useState({
+    stock: false, unit: false, snap: false, labor: false,
+    bom: false, wc: false, pol: false, fason: false, prod: false, so: false, map: false,
+  });
 
   useEffect(() => { const u = subscribeMrpStock(d => { setMrpStock(d || {}); setLoaded(p => ({ ...p, stock: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeUnitCosts(d => { setUnitCosts(d || {}); setLoaded(p => ({ ...p, unit: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeInventorySnapshots(d => { setSnapshots(d?.snapshots || {}); setLoaded(p => ({ ...p, snap: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeLaborCosts(d => { setLaborData(d || {}); setLoaded(p => ({ ...p, labor: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeBomModels(d => { setBomModels(d || {}); setLoaded(p => ({ ...p, bom: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeWorkCenters(d => { setWorkCenters(d || {}); setLoaded(p => ({ ...p, wc: true })); }); return u; }, []);
+  useEffect(() => {
+    const u = subscribeOverheadPolicy(d => {
+      setPolicy(!d || Object.keys(d).length === 0 ? { weights: { ...DEFAULT_WEIGHTS }, wcSalaryMapping: {} } : d);
+      setLoaded(p => ({ ...p, pol: true }));
+    });
+    return u;
+  }, []);
+  useEffect(() => { const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, fason: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeProducts(d => { setProducts(Array.isArray(d) ? d : []); setLoaded(p => ({ ...p, prod: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(p => ({ ...p, so: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeBomMapping(d => { setBomMapping(d || {}); setLoaded(p => ({ ...p, map: true })); }); return u; }, []);
 
   const allLoaded = Object.values(loaded).every(Boolean);
 
-  // Anlık envanter — basit hesap (BUY/RAW son alış)
+  // productCosts (mamul/yarı mamul birim TL fallback için) — InventoryTab'la aynı mantık
+  const monthlyOverheads = laborData?.monthlyOverheads || {};
+  const monthsAvailable = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
+  const productCostMonth = useMemo(() => {
+    if (monthsAvailable.length === 0) return null;
+    const cur = new Date().toISOString().slice(0, 7);
+    const completed = monthsAvailable.filter(m => m < cur);
+    return completed[0] || monthsAvailable[0];
+  }, [monthsAvailable]);
+  const monthlySupplies = laborData?.monthlySupplies || {};
+
+  const productCosts = useMemo(() => {
+    if (!allLoaded || !productCostMonth) return null;
+    const monthData = monthlyOverheads[productCostMonth];
+    if (!monthData) return null;
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: productCostMonth });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates, monthlySupplies]);
+
+  // Anlık envanter — InventoryTab ile birebir aynı (productCosts + mamul fallback dahil)
+  const catOverrides = bomMapping?._catOverrides || {};
   const live = useMemo(() => {
     if (!allLoaded) return null;
-    return calculateInventoryValue({ mrpStock, unitCosts });
-  }, [allLoaded, mrpStock, unitCosts]);
+    return calculateInventoryValue({ mrpStock, unitCosts, productCosts, products, salesOrders, catOverrides });
+  }, [allLoaded, mrpStock, unitCosts, productCosts, products, salesOrders, catOverrides]);
 
   const sym = CURRENCY_SYMBOLS[currency] || "₺";
   // Snapshot tarihsel kura göre çevrim
