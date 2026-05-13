@@ -760,7 +760,7 @@ export default function App() {
     const cascadeItems = Object.values(cascadeMap);
 
     setImportData({ matched, unmatched, cascadeItems, detailRows, filename, format: 'new' });
-    setImportNewProducts(unmatched.map(u => ({ ...u })));
+    setImportNewProducts(unmatched.map(u => ({ ...u, vioCode: u.code || "" })));
   };
 
   const processVioFile = (file) => {
@@ -882,7 +882,7 @@ export default function App() {
       });
       const cascadeItems = Object.values(cascadeMap);
       setImportData({matched,unmatched,cascadeItems});
-      setImportNewProducts(unmatched.map(u=>({...u})));
+      setImportNewProducts(unmatched.map(u=>({...u,vioCode:u.code||""})));
     };
     reader.readAsArrayBuffer(file);
   };
@@ -967,35 +967,6 @@ export default function App() {
 
   const executeImport = async () => {
     if(!importData||!allowedYears.includes(importYear)) return;
-    // VIO kodu çift kontrol — matched listede products.vioCode'u boş olan ürünler için uyar.
-    // Bunlar genellikle isim eşleşmesi ile bulundu (matchType === "name") ama products kaydında
-    // vioCode tanımlı değil. MRP root mamul stok lookup (App.jsx:7896) vioCode'a bağlı —
-    // boş ise konteyner sekmesinde ambar/cross-BOM bilgileri eksik gözükür.
-    const missingVio = [];
-    for (const m of (importData.matched || [])) {
-      const p = products.find(pr => pr.id === m.pid);
-      if (p && !((p.vioCode || "").trim()) && !VIO_CODES[m.pid]) {
-        missingVio.push({ pid: m.pid, name: p.nameTR, excelCode: m.code });
-      }
-    }
-    if (missingVio.length > 0) {
-      const preview = missingVio.slice(0, 10).map(x => `  • ${x.name} (#${x.pid}) → Excel kodu: ${x.excelCode}`).join("\n");
-      const more = missingVio.length > 10 ? `\n  ... ve ${missingVio.length - 10} tane daha` : "";
-      const ok = confirm(
-        `⚠ VIO Kodu Çift Kontrol\n\n` +
-        `Aşağıdaki ${missingVio.length} ürünün products.vioCode alanı boş — Excel'deki kod kullanılarak otomatik atansın mı?\n\n` +
-        `${preview}${more}\n\n` +
-        `[Tamam] = Otomatik atama yap, sonra import et\n` +
-        `[İptal] = İmport iptal, Ürünler sekmesinden manuel ekle, sonra tekrar dene\n\n` +
-        `Boş vioCode → MRP'de konteyner sekmesinde ambar/cross-BOM eksik gözükür.`
-      );
-      if (!ok) return;
-      // Otomatik vioCode atama
-      setProducts(prev => prev.map(p => {
-        const fix = missingVio.find(mv => mv.pid === p.id);
-        return fix ? { ...p, vioCode: fix.excelCode } : p;
-      }));
-    }
     setYearsData(prev=>{
       const y={...(prev[importYear]||{containers:[],orders:{},carryOver:{},quantities:{}})};
       const orders={...y.orders};
@@ -1043,11 +1014,16 @@ export default function App() {
   const approveNewProduct = (idx) => {
     const np=importNewProducts[idx];
     if(!np.nameTR||!np.nameEN||!np.kg) {alert("TR isim, EN isim ve KG zorunlu!");return;}
-    // VIO kodu (np.code) zorunlu — yoksa MRP root mamul stok lookup (App.jsx:7896) çalışmaz,
-    // konteyner sekmesinde ambar/cross-BOM eksik gözükür. Excel'den gelen kod kullanılır,
-    // ayrıca düzenleme imkanı için onay sorulur.
-    const vio = (np.code || "").trim();
-    if (!vio) { alert("VIO kodu boş! Önce Excel'deki stok kodunu kontrol edin."); return; }
+    // VIO kodu zorunlu — kullanıcı modal'da default Excel kodunu görüp doğruladı.
+    // Boş bırakılırsa MRP root mamul stok lookup (App.jsx:7896) çalışmaz,
+    // konteyner sekmesinde ambar/cross-BOM eksik gözükür.
+    const vio = ((np.vioCode ?? np.code) || "").trim();
+    if (!vio) { alert("VIO Kodu zorunlu! Excel'den otomatik geldiyse kontrol edin, manuel girmek isterseniz alana yazın."); return; }
+    // Aynı vioCode başka üründe varsa onay sor
+    const dup = products.find(p => (p.vioCode || "").trim() === vio);
+    if (dup) {
+      if (!confirm(`⚠ "${vio}" VIO kodu zaten "${dup.nameTR}" (#${dup.id}) ürününde tanımlı. Yine de yeni ürün olarak eklensin mi?`)) return;
+    }
     const newId=Math.max(...products.map(p=>p.id))+1;
     const newP={id:newId,nameTR:np.nameTR,nameEN:np.nameEN,kg:parseFloat(np.kg),vioCode:vio,color:`#${Math.floor(Math.random()*16777215).toString(16).padStart(6,"0")}`};
     setProducts(prev=>[...prev,newP]);
@@ -2678,7 +2654,7 @@ ${el.innerHTML}
               {/* Unmatched Products */}
               {importData.unmatched.length>0&&<div style={{marginBottom:16}}>
                 <h4 style={{fontSize:14,fontWeight:600,marginBottom:8,color:"#BA7517"}}>⚠ Tanınmayan ürünler ({importData.unmatched.length})</h4>
-                <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:8}}>Bu ürünler VIO kodlarıyla eşleşmedi. Eklemek için TR isim, EN isim ve KG bilgilerini girip "Onayla" tıklayın.</div>
+                <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:8}}>Bu ürünler products listesindeki kodlarla eşleşmedi. Eklemek için TR isim, EN isim, KG bilgilerini ve <b>VIO Kodu</b>'nu kontrol edin (default Excel'den gelir, yanlışsa düzeltin) → "Onayla".</div>
                 {importNewProducts.map((np,i)=>(
                   <div key={i} style={{padding:12,marginBottom:8,borderRadius:8,border:`1px solid ${np.approved?"#1D9E75":"#BA7517"}`,background:np.approved?"rgba(29,158,117,0.05)":"rgba(186,117,23,0.05)"}}>
                     <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
@@ -2699,6 +2675,16 @@ ${el.innerHTML}
                       <div style={{width:80}}>
                         <label style={{fontSize:9,color:"var(--color-text-tertiary)"}}>KG *</label>
                         <input type="number" value={np.kg} onChange={e=>{const v=e.target.value;setImportNewProducts(prev=>prev.map((p,j)=>j===i?{...p,kg:v}:p));}} style={{...iS,padding:"4px 8px",fontSize:11}}/>
+                      </div>
+                      <div style={{width:110}}>
+                        <label style={{fontSize:9,color:"var(--color-text-tertiary)"}}>VIO Kodu *</label>
+                        <input
+                          value={np.vioCode ?? np.code ?? ""}
+                          onChange={e=>{const v=e.target.value;setImportNewProducts(prev=>prev.map((p,j)=>j===i?{...p,vioCode:v}:p));}}
+                          placeholder="152-XXXX"
+                          title="Excel'den otomatik geldi — yanlışsa düzelt"
+                          style={{...iS,padding:"4px 8px",fontSize:11,fontFamily:"monospace"}}
+                        />
                       </div>
                       <button onClick={()=>approveNewProduct(i)} style={{...bP,padding:"5px 12px",fontSize:10}}>Onayla</button>
                     </div>}
