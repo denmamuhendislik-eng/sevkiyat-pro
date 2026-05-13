@@ -202,3 +202,34 @@ export function suggestWcSalaryMapping(items, wcCenters) {
 
   return suggestions;
 }
+
+// ==================== STOK SARF — HAREKETLİ ORTALAMA ====================
+// Yığılan alımları (varil soğutma sıvısı vb.) yumuşatmak için, mamul maliyet
+// hesabında o ayın tek başına TL'i yerine son N ayın aritmetik ortalaması kullanılır.
+//
+// monthlySupplies: { "2026-01": { totalTl, items, ... }, ... }
+// windowMonths:    son kaç ayın ortalaması (3/6/12; default 6)
+// refMonth (ops):  "2026-04" gibi referans ay — bu ayın TAMAMI ortalama dahil değil,
+//                  refMonth'tan önceki son N ay kullanılır. Verilmezse bugünün ayı
+//                  hariç tüm tam aylar üzerinden ortalama.
+//
+// Dönüş: { avgTl, monthsUsed, monthsList }
+export function getSupplyMonthlyAvg(monthlySupplies, windowMonths = 6, refMonth = null) {
+  const map = monthlySupplies || {};
+  const sorted = Object.keys(map).sort();
+  // Bugünün ayı ve sonrası kısmi veri → her zaman hariç
+  const today = new Date().toISOString().slice(0, 7);
+  const cutoff = refMonth || today;
+  const candidates = sorted.filter(m => m < cutoff);
+  // Son N ay
+  const selected = candidates.slice(-Math.max(1, Number(windowMonths) || 6));
+  if (selected.length === 0) {
+    return { avgTl: 0, monthsUsed: 0, monthsList: [] };
+  }
+  const sum = selected.reduce((s, m) => s + (Number(map[m]?.totalTl) || 0), 0);
+  return {
+    avgTl: sum / selected.length,
+    monthsUsed: selected.length,
+    monthsList: selected,
+  };
+}
