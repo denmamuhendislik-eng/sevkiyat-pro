@@ -140,10 +140,11 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
   const monthData = monthlyOverheads[selectedMonth];
 
   const allLoaded = Object.values(loaded).every(Boolean);
+  const monthlySupplies = laborData?.monthlySupplies || {};
   const calc = useMemo(() => {
     if (!allLoaded) return null;
-    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates });
-  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy, fasonRates]);
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: selectedMonth });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, selectedMonth]);
 
   const modelsList = useMemo(() => {
     if (!calc?.byModel) return [];

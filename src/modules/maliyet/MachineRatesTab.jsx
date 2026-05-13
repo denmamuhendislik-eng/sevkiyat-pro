@@ -505,11 +505,23 @@ function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDi
     setPolicyDirty(true);
   };
 
-  // Hesap
+  // Sarf WC seçimi (Talaşlı İmalat grubu)
+  const supplyWcCodes = useMemo(() => Array.isArray(policy?.supplyWcCodes) ? policy.supplyWcCodes : [], [policy]);
+  const toggleSupplyWc = (code) => {
+    setPolicy(prev => {
+      const cur = Array.isArray(prev?.supplyWcCodes) ? prev.supplyWcCodes : [];
+      const next = cur.includes(code) ? cur.filter(c => c !== code) : [...cur, code];
+      return { ...prev, supplyWcCodes: next };
+    });
+    setPolicyDirty(true);
+  };
+
+  // Hesap — monthlySupplies + selectedMonth refMonth olarak geçer (sarf payı dahil)
+  const monthlySupplies = laborData?.monthlySupplies || {};
   const calc = useMemo(() => {
     if (!monthData || !workCenters || !policy) return null;
-    return calculateMachineRates({ monthData, policy, workCenters });
-  }, [monthData, workCenters, policy]);
+    return calculateMachineRates({ monthData, policy, workCenters, monthlySupplies, refMonth: selectedMonth });
+  }, [monthData, workCenters, policy, monthlySupplies, selectedMonth]);
 
   const wcEntries = useMemo(() =>
     Object.entries(workCenters?.centers || {}).sort((a, b) => (a[1].name || a[0]).localeCompare(b[1].name || b[0]))
@@ -557,6 +569,44 @@ function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDi
               {savingPolicy ? "Kaydediliyor..." : "Politikayı Kaydet"}
             </button>
           )}
+        </div>
+      </div>
+
+      {/* Stok Sarf WC Grubu — Talaşlı İmalat */}
+      <div style={{ padding: "10px 14px", borderBottom: "0.5px solid var(--color-border-tertiary)", background: "#F0FDF4" }}>
+        <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: "#166534" }}>🛢 Stok Sarf WC Grubu (Talaşlı İmalat)</span>
+          <span style={{ fontSize: 10, color: "#166534" }}>
+            Stok Sarf sekmesindeki aylık ortalama bu WC'lerin makinalarına 4 ağırlıkla dağıtılır.
+            Seçili: <b>{supplyWcCodes.length}</b> WC
+            {calc?.summary?.supplyDistribution?.avgTl > 0 && (
+              <> · ortalama: <b>{fmt2(calc.summary.supplyDistribution.avgTl)} TL/ay</b> ({calc.summary.supplyDistribution.monthsUsed} ay) · dağıtılan: <b>{fmt2(calc.summary.supplyDistribution.totalDistributed)} TL</b></>
+            )}
+          </span>
+        </div>
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+          {wcEntries.map(([code, wc]) => {
+            const active = supplyWcCodes.includes(code);
+            const machineCount = (wc.machines || []).length;
+            return (
+              <button
+                key={code}
+                onClick={() => toggleSupplyWc(code)}
+                disabled={!canEdit}
+                title={`${wc.name || code} · ${machineCount} tezgah${machineCount === 0 ? " (boş, sarf payı 0 olur)" : ""}`}
+                style={{
+                  padding: "4px 10px", borderRadius: 4, fontSize: 11, fontWeight: active ? 600 : 500,
+                  border: "1px solid " + (active ? "#16A34A" : "#86EFAC"),
+                  background: active ? "#16A34A" : "white",
+                  color: active ? "white" : "#166534",
+                  cursor: canEdit ? "pointer" : "default",
+                  opacity: machineCount === 0 ? 0.5 : 1,
+                }}
+              >
+                {active ? "✓ " : ""}{wc.name || code} <span style={{ fontSize: 9, opacity: 0.8 }}>({machineCount})</span>
+              </button>
+            );
+          })}
         </div>
       </div>
 

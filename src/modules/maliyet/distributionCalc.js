@@ -27,9 +27,11 @@ function machineSatinAlmaTl(m) {
 
 export function calculateMachineRates({
   monthData,         // { items: [{ id (code), category, amount }], totalTl }
-  policy,            // { weights, wcSalaryMapping }
+  policy,            // { weights, wcSalaryMapping, supplyWcCodes, supplyAvgWindowMonths }
   workCenters,       // appData/workCenters dokümanı
   workDays = 22,     // ay başına iş günü (default)
+  monthlySupplies = null,  // { "2026-04": { totalTl, items, ... } } — opsiyonel, varsa sarf dağıtımı yapılır
+  refMonth = null,         // seçili hesap ayı ("2026-04"); sarf ortalaması bu ay öncesinden alınır
 }) {
   const weights = (policy?.weights && typeof policy.weights === "object")
     ? { ...DEFAULT_WEIGHTS, ...policy.weights }
@@ -87,7 +89,7 @@ export function calculateMachineRates({
   machines.forEach(m => {
     machinePay[m.id] = {
       satinAlmaPay: 0, alanPay: 0, kuruluKwPay: 0, operatorPay: 0,
-      wcSalaryPay: 0, operatorDirect: 0, total: 0, ratePerMin: 0,
+      wcSalaryPay: 0, operatorDirect: 0, supplyPay: 0, total: 0, ratePerMin: 0,
     };
   });
 
@@ -127,7 +129,43 @@ export function calculateMachineRates({
     if (totalKw > 0) p.kuruluKwPay = kwPool * (m.kuruluKw / totalKw);
     if (machineCount > 0) p.operatorPay = operatorPool / machineCount;
     p.operatorDirect = m.operatorAylikTl;
-    p.total = p.satinAlmaPay + p.alanPay + p.kuruluKwPay + p.operatorPay + p.wcSalaryPay + p.operatorDirect;
+  });
+
+  // 6b. Stok sarf hareketlerinin dağıtımı — ayrı havuz, sadece policy.supplyWcCodes WC'lerine,
+  // o WC'lerin makinaları arasında 4 ağırlık ile bölünür. Hareketli ortalama TL'i kullanılır.
+  const supplyWcCodes = Array.isArray(policy?.supplyWcCodes) ? policy.supplyWcCodes : [];
+  let supplyAvgInfo = { avgTl: 0, monthsUsed: 0, monthsList: [] };
+  if (monthlySupplies && supplyWcCodes.length > 0) {
+    const win = Number(policy?.supplyAvgWindowMonths) || 6;
+    supplyAvgInfo = getSupplyMonthlyAvg(monthlySupplies, win, refMonth);
+    if (supplyAvgInfo.avgTl > 0) {
+      const targetMachines = machines.filter(m => supplyWcCodes.includes(m.wcCode));
+      if (targetMachines.length > 0) {
+        const tSatinAlma = targetMachines.reduce((s, m) => s + m.satinAlmaTl, 0);
+        const tAlan = targetMachines.reduce((s, m) => s + m.alanM2, 0);
+        const tKw = targetMachines.reduce((s, m) => s + m.kuruluKw, 0);
+        const tCount = targetMachines.length;
+        const sAvgPool = supplyAvgInfo.avgTl * (weights.satinAlma || 0);
+        const sAlanPool = supplyAvgInfo.avgTl * (weights.alan || 0);
+        const sKwPool = supplyAvgInfo.avgTl * (weights.kuruluKw || 0);
+        const sOpPool = supplyAvgInfo.avgTl * (weights.operator || 0);
+        targetMachines.forEach(m => {
+          const p = machinePay[m.id];
+          let pay = 0;
+          if (tSatinAlma > 0) pay += sAvgPool * (m.satinAlmaTl / tSatinAlma);
+          if (tAlan > 0) pay += sAlanPool * (m.alanM2 / tAlan);
+          if (tKw > 0) pay += sKwPool * (m.kuruluKw / tKw);
+          if (tCount > 0) pay += sOpPool / tCount;
+          p.supplyPay = pay;
+        });
+      }
+    }
+  }
+
+  // 7. Total + ratePerMin (sarf payı dahil)
+  machines.forEach(m => {
+    const p = machinePay[m.id];
+    p.total = p.satinAlmaPay + p.alanPay + p.kuruluKwPay + p.operatorPay + p.wcSalaryPay + p.operatorDirect + p.supplyPay;
     // Sanal tezgahlar (mesOpCodes yok) gerçekten çalışmadığı için dakika ücreti irrelevant ama yine de hesapla (referans)
     p.ratePerMin = minutesPerMonth > 0 ? p.total / minutesPerMonth : 0;
   });
@@ -152,6 +190,13 @@ export function calculateMachineRates({
       totalSourceMonth,
       operatorDirectTotal: machines.reduce((s, m) => s + m.operatorAylikTl, 0),
       wcSalaryUnmapped,
+      supplyDistribution: {
+        avgTl: supplyAvgInfo.avgTl,
+        monthsUsed: supplyAvgInfo.monthsUsed,
+        monthsList: supplyAvgInfo.monthsList,
+        wcCodes: supplyWcCodes,
+        totalDistributed: machines.reduce((s, m) => s + machinePay[m.id].supplyPay, 0),
+      },
     },
   };
 }

@@ -45,7 +45,7 @@ function calcFasonOpCost(opCode, partCode, fasonRates) {
 }
 
 // Tüm BOM modelleri için maliyet hesabı.
-export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates }) {
+export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies = null, refMonth = null }) {
   if (!bomModels || Object.keys(bomModels).length === 0) {
     return { byModel: {}, wcRateAvg: {}, stockUnitCost: {}, summary: { error: "BOM modeli yok" } };
   }
@@ -57,7 +57,7 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
   // YRD (sanal) ekipmanlar dahil — kullanıcı tam da bu WC'de gerçek tezgah olmadığında
   // maliyet hesaplanabilsin diye YRD ekliyor. Dışarda bırakırsak o WC'de cycle × 0 = 0 olur
   // ve KAYNAK gibi sadece sanal ekipmanı olan WC'lerde işçilik hep sıfır çıkar.
-  const ratesCalc = calculateMachineRates({ monthData, policy, workCenters });
+  const ratesCalc = calculateMachineRates({ monthData, policy, workCenters, monthlySupplies, refMonth });
   const wcRateSum = {};
   for (const m of ratesCalc.machines) {
     const rate = ratesCalc.machinePay[m.id]?.ratePerMin || 0;

@@ -103,12 +103,13 @@ export default function InventoryTab({ canEdit, isAdmin }) {
     return completed[0] || monthsAvailable[0];
   }, [monthsAvailable]);
 
+  const monthlySupplies = laborData?.monthlySupplies || {};
   const productCosts = useMemo(() => {
     if (!allLoaded || !productCostMonth) return null;
     const monthData = monthlyOverheads[productCostMonth];
     if (!monthData) return null;
-    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates });
-  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates]);
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: productCostMonth });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates, monthlySupplies]);
 
   // Anlık envanter hesap (her render'da fresh)
   const catOverrides = bomMapping?._catOverrides || {};
