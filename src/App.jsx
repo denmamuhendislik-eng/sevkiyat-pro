@@ -170,6 +170,8 @@ export default function App() {
   const [editStdTemp, setEditStdTemp] = useState({qtyPerPallet:"",ambalajType:0,dara:""});
   const [editKgPid, setEditKgPid] = useState(null);
   const [editKgTemp, setEditKgTemp] = useState("");
+  const [editVioPid, setEditVioPid] = useState(null);
+  const [editVioTemp, setEditVioTemp] = useState("");
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
@@ -1359,6 +1361,23 @@ ${el.innerHTML}
     setEditKgPid(null);
   };
 
+  const saveEditVio = (pid) => {
+    if (!isAdmin) { setEditVioPid(null); return; }
+    const newVio = (editVioTemp || "").trim();
+    const oldP = products.find(p => p.id === pid);
+    if (!oldP) { setEditVioPid(null); return; }
+    if (newVio === (oldP.vioCode || "")) { setEditVioPid(null); return; }
+    // Diğer ürünlerde aynı vioCode varsa uyar
+    if (newVio) {
+      const dup = products.find(p => p.id !== pid && (p.vioCode || "") === newVio);
+      if (dup) {
+        if (!confirm(`⚠ "${newVio}" VIO kodu zaten "${dup.nameTR}" (#${dup.id}) ürününde tanımlı. Yine de devam edilsin mi?`)) return;
+      }
+    }
+    setProducts(prev => prev.map(p => p.id === pid ? { ...p, vioCode: newVio } : p));
+    setEditVioPid(null);
+  };
+
   const downloadFullBackup = async () => {
     if (!isAdmin || !db) { alert("Yetki yok veya bağlantı hazır değil."); return; }
     try {
@@ -2392,7 +2411,48 @@ ${el.innerHTML}
                           {isAdmin && <span style={{fontSize:9,marginLeft:3,color:"var(--color-text-tertiary)",fontWeight:400}}>✎</span>}
                         </div>
                       )}
-                      {VIO_CODES[p.id]&&<div style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",fontFamily:"monospace",marginTop:2}}>{VIO_CODES[p.id]}</div>}
+                      {/* VIO Kodu — inline edit (admin) */}
+                      {(() => {
+                        const constVio = VIO_CODES[p.id];
+                        const currentVio = p.vioCode || constVio || "";
+                        const isEditingVio = editVioPid === p.id;
+                        if (isEditingVio) {
+                          return (
+                            <div style={{display:"flex",alignItems:"center",gap:3,marginTop:2,justifyContent:"flex-end"}}>
+                              <input value={editVioTemp} onChange={e=>setEditVioTemp(e.target.value)} autoFocus
+                                onKeyDown={e=>{if(e.key==="Enter")saveEditVio(p.id);if(e.key==="Escape")setEditVioPid(null);}}
+                                placeholder="152-XXXX"
+                                style={{width:80,padding:"1px 4px",borderRadius:3,border:"2px solid #534AB7",fontSize:10,fontFamily:"monospace",textAlign:"right"}}/>
+                              <button onClick={()=>saveEditVio(p.id)} title="Kaydet (Enter)" style={{padding:"0 5px",borderRadius:3,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:9,fontWeight:600,cursor:"pointer"}}>✓</button>
+                              <button onClick={()=>setEditVioPid(null)} title="İptal (Esc)" style={{padding:"0 5px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:9,cursor:"pointer"}}>✕</button>
+                            </div>
+                          );
+                        }
+                        // Sabit listede ise (VIO_CODES) düzenleme kilitli — değişkenler kod tarafında
+                        if (constVio && !p.vioCode) {
+                          return <div style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",fontFamily:"monospace",marginTop:2}} title="Sabit kod listesinden — değiştirmek için + Ürün düzenle">{constVio}</div>;
+                        }
+                        if (currentVio) {
+                          return (
+                            <div onClick={isAdmin ? () => { setEditVioTemp(currentVio); setEditVioPid(p.id); } : undefined}
+                                 title={isAdmin ? "Tıkla: VIO kodu düzenle" : ""}
+                                 style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"rgba(83,74,183,0.1)",color:"#534AB7",fontFamily:"monospace",marginTop:2,cursor:isAdmin?"pointer":"default"}}>
+                              {currentVio}{isAdmin && <span style={{marginLeft:3,opacity:0.6}}>✎</span>}
+                            </div>
+                          );
+                        }
+                        // Boş — + VIO kodu butonu
+                        if (isAdmin) {
+                          return (
+                            <div onClick={() => { setEditVioTemp(""); setEditVioPid(p.id); }}
+                                 title="Tıkla: VIO kodu ekle"
+                                 style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"transparent",border:"1px dashed var(--color-border-secondary)",color:"var(--color-text-tertiary)",marginTop:2,cursor:"pointer"}}>
+                              + VIO kodu
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
                     </div>
                   </div>
 
