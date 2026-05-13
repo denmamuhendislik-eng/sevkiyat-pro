@@ -720,7 +720,7 @@ function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDi
         </div>
 
         {calc && monthData ? (
-          <DistributionResult calc={calc} fmt2={fmt2} fmt4={fmt4} />
+          <DistributionResult calc={calc} fmt2={fmt2} fmt4={fmt4} cf2={cf2} cf4={cf4} csym={csym} />
         ) : (
           <div style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 12, border: "1px dashed var(--color-border-tertiary)", borderRadius: 6 }}>
             {!monthData ? "Bu ay için gider verisi yok" : "Hesap hazırlanıyor..."}
@@ -731,7 +731,7 @@ function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDi
   );
 }
 
-function DistributionResult({ calc, fmt2, fmt4 }) {
+function DistributionResult({ calc, fmt2, fmt4, cf2, cf4, csym = "₺" }) {
   const { machines, machinePay, summary } = calc;
   if (summary.error) {
     return <div style={{ padding: 20, color: "#DC2626", fontSize: 12, textAlign: "center" }}>{summary.error}</div>;
