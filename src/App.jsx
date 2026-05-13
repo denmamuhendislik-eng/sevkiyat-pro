@@ -2176,7 +2176,7 @@ ${el.innerHTML}
             if (n.id === "mrp" && !canSeeMRP) return false;
             if (n.id === "digerMusteriler" && !canSeeDigerMusteriler) return false;
             if (n.id === "musteriDashboard" && !canSeeDigerMusteriler) return false;
-            if (n.id === "maliyet" && !(isAdmin || isUretim)) return false;
+            if (n.id === "maliyet" && !isAdmin) return false;
             if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard"].includes(n.id)) return false;
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
@@ -3071,7 +3071,7 @@ ${el.innerHTML}
           {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
 
           {/* ========== MALIYET PAGE ========== */}
-          {page==="maliyet"&&(isAdmin||isUretim)&&<Maliyet isAdmin={isAdmin} isUretim={isUretim} />}
+          {page==="maliyet"&&isAdmin&&<Maliyet isAdmin={isAdmin} isUretim={isUretim} />}
 
           {/* ========== PACKING PAGE ========== */}
           {page==="packing"&&packingCid&&(()=>{

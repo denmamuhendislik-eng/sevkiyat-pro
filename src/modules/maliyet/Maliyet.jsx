@@ -44,11 +44,11 @@ export default function Maliyet({ isAdmin, isUretim }) {
   const autoRates = useMemo(() => getLatestRates(currencyRates), [currencyRates]);
   const activeRates = useMemo(() => resolveActiveRates({ usd: usdOverride, eur: eurOverride }, autoRates), [usdOverride, eurOverride, autoRates]);
 
-  if (!isAdmin && !isUretim) {
+  if (!isAdmin) {
     return (
       <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)" }}>
         <div style={{ fontSize: 36, marginBottom: 10 }}>🔒</div>
-        <div style={{ fontSize: 14 }}>Maliyet modülü yetkisi yok</div>
+        <div style={{ fontSize: 14 }}>Maliyet modülü yetkisi yok — sadece admin erişebilir</div>
       </div>
     );
   }
