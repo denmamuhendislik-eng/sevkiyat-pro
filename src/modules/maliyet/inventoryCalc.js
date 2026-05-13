@@ -123,27 +123,31 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
   }
 
   // Alt kategori türet — MRP modülündeki isim regex'leri (App.jsx:15080)
-  // Dönüş: { mainGroup, subCategory } — UI'da iki kademeli hiyerarşi için kullanılıyor.
+  // Dönüş: { mainGroup, subCategory, catKey } — UI'da hiyerarşi + override dropdown için.
+  // catKey: raw_dokum/raw_dolu/raw_diger/buy_rulman/buy_baglanti/buy_lazer/buy_standart/buy_diger
+  // veya null (Mamul/Yarı Mamul/BOM Dışı için override mümkün değil)
   function resolveCategory(mainCat, name) {
-    if (!mainCat) return { mainGroup: "❓ BOM Dışı", subCategory: "❓ BOM Dışı" };
-    if (mainCat === "Mamul") return { mainGroup: "🏭 Mamul", subCategory: "🏭 Mamul" };
-    if (mainCat === "Yarı Mamul") return { mainGroup: "🔧 Yarı Mamul", subCategory: "🔧 Yarı Mamul" };
+    if (!mainCat) return { mainGroup: "❓ BOM Dışı", subCategory: "❓ BOM Dışı", catKey: null };
+    if (mainCat === "Mamul") return { mainGroup: "🏭 Mamul", subCategory: "🏭 Mamul", catKey: null };
+    if (mainCat === "Yarı Mamul") return { mainGroup: "🔧 Yarı Mamul", subCategory: "🔧 Yarı Mamul", catKey: null };
     const n = String(name || "").toLocaleUpperCase("tr-TR");
     if (mainCat === "RAW") {
       let sub = "📦 Diğer Hammadde";
-      if (/DÖKÜM|DÖK\.|GÖVDE DÖKÜM/.test(n)) sub = "🔶 Döküm";
-      else if (/MİL|ÇUBUK|BORU|LAMA|SAC|PLAKA|PROFİL|KÜTÜK|DOLU/.test(n)) sub = "🔩 Dolu Malzeme";
-      return { mainGroup: "⚙️ Hammadde", subCategory: sub };
+      let catKey = "raw_diger";
+      if (/DÖKÜM|DÖK\.|GÖVDE DÖKÜM/.test(n)) { sub = "🔶 Döküm"; catKey = "raw_dokum"; }
+      else if (/MİL|ÇUBUK|BORU|LAMA|SAC|PLAKA|PROFİL|KÜTÜK|DOLU/.test(n)) { sub = "🔩 Dolu Malzeme"; catKey = "raw_dolu"; }
+      return { mainGroup: "⚙️ Hammadde", subCategory: sub, catKey };
     }
     if (mainCat === "BUY") {
       let sub = "📎 Diğer Satın Alma";
-      if (/RULMAN|KEÇE|SEGMAN|O-RİNG|CONTA|SİMERİNG|SEAL/.test(n)) sub = "⚙ Rulman / Keçe";
-      else if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ|PRES FİT|NİPEL/.test(n)) sub = "🔧 Bağlantı Elemanı";
-      else if (/LAZER/.test(n)) sub = "✂ Lazer Parça";
-      else if (/YARI MAMÜL|YARI MAMUL|HAZIR|İŞLENMİŞ|MONTAJLI|ALT MONTAJ|KOMPLE|KAPAK|CONTA PLAKA|ELEMAN|ADAPTÖR|MANŞETİ|BAĞLANTI|FLANŞ/.test(n)) sub = "🔹 Standart / Yarı Mamül";
-      return { mainGroup: "🛒 Satın Alma", subCategory: sub };
+      let catKey = "buy_diger";
+      if (/RULMAN|KEÇE|SEGMAN|O-RİNG|CONTA|SİMERİNG|SEAL/.test(n)) { sub = "⚙ Rulman / Keçe"; catKey = "buy_rulman"; }
+      else if (/CİVATA|SOMUN|PERNO|RONDELA|PİM|SAPLAMA|TIRNAK|PERÇIN|YILDIZ|PRES FİT|NİPEL/.test(n)) { sub = "🔧 Bağlantı Elemanı"; catKey = "buy_baglanti"; }
+      else if (/LAZER/.test(n)) { sub = "✂ Lazer Parça"; catKey = "buy_lazer"; }
+      else if (/YARI MAMÜL|YARI MAMUL|HAZIR|İŞLENMİŞ|MONTAJLI|ALT MONTAJ|KOMPLE|KAPAK|CONTA PLAKA|ELEMAN|ADAPTÖR|MANŞETİ|BAĞLANTI|FLANŞ/.test(n)) { sub = "🔹 Standart / Yarı Mamül"; catKey = "buy_standart"; }
+      return { mainGroup: "🛒 Satın Alma", subCategory: sub, catKey };
     }
-    return { mainGroup: "❓ BOM Dışı", subCategory: "❓ BOM Dışı" };
+    return { mainGroup: "❓ BOM Dışı", subCategory: "❓ BOM Dışı", catKey: null };
   }
 
   // 2 kaynaklı lookup — önce unitCosts (BUY/RAW), sonra productCosts (MAKE)
@@ -188,11 +192,13 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
     // 1. MRP manuel override (kullanıcı niyeti açık)
     // 2. BOM bazlı tip + isim regex (otomatik)
     // 3. Mamul fallback (products/salesOrders'da var → BUY/BOM Dışı'sa Mamul'a çek)
-    let mainGroup, subCategory;
+    let mainGroup, subCategory, catKey, isOverride = false;
     const ovKey = overrideMap[code];
     if (ovKey && CAT_KEY_MAP[ovKey]) {
       mainGroup = CAT_KEY_MAP[ovKey].mainGroup;
       subCategory = CAT_KEY_MAP[ovKey].subCategory;
+      catKey = ovKey;
+      isOverride = true;
     } else {
       // BOM'dan ana grup belirle: önce kod, eşleşmezse isim üzerinden
       let mainCat = stockMainCatByCode[code];
@@ -204,7 +210,10 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
       if (knownProductCodes.has(code) && (mainCat !== "Mamul" && mainCat !== "Yarı Mamul")) {
         mainCat = "Mamul";
       }
-      ({ mainGroup, subCategory } = resolveCategory(mainCat, p.n));
+      const resolved = resolveCategory(mainCat, p.n);
+      mainGroup = resolved.mainGroup;
+      subCategory = resolved.subCategory;
+      catKey = resolved.catKey;
     }
     items.push({
       code,
@@ -213,6 +222,8 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
       group: p.g || "",
       mainGroup,
       category: subCategory,
+      catKey,            // raw_dokum/buy_rulman/... veya null (Mamul/Yarı Mamul/BOM Dışı)
+      catOverride: isOverride,  // true → MRP _catOverrides'tan geliyor, kullanıcı manuel
       qtyAmbar: safeNum(p.a),
       qtyUretim: safeNum(p.r),
       qtyFason: safeNum(p.f),

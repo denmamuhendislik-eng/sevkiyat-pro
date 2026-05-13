@@ -5,6 +5,7 @@ import {
   subscribeBomModels, subscribeWorkCenters, subscribeLaborCosts,
   subscribeOverheadPolicy, subscribeFasonRates,
   subscribeProducts, subscribeSalesOrders, subscribeBomMapping,
+  saveCatOverride,
 } from "./firestore";
 import { calculateInventoryValue, quarterKey, quarterEndDate, monthKey, monthLabel } from "./inventoryCalc";
 import { calculateAllProductCosts } from "./productCostCalc";
@@ -35,6 +36,19 @@ function prefixCategoryName(code) {
   if (m2) return m2[1] + "- (Diğer)";
   return "(Diğer)";
 }
+
+// MRP _catOverrides için seçenekler — sadece BUY/RAW parçalar override edilebilir
+const CAT_KEY_OPTIONS = [
+  { value: "", label: "🤖 Otomatik (algoritma)" },
+  { value: "raw_dokum", label: "🔶 Döküm (RAW)" },
+  { value: "raw_dolu", label: "🔩 Dolu Malzeme (RAW)" },
+  { value: "raw_diger", label: "📦 Diğer Hammadde (RAW)" },
+  { value: "buy_rulman", label: "⚙ Rulman / Keçe (BUY)" },
+  { value: "buy_baglanti", label: "🔧 Bağlantı Elemanı (BUY)" },
+  { value: "buy_lazer", label: "✂ Lazer Parça (BUY)" },
+  { value: "buy_standart", label: "🔹 Standart / Yarı Mamül (BUY)" },
+  { value: "buy_diger", label: "📎 Diğer Satın Alma (BUY)" },
+];
 
 const GROUP_OPTIONS = [
   // BOM-bazlı detaylı kategori (MRP modülündeki isim regex'leri ile alt kırılım — App.jsx:15080)
@@ -239,6 +253,17 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
     }
   };
 
+  // BUY/RAW parça için kategori override (admin) — MRP _catOverrides'a yazıyor, tek kaynak.
+  // MRP > BOM Patlatma ile aynı doc, anında live sync.
+  const handleCatOverride = async (code, newCatKey) => {
+    if (!isAdmin) return;
+    try {
+      await saveCatOverride(code, newCatKey || null, { canEdit, isAdmin });
+    } catch (err) {
+      alert("Kategori override hatası: " + err.message);
+    }
+  };
+
   const handleDelete = async (qKey) => {
     if (!isAdmin) return;
     if (!confirm(`${qKey} snapshot'ı silinsin mi?`)) return;
@@ -383,6 +408,8 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
         showMissing={showMissing}
         currency={currency}
         rates={rates}
+        isAdmin={isAdmin}
+        onCatOverride={handleCatOverride}
       />
 
       <div style={{ marginTop: 10, padding: "8px 14px", background: "var(--color-background-secondary)", borderRadius: 6, fontSize: 10, color: "var(--color-text-tertiary)", lineHeight: 1.6 }}>
@@ -397,11 +424,12 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
   );
 }
 
-function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGroup, search, showMissing, currency = "TRY", rates = null }) {
+function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGroup, search, showMissing, currency = "TRY", rates = null, isAdmin = false, onCatOverride = null }) {
   const f2 = (tl) => fmtMoneyNum(tl, currency, rates, 2);
   const sym = CURRENCY_SYMBOLS[currency] || "₺";
+  const COL_TEMPLATE = "110px 1fr 70px 70px 70px 90px 90px 110px 80px 130px";
   const HEADER = (
-    <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px 80px 80px 100px 100px 120px 90px", padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 6 }}>
+    <div style={{ display: "grid", gridTemplateColumns: COL_TEMPLATE, padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 6 }}>
       <span>Stok Kodu</span>
       <span>Stok Adı</span>
       <span style={{ textAlign: "right" }}>Ambar</span>
@@ -411,11 +439,12 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
       <span style={{ textAlign: "right" }}>Birim {sym}</span>
       <span style={{ textAlign: "right" }}>Değer {sym}</span>
       <span style={{ textAlign: "center" }}>Kaynak</span>
+      <span title="BUY/RAW parçalar için kategori override (MRP _catOverrides ile ortak)">Kategori</span>
     </div>
   );
 
   const renderItem = (it) => (
-    <div key={it.code} style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px 80px 80px 100px 100px 120px 90px", padding: "4px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 10, gap: 6, alignItems: "center", background: it.unitPriceTl <= 0 ? "#FFFBEB" : "transparent" }}>
+    <div key={it.code} style={{ display: "grid", gridTemplateColumns: COL_TEMPLATE, padding: "4px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 10, gap: 6, alignItems: "center", background: it.unitPriceTl <= 0 ? "#FFFBEB" : "transparent" }}>
       <span style={{ fontFamily: "var(--font-mono)" }}>{it.code}</span>
       <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.name}>{it.name}</span>
       <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyAmbar)}</span>
@@ -427,6 +456,28 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
       <span style={{ textAlign: "center", fontSize: 8, color: it.source === "mamul-calc" ? "var(--color-text-info)" : it.source === "buy-last" ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
         {it.source === "mamul-calc" ? "🏭 mamul" : it.source === "buy-last" ? "🛒 alış" : it.matchedBy}
       </span>
+      {/* Kategori dropdown — sadece BUY/RAW parçalar override edilebilir */}
+      {it.catKey != null && isAdmin && onCatOverride ? (
+        <select
+          value={it.catOverride ? it.catKey : ""}
+          onChange={(e) => onCatOverride(it.code, e.target.value)}
+          title={it.catOverride ? `🖊 Manuel override: ${it.catKey}` : `🤖 Otomatik: ${it.catKey}`}
+          style={{
+            fontSize: 9, padding: "2px 4px", borderRadius: 3,
+            border: "1px solid " + (it.catOverride ? "#C2410C" : "var(--color-border-tertiary)"),
+            background: it.catOverride ? "#FEF3C7" : "var(--color-background-primary)",
+            color: it.catOverride ? "#92400E" : "var(--color-text-secondary)",
+            fontWeight: it.catOverride ? 600 : 400,
+            width: "100%",
+          }}
+        >
+          {CAT_KEY_OPTIONS.map(o => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      ) : (
+        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", textAlign: "center" }} title="Sadece BUY/RAW parçalar override edilebilir">—</span>
+      )}
     </div>
   );
 

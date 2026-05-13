@@ -256,7 +256,8 @@ export function subscribeCurrencyRates(callback) {
 
 // MRP modülündeki manuel kategori override'ları — App.jsx:5730 (appData/mrpBomMapping)
 // _catOverrides: { stockCode: "raw_dokum" | "buy_rulman" | ... } — kullanıcı isteğiyle
-// otomatik isim regex'inin önüne geçer. READ-ONLY (MRP modülü yazıyor).
+// otomatik isim regex'inin önüne geçer. Envanter Değeri sekmesinden de yazılabilir
+// (tek kaynak, çift giriş noktası — MRP ↔ Envanter aynı doc'a yazıyor).
 export function subscribeBomMapping(callback) {
   if (!db) return () => {};
   const ref = doc(db, APP_COL, "mrpBomMapping");
@@ -265,6 +266,25 @@ export function subscribeBomMapping(callback) {
     (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
     (err) => { console.error("bomMapping listener:", err); callback({}); }
   );
+}
+
+// Envanter sekmesinden BUY/RAW alt kategori override yazıcısı.
+// catKey null → override sil (otomatik mantığa dön)
+export async function saveCatOverride(stockCode, catKey, { canEdit, isAdmin }) {
+  if (!isAdmin) throw new Error("Kategori override sadece admin rolüne açık");
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!stockCode) throw new Error("Stok kodu zorunlu");
+  const ref = doc(db, APP_COL, "mrpBomMapping");
+  const fieldPath = `_catOverrides.${stockCode}`;
+  try {
+    await updateDoc(ref, { [fieldPath]: catKey === null ? deleteField() : catKey });
+  } catch (e) {
+    // Doc yoksa create et
+    if (catKey !== null) {
+      await setDoc(ref, { _catOverrides: { [stockCode]: catKey } }, { merge: true });
+    }
+  }
 }
 
 // workCenters subscribe — Maliyet modülü tezgah meta verilerine erişir.
