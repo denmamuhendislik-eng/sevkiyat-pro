@@ -460,6 +460,25 @@ async function saveOverheadReport(db, parserResult) {
   };
 }
 
+/**
+ * TCMB döviz kurlarını Firestore'a yaz — günlük cron için.
+ * appData/currencyRates doc'una rates.{YYYY-MM-DD} field'ı eklenir (merge).
+ */
+async function saveCurrencyRates(db, rateRecord) {
+  if (!rateRecord || !rateRecord.date) return;
+  const ref = db.collection(APP_COL).doc("currencyRates");
+  await ref.set({
+    [`rates.${rateRecord.date}`]: {
+      usd: rateRecord.usd,
+      eur: rateRecord.eur,
+      source: rateRecord.source,
+      fetchedAt: rateRecord.fetchedAt,
+    },
+    lastFetch: rateRecord.fetchedAt,
+    lastDate: rateRecord.date,
+  }, { merge: true });
+}
+
 module.exports = {
   APP_COL,
   STOCK_DOC,
@@ -476,5 +495,6 @@ module.exports = {
   saveOverheadReport,
   appendAutomationLog,
   getLatestAutomationLog,
+  saveCurrencyRates,
   transformStockForFirestore,
 };

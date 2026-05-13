@@ -242,6 +242,18 @@ export function subscribeSalesOrders(callback) {
   );
 }
 
+// TCMB döviz kurları — günlük 16:30 cron tarafından doldurulur
+// Yapı: { rates: { "2026-05-13": { usd, eur, source, fetchedAt } }, lastFetch, lastDate }
+export function subscribeCurrencyRates(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "currencyRates");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("currencyRates listener:", err); callback({}); }
+  );
+}
+
 // MRP modülündeki manuel kategori override'ları — App.jsx:5730 (appData/mrpBomMapping)
 // _catOverrides: { stockCode: "raw_dokum" | "buy_rulman" | ... } — kullanıcı isteğiyle
 // otomatik isim regex'inin önüne geçer. READ-ONLY (MRP modülü yazıyor).

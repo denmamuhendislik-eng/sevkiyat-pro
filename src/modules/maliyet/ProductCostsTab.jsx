@@ -6,6 +6,7 @@ import {
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS } from "./distributionCalc";
+import { fmtMoneyNum, CURRENCY_SYMBOLS } from "./currency";
 
 const todayMonth = () => new Date().toISOString().slice(0, 7);
 const monthLabel = (ym) => {
@@ -14,6 +15,9 @@ const monthLabel = (ym) => {
   const months = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
   return `${months[Number(m) - 1]} ${y}`;
 };
+// fmt2/fmt0 module-level kaldı: status/explain gibi para birimi-bağımsız yerlerde
+// (örn. alış fiyatı tooltip'ı içinde, hep TL ile gösteriliyor). Para birimi-aware
+// yerlerde ProductCostsTab/ModelDetailPanel içindeki f2/f0/sym kullanılır.
 const fmt2 = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 });
 
@@ -85,7 +89,11 @@ function explainStatus(part) {
   return reasons.length > 0 ? reasons.join(" · ") : "—";
 }
 
-export default function ProductCostsTab({ canEdit, isAdmin }) {
+export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", rates = null }) {
+  // Para birimi yardımcısı — sadece sayı (sembol ayrı kolonlarda)
+  const f2 = (tl) => fmtMoneyNum(tl, currency, rates, 2);
+  const f0 = (tl) => fmtMoneyNum(tl, currency, rates, 0);
+  const sym = CURRENCY_SYMBOLS[currency] || "₺";
   const [bomModels, setBomModels] = useState({});
   const [workCenters, setWorkCenters] = useState({});
   const [unitCosts, setUnitCosts] = useState({});
@@ -224,7 +232,7 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
           O ayın tezgah dakika ücretleri kullanılır
         </span>
         <span style={{ marginLeft: "auto", fontSize: 11, color: "var(--color-text-secondary)" }}>
-          <b>{totals.models}</b> BOM · <b>{totals.costed}</b> maliyetli · <b>{totals.withoutCost}</b> eksik · Ortalama: <b>{fmt2(totals.avgCost)} ₺</b>
+          <b>{totals.models}</b> BOM · <b>{totals.costed}</b> maliyetli · <b>{totals.withoutCost}</b> eksik · Ortalama: <b>{f2(totals.avgCost)} {sym}</b>
         </span>
       </div>
 
@@ -274,7 +282,7 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 6 }}>
                     <span style={{ fontSize: 11, fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{m.modelCode || m.rootStockCode}</span>
                     <span style={{ fontSize: 12, fontWeight: 700, color: m.rootCost > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)", flexShrink: 0 }}>
-                      {m.rootCost > 0 ? fmt2(m.rootCost) + " ₺" : "—"}
+                      {m.rootCost > 0 ? `${f2(m.rootCost)} ${sym}` : "—"}
                     </span>
                   </div>
                   <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
@@ -282,8 +290,8 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
                   </div>
                   {m.rootCost > 0 && (
                     <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }}>
-                      Malz: {fmt0(m.rootMaterial)} · İşç: {fmt0(m.rootLabor)}
-                      {(m.rootFason || 0) > 0 && <> · Fas: {fmt0(m.rootFason)}</>}
+                      Malz: {f0(m.rootMaterial)} · İşç: {f0(m.rootLabor)}
+                      {(m.rootFason || 0) > 0 && <> · Fas: {f0(m.rootFason)}</>}
                     </div>
                   )}
                   {(() => {
@@ -311,6 +319,8 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
             stockUnitCost={calc.stockUnitCost}
             statusCounts={modelStatusCounts[selectedModel]}
             onClose={() => setSelectedModel(null)}
+            currency={currency}
+            rates={rates}
           />
         )}
       </div>
@@ -318,7 +328,9 @@ export default function ProductCostsTab({ canEdit, isAdmin }) {
   );
 }
 
-function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClose }) {
+function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClose, currency = "TRY", rates = null }) {
+  const f2 = (tl) => fmtMoneyNum(tl, currency, rates, 2);
+  const sym = CURRENCY_SYMBOLS[currency] || "₺";
   const [showZero, setShowZero] = useState(true);
   const [searchPart, setSearchPart] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");  // all | ok | partial | missing
@@ -372,10 +384,10 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClo
           <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{model.rootStockName || model.modelName}</div>
         </div>
         <div style={{ textAlign: "right" }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(model.rootCost)} ₺</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "var(--color-text-success)" }}>{f2(model.rootCost)} {sym}</div>
           <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
-            Malz: {fmt2(model.rootMaterial)} + İşç: {fmt2(model.rootLabor)}
-            {(model.rootFason || 0) > 0 && <> + Fas: {fmt2(model.rootFason)}</>} ₺
+            Malz: {f2(model.rootMaterial)} + İşç: {f2(model.rootLabor)}
+            {(model.rootFason || 0) > 0 && <> + Fas: {f2(model.rootFason)}</>} {sym}
           </div>
         </div>
         <button onClick={onClose} style={{ padding: "4px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", background: "transparent", fontSize: 11, cursor: "pointer" }}>Kapat</button>
@@ -483,10 +495,10 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClo
                     </span>
                   </td>
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{p.opCount || 0}</td>
-                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.materialCost)}</td>
-                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.laborCost)}</td>
-                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: (p.fasonCost || 0) > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{fmt2(p.fasonCost)}</td>
-                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: isRoot ? 700 : 500 }}>{fmt2(p.unitCost)}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{f2(p.materialCost)}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{f2(p.laborCost)}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: (p.fasonCost || 0) > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{f2(p.fasonCost)}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: isRoot ? 700 : 500 }}>{f2(p.unitCost)}</td>
                   <td style={{ padding: "4px 8px", fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.source}</td>
                 </tr>
               );

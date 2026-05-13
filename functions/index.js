@@ -38,7 +38,8 @@ const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
 const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport } = require("./firestore");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCurrencyRates } = require("./firestore");
+const { fetchTcmbRates } = require("./tcmb");
 
 // Firebase Admin tek seferlik init
 if (!admin.apps.length) {
@@ -336,5 +337,66 @@ exports.fetchVioReportsMidday = onSchedule(
       clientSecret: GMAIL_CLIENT_SECRET.value(),
       refreshToken: GMAIL_REFRESH_TOKEN.value(),
     });
+  },
+);
+
+// ==================== TCMB DÖVİZ KURLARI ====================
+// TCMB resmi kurları 15:30 sonrası açıklanır → cron 16:30 Pzt-Cum.
+// Hafta sonu çalışmaz (zaten o günler kur açıklanmaz, en son cuma kuru geçerli).
+
+async function runTcmbFetch(source) {
+  const runAt = new Date().toISOString();
+  logger.info(`[TCMB] Çalıştırma başladı`, { source, runAt });
+  try {
+    const rates = await fetchTcmbRates();
+    if (!rates) {
+      logger.warn(`[TCMB] Kur çekilemedi (TCMB API yanıtsız veya format değişti)`);
+      return { success: false, runAt, source, error: "TCMB API yanıtsız" };
+    }
+    await saveCurrencyRates(db, rates);
+    logger.info(`[TCMB] ✓ Kur kaydedildi`, { date: rates.date, usd: rates.usd, eur: rates.eur });
+    return { success: true, runAt, source, ...rates };
+  } catch (err) {
+    logger.error(`[TCMB] Hata`, { error: err.message, stack: err.stack });
+    return { success: false, runAt, source, error: err.message };
+  }
+}
+
+exports.fetchTcmbRatesDaily = onSchedule(
+  {
+    region: REGION,
+    schedule: "30 16 * * 1-5",
+    timeZone: "Europe/Istanbul",
+    timeoutSeconds: 60,
+    memory: "256MiB",
+  },
+  async () => {
+    await runTcmbFetch("scheduled-daily");
+  },
+);
+
+// Manuel tetik — geçmiş tarih için kur çekmek veya hemen test için
+// GET /fetchTcmbRatesHttp?date=2026-03-31 (opsiyonel; verilmezse bugün)
+exports.fetchTcmbRatesHttp = onRequest(
+  { region: REGION, timeoutSeconds: 60, memory: "256MiB", cors: true },
+  async (req, res) => {
+    const dateParam = req.query?.date;
+    const targetDate = dateParam ? new Date(dateParam) : null;
+    if (dateParam && isNaN(targetDate?.getTime())) {
+      res.status(400).json({ error: "Geçersiz date parametresi (örn. ?date=2026-03-31)" });
+      return;
+    }
+    try {
+      const rates = await fetchTcmbRates(targetDate);
+      if (!rates) {
+        res.status(404).json({ error: "TCMB kuru bulunamadı (hafta sonu/tatil ise birkaç gün geriye gidildi)" });
+        return;
+      }
+      await saveCurrencyRates(db, rates);
+      res.json({ success: true, ...rates });
+    } catch (err) {
+      logger.error("[TCMB HTTP] Hata", { error: err.message });
+      res.status(500).json({ error: err.message });
+    }
   },
 );

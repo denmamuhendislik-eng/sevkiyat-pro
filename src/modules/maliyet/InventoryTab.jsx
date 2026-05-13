@@ -9,6 +9,7 @@ import {
 import { calculateInventoryValue, quarterKey, quarterEndDate } from "./inventoryCalc";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS } from "./distributionCalc";
+import { fmtMoneyNum, getRatesForDate, CURRENCY_SYMBOLS } from "./currency";
 
 // Stok kodu prefix'inden kategori adı türet (VIO grup boş olduğunda fallback)
 function prefixCategoryName(code) {
@@ -53,7 +54,17 @@ const fmt2 = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigi
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 });
 const fmtPct = (n) => (n >= 0 ? "+" : "") + Number(n || 0).toFixed(1) + "%";
 
-export default function InventoryTab({ canEdit, isAdmin }) {
+export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates = null, currencyRates = {} }) {
+  const f2 = (tl) => fmtMoneyNum(tl, currency, rates, 2);
+  const sym = CURRENCY_SYMBOLS[currency] || "₺";
+  // Snapshot TL → tarihsel kur ile çevir. snap.ratesAt varsa onu, yoksa snap.takenAt
+  // tarihine en yakın currencyRates'i, yoksa anlık kuru kullan.
+  const f2Snap = (tl, snap) => {
+    if (currency === "TRY") return fmtMoneyNum(tl, "TRY", null, 2);
+    const dateKey = (snap?.takenAt || "").slice(0, 10);
+    const snapRates = snap?.ratesAt || getRatesForDate(currencyRates, dateKey) || rates;
+    return fmtMoneyNum(tl, currency, snapRates, 2);
+  };
   const [mrpStock, setMrpStock] = useState({});
   const [unitCosts, setUnitCosts] = useState({});
   const [snapshots, setSnapshots] = useState({});
@@ -196,17 +207,25 @@ export default function InventoryTab({ canEdit, isAdmin }) {
     }
     setSaving(true);
     try {
+      // O günkü TCMB kuru kayda alınır — geçmiş snapshot USD/EUR değerleri stabil kalır
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const snapDayRates = getRatesForDate(currencyRates, todayIso);
+      const tl = live.summary.totalValue;
       const snap = {
         takenAt: new Date().toISOString(),
         quarterEnd: qEnd,
         source: "manual",
-        totalValue: live.summary.totalValue,
+        totalValue: tl,
         stockCount: live.summary.stockCount,
         totalQty: live.summary.totalQty,
         missingPriceCount: live.summary.missingPriceCount,
         totalAmbar: live.summary.totalAmbar,
         totalUretim: live.summary.totalUretim,
         totalFason: live.summary.totalFason,
+        // Tarihsel kur — döviz toggle bunu kullanır, sonradan kur değişse bile sabit
+        ratesAt: snapDayRates ? { usd: snapDayRates.usd, eur: snapDayRates.eur, source: snapDayRates.source, date: snapDayRates.date } : null,
+        totalValueUsd: snapDayRates?.usd > 0 ? tl / snapDayRates.usd : null,
+        totalValueEur: snapDayRates?.eur > 0 ? tl / snapDayRates.eur : null,
         items: live.items.map(it => ({  // tam liste (~250 stok × ~200 byte = 50KB, doc limit altında)
           code: it.code, name: it.name, qtyTotal: it.qtyTotal,
           unitPriceTl: it.unitPriceTl, value: it.value, matchedBy: it.matchedBy,
@@ -250,15 +269,15 @@ export default function InventoryTab({ canEdit, isAdmin }) {
       <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 16px", background: "var(--color-background-secondary)", borderRadius: 8, marginBottom: 14, flexWrap: "wrap" }}>
         <div>
           <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>Anlık envanter değeri</div>
-          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(live.summary.totalValue)} ₺</div>
+          <div style={{ fontSize: 22, fontWeight: 700, color: "var(--color-text-success)" }}>{f2(live.summary.totalValue)} {sym}</div>
           <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{live.summary.stockCount} stok kalemi · {fmt0(live.summary.totalQty)} adet toplam</div>
         </div>
         {lastSnap && (
           <div style={{ borderLeft: "1px solid var(--color-border-secondary)", paddingLeft: 14 }}>
             <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>Son snapshot ({lastSnap.key})</div>
-            <div style={{ fontSize: 16, fontWeight: 600 }}>{fmt2(lastSnap.totalValue)} ₺</div>
+            <div style={{ fontSize: 16, fontWeight: 600 }}>{f2Snap(lastSnap.totalValue, lastSnap)} {sym}</div>
             <div style={{ fontSize: 10, color: valueChange >= 0 ? "var(--color-text-success)" : "#DC2626", fontWeight: 500 }}>
-              {valueChange >= 0 ? "↑" : "↓"} {fmt2(Math.abs(valueChange))} ₺ ({fmtPct(valueChangePct)})
+              {valueChange >= 0 ? "↑" : "↓"} {f2(Math.abs(valueChange))} {sym} ({fmtPct(valueChangePct)})
             </div>
           </div>
         )}
@@ -311,13 +330,13 @@ export default function InventoryTab({ canEdit, isAdmin }) {
                       <button onClick={(e) => { e.stopPropagation(); handleDelete(s.key); }} title="Sil" style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "var(--color-text-tertiary)" }}>✕</button>
                     )}
                   </div>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(s.totalValue)} ₺</div>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "var(--color-text-success)" }}>{f2Snap(s.totalValue, s)} {sym}</div>
                   <div style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>
                     {s.stockCount} kalem · {s.source === "manual" ? "📸 Manuel" : "🤖 Otomatik"}
                   </div>
                   {prev && (
                     <div style={{ fontSize: 10, color: diff >= 0 ? "var(--color-text-success)" : "#DC2626", fontWeight: 500 }}>
-                      {diff >= 0 ? "↑" : "↓"} {fmt2(Math.abs(diff))} ({fmtPct(diffPct)})
+                      {diff >= 0 ? "↑" : "↓"} {f2Snap(Math.abs(diff), s)} ({fmtPct(diffPct)})
                     </div>
                   )}
                 </div>
@@ -363,6 +382,8 @@ export default function InventoryTab({ canEdit, isAdmin }) {
         toggleGroup={toggleGroup}
         search={search}
         showMissing={showMissing}
+        currency={currency}
+        rates={rates}
       />
 
       <div style={{ marginTop: 10, padding: "8px 14px", background: "var(--color-background-secondary)", borderRadius: 6, fontSize: 10, color: "var(--color-text-tertiary)", lineHeight: 1.6 }}>
@@ -377,7 +398,9 @@ export default function InventoryTab({ canEdit, isAdmin }) {
   );
 }
 
-function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGroup, search, showMissing }) {
+function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGroup, search, showMissing, currency = "TRY", rates = null }) {
+  const f2 = (tl) => fmtMoneyNum(tl, currency, rates, 2);
+  const sym = CURRENCY_SYMBOLS[currency] || "₺";
   const HEADER = (
     <div style={{ display: "grid", gridTemplateColumns: "110px 1fr 80px 80px 80px 100px 100px 120px 90px", padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 6 }}>
       <span>Stok Kodu</span>
@@ -386,8 +409,8 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
       <span style={{ textAlign: "right" }}>Üretim</span>
       <span style={{ textAlign: "right" }}>Fason</span>
       <span style={{ textAlign: "right" }}>Toplam</span>
-      <span style={{ textAlign: "right" }}>Birim TL</span>
-      <span style={{ textAlign: "right" }}>Değer TL</span>
+      <span style={{ textAlign: "right" }}>Birim {sym}</span>
+      <span style={{ textAlign: "right" }}>Değer {sym}</span>
       <span style={{ textAlign: "center" }}>Kaynak</span>
     </div>
   );
@@ -400,8 +423,8 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
       <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyUretim)}</span>
       <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{fmt0(it.qtyFason)}</span>
       <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmt0(it.qtyTotal)}</span>
-      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(it.unitPriceTl)}</span>
-      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: it.value > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{fmt2(it.value)}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{f2(it.unitPriceTl)}</span>
+      <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: it.value > 0 ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>{f2(it.value)}</span>
       <span style={{ textAlign: "center", fontSize: 8, color: it.source === "mamul-calc" ? "var(--color-text-info)" : it.source === "buy-last" ? "var(--color-text-success)" : "var(--color-text-tertiary)" }}>
         {it.source === "mamul-calc" ? "🏭 mamul" : it.source === "buy-last" ? "🛒 alış" : it.matchedBy}
       </span>
@@ -449,7 +472,7 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
                 <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{isMainExpanded ? "▼" : "▶"}</span>
                 <span style={{ fontSize: 14, fontWeight: 700 }}>{mainKey}</span>
                 <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>({g.itemCount} kalem · {g.subGroups.length} alt grup · {fmt0(g.totalQty)} adet)</span>
-                <span style={{ marginLeft: "auto", fontSize: 14, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(g.totalValue)} ₺</span>
+                <span style={{ marginLeft: "auto", fontSize: 14, fontWeight: 700, color: "var(--color-text-success)" }}>{f2(g.totalValue)} {sym}</span>
               </div>
               {isMainExpanded && g.subGroups.map(sg => {
                 const subKey = mainKey + "/" + sg.key;
@@ -463,7 +486,7 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
                       <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isSubExpanded ? "▼" : "▶"}</span>
                       <span style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-info)" }}>{sg.key}</span>
                       <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>({sg.items.length} kalem · {fmt0(sg.totalQty)} adet)</span>
-                      <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "var(--color-text-success)" }}>{fmt2(sg.totalValue)} ₺</span>
+                      <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 600, color: "var(--color-text-success)" }}>{f2(sg.totalValue)} {sym}</span>
                     </div>
                     {isSubExpanded && (
                       <>
@@ -491,7 +514,7 @@ function InventoryTable({ filteredItems, groupedItems, expandedGroups, toggleGro
               <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{isMainExpanded ? "▼" : "▶"}</span>
               <span style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-info)" }}>{mainKey}</span>
               <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>({g.items.length} kalem · {fmt0(g.totalQty)} adet)</span>
-              <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color: "var(--color-text-success)" }}>{fmt2(g.totalValue)} ₺</span>
+              <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color: "var(--color-text-success)" }}>{f2(g.totalValue)} {sym}</span>
             </div>
             {isMainExpanded && (
               <>

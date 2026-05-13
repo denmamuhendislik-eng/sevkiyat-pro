@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect, useMemo } from "react";
 import MonthlyOverheadsTab from "./MonthlyOverheadsTab";
 import MachineRatesTab from "./MachineRatesTab";
 import UnitCostsTab from "./UnitCostsTab";
@@ -6,6 +6,8 @@ import FasonRatesTab from "./FasonRatesTab";
 import ProductCostsTab from "./ProductCostsTab";
 import InventoryTab from "./InventoryTab";
 import SuppliesTab from "./SuppliesTab";
+import { subscribeCurrencyRates } from "./firestore";
+import { CURRENCIES, CURRENCY_SYMBOLS, CURRENCY_LABELS, getLatestRates, resolveActiveRates } from "./currency";
 
 const TABS = [
   { id: "monthly", icon: "🗓", label: "Aylık Genel Giderler", phase: 2, active: true },
@@ -19,9 +21,26 @@ const TABS = [
   { id: "profitability", icon: "💵", label: "Karlılık", phase: 5, active: false, note: "Faz 5 — satış vs maliyet" },
 ];
 
+// Sekmenin döviz toggle'ından etkilenip etkilenmediği
+const CURRENCY_AWARE = new Set(["machineRates", "productCosts", "inventory"]);
+
 export default function Maliyet({ isAdmin, isUretim }) {
   const [activeTab, setActiveTab] = useState("monthly");
   const canEdit = !!(isAdmin || isUretim);
+
+  // Para birimi state — ortak (tüm sekmelerde aynı kur seçimi)
+  const [currency, setCurrency] = useState("TRY");
+  const [currencyRates, setCurrencyRates] = useState({});
+  const [usdOverride, setUsdOverride] = useState("");
+  const [eurOverride, setEurOverride] = useState("");
+
+  useEffect(() => {
+    const u = subscribeCurrencyRates(d => setCurrencyRates(d || {}));
+    return u;
+  }, []);
+
+  const autoRates = useMemo(() => getLatestRates(currencyRates), [currencyRates]);
+  const activeRates = useMemo(() => resolveActiveRates({ usd: usdOverride, eur: eurOverride }, autoRates), [usdOverride, eurOverride, autoRates]);
 
   if (!isAdmin && !isUretim) {
     return (
@@ -33,6 +52,8 @@ export default function Maliyet({ isAdmin, isUretim }) {
   }
 
   const activeMeta = TABS.find(t => t.id === activeTab);
+  const isCurrencyAware = CURRENCY_AWARE.has(activeTab);
+  const currencyProps = { currency, rates: activeRates };
 
   return (
     <div>
@@ -41,7 +62,73 @@ export default function Maliyet({ isAdmin, isUretim }) {
         <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
           Birim alış · Tezgah dakika ücreti · Mamul maliyeti · FIFO sevkiyat · Karlılık
         </span>
+
+        {/* Para birimi toolbar (sağ kenara yaslanmış) */}
+        <div style={{ marginLeft: "auto", display: "inline-flex", alignItems: "center", gap: 8, padding: "5px 10px", background: "var(--color-background-secondary)", borderRadius: 6, fontSize: 11 }}>
+          <span style={{ color: "var(--color-text-tertiary)" }}>Para birimi:</span>
+          {CURRENCIES.map(c => {
+            const active = currency === c;
+            return (
+              <button
+                key={c}
+                onClick={() => setCurrency(c)}
+                style={{
+                  padding: "3px 10px", borderRadius: 4, fontSize: 11, fontWeight: active ? 700 : 500,
+                  border: "1px solid " + (active ? "var(--color-text-info)" : "var(--color-border-tertiary)"),
+                  background: active ? "var(--color-text-info)" : "transparent",
+                  color: active ? "white" : "var(--color-text-secondary)",
+                  cursor: "pointer",
+                }}
+              >
+                {CURRENCY_SYMBOLS[c]} {CURRENCY_LABELS[c]}
+              </button>
+            );
+          })}
+          <span style={{ borderLeft: "1px solid var(--color-border-tertiary)", paddingLeft: 8, color: "var(--color-text-tertiary)", fontSize: 10 }}>
+            Kur:
+          </span>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10 }}>
+            <span>$</span>
+            <input
+              type="number" step="0.01" min="0"
+              value={usdOverride}
+              onChange={e => setUsdOverride(e.target.value)}
+              placeholder={autoRates?.usd > 0 ? autoRates.usd.toFixed(2) : "—"}
+              title={`Manuel override; boş = TCMB ${autoRates?.date || "yok"}`}
+              style={{ width: 60, padding: "2px 6px", borderRadius: 3, border: "1px solid " + (usdOverride ? "#C2410C" : "var(--color-border-tertiary)"), fontSize: 10 }}
+            />
+          </label>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 10 }}>
+            <span>€</span>
+            <input
+              type="number" step="0.01" min="0"
+              value={eurOverride}
+              onChange={e => setEurOverride(e.target.value)}
+              placeholder={autoRates?.eur > 0 ? autoRates.eur.toFixed(2) : "—"}
+              title={`Manuel override; boş = TCMB ${autoRates?.date || "yok"}`}
+              style={{ width: 60, padding: "2px 6px", borderRadius: 3, border: "1px solid " + (eurOverride ? "#C2410C" : "var(--color-border-tertiary)"), fontSize: 10 }}
+            />
+          </label>
+          {(usdOverride || eurOverride) && (
+            <button
+              onClick={() => { setUsdOverride(""); setEurOverride(""); }}
+              title="Override'ları temizle"
+              style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "var(--color-text-tertiary)", padding: 0 }}
+            >
+              ✕
+            </button>
+          )}
+          <span style={{ fontSize: 9, color: activeRates.isOverride ? "#C2410C" : "var(--color-text-tertiary)" }} title={activeRates.source}>
+            {activeRates.isOverride ? "🖊 manuel" : (autoRates?.date ? `TCMB ${autoRates.date}` : "kur yok")}
+          </span>
+        </div>
       </div>
+
+      {currency !== "TRY" && !isCurrencyAware && (
+        <div style={{ padding: "6px 12px", marginBottom: 10, background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 6, fontSize: 11, color: "#92400E" }}>
+          ℹ Bu sekme TL bazlı verilerle çalışır — döviz toggle sadece Mamul Maliyetleri / Envanter / Tezgah Dakika Ücretleri'nde etkilidir.
+        </div>
+      )}
 
       {/* Tab navigation */}
       <div style={{ display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", borderBottom: "1px solid var(--color-border-tertiary)", paddingBottom: 0 }}>
@@ -79,11 +166,11 @@ export default function Maliyet({ isAdmin, isUretim }) {
       {/* Tab content */}
       {activeTab === "monthly" && <MonthlyOverheadsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "supplies" && <SuppliesTab canEdit={canEdit} isAdmin={isAdmin} />}
-      {activeTab === "machineRates" && <MachineRatesTab canEdit={canEdit} />}
+      {activeTab === "machineRates" && <MachineRatesTab canEdit={canEdit} {...currencyProps} />}
       {activeTab === "unitCosts" && <UnitCostsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "fasonRates" && <FasonRatesTab canEdit={canEdit} isAdmin={isAdmin} />}
-      {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} />}
-      {activeTab === "inventory" && <InventoryTab canEdit={canEdit} isAdmin={isAdmin} />}
+      {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} />}
+      {activeTab === "inventory" && <InventoryTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} currencyRates={currencyRates} />}
       {activeMeta && !activeMeta.active && (
         <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
           <div style={{ fontSize: 32, marginBottom: 10 }}>{activeMeta.icon}</div>
@@ -94,4 +181,3 @@ export default function Maliyet({ isAdmin, isUretim }) {
     </div>
   );
 }
-

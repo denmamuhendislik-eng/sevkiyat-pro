@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { subscribeWorkCenters, saveMachinesForWc, saveWcManualCycle, subscribeLaborCosts, subscribeOverheadPolicy, saveOverheadPolicy, subscribeBomModels } from "./firestore";
 import { calculateMachineRates, DEFAULT_WEIGHTS, suggestWcSalaryMapping } from "./distributionCalc";
+import { fmtMoneyNum, CURRENCY_SYMBOLS } from "./currency";
 
 const todayMonth = () => new Date().toISOString().slice(0, 7);
 const monthLabel = (ym) => {
@@ -20,7 +21,7 @@ const META_FIELDS = [
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { maximumFractionDigits: 2 });
 
-export default function MachineRatesTab({ canEdit }) {
+export default function MachineRatesTab({ canEdit, currency = "TRY", rates = null }) {
   const [workCenters, setWorkCenters] = useState({});
   const [loaded, setLoaded] = useState(false);
   // Local draft: { [wcCode]: { dirty: bool, machines: [...] } }
@@ -412,6 +413,8 @@ export default function MachineRatesTab({ canEdit }) {
         showMappingEditor={showMappingEditor}
         setShowMappingEditor={setShowMappingEditor}
         canEdit={canEdit}
+        currency={currency}
+        rates={rates}
       />
 
 
@@ -436,7 +439,10 @@ const WEIGHT_LABELS = {
   operator:  { label: "Operatör/Eşit", icon: "👤", desc: "Eşit dağılım (idari, sosyal hizmetli vs. ortak personel)" },
 };
 
-function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDirty, setPolicyDirty, savingPolicy, setSavingPolicy, selectedMonth, setSelectedMonth, showMappingEditor, setShowMappingEditor, canEdit }) {
+function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDirty, setPolicyDirty, savingPolicy, setSavingPolicy, selectedMonth, setSelectedMonth, showMappingEditor, setShowMappingEditor, canEdit, currency = "TRY", rates = null }) {
+  const cf2 = (tl) => fmtMoneyNum(tl, currency, rates, 2);
+  const cf4 = (tl) => fmtMoneyNum(tl, currency, rates, 4);
+  const csym = CURRENCY_SYMBOLS[currency] || "₺";
   const monthlyOverheads = laborData?.monthlyOverheads || {};
   const monthsAvailable = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
   const monthData = monthlyOverheads[selectedMonth];
@@ -778,8 +784,8 @@ function DistributionResult({ calc, fmt2, fmt4 }) {
           <span style={{ textAlign: "right" }}>Eşit</span>
           <span style={{ textAlign: "right" }}>Op. Direkt</span>
           <span style={{ textAlign: "right", color: "#166534" }}>🛢 Sarf</span>
-          <span style={{ textAlign: "right" }}>Aylık Toplam</span>
-          <span style={{ textAlign: "right" }}>TL / dk</span>
+          <span style={{ textAlign: "right" }}>Aylık Toplam ({csym})</span>
+          <span style={{ textAlign: "right" }}>{csym} / dk</span>
         </div>
         {wcCodes.map(wcCode => {
           const wc = byWc[wcCode];
@@ -795,15 +801,15 @@ function DistributionResult({ calc, fmt2, fmt4 }) {
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {m.name}{m.isVirtual && <span style={{ marginLeft: 5, fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>YRD</span>}
                     </span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.wcSalaryPay)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.satinAlmaPay)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.alanPay)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.kuruluKwPay)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.operatorPay)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.operatorDirect)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: (p.supplyPay || 0) > 0 ? "#166534" : "var(--color-text-tertiary)", fontWeight: (p.supplyPay || 0) > 0 ? 600 : 400 }}>{fmt2(p.supplyPay)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmt2(p.total)}</span>
-                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: utilColor(p.ratePerMin) }}>{fmt4(p.ratePerMin)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cf2(p.wcSalaryPay)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cf2(p.satinAlmaPay)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cf2(p.alanPay)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cf2(p.kuruluKwPay)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cf2(p.operatorPay)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{cf2(p.operatorDirect)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: (p.supplyPay || 0) > 0 ? "#166534" : "var(--color-text-tertiary)", fontWeight: (p.supplyPay || 0) > 0 ? 600 : 400 }}>{cf2(p.supplyPay)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{cf2(p.total)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: utilColor(p.ratePerMin) }}>{cf4(p.ratePerMin)}</span>
                   </div>
                 );
               })}
