@@ -91,14 +91,20 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
     const rawPrice = Number(manualForm.unitPriceTl);
     if (!code) { alert("Stok kodu zorunlu"); return; }
     if (!(rawPrice > 0)) { alert("Birim fiyat sıfırdan büyük olmalı"); return; }
-    // KG bazlı fiyat girilmişse parça ağırlığı ile çarpıp AD fiyata çeviriyoruz.
-    // Sebep: downstream hesaplar (productCostCalc, inventoryCalc) AD bazında çalışır,
-    // VIO da Satır Net Fiyatı ile AD'ye çevirip yazıyor — manuel kayıt aynı formatta olmalı.
+    // Birim mantığı:
+    //   AD                → fiyat direkt (BOM qty adet)
+    //   KG + ağırlık var  → fiyat × ağırlık = TL/AD (döküm yatak vs. — BOM qty adet)
+    //   KG + ağırlık boş  → fiyat TL/KG direkt (gres yağ, soğutma sıvısı — BOM qty de KG)
     let price = rawPrice;
+    let partUnit = "AD";
     if (manualForm.priceUnit === "KG") {
       const w = Number(manualForm.weightPerPiece);
-      if (!(w > 0)) { alert("KG bazlı fiyat girdin — parça ağırlığı (kg/AD) zorunlu"); return; }
-      price = rawPrice * w;
+      if (w > 0) {
+        price = rawPrice * w;     // AD'ye çevir (BOM qty adet ise)
+        partUnit = "AD";
+      } else {
+        partUnit = "KG";          // direkt KG fiyatı (BOM qty kg cinsinden ise)
+      }
     }
     setManualSaving(true);
     try {
@@ -107,7 +113,7 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
         orderDate: manualForm.orderDate || new Date().toISOString().slice(0, 10),
         code,
         name: (manualForm.name || "").trim(),
-        unit: "AD",
+        unit: partUnit,
         originalQty: Number(manualForm.originalQty) || 0,
         shippedQty: 0,
         remainingQty: Number(manualForm.originalQty) || 0,
@@ -159,7 +165,7 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
       const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
       const partitions = [];
       let skipped = 0;
-      let kgWithoutWeight = 0;
+      let kgDirect = 0;  // bilgi: kaç satır KG direkt fiyat olarak kaydedildi
       const today = new Date().toISOString().slice(0, 10);
       for (let i = 1; i < rows.length; i++) {
         const r = rows[i];
@@ -169,10 +175,20 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
         if (!code || !(rawPrice > 0)) { skipped++; continue; }
         const unit = String(r[4] || "AD").trim().toUpperCase() === "KG" ? "KG" : "AD";
         const weight = Number(r[5]);
+        // Birim mantığı:
+        //   AD                → fiyat direkt (BOM qty adet)
+        //   KG + ağırlık var  → fiyat × ağırlık = TL/AD (döküm yatak vs.)
+        //   KG + ağırlık boş  → fiyat TL/KG direkt (gres yağ — BOM qty de KG)
         let price = rawPrice;
+        let partUnit = "AD";
         if (unit === "KG") {
-          if (!(weight > 0)) { kgWithoutWeight++; skipped++; continue; }
-          price = rawPrice * weight;
+          if (weight > 0) {
+            price = rawPrice * weight;
+            partUnit = "AD";
+          } else {
+            partUnit = "KG";
+            kgDirect++;
+          }
         }
         const orderDate = String(r[6] || today).trim() || today;
         const supplier = String(r[7] || "").trim() || "Manuel kayıt (toplu)";
@@ -181,7 +197,7 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
           orderDate,
           code,
           name,
-          unit: "AD",
+          unit: partUnit,
           originalQty: 0,
           shippedQty: 0,
           remainingQty: 0,
@@ -197,15 +213,15 @@ export default function UnitCostsTab({ canEdit, isAdmin }) {
         });
       }
       if (partitions.length === 0) {
-        alert(`Eklenecek satır yok.\nAtlanan: ${skipped}${kgWithoutWeight > 0 ? ` (${kgWithoutWeight} satır KG ama ağırlık eksik)` : ""}`);
+        alert(`Eklenecek satır yok.\nAtlanan: ${skipped} (TL/Birim boş veya stok kodu eksik)`);
         return;
       }
       const res = await saveUnitCostPartitions(unitCosts, partitions, { canEdit });
       const lines = [
         `✓ ${res.added} parti eklendi`,
         res.skipped > 0 ? `${res.skipped} duplicate atlandı` : null,
-        skipped > 0 ? `${skipped} satır boş/eksik (Excel'de TL/Birim girilmemiş)` : null,
-        kgWithoutWeight > 0 ? `${kgWithoutWeight} satırda KG birim ama ağırlık eksik` : null,
+        skipped > 0 ? `${skipped} satır boş/eksik (TL/Birim girilmemiş)` : null,
+        kgDirect > 0 ? `${kgDirect} satır KG direkt fiyat olarak kaydedildi (gres/yağ vb. — BOM'da qty de KG olmalı)` : null,
       ].filter(Boolean);
       alert(lines.join("\n"));
     } catch (err) {
@@ -648,19 +664,21 @@ function ManualPartitionModal({ form, setForm, onSave, saving, onClose }) {
           </div>
           {form.priceUnit === "KG" && (
             <>
-              <label>Parça Ağırlığı (kg/AD) *</label>
+              <label>Parça Ağırlığı (kg/AD)</label>
               <input
                 type="number" min="0" step="0.001"
                 value={form.weightPerPiece} onChange={e => upd("weightPerPiece", e.target.value)}
-                placeholder="örn. 2,5"
-                style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid #FCD34D", background: "#FFFBEB", fontSize: 12 }}
+                placeholder="boş = direkt KG fiyatı (gres/yağ vb.)"
+                style={{ padding: "6px 10px", borderRadius: 5, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
               />
               <span></span>
               <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
                 {Number(form.unitPriceTl) > 0 && Number(form.weightPerPiece) > 0 ? (
-                  <>= <b style={{ color: "var(--color-text-success)" }}>{(Number(form.unitPriceTl) * Number(form.weightPerPiece)).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL/AD</b> olarak kaydedilecek</>
+                  <>= <b style={{ color: "var(--color-text-success)" }}>{(Number(form.unitPriceTl) * Number(form.weightPerPiece)).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL/AD</b> olarak kaydedilecek (BOM qty = adet ise)</>
+                ) : Number(form.unitPriceTl) > 0 ? (
+                  <><b style={{ color: "#C2410C" }}>{fmt(form.unitPriceTl)} TL/KG</b> direkt kaydedilecek — BOM'da qty KG cinsinden olmalı (gres/yağ vb.)</>
                 ) : (
-                  <i>KG fiyat × parça ağırlığı = AD fiyat (hesap için)</i>
+                  <i>AD'ye çevirmek için ağırlık gir; gres yağ gibi KG ile tüketilen ürünler için boş bırak</i>
                 )}
               </div>
             </>
