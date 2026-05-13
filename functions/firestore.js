@@ -462,21 +462,34 @@ async function saveOverheadReport(db, parserResult) {
 
 /**
  * TCMB döviz kurlarını Firestore'a yaz — günlük cron için.
- * appData/currencyRates doc'una rates.{YYYY-MM-DD} field'ı eklenir (merge).
+ * appData/currencyRates doc'una rates.{YYYY-MM-DD} field'ı eklenir (deep merge).
+ * Not: set() + merge:true ile NESTED map yazılır; dot-notation string key olarak
+ * yazılır ve frontend okuyamaz. update() dot notation'ı nested olarak yorumlar.
  */
 async function saveCurrencyRates(db, rateRecord) {
   if (!rateRecord || !rateRecord.date) return;
   const ref = db.collection(APP_COL).doc("currencyRates");
-  await ref.set({
-    [`rates.${rateRecord.date}`]: {
-      usd: rateRecord.usd,
-      eur: rateRecord.eur,
-      source: rateRecord.source,
-      fetchedAt: rateRecord.fetchedAt,
-    },
-    lastFetch: rateRecord.fetchedAt,
-    lastDate: rateRecord.date,
-  }, { merge: true });
+  const entry = {
+    usd: rateRecord.usd,
+    eur: rateRecord.eur,
+    source: rateRecord.source,
+    fetchedAt: rateRecord.fetchedAt,
+  };
+  try {
+    // update → dot notation'ı NESTED yorumlar (rates.{date} alt-objeye yazar)
+    await ref.update({
+      [`rates.${rateRecord.date}`]: entry,
+      lastFetch: rateRecord.fetchedAt,
+      lastDate: rateRecord.date,
+    });
+  } catch (e) {
+    // Doc yoksa create et (yeni doc, ilk yazım)
+    await ref.set({
+      rates: { [rateRecord.date]: entry },
+      lastFetch: rateRecord.fetchedAt,
+      lastDate: rateRecord.date,
+    });
+  }
 }
 
 module.exports = {
