@@ -262,11 +262,15 @@ export function suggestWcSalaryMapping(items, wcCenters) {
 export function getSupplyMonthlyAvg(monthlySupplies, windowMonths = 6, refMonth = null) {
   const map = monthlySupplies || {};
   const sorted = Object.keys(map).sort();
-  // Bugünün ayı ve sonrası kısmi veri → her zaman hariç
+  // Bugünün ayı ve sonrası her zaman hariç (kısmi veri).
+  // refMonth verilirse o ay DAHİL son N ay (örn. refMonth=2026-04, N=3 → Şub/Mar/Nis).
+  // refMonth yoksa: bugünün ayı hariç tüm tam aylardan son N.
   const today = new Date().toISOString().slice(0, 7);
-  const cutoff = refMonth || today;
-  const candidates = sorted.filter(m => m < cutoff);
-  // Son N ay
+  const candidates = sorted.filter(m => {
+    if (m >= today) return false;                  // current/future hariç (kısmi)
+    if (refMonth) return m <= refMonth;            // refMonth dahil son N
+    return true;
+  });
   const selected = candidates.slice(-Math.max(1, Number(windowMonths) || 6));
   if (selected.length === 0) {
     return { avgTl: 0, monthsUsed: 0, monthsList: [] };
