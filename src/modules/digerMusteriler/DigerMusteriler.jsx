@@ -25,7 +25,7 @@ function shortWeek(isoWeek) {
   return m ? `W${m[1]}` : isoWeek;
 }
 
-export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigateToMrp }) {
+export default function DigerMusteriler({ isAdmin, isUretim, isSales, products = [], onNavigateToMrp }) {
   const canEdit = !!(isAdmin || isUretim || isSales);
   const role = isAdmin ? 'admin' : isSales ? 'satis' : (isUretim ? 'üretim' : 'bilinmiyor');
 
@@ -536,6 +536,33 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       const buf = await file.arrayBuffer();
       const wb = XLSX.read(buf, { type: 'array' });
       const result = parseSalesOrderExcel(wb);
+
+      // VIO kodu çift kontrol — Excel'deki stok kodları products.vioCode listesinde var mı?
+      // Eşleşmeyenler MRP'de pseudo-pid alır; root mamul stok havuzu döngüsü onları
+      // dışlayabildiği için (App.jsx:7896 products.forEach) konteyner sekmesinde ambar
+      // ve cross-BOM bilgileri eksik kalır. Çift kontrol için kullanıcı onayı bekliyoruz.
+      const vioSet = new Set((products || []).map(p => (p.vioCode || "").trim()).filter(Boolean));
+      const uniqueImportStocks = new Set();
+      for (const o of Object.values(result.ordersMap || {})) {
+        if (o?.stokKodu) uniqueImportStocks.add(o.stokKodu.trim());
+      }
+      const unmappedStocks = [...uniqueImportStocks].filter(s => s && !vioSet.has(s));
+      if (unmappedStocks.length > 0) {
+        const preview = unmappedStocks.slice(0, 15).join(", ");
+        const more = unmappedStocks.length > 15 ? ` ... ve ${unmappedStocks.length - 15} tane daha` : "";
+        const ok = confirm(
+          `⚠ VIO Kodu Kontrolü\n\n` +
+          `${unmappedStocks.length} stok kodu Ürünler listesinde tanımlı değil:\n${preview}${more}\n\n` +
+          `Bu siparişler import edilirse MRP'de geçici pseudo-pid atanır — konteyner sekmesinde ambar/cross-BOM bilgileri eksik gözükebilir.\n\n` +
+          `Önerilen: İptal et, önce Ürünler sekmesinden bu kodları VIO Kodu olarak ekle, sonra tekrar import et.\n\n` +
+          `Yine de devam edilsin mi?`
+        );
+        if (!ok) {
+          setUploading(false);
+          return;
+        }
+      }
+
       // Sevk geçmişi diff — yeni vs eski salesOrders → shipments events.
       // VIO sadece aktif siparişleri verir; tam teslim olunca rapordan düşer. Bu yüzden:
       //   1) sevkEdilen artmışsa (kısmi/tam) → delta event yaz

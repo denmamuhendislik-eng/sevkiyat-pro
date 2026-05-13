@@ -3047,7 +3047,7 @@ ${el.innerHTML}
           {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts} initialTab={pendingMrpTab} onConsumeInitialTab={()=>setPendingMrpTab(null)} onNavigateToPage={setPage}/>}
 
           {/* ========== DIGER MUSTERILER PAGE ========== */}
-          {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
+          {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} products={products} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
           {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
 
           {/* ========== MALIYET PAGE ========== */}
