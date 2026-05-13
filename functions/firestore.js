@@ -492,6 +492,38 @@ async function saveCurrencyRates(db, rateRecord) {
   }
 }
 
+/**
+ * Önceki ayın aylık envanter snapshot'ını yaz — cron için.
+ * monthKey: "YYYY-MM" (örn. "2026-04" → Nisan kapanış)
+ * inventorySnapshots.snapshots.{monthKey} alanına nested kayıt (deep merge).
+ */
+async function saveMonthlyInventorySnapshot(db, monthKey, snapshot) {
+  if (!monthKey || !/^\d{4}-\d{2}$/.test(monthKey)) {
+    throw new Error("Geçersiz monthKey: " + monthKey);
+  }
+  const ref = db.collection(APP_COL).doc("inventorySnapshots");
+  try {
+    await ref.update({
+      [`snapshots.${monthKey}`]: snapshot,
+      lastAutoSnapshot: snapshot.takenAt,
+    });
+  } catch (e) {
+    // Doc yoksa create et (ilk yazım)
+    await ref.set({
+      snapshots: { [monthKey]: snapshot },
+      lastAutoSnapshot: snapshot.takenAt,
+    });
+  }
+}
+
+/**
+ * Bir doc'tan tek field oku (snapshot cron için mrpStock/unitCosts/currencyRates).
+ */
+async function readAppDoc(db, docName) {
+  const snap = await db.collection(APP_COL).doc(docName).get();
+  return snap.exists ? snap.data() : null;
+}
+
 module.exports = {
   APP_COL,
   STOCK_DOC,
@@ -509,5 +541,7 @@ module.exports = {
   appendAutomationLog,
   getLatestAutomationLog,
   saveCurrencyRates,
+  saveMonthlyInventorySnapshot,
+  readAppDoc,
   transformStockForFirestore,
 };

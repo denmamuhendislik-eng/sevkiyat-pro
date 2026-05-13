@@ -6,7 +6,7 @@ import {
   subscribeOverheadPolicy, subscribeFasonRates,
   subscribeProducts, subscribeSalesOrders, subscribeBomMapping,
 } from "./firestore";
-import { calculateInventoryValue, quarterKey, quarterEndDate } from "./inventoryCalc";
+import { calculateInventoryValue, quarterKey, quarterEndDate, monthKey, monthLabel } from "./inventoryCalc";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS } from "./distributionCalc";
 import { fmtMoneyNum, getRatesForDate, CURRENCY_SYMBOLS } from "./currency";
@@ -200,10 +200,9 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
 
   const handleTakeSnapshot = async () => {
     if (!canEdit || !live) return;
-    const qKey = quarterKey(new Date());
-    const qEnd = quarterEndDate(qKey);
-    if (snapshots[qKey]) {
-      if (!confirm(`${qKey} için zaten snapshot var. Üzerine yazılsın mı?`)) return;
+    const mKey = monthKey(new Date());
+    if (snapshots[mKey]) {
+      if (!confirm(`${monthLabel(mKey)} için zaten snapshot var. Üzerine yazılsın mı?`)) return;
     }
     setSaving(true);
     try {
@@ -213,8 +212,8 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
       const tl = live.summary.totalValue;
       const snap = {
         takenAt: new Date().toISOString(),
-        quarterEnd: qEnd,
-        source: "manual",
+        monthKey: mKey,
+        source: "manual-monthly",
         totalValue: tl,
         stockCount: live.summary.stockCount,
         totalQty: live.summary.totalQty,
@@ -231,8 +230,8 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
           unitPriceTl: it.unitPriceTl, value: it.value, matchedBy: it.matchedBy,
         })),
       };
-      await saveInventorySnapshot(qKey, snap, { canEdit });
-      alert(`✓ Snapshot kaydedildi: ${qKey}`);
+      await saveInventorySnapshot(mKey, snap, { canEdit });
+      alert(`✓ Snapshot kaydedildi: ${monthLabel(mKey)}`);
     } catch (err) {
       alert("Hata: " + err.message);
     } finally {
@@ -288,8 +287,8 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
         )}
         <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
           <div style={{ textAlign: "right", marginRight: 8 }}>
-            <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Bu çeyrek: <b>{quarterKey()}</b></div>
-            <div style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Sonu: {quarterEndDate(quarterKey())}</div>
+            <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Bu ay: <b>{monthLabel(monthKey())}</b></div>
+            <div style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>Otomatik cron: her ayın 1'i 11:00 (önceki ay)</div>
           </div>
           {canEdit && (
             <button
@@ -306,7 +305,7 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
       {/* Snapshot listesi */}
       {snapList.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Çeyrek Snapshot Geçmişi</div>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Aylık Snapshot Geçmişi</div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
             {snapList.map((s, i) => {
               const prev = snapList[i + 1];
@@ -325,14 +324,14 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
                   }}
                 >
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline" }}>
-                    <span style={{ fontSize: 12, fontWeight: 600 }}>{s.key}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600 }}>{s.monthKey ? monthLabel(s.monthKey) : s.key}</span>
                     {isAdmin && (
                       <button onClick={(e) => { e.stopPropagation(); handleDelete(s.key); }} title="Sil" style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 12, color: "var(--color-text-tertiary)" }}>✕</button>
                     )}
                   </div>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "var(--color-text-success)" }}>{f2Snap(s.totalValue, s)} {sym}</div>
                   <div style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>
-                    {s.stockCount} kalem · {s.source === "manual" ? "📸 Manuel" : "🤖 Otomatik"}
+                    {s.stockCount} kalem · {s.source?.startsWith("auto-") ? "🤖 Otomatik" : "📸 Manuel"}
                   </div>
                   {prev && (
                     <div style={{ fontSize: 10, color: diff >= 0 ? "var(--color-text-success)" : "#DC2626", fontWeight: 500 }}>
@@ -392,7 +391,7 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
           <> · Stok raporu: {new Date(live.summary.mrpStockImportedAt).toLocaleString("tr-TR")}</>
         )}
         <br/>
-        Çeyrek snapshot'lar: <b>Mart sonu (Q1), Haziran sonu (Q2), Eylül sonu (Q3), Aralık sonu (Q4)</b>. Manuel anytime Snapshot Al ile alınabilir.
+        Aylık snapshot'lar: her ayın 1'i sabah 11:00'da önceki ay için otomatik alınır (Cloud Function cron). Manuel anytime Snapshot Al ile mevcut ay için de alınabilir.
       </div>
     </div>
   );

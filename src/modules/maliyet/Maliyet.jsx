@@ -6,10 +6,12 @@ import FasonRatesTab from "./FasonRatesTab";
 import ProductCostsTab from "./ProductCostsTab";
 import InventoryTab from "./InventoryTab";
 import SuppliesTab from "./SuppliesTab";
+import MaliyetDashboard from "./MaliyetDashboard";
 import { subscribeCurrencyRates } from "./firestore";
 import { CURRENCIES, CURRENCY_SYMBOLS, CURRENCY_LABELS, getLatestRates, resolveActiveRates } from "./currency";
 
 const TABS = [
+  { id: "dashboard", icon: "📊", label: "Dashboard", phase: 4, active: true, note: "Envanter trendi, KPI'lar, aylık snapshot grafiği" },
   { id: "monthly", icon: "🗓", label: "Aylık Genel Giderler", phase: 2, active: true },
   { id: "supplies", icon: "🛢", label: "Stok Sarf Hareketleri", phase: 2, active: true, note: "Kesici takım, kesme yağı, PPE vs. — talaşlı imalat WC'lerine dağıtılır" },
   { id: "machineRates", icon: "⚙️", label: "Tezgah Dakika Ücretleri", phase: 2, active: true },
@@ -22,10 +24,10 @@ const TABS = [
 ];
 
 // Sekmenin döviz toggle'ından etkilenip etkilenmediği
-const CURRENCY_AWARE = new Set(["machineRates", "productCosts", "inventory"]);
+const CURRENCY_AWARE = new Set(["dashboard", "machineRates", "productCosts", "inventory"]);
 
 export default function Maliyet({ isAdmin, isUretim }) {
-  const [activeTab, setActiveTab] = useState("monthly");
+  const [activeTab, setActiveTab] = useState("dashboard");
   const canEdit = !!(isAdmin || isUretim);
 
   // Para birimi state — ortak (tüm sekmelerde aynı kur seçimi)
@@ -164,6 +166,7 @@ export default function Maliyet({ isAdmin, isUretim }) {
       </div>
 
       {/* Tab content */}
+      {activeTab === "dashboard" && <MaliyetDashboard {...currencyProps} currencyRates={currencyRates} />}
       {activeTab === "monthly" && <MonthlyOverheadsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "supplies" && <SuppliesTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "machineRates" && <MachineRatesTab canEdit={canEdit} {...currencyProps} />}

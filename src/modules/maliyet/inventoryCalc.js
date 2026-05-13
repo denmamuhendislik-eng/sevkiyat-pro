@@ -249,7 +249,21 @@ export function calculateInventoryValue({ mrpStock, unitCosts, productCosts, pro
   };
 }
 
-// Çeyrek anahtarı: 2026-Q1 (Oca/Şub/Mar), 2026-Q2 (Nis/May/Haz), ...
+// Aylık anahtarı: 2026-04 (Nisan). Manuel snapshot için mevcut ay kullanılır.
+export function monthKey(date = new Date()) {
+  return date.toISOString().slice(0, 7);
+}
+
+// Aylık etiket: "Nis 2026"
+export function monthLabel(mKey) {
+  if (!mKey) return "";
+  const m = mKey.match(/^(\d{4})-(\d{2})$/);
+  if (!m) return mKey;
+  const months = ["Oca", "Şub", "Mar", "Nis", "May", "Haz", "Tem", "Ağu", "Eyl", "Eki", "Kas", "Ara"];
+  return `${months[Number(m[2]) - 1]} ${m[1]}`;
+}
+
+// Çeyrek anahtarı: 2026-Q1 (Oca/Şub/Mar), 2026-Q2 (Nis/May/Haz), ... — backward compat
 export function quarterKey(date = new Date()) {
   const y = date.getFullYear();
   const m = date.getMonth(); // 0-11

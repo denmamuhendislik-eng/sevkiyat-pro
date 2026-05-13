@@ -38,8 +38,9 @@ const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
 const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCurrencyRates } = require("./firestore");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
 const { fetchTcmbRates } = require("./tcmb");
+const { calculateSimpleInventoryValue } = require("./inventoryCalcSimple");
 
 // Firebase Admin tek seferlik init
 if (!admin.apps.length) {
@@ -396,6 +397,119 @@ exports.fetchTcmbRatesHttp = onRequest(
       res.json({ success: true, ...rates });
     } catch (err) {
       logger.error("[TCMB HTTP] Hata", { error: err.message });
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ==================== AYLIK ENVANTER SNAPSHOT ====================
+// Her ayın 1'i sabah 11:00 — VIO Son Stok Raporu cron'u (09:00) sonrası çalışır.
+// Önceki ayın kapanış stoğu için snapshot alır. Basit hesap (BUY/RAW × son alış).
+// Snapshot anında TCMB kuru da kayıt altına alınır → tarihsel USD/EUR sabit.
+
+function previousMonthKey(now = new Date()) {
+  const y = now.getFullYear();
+  const m = now.getMonth();  // 0-11; bu ay
+  // Önceki ay
+  const prev = new Date(y, m - 1, 1);
+  return `${prev.getFullYear()}-${String(prev.getMonth() + 1).padStart(2, "0")}`;
+}
+
+async function runMonthlySnapshot(source, monthKey = null) {
+  const takenAt = new Date().toISOString();
+  const targetMonth = monthKey || previousMonthKey();
+  logger.info(`[Snapshot] Başladı`, { source, targetMonth, takenAt });
+
+  try {
+    const [stock, unitCosts, currencyRates] = await Promise.all([
+      readAppDoc(db, "mrpStock"),
+      readAppDoc(db, "unitCosts"),
+      readAppDoc(db, "currencyRates"),
+    ]);
+
+    if (!stock || !stock.parts) {
+      logger.warn(`[Snapshot] mrpStock yok veya boş`);
+      return { success: false, error: "mrpStock yok" };
+    }
+
+    const result = calculateSimpleInventoryValue({ mrpStock: stock, unitCosts });
+
+    // O ayın TCMB kuru — currencyRates.rates'ten en yakın geçmiş tarih
+    let ratesAt = null;
+    const ratesMap = currencyRates?.rates || {};
+    const keys = Object.keys(ratesMap).sort();
+    if (keys.length > 0) {
+      // En son kayıtlı kur (snapshot anında)
+      const lastKey = keys[keys.length - 1];
+      const r = ratesMap[lastKey];
+      ratesAt = {
+        usd: Number(r?.usd) || 0,
+        eur: Number(r?.eur) || 0,
+        source: r?.source || `tcmb-${lastKey}`,
+        date: lastKey,
+      };
+    }
+
+    const snapshot = {
+      takenAt,
+      monthKey: targetMonth,
+      source,  // "auto-cron-monthly" | "manual-monthly" | "manual"
+      totalValue: result.totalValue,
+      totalQty: result.totalQty,
+      stockCount: result.stockCount,
+      missingPriceCount: result.missingPriceCount,
+      totalAmbar: result.totalAmbar,
+      totalUretim: result.totalUretim,
+      totalFason: result.totalFason,
+      ratesAt,
+      totalValueUsd: ratesAt?.usd > 0 ? Math.round((result.totalValue / ratesAt.usd) * 100) / 100 : null,
+      totalValueEur: ratesAt?.eur > 0 ? Math.round((result.totalValue / ratesAt.eur) * 100) / 100 : null,
+      mrpStockImportedAt: stock?.importedAt || null,
+      unitCostsLastImport: unitCosts?.lastImport || null,
+    };
+
+    await saveMonthlyInventorySnapshot(db, targetMonth, snapshot);
+    logger.info(`[Snapshot] ✓ ${targetMonth} kaydedildi`, { totalValue: snapshot.totalValue, stockCount: snapshot.stockCount });
+    return { success: true, monthKey: targetMonth, ...snapshot };
+  } catch (err) {
+    logger.error(`[Snapshot] Hata`, { error: err.message, stack: err.stack });
+    return { success: false, error: err.message };
+  }
+}
+
+// Her ayın 1'inde 11:00 (VIO Son Stok Raporu cron'undan sonra)
+exports.takeMonthlySnapshot = onSchedule(
+  {
+    region: REGION,
+    schedule: "0 11 1 * *",
+    timeZone: "Europe/Istanbul",
+    timeoutSeconds: 120,
+    memory: "512MiB",
+  },
+  async () => {
+    await runMonthlySnapshot("auto-cron-monthly");
+  },
+);
+
+// Manuel tetik — geçmiş ay için snapshot veya test için
+// GET /takeMonthlySnapshotHttp?month=2026-04 (opsiyonel; verilmezse önceki ay)
+exports.takeMonthlySnapshotHttp = onRequest(
+  { region: REGION, timeoutSeconds: 120, memory: "512MiB", cors: true },
+  async (req, res) => {
+    const monthParam = req.query?.month;
+    if (monthParam && !/^\d{4}-\d{2}$/.test(monthParam)) {
+      res.status(400).json({ error: "Geçersiz month parametresi (örn. ?month=2026-04)" });
+      return;
+    }
+    try {
+      const result = await runMonthlySnapshot("manual-http", monthParam || null);
+      if (!result.success) {
+        res.status(500).json(result);
+        return;
+      }
+      res.json(result);
+    } catch (err) {
+      logger.error("[Snapshot HTTP] Hata", { error: err.message });
       res.status(500).json({ error: err.message });
     }
   },
