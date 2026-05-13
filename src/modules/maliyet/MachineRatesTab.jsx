@@ -769,7 +769,7 @@ function DistributionResult({ calc, fmt2, fmt4 }) {
 
       {/* Tezgah tablosu — WC bazında gruplanmış */}
       <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 6, overflow: "hidden" }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 100px 100px 100px 100px 100px 110px 110px", padding: "6px 10px", background: "var(--color-background-secondary)", fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", gap: 6 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 80px 90px 80px 80px 80px 90px 90px 110px 100px", padding: "6px 10px", background: "var(--color-background-secondary)", fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", gap: 6 }}>
           <span>Tezgah</span>
           <span style={{ textAlign: "right" }}>WC Maaş</span>
           <span style={{ textAlign: "right" }}>Satın Alma</span>
@@ -777,6 +777,7 @@ function DistributionResult({ calc, fmt2, fmt4 }) {
           <span style={{ textAlign: "right" }}>Güç</span>
           <span style={{ textAlign: "right" }}>Eşit</span>
           <span style={{ textAlign: "right" }}>Op. Direkt</span>
+          <span style={{ textAlign: "right", color: "#166534" }}>🛢 Sarf</span>
           <span style={{ textAlign: "right" }}>Aylık Toplam</span>
           <span style={{ textAlign: "right" }}>TL / dk</span>
         </div>
@@ -790,7 +791,7 @@ function DistributionResult({ calc, fmt2, fmt4 }) {
               {wc.machines.map(m => {
                 const p = machinePay[m.id];
                 return (
-                  <div key={m.id} style={{ display: "grid", gridTemplateColumns: "1fr 80px 100px 100px 100px 100px 100px 110px 110px", padding: "4px 10px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 10, gap: 6, alignItems: "center" }}>
+                  <div key={m.id} style={{ display: "grid", gridTemplateColumns: "1fr 80px 90px 80px 80px 80px 90px 90px 110px 100px", padding: "4px 10px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 10, gap: 6, alignItems: "center" }}>
                     <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                       {m.name}{m.isVirtual && <span style={{ marginLeft: 5, fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>YRD</span>}
                     </span>
@@ -800,6 +801,7 @@ function DistributionResult({ calc, fmt2, fmt4 }) {
                     <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.kuruluKwPay)}</span>
                     <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.operatorPay)}</span>
                     <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt2(p.operatorDirect)}</span>
+                    <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: (p.supplyPay || 0) > 0 ? "#166534" : "var(--color-text-tertiary)", fontWeight: (p.supplyPay || 0) > 0 ? 600 : 400 }}>{fmt2(p.supplyPay)}</span>
                     <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmt2(p.total)}</span>
                     <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 700, color: utilColor(p.ratePerMin) }}>{fmt4(p.ratePerMin)}</span>
                   </div>
