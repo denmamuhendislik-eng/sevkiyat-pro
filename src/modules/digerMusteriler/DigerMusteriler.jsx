@@ -671,9 +671,26 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           pushEvent(id, { at: importedAt, deltaQty: newShip, cumulative: newShip, source: 'vio-update' });
         }
       }
-      // Save: salesOrders + shipments (eğer event üretildiyse) + planOverrides (deferred→cancelled)
+      // 3) Backfill pass — tüm mevcut shipments için, salesOrders'ta hâlâ aktif olanlardan
+      // unitPriceTl + toplamBedel doldur (önceki bug zamanında bu alanlar yazılmadıysa).
+      // event üretmese bile mevcut shipment'ın TL field'ları güncellenir.
+      let backfillCount = 0;
+      for (const [id, sh] of Object.entries(newShipments)) {
+        if (sh.unitPriceTl && sh.toplamBedel) continue;
+        const so = result.ordersMap[id];
+        if (!so) continue;
+        const orjMikt = Number(so.orijinalMiktar) || 0;
+        const toplamBedel = Number(so.toplamBedel) || 0;
+        if (orjMikt > 0 && toplamBedel > 0) {
+          sh.toplamBedel = toplamBedel;
+          sh.unitPriceTl = toplamBedel / orjMikt;
+          if (!sh.orijinalMiktar) sh.orijinalMiktar = orjMikt;
+          backfillCount++;
+        }
+      }
+      // Save: salesOrders + shipments (event veya backfill varsa) + planOverrides
       await saveSalesOrders(result.ordersMap, { canEdit });
-      if (eventCount > 0) {
+      if (eventCount > 0 || backfillCount > 0) {
         await saveShipments(newShipments, { canEdit });
       }
       if (cancelledCount > 0) {
@@ -685,9 +702,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       const extra = result.aggregateCount > 0 ? ` (${result.aggregateCount} duplicate birleştirildi)` : '';
       const shipExtra = eventCount > 0 ? ` · ${eventCount} sevk hareketi` : '';
       const cancelExtra = cancelledCount > 0 ? ` · ${cancelledCount} iptal` : '';
+      const backfillExtra = backfillCount > 0 ? ` · ${backfillCount} birim fiyat backfill` : '';
       setUploadResult({
         ok: true,
-        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}${shipExtra}${cancelExtra}`,
+        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}${shipExtra}${cancelExtra}${backfillExtra}`,
       });
     } catch (e) {
       setUploadResult({ ok: false, message: `✗ Hata: ${e.message || String(e)}` });
