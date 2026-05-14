@@ -7,6 +7,7 @@ import ProductCostsTab from "./ProductCostsTab";
 import InventoryTab from "./InventoryTab";
 import SuppliesTab from "./SuppliesTab";
 import MaliyetDashboard from "./MaliyetDashboard";
+import ProfitabilityTab from "./ProfitabilityTab";
 import { subscribeCurrencyRates } from "./firestore";
 import { CURRENCIES, CURRENCY_SYMBOLS, CURRENCY_LABELS, getLatestRates, resolveActiveRates } from "./currency";
 
@@ -20,11 +21,11 @@ const TABS = [
   { id: "productCosts", icon: "📦", label: "Mamul Maliyetleri", phase: 3, active: true },
   { id: "shipmentCosts", icon: "🚛", label: "Sevkiyat Maliyetleri", phase: 4, active: false, note: "Faz 4 — FIFO bazlı" },
   { id: "inventory", icon: "📚", label: "Envanter Değeri", phase: 4, active: true },
-  { id: "profitability", icon: "💵", label: "Karlılık", phase: 5, active: false, note: "Faz 5 — satış vs maliyet" },
+  { id: "profitability", icon: "💵", label: "Karlılık", phase: 5, active: true, note: "Ürün × kanal birim karlılık — güncel maliyet (rootCost) vs güncel satış fiyatı" },
 ];
 
 // Sekmenin döviz toggle'ından etkilenip etkilenmediği
-const CURRENCY_AWARE = new Set(["dashboard", "machineRates", "productCosts", "inventory"]);
+const CURRENCY_AWARE = new Set(["dashboard", "machineRates", "productCosts", "inventory", "profitability"]);
 
 export default function Maliyet({ isAdmin, isUretim }) {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -174,6 +175,7 @@ export default function Maliyet({ isAdmin, isUretim }) {
       {activeTab === "fasonRates" && <FasonRatesTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} />}
       {activeTab === "inventory" && <InventoryTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} currencyRates={currencyRates} />}
+      {activeTab === "profitability" && <ProfitabilityTab {...currencyProps} />}
       {activeMeta && !activeMeta.active && (
         <div style={{ padding: 40, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
           <div style={{ fontSize: 32, marginBottom: 10 }}>{activeMeta.icon}</div>

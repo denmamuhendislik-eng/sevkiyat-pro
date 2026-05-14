@@ -1008,8 +1008,47 @@ export default function App() {
         // Kayıt hatası yearsData yazımını bozmaz — alert'e eklemeyelim, sessizce log
       }
     }
+    // v22 Step C: VIO dvFiyat (EUR) → products.salesPriceEur otomatik yazımı
+    // Aynı stokKodu için birden fazla sipariş varsa en güncel orderDate kazanır
+    let priceUpdatedCount = 0;
+    if (importData.format === 'new' && importData.detailRows?.length > 0) {
+      const priceByCode = {};
+      importData.detailRows.forEach(d => {
+        const code = d.stokKodu;
+        const price = Number(d.dvFiyat) || 0;
+        if (!code || price <= 0) return;
+        const existing = priceByCode[code];
+        if (!existing || (d.orderDate && d.orderDate > (existing.orderDate || ""))) {
+          priceByCode[code] = { price, orderDate: d.orderDate };
+        }
+      });
+      const priceUpdates = {};
+      importData.matched.forEach(m => {
+        const entry = priceByCode[m.code];
+        if (entry) priceUpdates[m.pid] = entry.price;
+      });
+      importNewProducts.filter(np => np.approved && np.newPid).forEach(np => {
+        const entry = priceByCode[np.code];
+        if (entry) priceUpdates[np.newPid] = entry.price;
+      });
+      if (Object.keys(priceUpdates).length > 0) {
+        const stamp = new Date().toISOString();
+        products.forEach(p => {
+          const newPrice = priceUpdates[p.id];
+          if (newPrice === undefined) return;
+          if (newPrice === (Number(p.salesPriceEur) || 0)) return;
+          priceUpdatedCount++;
+        });
+        setProducts(prev => prev.map(p => {
+          const newPrice = priceUpdates[p.id];
+          if (newPrice === undefined) return p;
+          if (newPrice === (Number(p.salesPriceEur) || 0)) return p;
+          return { ...p, salesPriceEur: newPrice, salesPriceUpdatedAt: stamp };
+        }));
+      }
+    }
     const nameMatchCount = importData.matched.filter(m => m.matchType === "name").length;
-    alert(`${importData.matched.length} ürün siparişi ${importYear} yılına aktarıldı!${nameMatchCount > 0 ? `\n⚠ ${nameMatchCount} ürün isim eşleşmesi ile bulundu (kod farklı).` : ""}`);
+    alert(`${importData.matched.length} ürün siparişi ${importYear} yılına aktarıldı!${nameMatchCount > 0 ? `\n⚠ ${nameMatchCount} ürün isim eşleşmesi ile bulundu (kod farklı).` : ""}${priceUpdatedCount > 0 ? `\n💵 ${priceUpdatedCount} ürün satış fiyatı (EUR) güncellendi.` : ""}`);
     setImportData(null);setImportNewProducts([]);
   };
 
