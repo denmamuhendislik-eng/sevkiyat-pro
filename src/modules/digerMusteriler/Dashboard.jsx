@@ -149,23 +149,24 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       const k = o.orderDate.substring(0, 7);
       if (map[k]) map[k].alindi += Number(o.toplamBedel || 0);
     }
-    // Sevk (shipment events — orijinal birim fiyatı * deltaQty)
-    for (const sh of Object.values(shipments || {})) {
-      if (!sh || !sh.events) continue;
-      const unitBedel = sh.orijinalMiktar > 0 ? (Number(sh.events.length > 0 ? 0 : 0)) : 0;
-      // Daha güvenli: event başına bedel = (deltaQty / orijinalMiktar) * toplamBedel — ama toplamBedel sh'de yok
-      // Bu yüzden basit yaklaşım: sevkEdilen oranı * salesOrders'taki toplamBedel
-    }
-    // Daha doğru sevk bedeli: salesOrders'taki toplamBedel'i events üzerinden orantıla
+    // Sevk Edildi — shipment seviyesinde (totalShipped × birim fiyat), ay = finalShipAt
+    // Önceki implementasyon events.deltaQty kullanıyordu ama parser bug zamanında yazılan
+    // geçmiş events bozuk olduğu için sevk TL'leri eksik görünüyordu. Yeni yaklaşım
+    // shipment'ın özet alanlarını (totalShipped, finalShipAt) kullanır — Sevk Performansı
+    // popup'ı zaten bu doğru veriyi gösteriyor.
     for (const [id, sh] of Object.entries(shipments || {})) {
-      if (!sh?.events?.length || !sh.orijinalMiktar) continue;
+      const shipped = Number(sh?.totalShipped || 0);
+      if (shipped <= 0) continue;
       const so = salesOrders?.[id];
-      const unitPrice = so ? (Number(so.toplamBedel || 0) / Number(so.orijinalMiktar || 1)) : (Number(sh.orijinalMiktar > 0 ? 0 : 0));
-      for (const ev of sh.events) {
-        if (!ev.at) continue;
-        const k = ev.at.substring(0, 7);
-        if (map[k]) map[k].sevk += Number(ev.deltaQty || 0) * unitPrice;
-      }
+      if (!so) continue;
+      const orjMikt = Number(so.orijinalMiktar || 0);
+      const toplamBedel = Number(so.toplamBedel || 0);
+      if (orjMikt <= 0 || toplamBedel <= 0) continue;
+      const unitPrice = toplamBedel / orjMikt;
+      // Ay tercihi: finalShipAt > firstShipAt > lastUpdate
+      const dateRef = sh.finalShipAt || sh.firstShipAt || sh.lastUpdate || "";
+      const k = String(dateRef).substring(0, 7);
+      if (map[k]) map[k].sevk += shipped * unitPrice;
     }
     return months;
   }, [salesOrders, shipments, today]);
