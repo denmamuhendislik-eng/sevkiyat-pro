@@ -1390,6 +1390,67 @@ ${el.innerHTML}
     setEditVioPid(null);
   };
 
+  // Satış fiyatı Excel şablonu indir — sadece aktif siparişi olan ürünler için
+  const downloadSalesPriceTemplate = () => {
+    const activeProducts = products.filter(p => {
+      const st = getPStats(p.id);
+      return (st.order > 0 || st.planned > 0);
+    });
+    if (activeProducts.length === 0) { alert("Aktif siparişi olan ürün yok."); return; }
+    const rows = [["ID", "Stok Kodu", "Ürün Adı (TR)", "Ürün Adı (EN)", "Mevcut Fiyat (EUR)", "Yeni Fiyat (EUR) *", "Not"]];
+    activeProducts.sort((a, b) => (a.nameTR || "").localeCompare(b.nameTR || ""));
+    activeProducts.forEach(p => {
+      const currentVio = p.vioCode || VIO_CODES[p.id] || "";
+      const currentPrice = Number(p.salesPriceEur) || 0;
+      rows.push([p.id, currentVio, p.nameTR || "", p.nameEN || "", currentPrice > 0 ? currentPrice : "", "", ""]);
+    });
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    ws["!cols"] = [{ wch: 6 }, { wch: 14 }, { wch: 40 }, { wch: 40 }, { wch: 16 }, { wch: 16 }, { wch: 25 }];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Satis_Fiyatlari");
+    XLSX.writeFile(wb, `satis_fiyatlari_${new Date().toISOString().slice(0, 10)}.xlsx`);
+  };
+
+  const uploadSalesPriceRef = useRef(null);
+  const handleSalesPriceUpload = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file || !isAdmin) { e.target.value = ""; return; }
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: "array" });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { header: 1, defval: "" });
+      let updated = 0, skipped = 0;
+      const updates = {};  // pid → newPrice
+      for (let i = 1; i < rows.length; i++) {
+        const r = rows[i];
+        const id = Number(r[0]);
+        const newPriceRaw = r[5];
+        if (!id || newPriceRaw === "" || newPriceRaw === null) { skipped++; continue; }
+        const newPrice = parseFloat(String(newPriceRaw).replace(",", "."));
+        if (isNaN(newPrice) || newPrice < 0) { skipped++; continue; }
+        updates[id] = newPrice;
+      }
+      if (Object.keys(updates).length === 0) {
+        alert("Excel'de güncellenecek 'Yeni Fiyat (EUR) *' kolonu doldurulmuş satır yok.");
+        return;
+      }
+      const now = new Date().toISOString();
+      setProducts(prev => prev.map(p => {
+        if (updates[p.id] !== undefined) {
+          updated++;
+          return { ...p, salesPriceEur: updates[p.id], salesPriceUpdatedAt: now };
+        }
+        return p;
+      }));
+      alert(`✓ ${updated} ürün satış fiyatı güncellendi · ${skipped} satır atlandı (boş/geçersiz)`);
+    } catch (err) {
+      alert("Excel okuma hatası: " + err.message);
+    } finally {
+      e.target.value = "";
+    }
+  };
+
   const saveEditPrice = (pid) => {
     if (!isAdmin) { setEditPricePid(null); return; }
     const oldP = products.find(p => p.id === pid);
@@ -2256,6 +2317,11 @@ ${el.innerHTML}
             </>}
             {isAdmin&&page==="products"&&<button onClick={()=>setShowAddP(true)} style={bP}>+ Ürün</button>}
             {isAdmin&&page==="products"&&<button onClick={()=>setShowCombEdit(true)} style={{...bS,fontSize:13}}>+ Kombine</button>}
+            {isAdmin&&page==="products"&&<>
+              <input ref={uploadSalesPriceRef} type="file" accept=".xlsx,.xls" style={{display:"none"}} onChange={handleSalesPriceUpload}/>
+              <button onClick={downloadSalesPriceTemplate} title="Aktif siparişi olan ürünler için satış fiyatı şablonu indir" style={{...bS,fontSize:12,border:"1px solid #1D9E75",color:"#0F6E56"}}>📥 Satış Fiyatı Şablonu</button>
+              <button onClick={()=>uploadSalesPriceRef.current?.click()} title="Doldurulmuş satış fiyatı Excel'ini yükle (toplu güncelleme)" style={{...bS,fontSize:12,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#0F6E56"}}>📤 Satış Fiyatı Yükle</button>
+            </>}
             {!isAdmin&&!isPacker&&<span style={{fontSize:10,padding:"4px 10px",borderRadius:6,background:"rgba(29,158,117,0.1)",color:"#1D9E75"}}>Görüntüleme modu</span>}
           </div>
         </div>
