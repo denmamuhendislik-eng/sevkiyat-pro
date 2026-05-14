@@ -149,20 +149,44 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       const k = o.orderDate.substring(0, 7);
       if (map[k]) map[k].alindi += Number(o.toplamBedel || 0);
     }
-    // Sevk Edildi — shipment seviyesinde (totalShipped × shipment.unitPriceTl).
-    // Birim fiyat shipment'a snapshot olarak yazıldığı için (ensureShipmentDoc),
-    // sipariş tam sevk olup VIO'dan düşse bile (salesOrders'ta yok) TL hesabı çalışır.
-    // Fallback zinciri: shipment.unitPriceTl > salesOrders.toplamBedel/orijinalMiktar.
+    // Sevk Edildi — shipment seviyesinde (totalShipped × birim fiyat).
+    // Fiyat öncelik zinciri (kayıp toleranslı):
+    //   1) shipment.unitPriceTl (snapshot, ensureShipmentDoc tarafından yazılan)
+    //   2) salesOrders[id].toplamBedel / orijinalMiktar (sipariş hâlâ aktifse)
+    //   3) stokKodu bazlı global lookup — aynı parçanın başka aktif/snapshot fiyatı
+    // (3) kritik: tam sevk olup VIO'dan düşmüş + shipment'a unitPriceTl yazılmamış
+    // shipments için bile aynı stokKodu başka siparişte varsa fiyat bulunur.
+
+    // 1. Stok kodu → unitPriceTl global haritası
+    const priceByStock = {};
+    for (const o of Object.values(salesOrders || {})) {
+      const orj = Number(o?.orijinalMiktar || 0);
+      const bedel = Number(o?.toplamBedel || 0);
+      if (o?.stokKodu && orj > 0 && bedel > 0) {
+        priceByStock[o.stokKodu] = bedel / orj;
+      }
+    }
+    for (const sh of Object.values(shipments || {})) {
+      if (sh?.stokKodu && Number(sh.unitPriceTl) > 0 && !priceByStock[sh.stokKodu]) {
+        priceByStock[sh.stokKodu] = Number(sh.unitPriceTl);
+      }
+    }
+
+    // 2. Shipments üzerinde iterate
     for (const [id, sh] of Object.entries(shipments || {})) {
       const shipped = Number(sh?.totalShipped || 0);
       if (shipped <= 0) continue;
       let unitPrice = Number(sh?.unitPriceTl) || 0;
       if (!unitPrice) {
-        // Backfill: shipment'ta birim fiyat yok ama salesOrders hâlâ varsa oradan al
         const so = salesOrders?.[id];
         const orjMikt = Number(so?.orijinalMiktar || 0);
         const toplamBedel = Number(so?.toplamBedel || 0);
         if (orjMikt > 0 && toplamBedel > 0) unitPrice = toplamBedel / orjMikt;
+      }
+      if (!unitPrice && sh?.stokKodu) {
+        // Stok kodu fallback — aynı parçanın başka aktif siparişinden veya
+        // başka shipment'ın snapshot'ından
+        unitPrice = priceByStock[sh.stokKodu] || 0;
       }
       if (unitPrice <= 0) continue;
       // Ay tercihi: finalShipAt > firstShipAt > lastUpdate
