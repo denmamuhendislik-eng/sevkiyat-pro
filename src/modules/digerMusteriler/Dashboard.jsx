@@ -149,20 +149,22 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       const k = o.orderDate.substring(0, 7);
       if (map[k]) map[k].alindi += Number(o.toplamBedel || 0);
     }
-    // Sevk Edildi — shipment seviyesinde (totalShipped × birim fiyat), ay = finalShipAt
-    // Önceki implementasyon events.deltaQty kullanıyordu ama parser bug zamanında yazılan
-    // geçmiş events bozuk olduğu için sevk TL'leri eksik görünüyordu. Yeni yaklaşım
-    // shipment'ın özet alanlarını (totalShipped, finalShipAt) kullanır — Sevk Performansı
-    // popup'ı zaten bu doğru veriyi gösteriyor.
+    // Sevk Edildi — shipment seviyesinde (totalShipped × shipment.unitPriceTl).
+    // Birim fiyat shipment'a snapshot olarak yazıldığı için (ensureShipmentDoc),
+    // sipariş tam sevk olup VIO'dan düşse bile (salesOrders'ta yok) TL hesabı çalışır.
+    // Fallback zinciri: shipment.unitPriceTl > salesOrders.toplamBedel/orijinalMiktar.
     for (const [id, sh] of Object.entries(shipments || {})) {
       const shipped = Number(sh?.totalShipped || 0);
       if (shipped <= 0) continue;
-      const so = salesOrders?.[id];
-      if (!so) continue;
-      const orjMikt = Number(so.orijinalMiktar || 0);
-      const toplamBedel = Number(so.toplamBedel || 0);
-      if (orjMikt <= 0 || toplamBedel <= 0) continue;
-      const unitPrice = toplamBedel / orjMikt;
+      let unitPrice = Number(sh?.unitPriceTl) || 0;
+      if (!unitPrice) {
+        // Backfill: shipment'ta birim fiyat yok ama salesOrders hâlâ varsa oradan al
+        const so = salesOrders?.[id];
+        const orjMikt = Number(so?.orijinalMiktar || 0);
+        const toplamBedel = Number(so?.toplamBedel || 0);
+        if (orjMikt > 0 && toplamBedel > 0) unitPrice = toplamBedel / orjMikt;
+      }
+      if (unitPrice <= 0) continue;
       // Ay tercihi: finalShipAt > firstShipAt > lastUpdate
       const dateRef = sh.finalShipAt || sh.firstShipAt || sh.lastUpdate || "";
       const k = String(dateRef).substring(0, 7);

@@ -565,13 +565,20 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       };
       const ensureShipmentDoc = (id, o) => {
         if (!newShipments[id]) {
+          // Birim fiyat snapshot — VIO'dan sevk olup salesOrders'tan düşse bile burada kalır.
+          // toplamBedel / orijinalMiktar = TL/AD. Dashboard aylık TL hesabı için kritik.
+          const orjMikt = Number(o.orijinalMiktar) || 0;
+          const toplamBedel = Number(o.toplamBedel) || 0;
+          const unitPriceTl = orjMikt > 0 ? toplamBedel / orjMikt : 0;
           newShipments[id] = {
             customerCode: o.customerCode || '',
             customerName: o.customerName || '',
             stokKodu: o.stokKodu || '',
             stokAdi: o.stokAdi || '',
             belgeNo: o.belgeNo || '',
-            orijinalMiktar: o.orijinalMiktar || 0,
+            orijinalMiktar: orjMikt,
+            toplamBedel,
+            unitPriceTl,
             teslimTarihi: o.teslimTarihi || '',
             events: [],
             totalShipped: 0,
@@ -580,6 +587,19 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             finalShipAt: '',
             lastUpdate: importedAt,
           };
+        } else {
+          // Backfill: mevcut shipment'ta unitPriceTl yoksa veya bedel/miktar field'ı eksikse,
+          // bu import'taki salesOrders verisiyle güncelle. Eski shipment'lar için telafi.
+          const sh = newShipments[id];
+          if (!sh.unitPriceTl || !sh.toplamBedel) {
+            const orjMikt = Number(o.orijinalMiktar) || sh.orijinalMiktar || 0;
+            const toplamBedel = Number(o.toplamBedel) || 0;
+            if (orjMikt > 0 && toplamBedel > 0) {
+              sh.toplamBedel = toplamBedel;
+              sh.unitPriceTl = toplamBedel / orjMikt;
+              if (!sh.orijinalMiktar) sh.orijinalMiktar = orjMikt;
+            }
+          }
         }
         return newShipments[id];
       };
