@@ -172,6 +172,8 @@ export default function App() {
   const [editKgTemp, setEditKgTemp] = useState("");
   const [editVioPid, setEditVioPid] = useState(null);
   const [editVioTemp, setEditVioTemp] = useState("");
+  const [editPricePid, setEditPricePid] = useState(null);
+  const [editPriceTemp, setEditPriceTemp] = useState("");
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
@@ -1388,6 +1390,28 @@ ${el.innerHTML}
     setEditVioPid(null);
   };
 
+  const saveEditPrice = (pid) => {
+    if (!isAdmin) { setEditPricePid(null); return; }
+    const oldP = products.find(p => p.id === pid);
+    if (!oldP) { setEditPricePid(null); return; }
+    const trimmed = (editPriceTemp || "").toString().replace(",", ".").trim();
+    // Boş = fiyatı sil
+    if (trimmed === "") {
+      if (!(oldP.salesPriceEur > 0)) { setEditPricePid(null); return; }
+      setProducts(prev => prev.map(p => p.id === pid ? { ...p, salesPriceEur: 0, salesPriceUpdatedAt: new Date().toISOString() } : p));
+      setEditPricePid(null);
+      return;
+    }
+    const newPrice = parseFloat(trimmed);
+    if (isNaN(newPrice) || newPrice < 0) {
+      alert("Satış fiyatı 0 veya pozitif sayı olmalıdır.");
+      return;
+    }
+    if (newPrice === (oldP.salesPriceEur || 0)) { setEditPricePid(null); return; }
+    setProducts(prev => prev.map(p => p.id === pid ? { ...p, salesPriceEur: newPrice, salesPriceUpdatedAt: new Date().toISOString() } : p));
+    setEditPricePid(null);
+  };
+
   const downloadFullBackup = async () => {
     if (!isAdmin || !db) { alert("Yetki yok veya bağlantı hazır değil."); return; }
     try {
@@ -2458,6 +2482,44 @@ ${el.innerHTML}
                                  title="Tıkla: VIO kodu ekle"
                                  style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"transparent",border:"1px dashed var(--color-border-secondary)",color:"var(--color-text-tertiary)",marginTop:2,cursor:"pointer"}}>
                               + VIO kodu
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+                      {/* Satış Fiyatı EUR — inline edit (admin) — Karlılık hesabı için */}
+                      {(() => {
+                        const price = Number(p.salesPriceEur) || 0;
+                        const isEditingPrice = editPricePid === p.id;
+                        if (isEditingPrice) {
+                          return (
+                            <div style={{display:"flex",alignItems:"center",gap:3,marginTop:3,justifyContent:"flex-end"}}>
+                              <input type="number" step="0.01" min="0" value={editPriceTemp} onChange={e=>setEditPriceTemp(e.target.value)} autoFocus
+                                onKeyDown={e=>{if(e.key==="Enter")saveEditPrice(p.id);if(e.key==="Escape")setEditPricePid(null);}}
+                                placeholder="0.00"
+                                style={{width:70,padding:"1px 4px",borderRadius:3,border:"2px solid #1D9E75",fontSize:10,textAlign:"right"}}/>
+                              <span style={{fontSize:9}}>€</span>
+                              <button onClick={()=>saveEditPrice(p.id)} title="Kaydet (Enter)" style={{padding:"0 5px",borderRadius:3,border:"1px solid #1D9E75",background:"rgba(29,158,117,0.08)",color:"#1D9E75",fontSize:9,fontWeight:600,cursor:"pointer"}}>✓</button>
+                              <button onClick={()=>setEditPricePid(null)} title="İptal (Esc)" style={{padding:"0 5px",borderRadius:3,border:"1px solid var(--color-border-secondary)",background:"transparent",fontSize:9,cursor:"pointer"}}>✕</button>
+                            </div>
+                          );
+                        }
+                        if (price > 0) {
+                          return (
+                            <div onClick={isAdmin ? () => { setEditPriceTemp(String(price)); setEditPricePid(p.id); } : undefined}
+                                 title={isAdmin ? `Tıkla: satış fiyatı düzenle${p.salesPriceUpdatedAt ? ` · son güncelleme: ${new Date(p.salesPriceUpdatedAt).toLocaleDateString("tr-TR")}` : ""}` : ""}
+                                 style={{fontSize:9,padding:"1px 6px",borderRadius:3,background:"rgba(29,158,117,0.1)",color:"#0F6E56",fontFamily:"monospace",marginTop:3,cursor:isAdmin?"pointer":"default",fontWeight:600}}>
+                              {price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €{isAdmin && <span style={{marginLeft:3,opacity:0.6}}>✎</span>}
+                            </div>
+                          );
+                        }
+                        // Boş — + Satış Fiyatı butonu (sadece admin)
+                        if (isAdmin) {
+                          return (
+                            <div onClick={() => { setEditPriceTemp(""); setEditPricePid(p.id); }}
+                                 title="Tıkla: satış fiyatı (EUR) ekle — karlılık hesabı için"
+                                 style={{fontSize:8,padding:"1px 5px",borderRadius:3,background:"transparent",border:"1px dashed #FCD34D",color:"#92400E",marginTop:3,cursor:"pointer"}}>
+                              + Satış Fiyatı €
                             </div>
                           );
                         }
