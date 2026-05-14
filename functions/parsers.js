@@ -666,9 +666,11 @@ function findHeaderColumnsSO(row) {
     else if (h === "stok adı" || h === "stok adi") cols.stokAdi = ci;
     else if (h === "teslim tarihi") cols.teslimTarihi = ci;
     else if (h === "brm") cols.brm = ci;
-    else if (h.includes("orijinal miktar")) cols.orijinalMiktar = ci;
-    else if (h.includes("sevk edilen")) cols.sevkEdilen = ci;
-    else if (h.includes("kalan miktar")) cols.kalanMiktar = ci;
+    // Exact match — Excel'de 'Kalan Miktar Bedeli' (TL) gibi bedel kolonları
+    // 'kalan miktar' substring'iyle çakışıyordu, miktar yerine TL okunuyordu.
+    else if (h === "orijinal miktar") cols.orijinalMiktar = ci;
+    else if (h === "sevk edilen miktar" || h === "sevk edilen") cols.sevkEdilen = ci;
+    else if (h === "kalan miktar") cols.kalanMiktar = ci;
     else if (h.includes("dv.fiyat") || h.includes("dv fiyat")) cols.dvFiyat = ci;
     else if (h === "fiyat") cols.fiyat = ci;
     else if (h.includes("toplam bedel")) cols.toplamBedel = ci;
