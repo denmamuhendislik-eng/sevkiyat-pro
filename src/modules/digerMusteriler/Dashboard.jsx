@@ -173,6 +173,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     }
 
     // 2. Shipments üzerinde iterate
+    const missing = [];  // fiyatı bulunamayan shipments (audit)
     for (const [id, sh] of Object.entries(shipments || {})) {
       const shipped = Number(sh?.totalShipped || 0);
       if (shipped <= 0) continue;
@@ -184,18 +185,27 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
         if (orjMikt > 0 && toplamBedel > 0) unitPrice = toplamBedel / orjMikt;
       }
       if (!unitPrice && sh?.stokKodu) {
-        // Stok kodu fallback — aynı parçanın başka aktif siparişinden veya
-        // başka shipment'ın snapshot'ından
         unitPrice = priceByStock[sh.stokKodu] || 0;
       }
-      if (unitPrice <= 0) continue;
-      // Ay tercihi: finalShipAt > firstShipAt > lastUpdate
       const dateRef = sh.finalShipAt || sh.firstShipAt || sh.lastUpdate || "";
       const k = String(dateRef).substring(0, 7);
+      if (unitPrice <= 0) {
+        // Fiyat bulunamadı — kayıp, audit listesine ekle
+        missing.push({
+          id, stokKodu: sh.stokKodu || "", stokAdi: sh.stokAdi || "",
+          belgeNo: sh.belgeNo || "", customerCode: sh.customerCode || "",
+          totalShipped: shipped, finalShipAt: dateRef, monthKey: k,
+        });
+        continue;
+      }
       if (map[k]) map[k].sevk += shipped * unitPrice;
     }
-    return months;
+    return { months, missing };
   }, [salesOrders, shipments, today]);
+
+  // monthlyTrend artık { months, missing } döndürüyor; eski .map için months ayır
+  const monthlyTrendMonths = monthlyTrend.months;
+  const monthlyTrendMissing = monthlyTrend.missing;
 
   // 5b) Gelecek 6 ay yükü — bizim plan vs müşteri teslim (bedel)
   const futureLoad = useMemo(() => {
@@ -391,7 +401,7 @@ Hesaplamalar:
         </ChartCard>
         <ChartCard title="Aylık Trend — Alınan vs Sevk Edilen (Son 6 Ay)">
           <ResponsiveContainer width="100%" height={220}>
-            <BarChart data={monthlyTrend} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
+            <BarChart data={monthlyTrendMonths} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" />
               <XAxis dataKey="label" tick={{ fontSize: 11 }} />
               <YAxis tickFormatter={(v) => v >= 1000000 ? (v/1000000).toFixed(1) + 'M' : v >= 1000 ? (v/1000).toFixed(0) + 'K' : v} tick={{ fontSize: 11 }} />
@@ -401,6 +411,22 @@ Hesaplamalar:
               <Bar dataKey="sevk" name="Sevk Edildi" fill="#16a34a" />
             </BarChart>
           </ResponsiveContainer>
+          {monthlyTrendMissing.length > 0 && (
+            <div
+              title={monthlyTrendMissing.slice(0, 30).map(m =>
+                `• ${m.stokKodu} (${m.belgeNo}) → ${m.totalShipped} ad · ${m.monthKey || '-'}`
+              ).join("\n") + (monthlyTrendMissing.length > 30 ? `\n... ve ${monthlyTrendMissing.length - 30} kayıt daha` : "")}
+              style={{
+                marginTop: 8, padding: "6px 10px", background: "#FFFBEB",
+                border: "1px solid #FCD34D", borderRadius: 6,
+                fontSize: 10, color: "#92400E", cursor: "help",
+              }}
+            >
+              ⚠ {monthlyTrendMissing.length} sevk için fiyat bulunamadı (toplam{" "}
+              {monthlyTrendMissing.reduce((s, m) => s + (m.totalShipped || 0), 0)} adet) —
+              grafik TL toplamına dahil değil. Üzerine gel: detaylar.
+            </div>
+          )}
         </ChartCard>
       </div>
 
