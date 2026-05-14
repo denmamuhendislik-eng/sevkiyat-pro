@@ -457,7 +457,9 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClo
               <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Malzeme</th>
               <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>İşçilik</th>
               <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Fason</th>
-              <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Birim TL</th>
+              <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }}>Birim {sym}</th>
+              <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }} title="1 adet root mamul için bu parçadan kullanılan miktar (zincir qty çarpımı)">Kullanım</th>
+              <th style={{ padding: "5px 8px", textAlign: "right", fontWeight: 500 }} title="Birim TL × Kullanım = root maliyetine bu parçanın katkısı">Etki ({sym})</th>
               <th style={{ padding: "5px 8px", textAlign: "left", fontWeight: 500 }}>Kaynak</th>
             </tr>
           </thead>
@@ -499,6 +501,17 @@ function ModelDetailPanel({ model, wcRateAvg, stockUnitCost, statusCounts, onClo
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)" }}>{f2(p.laborCost)}</td>
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: (p.fasonCost || 0) > 0 ? "#C2410C" : "var(--color-text-tertiary)" }}>{f2(p.fasonCost)}</td>
                   <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: isRoot ? 700 : 500 }}>{f2(p.unitCost)}</td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }} title={`1 root için ${p.effectiveQty ?? 1} kullanılır`}>
+                    {(() => {
+                      const q = p.effectiveQty ?? 1;
+                      if (q === 1) return "1";
+                      if (q < 0.01) return q.toFixed(6).replace(/0+$/, "").replace(/\.$/, "");
+                      return q.toLocaleString("tr-TR", { maximumFractionDigits: 4 });
+                    })()}
+                  </td>
+                  <td style={{ padding: "4px 8px", textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: bypassed ? "var(--color-text-tertiary)" : "var(--color-text-success)" }} title="Birim × Kullanım = root maliyetine katkı">
+                    {bypassed ? "—" : f2(p.contribution)}
+                  </td>
                   <td style={{ padding: "4px 8px", fontSize: 9, color: "var(--color-text-tertiary)" }}>{p.source}</td>
                 </tr>
               );

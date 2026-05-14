@@ -393,6 +393,20 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     }
     const rollup = rollupTotals(rootIdx);
 
+    // Her parça için root'a etkili kullanım miktarı (effectiveQty) — root'tan o parçaya
+    // inerken zincir qty çarpımı (1 adet root mamul için bu parçadan kaç adet/kg kullanılıyor).
+    // Bu × unitCost = root maliyetine katkı (contribution).
+    function getEffectiveQty(idx) {
+      let qty = 1;
+      let cur = parts[idx];
+      // Yukarı zincir: root'a kadar parent.qty çarpımı
+      while (cur && cur.parentIdx !== null && cur.parentIdx !== undefined) {
+        qty *= safeNum(cur.qty) || safeNum(cur.qtyPerParent) || 1;
+        cur = parts[cur.parentIdx];
+      }
+      return Math.round(qty * 1000000) / 1000000;  // ondalık hassasiyet
+    }
+
     byModel[modelKey] = {
       modelKey,
       modelCode: model.modelCode,
@@ -405,10 +419,16 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
       rootStockCode: parts[rootIdx]?.stockCode,
       rootStockName: parts[rootIdx]?.stockName,
       partCosts: partCost,
-      partsList: parts.map((p, i) => ({
-        idx: i,
-        ...partCost[i],
-      })),
+      partsList: parts.map((p, i) => {
+        const pc = partCost[i] || {};
+        const effQty = getEffectiveQty(i);
+        return {
+          idx: i,
+          ...pc,
+          effectiveQty: effQty,
+          contribution: (Number(pc.unitCost) || 0) * effQty,
+        };
+      }),
     };
   }
 
