@@ -57,6 +57,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const [uploading, setUploading] = useState(false);
   const [uploadResult, setUploadResult] = useState(null);
   const fileInputRef = useRef(null);
+  const backfillFileInputRef = useRef(null);
 
   const [customerFilter, setCustomerFilter] = useState('all');
   const [searchText, setSearchText] = useState('');
@@ -527,6 +528,67 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     });
     return arr;
   }, [grouped, bomSet, productSort]);
+
+  // Eski Excel'den fiyat backfill — geçmiş bug zamanında veya tam-sevk olup VIO'dan
+  // düşmüş shipments için unitPriceTl boş kalmış olabilir. Eski Excel'i yükleyerek
+  // sadece stokKodu × birim fiyat tablosu çıkarılır ve mevcut shipments'a uygulanır.
+  // Önemli: salesOrders'a DOKUNMAZ — sadece shipments.unitPriceTl/toplamBedel doldurulur.
+  const handleBackfillFile = async (file) => {
+    if (!file || !isAdmin) return;
+    setUploading(true);
+    setUploadResult(null);
+    try {
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const result = parseSalesOrderExcel(wb);
+      // Stok kodu → unitPriceTl map (Excel'deki her satır)
+      const priceMap = {};
+      for (const o of Object.values(result.ordersMap || {})) {
+        const orj = Number(o?.orijinalMiktar || 0);
+        const bedel = Number(o?.toplamBedel || 0);
+        if (o?.stokKodu && orj > 0 && bedel > 0) {
+          // Aynı stokKodu birden fazla satırda olabilir → ortalama veya son? Son alınır
+          priceMap[o.stokKodu] = bedel / orj;
+        }
+      }
+      const priceMapCount = Object.keys(priceMap).length;
+
+      // Mevcut shipments'ı tara, fiyatsız olanları doldur (sadece stokKodu match)
+      const newShipments = { ...shipments };
+      let filled = 0;
+      let stillMissing = 0;
+      for (const [id, sh] of Object.entries(newShipments)) {
+        if (!sh) continue;
+        if (Number(sh.unitPriceTl) > 0) continue;  // zaten fiyatlı
+        if (!sh.stokKodu) continue;
+        const price = priceMap[sh.stokKodu];
+        if (price > 0) {
+          newShipments[id] = {
+            ...sh,
+            unitPriceTl: price,
+            // toplamBedel hesapla — orijinalMiktar varsa
+            ...(Number(sh.orijinalMiktar) > 0 && !sh.toplamBedel ? { toplamBedel: price * Number(sh.orijinalMiktar) } : {}),
+          };
+          filled++;
+        } else {
+          stillMissing++;
+        }
+      }
+
+      if (filled > 0) {
+        await saveShipments(newShipments, { canEdit });
+      }
+      setUploadResult({
+        ok: true,
+        message: `💵 Fiyat Backfill: ${priceMapCount} stok kodu Excel'den çıkarıldı · ${filled} shipment fiyatlandı${stillMissing > 0 ? ` · ${stillMissing} hâlâ eksik (Excel'de yok)` : ""}`,
+      });
+    } catch (e) {
+      setUploadResult({ ok: false, message: `✗ Backfill hatası: ${e.message || String(e)}` });
+    } finally {
+      setUploading(false);
+      if (backfillFileInputRef.current) backfillFileInputRef.current.value = '';
+    }
+  };
 
   const handleFile = async (file) => {
     if (!file) return;
@@ -1071,6 +1133,32 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
         >
           {uploading ? 'Yükleniyor...' : 'Satış Siparişi Excel Yükle (acil durum)'}
         </button>
+        {isAdmin && (
+          <>
+            <input
+              ref={backfillFileInputRef}
+              type="file"
+              accept=".xlsx,.xls"
+              style={{ display: 'none' }}
+              onChange={(e) => handleBackfillFile(e.target.files?.[0])}
+            />
+            <button
+              onClick={() => backfillFileInputRef.current?.click()}
+              disabled={uploading}
+              title="Eski Excel'den fiyat lookup — sadece shipments.unitPriceTl boş olanları doldurur, salesOrders'a dokunmaz. Mayıs sevki gibi fiyatsız geçmiş kayıtlar için."
+              style={{
+                marginLeft: 8, padding: '6px 14px', borderRadius: 6, fontSize: 12,
+                border: '1px solid #C2410C',
+                background: 'transparent',
+                color: '#C2410C',
+                cursor: uploading ? 'not-allowed' : 'pointer',
+                opacity: uploading ? 0.6 : 1,
+              }}
+            >
+              💵 Eski Excel'den Fiyat Backfill
+            </button>
+          </>
+        )}
         {uploadResult && (
           <div style={{
             marginTop: 10, padding: 10, borderRadius: 6, fontSize: 12,
