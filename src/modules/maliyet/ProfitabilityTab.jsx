@@ -250,20 +250,22 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
     return out;
   }, [rows, channelFilter, search, sortBy, sortDir]);
 
-  // KPI'lar — visibleRows üzerinden (ama noPrice/fiyatsızları marj ortalamasından dışla)
+  // Toplam fiyatsız count — filter butonu üzerinde sabit referans (filter'dan bağımsız)
+  const totalNoPriceCount = useMemo(() => rows.filter(r => !r.hasPrice).length, [rows]);
+
+  // KPI'lar — visibleRows üzerinden hesaplanır, filter + arama anında yansır
   const kpi = useMemo(() => {
-    const priced = rows.filter(r => r.hasPrice && r.marginPct != null && r.channel !== "noPrice");
-    const profitable = priced.filter(r => r.marginPct > 0).length;
+    const priced = visibleRows.filter(r => r.hasPrice && r.marginPct != null);
     const lossMaking = priced.filter(r => r.marginPct < 0).length;
     const healthy = priced.filter(r => r.marginPct >= 20).length;
     const lowMargin = priced.filter(r => r.marginPct >= 0 && r.marginPct < 20).length;
     const avgMargin = priced.length > 0 ? priced.reduce((s, r) => s + r.marginPct, 0) / priced.length : 0;
-    const noPriceCount = rows.filter(r => !r.hasPrice).length;
+    const noPriceCount = visibleRows.filter(r => !r.hasPrice).length;
     const sorted = [...priced].sort((a, b) => b.marginPct - a.marginPct);
     const topProfit = sorted[0] || null;
     const worstLoss = sorted.length > 0 ? sorted[sorted.length - 1] : null;
-    return { priced: priced.length, profitable, lossMaking, healthy, lowMargin, avgMargin, noPriceCount, topProfit, worstLoss };
-  }, [rows]);
+    return { priced: priced.length, lossMaking, healthy, lowMargin, avgMargin, noPriceCount, topProfit, worstLoss };
+  }, [visibleRows]);
 
   if (!allLoaded) {
     return <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-tertiary)" }}>Veriler yükleniyor...</div>;
@@ -320,7 +322,7 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
             { id: "all", label: "Tümü (fiyatlı)", color: "#374151" },
             { id: "sevkiyat", label: "Sevkiyat Planı", color: CHANNEL_COLORS.sevkiyat },
             { id: "digerMusteriler", label: "Diğer Müşteriler", color: CHANNEL_COLORS.digerMusteriler },
-            { id: "noPrice", label: `Fiyatsız (${kpi.noPriceCount})`, color: "#9CA3AF" },
+            { id: "noPrice", label: `Fiyatsız (${totalNoPriceCount})`, color: "#9CA3AF" },
           ].map(opt => {
             const active = channelFilter === opt.id;
             return (
