@@ -165,6 +165,7 @@ export default function App() {
   const [pallets, setPallets] = useState([]); // array of pallet objects
   const [kantarBrut, setKantarBrut] = useState("");
   const [kantarApplied, setKantarApplied] = useState(false);
+  const [labelSize, setLabelSize] = useState("200"); // "200" = 100×200mm, "135" = 100×135mm — A seçeneği: aynı içerik, fontlar küçülür
   const [packingStandards, setPackingStandards] = useState({}); // {pid: {qtyPerPallet, ambalajType, dara}}
   const [editStdPid, setEditStdPid] = useState(null);
   const [editStdTemp, setEditStdTemp] = useState({qtyPerPallet:"",ambalajType:0,dara:""});
@@ -1117,17 +1118,20 @@ export default function App() {
   const printPdf = () => {
     const el=document.getElementById("pdf-preview");
     if(!el) return;
-    const isLabel = el.querySelector('[data-label="true"]') !== null;
-    
+    const labelEl = el.querySelector('[data-label="true"]');
+    const isLabel = labelEl !== null;
+    const labelH = isLabel ? (Number(labelEl.getAttribute("data-label-h")) || 200) : 200;
+
     if (isLabel) {
       // Labels: open in new window with exact dimensions to force correct print size
-      const pw = window.open("", "_blank", "width=420,height=820,scrollbars=no,menubar=no,toolbar=no");
+      const winH = Math.round(labelH * 4.1);  // 200mm→820, 135mm→555 — preview için
+      const pw = window.open("", "_blank", `width=420,height=${winH},scrollbars=no,menubar=no,toolbar=no`);
       if (!pw) { alert("Popup engellenmiş. Lütfen bu site için popup'lara izin verin."); return; }
       pw.document.open();
       pw.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8">
 <title>Palet Etiketi</title>
 <style>
-  @page { size: 100mm 200mm; margin: 0; }
+  @page { size: 100mm ${labelH}mm; margin: 0; }
   @media print {
     html, body { width: 100mm; margin: 0; padding: 0; }
     body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
@@ -1135,7 +1139,7 @@ export default function App() {
   }
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: Arial, sans-serif; }
-  .label-page { width: 100mm; height: 200mm; page-break-after: always; overflow: hidden; }
+  .label-page { width: 100mm; height: ${labelH}mm; page-break-after: always; overflow: hidden; }
   .print-hint { padding: 10px 16px; background: #FEF3C7; border-bottom: 1px solid #F59E0B; font-size: 12px; color: #92400E; }
   .print-hint b { color: #DC2626; }
   .print-actions { padding: 10px 16px; display: flex; gap: 8px; }
@@ -1145,7 +1149,7 @@ export default function App() {
 </head><body>
 <div class="no-print">
   <div class="print-hint">
-    ⚠ Yazdırma ayarlarında: Kağıt boyutu → <b>100 × 200 mm</b> &nbsp;·&nbsp; Ölçek → <b>Gerçek boyut / 100%</b> &nbsp;·&nbsp; Kenar boşlukları → <b>Yok</b>
+    ⚠ Yazdırma ayarlarında: Kağıt boyutu → <b>100 × ${labelH} mm</b> &nbsp;·&nbsp; Ölçek → <b>Gerçek boyut / 100%</b> &nbsp;·&nbsp; Kenar boşlukları → <b>Yok</b>
   </div>
   <div class="print-actions">
     <button class="primary" onclick="window.print()">🖨 Yazdır</button>
@@ -1192,20 +1196,23 @@ ${el.innerHTML}
   const downloadPdfFile = async () => {
     const el = document.getElementById("pdf-preview");
     if (!el) return;
-    const isLabel = el.querySelector('[data-label="true"]') !== null;
+    const labelEl = el.querySelector('[data-label="true"]');
+    const isLabel = labelEl !== null;
+    const labelH = isLabel ? (Number(labelEl.getAttribute("data-label-h")) || 200) : 200;
     const pages = el.querySelectorAll(".label-page");
 
     if (isLabel && pages.length > 0) {
-      // Label PDF: 100mm x 200mm per page
-      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: [100, 200] });
-      const mmToPx = 3.78; // ~96dpi: 1mm ≈ 3.78px
+      // Label PDF: 100mm x labelH mm per page
+      const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: [100, labelH] });
+      const pageWpx = 378; // 100mm at 96dpi
+      const pageHpx = Math.round(labelH * 3.78); // labelH mm at 96dpi
 
       for (let i = 0; i < pages.length; i++) {
         const page = pages[i];
         // Ensure page is visible and properly sized for rendering
         const origStyle = page.getAttribute("style") || "";
-        page.style.width = "378px"; // 100mm at 96dpi
-        page.style.height = "756px"; // 200mm at 96dpi
+        page.style.width = pageWpx + "px";
+        page.style.height = pageHpx + "px";
         page.style.position = "relative";
         page.style.overflow = "hidden";
 
@@ -1214,13 +1221,13 @@ ${el.innerHTML}
             scale: 2, // 2x for quality
             useCORS: true,
             allowTaint: true,
-            width: 378,
-            height: 756,
+            width: pageWpx,
+            height: pageHpx,
             backgroundColor: "#ffffff"
           });
 
-          if (i > 0) pdf.addPage([100, 200]);
-          pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, 100, 200);
+          if (i > 0) pdf.addPage([100, labelH]);
+          pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, 100, labelH);
         } catch (err) {
           console.error("PDF page render error:", err);
         }
@@ -1229,7 +1236,7 @@ ${el.innerHTML}
         page.setAttribute("style", origStyle);
       }
 
-      pdf.save("palet-etiket.pdf");
+      pdf.save(`palet-etiket-100x${labelH}.pdf`);
     } else {
       // Non-label: A4
       const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
@@ -1920,6 +1927,51 @@ ${el.innerHTML}
     const fk2 = (v) => Number(v).toLocaleString("tr-TR",{minimumFractionDigits:1,maximumFractionDigits:1});
     const properCase = (s) => s?s.charAt(0).toUpperCase()+s.slice(1).toLowerCase():"";
 
+    // A seçeneği — aynı içerik, dikey scale: tüm font/padding/margin değerleri labelSize'a göre.
+    // Yatay genişlik (logo width, kolon genişlikleri) 100mm sabit olduğu için scale edilmez.
+    const isSmall = labelSize === "135";
+    const labelH = isSmall ? 135 : 200;
+    const cfg = {
+      labelH,
+      padding: isSmall ? "3mm 5mm" : "4mm 5mm",
+      mb: isSmall ? "1.5mm" : "2mm",
+      // Header
+      logoW: isSmall ? 30 : 36,                     // DENMA logo mm
+      denmaInfoFont: isSmall ? 5.5 : 7,             // px
+      denmaInfoLine: isSmall ? 1.35 : 1.5,
+      denmaInfoMt: isSmall ? "1mm" : "1.5mm",
+      palletPadV: isSmall ? "1.5mm" : "2mm",
+      palletPadH: isSmall ? "4mm" : "6mm",
+      palletLabelFont: isSmall ? 10 : 14,
+      palletNoFont: isSmall ? 38 : 52,
+      // Date
+      datePad: isSmall ? "1.2mm 4mm" : "2mm 4mm",
+      dateFont: isSmall ? 14 : 20,
+      // Customer
+      custPad: isSmall ? "1.2mm 4mm" : "2mm 4mm",
+      custToFont: isSmall ? 7 : 10,
+      custCityFont: isSmall ? 13 : 18,
+      custCityMt: isSmall ? "0.5mm" : "1mm",
+      // Heavy warning
+      heavyPad: isSmall ? "1.2mm 4mm" : "2mm 4mm",
+      heavyFont: isSmall ? 11 : 16,
+      // Table
+      tablePad: isSmall ? "1.5px 4px" : "2px 5px",
+      tableHeaderFont: isSmall ? 6 : 8,
+      tableCellFont: isSmall ? 7.5 : 10,
+      // Weights
+      weightsPad: isSmall ? "1.2mm 4mm" : "2mm 4mm",
+      weightFont: isSmall ? 11 : 14,
+      weightHeavyFont: isSmall ? 12 : 16,
+      weightGap: isSmall ? "1mm" : "1.5mm",
+      // Bottom row
+      bottomH: isSmall ? 14 : 20,                   // mm
+      isoPad: isSmall ? "1mm 2mm" : "1.5mm 3mm",
+      isoTitleFont: isSmall ? 6.5 : 8,
+      isoBodyFont: isSmall ? 5.5 : 7,
+      isoFooterFont: isSmall ? 5 : 6,
+    };
+
     const pages = [];
     for (const pl of pallets) {
       const plNet = getPalletNet(pl);
@@ -1929,10 +1981,10 @@ ${el.innerHTML}
       let itemRows = "";
       pl.items.forEach((it,i) => {
         itemRows += `<tr>
-          <td style="padding:2px 5px;text-align:center;border:1px solid #000;font-size:10px">${i+1}</td>
-          <td style="padding:2px 5px;border:1px solid #000;font-size:10px">${it.nameEN}</td>
-          <td style="padding:2px 5px;text-align:center;border:1px solid #000;font-size:10px">${it.qty}</td>
-          <td style="padding:2px 5px;text-align:right;border:1px solid #000;font-size:10px">${fk2(it.kg*it.qty)}</td>
+          <td style="padding:${cfg.tablePad};text-align:center;border:1px solid #000;font-size:${cfg.tableCellFont}px">${i+1}</td>
+          <td style="padding:${cfg.tablePad};border:1px solid #000;font-size:${cfg.tableCellFont}px">${it.nameEN}</td>
+          <td style="padding:${cfg.tablePad};text-align:center;border:1px solid #000;font-size:${cfg.tableCellFont}px">${it.qty}</td>
+          <td style="padding:${cfg.tablePad};text-align:right;border:1px solid #000;font-size:${cfg.tableCellFont}px">${fk2(it.kg*it.qty)}</td>
         </tr>`;
       });
 
@@ -1944,12 +1996,12 @@ ${el.innerHTML}
         qrUrl = await QRCode.toDataURL(qrData, { width: 150, margin: 1, errorCorrectionLevel: "M" });
       } catch(e) { console.error("QR generation error:", e); }
 
-      pages.push(`<div class="label-page" style="width:100mm;height:200mm;padding:4mm 5mm;font-family:Arial,sans-serif;color:#000;box-sizing:border-box;page-break-after:always;overflow:hidden;${isHeavy?'border:3px solid #000;':''}">
+      pages.push(`<div class="label-page" style="width:100mm;height:${cfg.labelH}mm;padding:${cfg.padding};font-family:Arial,sans-serif;color:#000;box-sizing:border-box;page-break-after:always;overflow:hidden;${isHeavy?'border:3px solid #000;':''}">
         <!-- Header: Logo + Pallet No -->
-        <div style="display:flex;justify-content:space-between;align-items:stretch;margin-bottom:2mm">
+        <div style="display:flex;justify-content:space-between;align-items:stretch;margin-bottom:${cfg.mb}">
           <div style="flex:1;display:flex;flex-direction:column;justify-content:center">
-            <img src="${LOGO_DENMA}" style="width:36mm;height:auto;display:block" alt="DENMA"/>
-            <div style="font-size:7px;margin-top:1.5mm;line-height:1.5">
+            <img src="${LOGO_DENMA}" style="width:${cfg.logoW}mm;height:auto;display:block" alt="DENMA"/>
+            <div style="font-size:${cfg.denmaInfoFont}px;margin-top:${cfg.denmaInfoMt};line-height:${cfg.denmaInfoLine}">
               <b>${DENMA_INFO.name}</b><br>
               Fevzi Çakmak Mah. 10670 Sk. No:31/B<br>
               Karatay - KONYA / <b>TURKEY</b><br>
@@ -1957,69 +2009,69 @@ ${el.innerHTML}
               ${DENMA_INFO.web} — ${DENMA_INFO.email}
             </div>
           </div>
-          <div style="border:2.5px solid #000;padding:2mm 6mm;text-align:center;margin-left:3mm">
-            <div style="font-size:14px;font-weight:900;letter-spacing:1px">PALLET</div>
-            <div style="font-size:52px;font-weight:900;line-height:1">${pl.id}</div>
+          <div style="border:2.5px solid #000;padding:${cfg.palletPadV} ${cfg.palletPadH};text-align:center;margin-left:3mm">
+            <div style="font-size:${cfg.palletLabelFont}px;font-weight:900;letter-spacing:1px">PALLET</div>
+            <div style="font-size:${cfg.palletNoFont}px;font-weight:900;line-height:1">${pl.id}</div>
           </div>
         </div>
 
         <!-- Date -->
-        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:2mm;text-align:center">
-          <div style="font-size:20px;font-weight:800;letter-spacing:1px">${dateStr}</div>
+        <div style="border:2px solid #000;padding:${cfg.datePad};margin-bottom:${cfg.mb};text-align:center">
+          <div style="font-size:${cfg.dateFont}px;font-weight:800;letter-spacing:1px">${dateStr}</div>
         </div>
 
         <!-- Customer -->
-        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:2mm;text-align:center">
-          <div style="font-size:10px">TO: <b>${CUSTOMER.name}</b></div>
-          <div style="font-size:18px;font-weight:800;margin-top:1mm">${properCase(CUSTOMER.city)} / ITALY</div>
+        <div style="border:2px solid #000;padding:${cfg.custPad};margin-bottom:${cfg.mb};text-align:center">
+          <div style="font-size:${cfg.custToFont}px">TO: <b>${CUSTOMER.name}</b></div>
+          <div style="font-size:${cfg.custCityFont}px;font-weight:800;margin-top:${cfg.custCityMt}">${properCase(CUSTOMER.city)} / ITALY</div>
         </div>
 
         <!-- Heavy warning -->
-        ${isHeavy?`<div style="border:2.5px solid #000;padding:2mm 4mm;margin-bottom:2mm;text-align:center;background:#000;color:#fff">
-          <div style="font-size:16px;font-weight:900;letter-spacing:3px">⚠ HEAVY PALLET ⚠</div>
+        ${isHeavy?`<div style="border:2.5px solid #000;padding:${cfg.heavyPad};margin-bottom:${cfg.mb};text-align:center;background:#000;color:#fff">
+          <div style="font-size:${cfg.heavyFont}px;font-weight:900;letter-spacing:3px">⚠ HEAVY PALLET ⚠</div>
         </div>`:''}
 
         <!-- Product table (no Gross column) -->
-        <table style="width:100%;border-collapse:collapse;margin-bottom:2mm">
+        <table style="width:100%;border-collapse:collapse;margin-bottom:${cfg.mb}">
           <thead><tr style="background:#eee">
-            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;width:20px">Nr.</th>
-            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;text-align:left">Description</th>
-            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;width:35px">Qnt.</th>
-            <th style="padding:2px 5px;border:1px solid #000;font-size:8px;text-align:right;width:55px">Net Kg</th>
+            <th style="padding:${cfg.tablePad};border:1px solid #000;font-size:${cfg.tableHeaderFont}px;width:20px">Nr.</th>
+            <th style="padding:${cfg.tablePad};border:1px solid #000;font-size:${cfg.tableHeaderFont}px;text-align:left">Description</th>
+            <th style="padding:${cfg.tablePad};border:1px solid #000;font-size:${cfg.tableHeaderFont}px;width:35px">Qnt.</th>
+            <th style="padding:${cfg.tablePad};border:1px solid #000;font-size:${cfg.tableHeaderFont}px;text-align:right;width:55px">Net Kg</th>
           </tr></thead>
           <tbody>${itemRows}
             <tr style="background:#eee;font-weight:700">
-              <td colspan="2" style="padding:2px 5px;border:1px solid #000;text-align:right;font-size:10px">Total :</td>
-              <td style="padding:2px 5px;border:1px solid #000;text-align:center;font-size:10px">${pl.items.reduce((s,it)=>s+it.qty,0)}</td>
-              <td style="padding:2px 5px;border:1px solid #000;text-align:right;font-size:10px">${fk2(plNet)}</td>
+              <td colspan="2" style="padding:${cfg.tablePad};border:1px solid #000;text-align:right;font-size:${cfg.tableCellFont}px">Total :</td>
+              <td style="padding:${cfg.tablePad};border:1px solid #000;text-align:center;font-size:${cfg.tableCellFont}px">${pl.items.reduce((s,it)=>s+it.qty,0)}</td>
+              <td style="padding:${cfg.tablePad};border:1px solid #000;text-align:right;font-size:${cfg.tableCellFont}px">${fk2(plNet)}</td>
             </tr>
           </tbody>
         </table>
 
         <!-- Weights -->
-        <div style="border:2px solid #000;padding:2mm 4mm;margin-bottom:2mm">
-          <div style="display:flex;justify-content:space-between;font-size:14px;font-weight:700">
+        <div style="border:2px solid #000;padding:${cfg.weightsPad};margin-bottom:${cfg.mb}">
+          <div style="display:flex;justify-content:space-between;font-size:${cfg.weightFont}px;font-weight:700">
             <span>Net Weight</span><span>${fk2(plNet)} Kg</span>
           </div>
-          <div style="display:flex;justify-content:space-between;font-size:${isHeavy?'16':'14'}px;font-weight:${isHeavy?'900':'700'};margin-top:1.5mm">
+          <div style="display:flex;justify-content:space-between;font-size:${isHeavy?cfg.weightHeavyFont:cfg.weightFont}px;font-weight:${isHeavy?'900':'700'};margin-top:${cfg.weightGap}">
             <span>Gross Weight</span><span>${fk2(plBrut)} Kg${isHeavy?' ⚠':''}</span>
           </div>
         </div>
 
         <!-- Bottom: Made in Turkey + ISO text + QR Code — all same height -->
-        <div style="display:flex;justify-content:space-between;align-items:center;height:20mm">
-          <img src="${LOGO_MADE}" style="height:20mm;width:auto" alt="Made in Türkiye"/>
-          <div style="border:1.5px solid #000;padding:1.5mm 3mm;text-align:center;font-size:7px;line-height:1.4;height:20mm;display:flex;flex-direction:column;justify-content:center">
-            <div style="font-weight:900;font-size:8px;margin-bottom:1px">INTEGRATED<br>MANAGEMENT SYSTEM</div>
+        <div style="display:flex;justify-content:space-between;align-items:center;height:${cfg.bottomH}mm">
+          <img src="${LOGO_MADE}" style="height:${cfg.bottomH}mm;width:auto" alt="Made in Türkiye"/>
+          <div style="border:1.5px solid #000;padding:${cfg.isoPad};text-align:center;font-size:${cfg.isoBodyFont}px;line-height:1.4;height:${cfg.bottomH}mm;display:flex;flex-direction:column;justify-content:center">
+            <div style="font-weight:900;font-size:${cfg.isoTitleFont}px;margin-bottom:1px">INTEGRATED<br>MANAGEMENT SYSTEM</div>
             <div>ISO 9001 · ISO 14001 · ISO 45001</div>
-            <div style="font-size:6px;margin-top:1px">Quality · Environment · Health &amp; Safety</div>
+            <div style="font-size:${cfg.isoFooterFont}px;margin-top:1px">Quality · Environment · Health &amp; Safety</div>
           </div>
-          <img src="${qrUrl}" style="width:20mm;height:20mm" alt="QR"/>
+          <img src="${qrUrl}" style="width:${cfg.bottomH}mm;height:${cfg.bottomH}mm" alt="QR"/>
         </div>
       </div>`);
     }
 
-    setPdfHtml(`<div data-label="true">${pages.join("")}</div>`);
+    setPdfHtml(`<div data-label="true" data-label-h="${labelH}">${pages.join("")}</div>`);
   };
 
   // --- Yükleme Kontrol Formu ---
@@ -3402,7 +3454,24 @@ ${el.innerHTML}
                 <button onClick={()=>generatePackingPDF("EN")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#185FA5",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📄 Pack List (EN)</button>
                 <button onClick={()=>exportPackingExcel("TR")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#BA7517",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📊 Excel (TR)</button>
                 <button onClick={()=>exportPackingExcel("EN")} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#BA7517",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📊 Excel (EN)</button>
-                <button onClick={()=>generatePalletLabelPDF()} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#0F6E56",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>🏷 Palet Etiketi</button>
+                <div style={{display:"inline-flex",alignItems:"center",gap:0,borderRadius:8,overflow:"hidden",border:"1px solid #0F6E56"}}>
+                  <button onClick={()=>generatePalletLabelPDF()} style={{padding:"8px 16px",border:"none",background:"#0F6E56",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>🏷 Palet Etiketi</button>
+                  <div style={{display:"inline-flex",background:"#0F6E56"}} title="Etiket boyutu seç">
+                    {["200","135"].map(s=>{
+                      const active = labelSize === s;
+                      return (
+                        <button
+                          key={s}
+                          onClick={()=>setLabelSize(s)}
+                          style={{padding:"8px 10px",border:"none",borderLeft:"1px solid rgba(255,255,255,0.3)",background:active?"#08543F":"#0F6E56",color:"#fff",fontSize:11,fontWeight:active?700:400,cursor:"pointer"}}
+                          title={`100×${s}mm etiket`}
+                        >
+                          100×{s}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
                 <button onClick={generateLoadingForm} style={{padding:"8px 20px",borderRadius:8,border:"none",background:"#D85A30",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer"}}>📋 Yükleme Formu</button>
               </div>}
             </div>;
