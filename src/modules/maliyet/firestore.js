@@ -5,6 +5,7 @@ const APP_COL = "appData";
 const LABOR_DOC = "laborCosts";
 const WC_DOC = "workCenters";
 const UNIT_COSTS_DOC = "unitCosts";
+const PRODUCT_COSTS_LATEST_DOC = "productCostsLatest";
 
 // laborCosts doc yapısı:
 // {
@@ -205,6 +206,17 @@ export async function deleteInventorySnapshot(quarterKey, { canEdit, isAdmin }) 
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
   const ref = doc(db, APP_COL, "inventorySnapshots");
   await updateDoc(ref, { [`snapshots.${quarterKey}`]: deleteField() });
+}
+
+// productCostsLatest: en güncel mamul/yarı mamul rootCost map'i.
+// ProductCostsTab hesap tamamlandığında çağırır → Cloud Function takeMonthlySnapshot
+// bu doc'u okuyup mrpStock'taki mamul/yarı mamul stoklarını rootCost ile değerler.
+// Aksi takdirde snapshot sadece BUY/RAW (unitCosts.byStock) sayar, mamul stokları 0 TL düşer.
+// Yapı: { byStockCode: { [stockCode]: rootCost }, calculatedAt, monthRef, modelCount }
+export async function saveProductCostsLatest(payload) {
+  if (!db) return;
+  const ref = doc(db, APP_COL, PRODUCT_COSTS_LATEST_DOC);
+  await setDoc(ref, payload);
 }
 
 // BOM modelleri subscribe (read-only) — mamul maliyet hesabı için

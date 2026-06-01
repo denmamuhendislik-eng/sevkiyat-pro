@@ -184,8 +184,8 @@ async function runVioImport(source, secrets) {
           continue;
         }
 
-        // Firestore'a yaz
-        const saveOut = await saveReport(db, item.type, parserResult, item.filename);
+        // Firestore'a yaz — overhead için mail tarihi gerekiyor (kısmi-ay kontrolü)
+        const saveOut = await saveReport(db, item.type, parserResult, item.filename, { messageDate: item.internalDate });
 
         const summary = summarizeResult(item.type, parserResult);
         // salesOrders için diff sayılarını da summary'ye ekle
@@ -196,6 +196,7 @@ async function runVioImport(source, secrets) {
         if (item.type === "overhead" && saveOut?.overheadMeta) {
           summary.overheadMonthsWritten = saveOut.overheadMeta.monthsWritten;
           summary.overheadCodesGuessed = saveOut.overheadMeta.codesGuessed;
+          summary.overheadSkippedPartial = saveOut.overheadMeta.skippedPartialMonths || [];
         }
         // purchase için paralel fiyat çıkarımı → unitCosts FIFO partileri
         if (item.type === "purchase") {
@@ -421,10 +422,11 @@ async function runMonthlySnapshot(source, monthKey = null) {
   logger.info(`[Snapshot] Başladı`, { source, targetMonth, takenAt });
 
   try {
-    const [stock, unitCosts, currencyRates] = await Promise.all([
+    const [stock, unitCosts, currencyRates, productCosts] = await Promise.all([
       readAppDoc(db, "mrpStock"),
       readAppDoc(db, "unitCosts"),
       readAppDoc(db, "currencyRates"),
+      readAppDoc(db, "productCostsLatest"),  // ProductCostsTab tarafından yazılır
     ]);
 
     if (!stock || !stock.parts) {
@@ -432,7 +434,7 @@ async function runMonthlySnapshot(source, monthKey = null) {
       return { success: false, error: "mrpStock yok" };
     }
 
-    const result = calculateSimpleInventoryValue({ mrpStock: stock, unitCosts });
+    const result = calculateSimpleInventoryValue({ mrpStock: stock, unitCosts, productCosts });
 
     // O ayın TCMB kuru — currencyRates.rates'ten en yakın geçmiş tarih
     let ratesAt = null;
@@ -466,6 +468,8 @@ async function runMonthlySnapshot(source, monthKey = null) {
       totalValueEur: ratesAt?.eur > 0 ? Math.round((result.totalValue / ratesAt.eur) * 100) / 100 : null,
       mrpStockImportedAt: stock?.importedAt || null,
       unitCostsLastImport: unitCosts?.lastImport || null,
+      productCostsFallbackCount: result.productCostsFallbackCount || 0,
+      productCostsCalculatedAt: result.productCostsCalculatedAt || null,
     };
 
     await saveMonthlyInventorySnapshot(db, targetMonth, snapshot);
@@ -493,15 +497,64 @@ exports.takeMonthlySnapshot = onSchedule(
 
 // Manuel tetik — geçmiş ay için snapshot veya test için
 // GET /takeMonthlySnapshotHttp?month=2026-04 (opsiyonel; verilmezse önceki ay)
+// GET /takeMonthlySnapshotHttp?month=2026-03&manualTl=20441855.66 — geçmiş envanter
+//     manuel TL ile override (anlık mrpStock atla, kullanıcının verdiği değer yazılır,
+//     kur ay sonu TCMB'den otomatik çekilir).
 exports.takeMonthlySnapshotHttp = onRequest(
   { region: REGION, timeoutSeconds: 120, memory: "512MiB", cors: true },
   async (req, res) => {
     const monthParam = req.query?.month;
+    const manualTlParam = req.query?.manualTl;
     if (monthParam && !/^\d{4}-\d{2}$/.test(monthParam)) {
       res.status(400).json({ error: "Geçersiz month parametresi (örn. ?month=2026-04)" });
       return;
     }
     try {
+      // Manuel TL override modu — geçmiş tarih için kullanıcının elindeki değer
+      if (manualTlParam) {
+        const tl = Number(manualTlParam);
+        if (!(tl > 0)) {
+          res.status(400).json({ error: "manualTl pozitif olmalı" });
+          return;
+        }
+        const targetMonth = monthParam;
+        if (!targetMonth) {
+          res.status(400).json({ error: "manualTl ile birlikte month zorunlu" });
+          return;
+        }
+        // Ay sonu tarihi: ?date verilirse onu, verilmezse ayın son günü
+        let endDateIso;
+        if (req.query?.date && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)) {
+          endDateIso = req.query.date;
+        } else {
+          const [yy, mm] = targetMonth.split("-").map(Number);
+          const lastDay = new Date(yy, mm, 0);
+          endDateIso = lastDay.toISOString().slice(0, 10);
+        }
+        // TCMB kuru — fetch et + Firestore'a kaydet (zaten varsa upsert)
+        const rateRecord = await fetchTcmbRates(new Date(endDateIso));
+        if (rateRecord) {
+          await saveCurrencyRates(db, rateRecord);
+        }
+        const ratesAt = rateRecord
+          ? { usd: rateRecord.usd, eur: rateRecord.eur, source: rateRecord.source, date: rateRecord.date }
+          : null;
+        const snapshot = {
+          takenAt: new Date().toISOString(),
+          monthKey: targetMonth,
+          source: "manual-historical",
+          totalValue: tl,
+          ratesAt,
+          totalValueUsd: ratesAt?.usd > 0 ? Math.round((tl / ratesAt.usd) * 100) / 100 : null,
+          totalValueEur: ratesAt?.eur > 0 ? Math.round((tl / ratesAt.eur) * 100) / 100 : null,
+          note: `Manuel girilmiş geçmiş envanter (${endDateIso} TCMB kuru)`,
+        };
+        await saveMonthlyInventorySnapshot(db, targetMonth, snapshot);
+        logger.info(`[Snapshot] ✓ Manuel ${targetMonth}`, { tl, ratesAt });
+        res.json({ success: true, ...snapshot });
+        return;
+      }
+      // Normal mod — anlık hesap
       const result = await runMonthlySnapshot("manual-http", monthParam || null);
       if (!result.success) {
         res.status(500).json(result);
@@ -510,6 +563,29 @@ exports.takeMonthlySnapshotHttp = onRequest(
       res.json(result);
     } catch (err) {
       logger.error("[Snapshot HTTP] Hata", { error: err.message });
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// Silme endpoint — geçici/hatalı snapshot'ı kaldır
+// GET /deleteMonthlySnapshotHttp?month=2026-02
+exports.deleteMonthlySnapshotHttp = onRequest(
+  { region: REGION, timeoutSeconds: 30, memory: "256MiB", cors: true },
+  async (req, res) => {
+    const monthParam = req.query?.month;
+    if (!monthParam || !/^\d{4}-\d{2}$/.test(monthParam)) {
+      res.status(400).json({ error: "month zorunlu (örn. ?month=2026-02)" });
+      return;
+    }
+    try {
+      const ref = db.collection("appData").doc("inventorySnapshots");
+      const admin = require("firebase-admin");
+      await ref.update({ [`snapshots.${monthParam}`]: admin.firestore.FieldValue.delete() });
+      logger.info(`[Snapshot] ✓ Silindi: ${monthParam}`);
+      res.json({ success: true, monthKey: monthParam });
+    } catch (err) {
+      logger.error("[Snapshot delete] Hata", { error: err.message });
       res.status(500).json({ error: err.message });
     }
   },

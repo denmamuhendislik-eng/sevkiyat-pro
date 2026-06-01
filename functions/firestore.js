@@ -82,7 +82,7 @@ function transformPurchaseForFirestore(parserResult) {
 /**
  * Tek bir rapor için Firestore yazma — type'a göre uygun dönüşümü uygular
  */
-async function saveReport(db, type, parserResult, fileName) {
+async function saveReport(db, type, parserResult, fileName, opts = {}) {
   let docId, payload;
   if (type === "stock") {
     docId = STOCK_DOC;
@@ -98,8 +98,8 @@ async function saveReport(db, type, parserResult, fileName) {
     const diffResult = await saveSalesOrdersWithDiff(db, parserResult);
     return { docId: SALES_ORDERS_DOC, payload: parserResult.ordersMap || {}, diffMeta: diffResult };
   } else if (type === "overhead") {
-    // Özel akış: çoklu ay yazımı + kategori mapping tahmin
-    const overheadOut = await saveOverheadReport(db, parserResult);
+    // Özel akış: çoklu ay yazımı + kategori mapping tahmin + mail tarihi bazlı kısmi-ay kontrolü
+    const overheadOut = await saveOverheadReport(db, parserResult, { messageDate: opts.messageDate });
     return { docId: LABOR_COSTS_DOC, payload: null, overheadMeta: overheadOut };
   } else {
     throw new Error(`Bilinmeyen rapor tipi: ${type}`);
@@ -380,8 +380,10 @@ async function saveUnitCostPartitions(db, newPartitions) {
   return { added, skipped, stockCount: Object.keys(byStock).length };
 }
 
-// Genel gider raporu (Hizmet Total) çoklu ay yazımı + kategori mapping akıllı tahmin
-async function saveOverheadReport(db, parserResult) {
+// Genel gider raporu (Hizmet Total) çoklu ay yazımı + kategori mapping akıllı tahmin.
+// opts.messageDate (Gmail internalDate, unix ms) verilirse mail ay sonundan önce gelmişse
+// o ay "kısmi" sayılıp skip edilir — VIO bazen ay-içi (örn. 10 Mayıs) interim raporu atıyor.
+async function saveOverheadReport(db, parserResult, opts = {}) {
   if (!parserResult?.byMonth || Object.keys(parserResult.byMonth).length === 0) {
     return { monthsWritten: 0, codesGuessed: 0 };
   }
@@ -408,15 +410,30 @@ async function saveOverheadReport(db, parserResult) {
   const importedAt = parserResult.importedAt || new Date().toISOString();
   // Bugünün ayı — kısmi/eksik olduğu için atlanır (VIO her ayın 10'unda gönderdiğinde o ay henüz bitmemiş)
   const currentMonth = new Date().toISOString().slice(0, 7);
+  // Mail tarihi (Gmail internalDate, unix ms) — ay sonundan önce geldiyse o ay kısmi sayılır.
+  // Cron her gün çalıştığı için bir sonraki ayın 1+'inde aynı mail görüldüğünde mevcut
+  // ym >= currentMonth kuralı geçilebiliyordu ama içerik 10 günlük olabilirdi → bu kontrol kapatıyor.
+  const messageDateMs = Number(opts?.messageDate) || null;
   const monthlyOverheads = {};
   const updatedMappings = { ...savedMappings };
   let codesGuessed = 0;
   const skippedMonths = [];
+  const skippedPartialMonths = [];
 
   for (const [ym, m] of Object.entries(parserResult.byMonth)) {
     if (ym >= currentMonth) {
       skippedMonths.push(ym);
       continue;
+    }
+    // Yeni kural: mail ay sonundan SONRA gelmeli (ay tamamlanmış demek). Aksi takdirde kısmi.
+    if (messageDateMs) {
+      const [yy, mm] = ym.split("-").map(Number);
+      // Ayın son gününün gece yarısı — mail bu tarihten önce geldiyse içerik tamamlanmamış
+      const lastDayOfYmMs = new Date(yy, mm, 0, 23, 59, 59, 999).getTime();
+      if (messageDateMs <= lastDayOfYmMs) {
+        skippedPartialMonths.push(ym);
+        continue;
+      }
     }
     // Aynı kod birden çok satırda olursa birleştir (ay içi)
     const merged = {};
@@ -449,14 +466,17 @@ async function saveOverheadReport(db, parserResult) {
   } catch (e) {
     await laborRef.set({ monthlyOverheads }, { merge: true });
   }
-  // Mapping'leri kaydet
-  await mappingsRef.set({ mappings: updatedMappings, updatedAt: importedAt }, { merge: false });
+  // Mapping'leri kaydet — sadece yazılacak ay varsa (boş kayıt mevcut mapping'leri silmesin)
+  if (Object.keys(monthlyOverheads).length > 0) {
+    await mappingsRef.set({ mappings: updatedMappings, updatedAt: importedAt }, { merge: false });
+  }
 
   return {
     monthsWritten: Object.keys(monthlyOverheads).length,
     codesGuessed,
     totalTl: Object.values(monthlyOverheads).reduce((s, m) => s + (m.totalTl || 0), 0),
     skippedMonths,
+    skippedPartialMonths,
   };
 }
 

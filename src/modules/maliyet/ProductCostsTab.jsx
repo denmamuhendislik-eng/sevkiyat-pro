@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import {
   subscribeBomModels, subscribeWorkCenters, subscribeUnitCosts,
   subscribeLaborCosts, subscribeOverheadPolicy, subscribeFasonRates,
+  saveProductCostsLatest,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS } from "./distributionCalc";
@@ -182,6 +183,27 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
       withoutCost: models.length - costed,
     };
   }, [calc]);
+
+  // Cloud Function snapshot için en güncel rootCost map'ini Firestore'a yaz.
+  // takeMonthlySnapshot bu doc'u okuyup mamul/yarı mamul stoklarını rootCost ile değerler;
+  // aksi takdirde snapshot sadece BUY/RAW sayardı (~9M TL eksik anlık envantere göre).
+  useEffect(() => {
+    if (!calc?.byModel) return;
+    const byStockCode = {};
+    for (const m of Object.values(calc.byModel)) {
+      const code = (m.rootStockCode || "").trim();
+      const cost = Number(m.rootCost) || 0;
+      if (!code || cost <= 0) continue;
+      byStockCode[code] = Math.round(cost * 100) / 100;
+    }
+    if (Object.keys(byStockCode).length === 0) return;
+    saveProductCostsLatest({
+      byStockCode,
+      calculatedAt: new Date().toISOString(),
+      monthRef: selectedMonth,
+      modelCount: Object.keys(byStockCode).length,
+    }).catch(err => console.warn("productCostsLatest yazımı başarısız (snapshot etkilenmez):", err.message));
+  }, [calc, selectedMonth]);
 
   // Model bazlı status özeti — sol panelde badge ve detayda parçalama için
   const modelStatusCounts = useMemo(() => {

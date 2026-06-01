@@ -1,14 +1,20 @@
 // Otomatik aylık snapshot için basit envanter hesabı.
-// Frontend'deki inventoryCalc.js mantığının özeti — BOM/mamul fallback ATLA:
-// Envanterin >%95'i BUY/RAW olduğundan toplam TL bu basit hesapla doğru çıkar.
-// (Dashboard trend grafiği için yeterli; ileride detaylı hesap istenirse migrate edilir.)
+// Frontend'deki inventoryCalc.js mantığının özeti.
+//
+// Fiyat lookup sırası:
+//   1. unitCosts.byStock[code] — son alış fiyatı (BUY/RAW kategorileri için)
+//   2. productCostsLatest.byStockCode[code] — mamul/yarı mamul rootCost (Frontend
+//      ProductCostsTab tarafından hesaplanıp yazılır). Bu fallback olmadan snapshot
+//      anlık envanterden ~9M TL düşük çıkıyordu (mamul stokları sıfır TL sayılıyordu).
 //
 // Girdiler:
 //   mrpStock: { parts: { [code]: { n, u, g, a, r, f, h, t } } }
 //   unitCosts: { byStock: { [code]: { partitions: [...], lastName } } }
+//   productCosts: { byStockCode: { [code]: rootCostTl }, calculatedAt }  ← yeni, opsiyonel
 //
 // Çıktı:
-//   { totalValue, totalQty, stockCount, missingPriceCount, items? }
+//   { totalValue, totalQty, stockCount, missingPriceCount, totalAmbar, totalUretim,
+//     totalFason, productCostsFallbackCount, productCostsCalculatedAt }
 
 function safeNum(v) { const n = Number(v); return isNaN(n) ? 0 : n; }
 
@@ -24,9 +30,10 @@ function getLastPriceForStock(slot) {
   return 0;
 }
 
-function calculateSimpleInventoryValue({ mrpStock, unitCosts }) {
+function calculateSimpleInventoryValue({ mrpStock, unitCosts, productCosts = null }) {
   const parts = mrpStock?.parts || {};
   const byStock = unitCosts?.byStock || {};
+  const byStockCode = productCosts?.byStockCode || {};
   let totalValue = 0;
   let totalQty = 0;
   let stockCount = 0;
@@ -34,13 +41,22 @@ function calculateSimpleInventoryValue({ mrpStock, unitCosts }) {
   let totalAmbar = 0;
   let totalUretim = 0;
   let totalFason = 0;
+  let productCostsFallbackCount = 0;
 
   for (const [code, p] of Object.entries(parts)) {
     const qty = safeNum(p.t);
     if (qty <= 0) continue;
     stockCount++;
     totalQty += qty;
-    const price = getLastPriceForStock(byStock[code]);
+    let price = getLastPriceForStock(byStock[code]);
+    if (price <= 0) {
+      // Mamul/yarı mamul fallback: ProductCostsTab tarafından yazılmış rootCost
+      const fallback = safeNum(byStockCode[code]);
+      if (fallback > 0) {
+        price = fallback;
+        productCostsFallbackCount++;
+      }
+    }
     if (price <= 0) {
       missingPriceCount++;
       continue;  // fiyatı yoksa toplamlara dahil değil
@@ -60,6 +76,8 @@ function calculateSimpleInventoryValue({ mrpStock, unitCosts }) {
     totalAmbar: Math.round(totalAmbar * 100) / 100,
     totalUretim: Math.round(totalUretim * 100) / 100,
     totalFason: Math.round(totalFason * 100) / 100,
+    productCostsFallbackCount,
+    productCostsCalculatedAt: productCosts?.calculatedAt || null,
   };
 }
 
