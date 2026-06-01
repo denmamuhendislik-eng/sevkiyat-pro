@@ -184,24 +184,42 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
     };
   }, [calc]);
 
-  // Cloud Function snapshot için en güncel rootCost map'ini Firestore'a yaz.
-  // takeMonthlySnapshot bu doc'u okuyup mamul/yarı mamul stoklarını rootCost ile değerler;
-  // aksi takdirde snapshot sadece BUY/RAW sayardı (~9M TL eksik anlık envantere göre).
+  // Cloud Function snapshot için en güncel hesaplı maliyet map'ini Firestore'a yaz.
+  // Hem root mamul (rootStockCode → rootCost) hem tüm BOM parçaları (partsList → unitCost)
+  // dahil edilir — yarı mamul/intermediate stoklar da snapshot'ta fiyat fallback bulur.
+  // Aynı stockCode birden çok model'de görünürse en yüksek hesaplı maliyet kazanır.
   useEffect(() => {
     if (!calc?.byModel) return;
     const byStockCode = {};
+    let partCount = 0;
     for (const m of Object.values(calc.byModel)) {
-      const code = (m.rootStockCode || "").trim();
-      const cost = Number(m.rootCost) || 0;
-      if (!code || cost <= 0) continue;
-      byStockCode[code] = Math.round(cost * 100) / 100;
+      // Root mamul
+      const rootCode = (m.rootStockCode || "").trim();
+      const rootCost = Number(m.rootCost) || 0;
+      if (rootCode && rootCost > 0) {
+        const v = Math.round(rootCost * 100) / 100;
+        if (!byStockCode[rootCode] || byStockCode[rootCode] < v) byStockCode[rootCode] = v;
+      }
+      // Tüm BOM parçaları
+      for (const part of (m.partsList || [])) {
+        const code = (part.stockCode || "").trim();
+        const cost = Number(part.unitCost) || 0;
+        if (!code || cost <= 0) continue;
+        const v = Math.round(cost * 100) / 100;
+        if (!byStockCode[code] || byStockCode[code] < v) {
+          byStockCode[code] = v;
+          partCount++;
+        }
+      }
     }
     if (Object.keys(byStockCode).length === 0) return;
     saveProductCostsLatest({
       byStockCode,
       calculatedAt: new Date().toISOString(),
       monthRef: selectedMonth,
-      modelCount: Object.keys(byStockCode).length,
+      modelCount: Object.keys(calc.byModel).length,
+      partCount,
+      totalCodeCount: Object.keys(byStockCode).length,
     }).catch(err => console.warn("productCostsLatest yazımı başarısız (snapshot etkilenmez):", err.message));
   }, [calc, selectedMonth]);
 
