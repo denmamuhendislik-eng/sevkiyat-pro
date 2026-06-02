@@ -6009,10 +6009,16 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       const currentPlsTotal = stk.pl.reduce((s, x) => s + (x.q || 0), 0);
       if (currentPlsTotal <= 0) return; // hat stoğu sıfıra düştü → onay geçersiz
       // v18.10: Hat stoğu azaldıysa onayı iptal etme, miktarı otomatik güncelle.
-      // Eski: currentPlsTotal < conf.qty → iptal (çok katı, her sabah tekrar onay gerekiyordu)
-      // Yeni: currentPlsTotal > 0 olduğu sürece onay korunur, miktar güncel değerle güncellenir
-      const effectiveQty = Math.min(conf.qty, currentPlsTotal);
-      map[code] = { qty: effectiveQty, confirmedAt: conf.confirmedAt, confirmedBy: conf.confirmedBy };
+      // v22 (2026-06-02): Math.min kaldırıldı — onay bir kez verildiyse hat stoğunun TAMAMI
+      // (artan dahil) onaylı sayılır. Eskiden Math.min(conf.qty, currentPlsTotal) ile sadece
+      // azalma yönünde güncelleme vardı, artış yönünde eski conf.qty kazanıyordu — örn. 15 Nisan
+      // 10 ad onaylı stokun anlık 153 olması durumunda 143 parça MRP havuzu dışında kalıyordu.
+      map[code] = {
+        qty: currentPlsTotal,
+        originalQty: conf.qty,
+        confirmedAt: conf.confirmedAt,
+        confirmedBy: conf.confirmedBy,
+      };
     });
     return map;
   }, [plsConfirmations, stockLookup]);
@@ -12464,11 +12470,18 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                                                 <tr key={code} style={{ borderTop: "1px solid var(--color-border)" }}>
                                                   <td style={{ padding: "6px 8px", fontFamily: "var(--font-mono)", fontSize: 10 }}>{code}</td>
                                                   <td style={{ padding: "6px 8px", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={name}>{name}</td>
-                                                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#166534" }}>{conf.qty} <span style={{ fontSize: 9, fontWeight: 400, color: "var(--color-text-tertiary)" }}>{unit}</span></td>
-                                                  <td style={{ padding: "6px 8px", fontSize: 10, color: currentPls >= conf.qty ? "var(--color-text-secondary)" : "#DC2626", cursor: locTooltip ? "help" : "default", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                                                  <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#166534" }}>
+                                                    {conf.qty} <span style={{ fontSize: 9, fontWeight: 400, color: "var(--color-text-tertiary)" }}>{unit}</span>
+                                                    {conf.originalQty && conf.qty > conf.originalQty && (
+                                                      <div style={{ fontSize: 9, fontWeight: 500, color: "#2563EB", marginTop: 1 }}
+                                                           title={`Operatör orijinal olarak ${conf.originalQty} ${unit} onayladı; hat stoğu sonradan ${conf.qty - conf.originalQty} ${unit} arttı, tamamı havuzda`}>
+                                                        ↑ {conf.originalQty} onay + {conf.qty - conf.originalQty} yeni
+                                                      </div>
+                                                    )}
+                                                  </td>
+                                                  <td style={{ padding: "6px 8px", fontSize: 10, color: "var(--color-text-secondary)", cursor: locTooltip ? "help" : "default", maxWidth: 180, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
                                                       title={locTooltip || ""}>
                                                     {locSummary}
-                                                    {currentPls < conf.qty && <span style={{ marginLeft: 4 }}>⚠</span>}
                                                   </td>
                                                   <td style={{ padding: "6px 8px", fontSize: 10, color: "var(--color-text-secondary)" }}>{conf.confirmedBy || "—"}</td>
                                                   <td style={{ padding: "6px 8px", fontSize: 10, color: "var(--color-text-secondary)" }}>{dateStr}</td>
