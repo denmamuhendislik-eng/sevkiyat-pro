@@ -443,6 +443,12 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     }
   }
 
+  // BOM'lar arası tutarsızlık raporu — aynı stok kodu birden çok modelde geçiyorsa
+  // supplyType / cycleTime / wcCode farkları audit listesi olarak çıkarılır.
+  // Drift kök sebebi: BOM yükleme parent-bazlı (her modelKey parts ayrı kayıtlı,
+  // global parça master yok). Yeni BOM eklendiğinde eski modeller dokunulmuyor.
+  const crossModelInconsistencies = findCrossModelInconsistencies(bomModels);
+
   return {
     byModel,
     wcRateAvg,
@@ -450,6 +456,7 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     wcManualCycle,
     stockUnitCost,
     ratesCalcSummary: ratesCalc.summary,
+    crossModelInconsistencies,
     summary: {
       modelCount: Object.keys(byModel).length,
       stockCount: Object.keys(stockUnitCost).length,
@@ -459,6 +466,80 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
       laborOpManual: totalOpManual,
       laborOpWcAvg: totalOpWcAvg,
       laborOpDefault: totalOpDefault,
+      inconsistencyCount: crossModelInconsistencies.length,
     },
   };
+}
+
+// Aynı stok kodu birden çok modelde geçiyorsa supplyType / cycleTime farklılıklarını
+// liste olarak çıkarır. ProductCostsTab üstte audit banner gösterir.
+function findCrossModelInconsistencies(bomModels) {
+  const usage = {};  // stockCode → { supplyTypeByModel, opCyclesByModel: {opCode→{modelKey:cycle}}, stockName }
+  for (const [mk, model] of Object.entries(bomModels || {})) {
+    if (mk === "undefined") continue;
+    for (const part of (model.parts || [])) {
+      const code = part.stockCode;
+      if (!code) continue;
+      if (!usage[code]) usage[code] = { supplyTypeByModel: {}, opCyclesByModel: {}, stockName: "" };
+      usage[code].supplyTypeByModel[mk] = part.supplyType || "";
+      if (!usage[code].stockName && part.stockName) usage[code].stockName = part.stockName;
+      for (const op of (part.operations || [])) {
+        if (!op.opCode) continue;
+        const opStr = String(op.opCode);
+        if (!usage[code].opCyclesByModel[opStr]) usage[code].opCyclesByModel[opStr] = {};
+        usage[code].opCyclesByModel[opStr][mk] = safeNum(op.cycleTime);
+      }
+    }
+  }
+
+  const out = [];
+  for (const [stockCode, u] of Object.entries(usage)) {
+    const modelKeys = Object.keys(u.supplyTypeByModel);
+    if (modelKeys.length < 2) continue;  // tek model — tutarsızlık olamaz
+
+    // supplyType tutarsızlığı (kategorik — hesap modelini değiştirir, impact=high)
+    const supplyTypes = [...new Set(Object.values(u.supplyTypeByModel))];
+    if (supplyTypes.length > 1) {
+      out.push({
+        stockCode,
+        stockName: u.stockName,
+        field: "supplyType",
+        impact: "high",
+        valuesByModel: { ...u.supplyTypeByModel },
+        distinctValues: supplyTypes,
+      });
+    }
+
+    // cycleTime tutarsızlığı (op kodu bazlı) — bir modelde dolu, başka modelde boş → medium;
+    // her ikisi de dolu ama farklı → medium da; hepsi aynı → tutarsız değil
+    for (const [opCode, cyclesByModel] of Object.entries(u.opCyclesByModel)) {
+      const values = Object.values(cyclesByModel);
+      if (values.length < 2) continue;
+      const filled = values.filter(v => v > 0);
+      const empty = values.filter(v => v === 0);
+      const uniqFilled = [...new Set(filled)];
+      const hasFilledAndEmpty = filled.length > 0 && empty.length > 0;
+      const hasMultipleFilled = uniqFilled.length > 1;
+      if (hasFilledAndEmpty || hasMultipleFilled) {
+        out.push({
+          stockCode,
+          stockName: u.stockName,
+          field: "cycleTime",
+          opCode,
+          impact: "medium",
+          valuesByModel: { ...cyclesByModel },
+          distinctValues: uniqFilled,
+          hasEmpty: empty.length > 0,
+        });
+      }
+    }
+  }
+
+  // Önce supplyType (high), sonra cycleTime — alfabetik stockCode
+  out.sort((a, b) => {
+    if (a.impact !== b.impact) return a.impact === "high" ? -1 : 1;
+    if (a.stockCode !== b.stockCode) return a.stockCode.localeCompare(b.stockCode);
+    return (a.opCode || "").localeCompare(b.opCode || "");
+  });
+  return out;
 }

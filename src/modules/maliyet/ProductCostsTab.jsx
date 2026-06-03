@@ -121,6 +121,8 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
   const [selectedMonth, setSelectedMonth] = useState(todayMonth());
   const [selectedModel, setSelectedModel] = useState(null);
   const [searchModel, setSearchModel] = useState("");
+  const [showInconsistencies, setShowInconsistencies] = useState(false);
+  const [inconsistencyFilter, setInconsistencyFilter] = useState("all"); // all | supplyType | cycleTime
 
   useEffect(() => {
     const u = subscribeBomModels(d => { setBomModels(d || {}); setLoaded(p => ({ ...p, bom: true })); });
@@ -303,6 +305,112 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
           ⚠ Birim Maliyet verisi yok — BUY/RAW parçalar 0 hesaplanır. Önce Birim Maliyetler sekmesinden VIO Excel'i yükle.
         </div>
       )}
+
+      {/* BOM'lar arası tutarsızlık raporu */}
+      {(calc?.crossModelInconsistencies?.length > 0) && (() => {
+        const all = calc.crossModelInconsistencies;
+        const supplyCount = all.filter(i => i.field === "supplyType").length;
+        const cycleCount = all.filter(i => i.field === "cycleTime").length;
+        const filtered = inconsistencyFilter === "all" ? all : all.filter(i => i.field === inconsistencyFilter);
+        return (
+          <div style={{ marginBottom: 10, border: "1px solid #F59E0B", borderRadius: 6, overflow: "hidden", background: "#FFFBEB" }}>
+            <div
+              onClick={() => setShowInconsistencies(v => !v)}
+              style={{ padding: "8px 12px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer", userSelect: "none" }}
+            >
+              <span style={{ fontSize: 10, color: "#92400E" }}>{showInconsistencies ? "▼" : "▶"}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: "#92400E" }}>
+                ⚠ BOM'lar Arası Tutarsızlık ({all.length})
+              </span>
+              <span style={{ fontSize: 10, color: "#92400E" }}>
+                {supplyCount > 0 && <span style={{ marginRight: 8 }}><b>{supplyCount}</b> supplyType</span>}
+                {cycleCount > 0 && <span><b>{cycleCount}</b> cycleTime</span>}
+              </span>
+              <span style={{ marginLeft: "auto", fontSize: 10, color: "#92400E" }}>
+                Aynı stok kodu farklı BOM'larda farklı kayıtlı — manuel kontrol et
+              </span>
+            </div>
+            {showInconsistencies && (
+              <div style={{ background: "white", borderTop: "1px solid #FCD34D" }}>
+                {/* Filter butonları */}
+                <div style={{ padding: "8px 12px", borderBottom: "1px solid var(--color-border-tertiary)", display: "flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>Filtre:</span>
+                  {[
+                    { id: "all", label: `Tümü (${all.length})`, color: "#92400E" },
+                    { id: "supplyType", label: `supplyType (${supplyCount})`, color: "#DC2626" },
+                    { id: "cycleTime", label: `cycleTime (${cycleCount})`, color: "#D97706" },
+                  ].map(f => {
+                    const active = inconsistencyFilter === f.id;
+                    return (
+                      <button
+                        key={f.id}
+                        onClick={() => setInconsistencyFilter(f.id)}
+                        style={{ padding: "3px 10px", fontSize: 10, borderRadius: 4, cursor: "pointer", fontWeight: active ? 600 : 400,
+                          border: "1px solid " + (active ? f.color : "var(--color-border-tertiary)"),
+                          background: active ? f.color : "transparent", color: active ? "white" : "var(--color-text-secondary)" }}>
+                        {f.label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {/* Tablo */}
+                <div style={{ maxHeight: 360, overflowY: "auto" }}>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <thead style={{ background: "var(--color-background-secondary)", position: "sticky", top: 0 }}>
+                      <tr style={{ borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                        <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)" }}>Stok Kodu</th>
+                        <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)" }}>Stok Adı</th>
+                        <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)" }}>Alan</th>
+                        <th style={{ padding: "6px 10px", textAlign: "left", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)" }}>BOM'lar arası değerler</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filtered.length === 0 && (
+                        <tr><td colSpan={4} style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)", fontSize: 11 }}>Bu filtreyle eşleşen tutarsızlık yok</td></tr>
+                      )}
+                      {filtered.map((inc, idx) => {
+                        const isHigh = inc.impact === "high";
+                        const fieldLabel = inc.field === "supplyType" ? "supplyType" : `cycleTime · op ${inc.opCode}`;
+                        const modelEntries = Object.entries(inc.valuesByModel).sort();
+                        return (
+                          <tr key={`${inc.stockCode}_${inc.field}_${inc.opCode || ""}_${idx}`} style={{ borderBottom: "1px solid var(--color-border-tertiary)", background: isHigh ? "rgba(220, 38, 38, 0.04)" : "transparent" }}>
+                            <td style={{ padding: "5px 10px", fontFamily: "var(--font-mono)", fontSize: 10, fontWeight: 600, verticalAlign: "top" }}>{inc.stockCode}</td>
+                            <td style={{ padding: "5px 10px", fontSize: 10, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", verticalAlign: "top" }} title={inc.stockName}>{inc.stockName || "—"}</td>
+                            <td style={{ padding: "5px 10px", fontSize: 10, verticalAlign: "top" }}>
+                              <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600, color: "white", background: isHigh ? "#DC2626" : "#D97706" }}>
+                                {fieldLabel}
+                              </span>
+                            </td>
+                            <td style={{ padding: "5px 10px", fontSize: 10, verticalAlign: "top" }}>
+                              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                                {modelEntries.map(([mk, val]) => {
+                                  const display = inc.field === "supplyType"
+                                    ? (val || "—")
+                                    : (val > 0 ? `${val} dk` : "boş");
+                                  const isEmptyCycle = inc.field === "cycleTime" && val === 0;
+                                  return (
+                                    <span key={mk} style={{ padding: "2px 7px", borderRadius: 3, border: "1px solid var(--color-border-tertiary)", background: isEmptyCycle ? "#FEE2E2" : "var(--color-background-secondary)", fontSize: 10 }}>
+                                      <span style={{ fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)", marginRight: 4 }}>{mk}:</span>
+                                      <strong style={{ color: isEmptyCycle ? "#991B1B" : "var(--color-text-primary)" }}>{display}</strong>
+                                    </span>
+                                  );
+                                })}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                <div style={{ padding: "6px 12px", fontSize: 9, color: "var(--color-text-tertiary)", borderTop: "1px solid var(--color-border-tertiary)", background: "var(--color-background-secondary)" }}>
+                  ℹ <b>supplyType</b> (kırmızı) hesap modelini değiştirir — yüksek etki · <b>cycleTime</b> (turuncu) işçilik miktarını etkiler — orta etki · BOM yükleme parent-bazlı, eski yüklemelerde drift birikir. Manuel düzeltmek için ilgili BOM Excel'i indir → düzelt → yükle.
+                </div>
+              </div>
+            )}
+          </div>
+        );
+      })()}
 
       <div style={{ display: "grid", gridTemplateColumns: selectedModel ? "350px 1fr" : "1fr", gap: 12 }}>
         {/* SOL: BOM listesi */}
