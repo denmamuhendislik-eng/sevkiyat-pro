@@ -13,7 +13,7 @@ const SHEET_COMPLETE = "Komple_FASON";  // BOM'da fason op tanımsız supplyType
 // KG bazlı fason op'lar — bu op'lardan geçen parçaların ağırlığı bilinmeli.
 // Diğer fason'lar (talaşlı, dişli açımı, balans, büküm, kaplama vs.) AD/parça-özel.
 // Not: Kullanıcı Sheet 1'de op birim KG seçerse de o op KG-bazlı sayılır (dinamik).
-const DEFAULT_KG_OPS = ["621", "622"];  // Sementasyon, Islah
+const DEFAULT_KG_OPS = ["621", "622", "674"];  // Sementasyon, Islah, Bolu Fason
 
 const fmt2 = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -111,7 +111,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
   const handleDownloadTemplate = () => {
     const wb = XLSX.utils.book_new();
 
-    // Sheet 1: Op Ücretleri — sadece KG bazlı op'lar (DEFAULT_KG_OPS: 621/622).
+    // Sheet 1: Op Ücretleri — sadece KG bazlı op'lar (DEFAULT_KG_OPS: 621/622/674).
     // Bu op'lar tüm parçalar için aynı TL/kg fiyatı ile yönetiliyor, parça-özel override
     // gerekmiyor. Diğer fason op'lar (dişli açım, kaynak fason vb.) genelde AD bazlı ve
     // parça-özel fiyatlanıyor → Sheet 3'te yönetilir.
@@ -159,8 +159,8 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     ws2["!cols"] = [{ wch: 14 }, { wch: 45 }, { wch: 10 }];
     XLSX.utils.book_append_sheet(wb, ws2, SHEET_WEIGHT);
 
-    // Sheet 3: Parça-Özel Override — KG bazlı op'lar (621/622) hariç tüm (op,parça) çiftleri.
-    // 621/622 Sheet 1'deki tek default ile yönetildiği için override gerekmiyor, çıkartıldı.
+    // Sheet 3: Parça-Özel Override — KG bazlı op'lar (621/622/674) hariç tüm (op,parça) çiftleri.
+    // KG bazlı op'lar Sheet 1'deki tek default ile yönetildiği için override gerekmiyor, çıkartıldı.
     // Diğer fason op'lar (dişli açım, kaynak fason vs.) parça-özel fiyatlanıyor → burada.
     const overrideRows = [["Op Kodu", "Op Adı", "Stok Kodu", "Stok Adı", "Birim (AD/KG)", "TL/Birim", "Not"]];
     const allKeys = new Set([
@@ -231,7 +231,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
 
       // Sheet 1: Op Ücretleri
       // Birim hücresi boş veya tanınmayan değer ise DEFAULT_KG_OPS'a göre fallback
-      // (621/622 → KG, diğerleri AD). Kullanıcı bilinçli "AD"/"KG" yazarsa onu kullanır.
+      // (621/622/674 → KG, diğerleri AD). Kullanıcı bilinçli "AD"/"KG" yazarsa onu kullanır.
       if (wb.Sheets[SHEET_OP]) {
         const rows = XLSX.utils.sheet_to_json(wb.Sheets[SHEET_OP], { header: 1, defval: "" });
         for (let i = 1; i < rows.length; i++) {
@@ -370,7 +370,7 @@ export default function FasonRatesTab({ canEdit, isAdmin }) {
     setDirty(true);
   };
 
-  // KG bazlı op'lar (621/622) için tüm partOverrides'ı toplu temizle —
+  // KG bazlı op'lar (621/622/674) için tüm partOverrides'ı toplu temizle —
   // Sheet 1 default fiyatı zaten kullanıyor, parça-özel override gerekmiyor.
   // confirm() Chrome'da suppress olabildiği için direkt draft'a uygulanır;
   // kullanıcı Kaydet'e basmadan etki yok, "Geri al" ile iptal edilebilir.
@@ -678,10 +678,10 @@ function OverridesSection({ draft, removeOverride, canEdit, removeKgOpOverrides,
               {kgOpKeys.length > 0 && (
                 <button
                   onClick={(e) => { e.stopPropagation(); removeKgOpOverrides(); }}
-                  title="621 ve 622 KG bazlı op'lar için tüm parça-özel override'ları draft'tan çıkarır — Sheet 1 default fiyatı devreye girer. Kaydet'e basmadan etki yok."
+                  title="KG bazlı op'lar (621/622/674) için tüm parça-özel override'ları draft'tan çıkarır — Sheet 1 default fiyatı devreye girer. Kaydet'e basmadan etki yok."
                   style={{ padding: "4px 10px", borderRadius: 4, border: "1px solid #C2410C", background: "transparent", color: "#C2410C", fontSize: 10, fontWeight: 500, cursor: "pointer" }}
                 >
-                  🧹 621/622 override'larını temizle ({kgOpKeys.length})
+                  🧹 KG-op override'larını temizle ({kgOpKeys.length})
                 </button>
               )}
             </span>
