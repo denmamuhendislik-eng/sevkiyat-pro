@@ -41,10 +41,21 @@ function getRowStatus(part) {
   }
   if (sType === "FASON") {
     const src = part.source || "";
-    if (src.includes("fason-rate-missing")) return "missing";
-    // FASON parçada fason ücreti zorunlu (parça komple fasonda yapılıyor) —
-    // BOM'da fason op tanımsızsa fasonCost 0 olur, bunu eksik say.
-    if ((part.fasonCost || 0) <= 0) return "missing";
+    const fasonCost = part.fasonCost || 0;
+    // Hiç fason ücret yok → gerçek eksik (ne op-bazlı tanım ne komple FASON fallback)
+    if (fasonCost <= 0) return "missing";
+    // v22 (2026-06-03): substring "fason-rate-missing" kontrolü tek başına yanıltıcı —
+    // op kodu Fason Ücretleri tablosunda tanımsız olsa bile, parça-bazlı "Komple FASON"
+    // tablosundan fallback (fason-complete-by-code) ile karşılanıyor olabilir.
+    // 151-0228 örneği: fason 78.40 TL hesaplandı (complete-by-code) ama source ikisini
+    // de içerdiği için eskiden missing sayılıyordu → 7 yanlış eksik gösterimi.
+    const hasMissing = src.includes("fason-rate-missing");
+    const hasComplete = src.includes("fason-complete-by-code");
+    if (hasMissing && hasComplete) {
+      // Op tabloda yok ama komple fason fallback ile karşılandı → OK (alt parçalar da OK ise)
+      return part.unitCost > 0 ? "ok" : "missing";
+    }
+    if (hasMissing) return "partial";  // rate-missing var ama fasonCost > 0 (nadir, audit için kısmi)
     if (src.includes("no-weight")) return "partial";
     return part.unitCost > 0 ? "ok" : "missing";
   }
@@ -83,7 +94,12 @@ function explainStatus(part) {
   if (sType === "FASON" && (part.fasonCost || 0) <= 0 && !src.includes("fason-rate-missing")) {
     reasons.push("FASON tipi ama BOM'da fason op tanımsız → fason ücreti hesaplanmadı ✗");
   }
-  if (src.includes("fason-rate-missing")) reasons.push("Fason ücreti tanımsız ✗");
+  // Op kodu tanımsız ama komple fason fallback ile karşılandı → audit notu (eksik sayılmaz)
+  if (src.includes("fason-rate-missing") && src.includes("fason-complete-by-code")) {
+    reasons.push(`Op kodu Fason Ücretleri tablosunda tanımsız, parça-bazlı Komple FASON ücreti (${fmt2(part.fasonCost)} TL) ile karşılandı ⓘ`);
+  } else if (src.includes("fason-rate-missing")) {
+    reasons.push("Fason ücreti tanımsız ✗");
+  }
   if (src.includes("no-weight")) reasons.push("Parça ağırlığı yok (KG bazlı fason) ⚠");
   if (src.includes("children-ignored")) reasons.push("BOM children görmezden gelindi (BUY)");
   if (src.includes("ops-fason-skip")) reasons.push("İçsel op'lar atlandı (FASON)");
