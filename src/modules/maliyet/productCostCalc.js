@@ -473,6 +473,15 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
 
 // Aynı stok kodu birden çok modelde geçiyorsa supplyType / cycleTime farklılıklarını
 // liste olarak çıkarır. ProductCostsTab üstte audit banner gösterir.
+//
+// PRODUCT → MAKE normalize: v13 refactor'da PRODUCT konsepti kaldırıldı; App.jsx
+// runtime'da her yerde normalize ediyor. Bazı eski BOM kayıtlarında raw "PRODUCT"
+// kalmış olabilir → tarayıcı da aynı normalize'ı uygulamalı, yoksa sahte
+// "PRODUCT vs MAKE" tutarsızlıkları rapor edilir.
+function normSupplyType(t) {
+  return t === "PRODUCT" ? "MAKE" : (t || "");
+}
+
 function findCrossModelInconsistencies(bomModels) {
   const usage = {};  // stockCode → { supplyTypeByModel, opCyclesByModel: {opCode→{modelKey:cycle}}, stockName }
   for (const [mk, model] of Object.entries(bomModels || {})) {
@@ -481,7 +490,7 @@ function findCrossModelInconsistencies(bomModels) {
       const code = part.stockCode;
       if (!code) continue;
       if (!usage[code]) usage[code] = { supplyTypeByModel: {}, opCyclesByModel: {}, stockName: "" };
-      usage[code].supplyTypeByModel[mk] = part.supplyType || "";
+      usage[code].supplyTypeByModel[mk] = normSupplyType(part.supplyType);
       if (!usage[code].stockName && part.stockName) usage[code].stockName = part.stockName;
       for (const op of (part.operations || [])) {
         if (!op.opCode) continue;
