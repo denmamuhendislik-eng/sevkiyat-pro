@@ -178,6 +178,12 @@ export default function App() {
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
+  // Snapshot listener race-condition fix (2026-06-09): kullanıcı miktar
+  // inputlarını yazıyorken Firestore echo veya başka cihaz snapshot'ı local
+  // değişiklikleri overwrite ediyordu. Save tetiklendiği andan başlayıp echo
+  // gelene kadar geçen pencerede snapshot'ları yok sayıyoruz.
+  const savingLockUntilRef = useRef(0);
+  const SAVE_LOCK_BUFFER_MS = 3000;
 
   const isAdmin = userRole === "admin";
   const isPacker = userRole === "packer";
@@ -241,6 +247,10 @@ export default function App() {
     if (!authUser) return;
     const unsub = onSnapshot(doc(db, "appData", "state"), (snap) => {
       if (snap.exists()) {
+        // Save inflight veya echo bekleniyor → local değişiklikleri koru.
+        // SAVE_LOCK_BUFFER_MS süresince snapshot'ları yok sayıyoruz; bu süre
+        // dolduktan sonra başka cihazdan gelen güncellemeler kabul edilir.
+        if (Date.now() < savingLockUntilRef.current) return;
         const d = snap.data();
         if (d.yearsData) setYearsData(d.yearsData);
         if (d.products) {
@@ -301,8 +311,13 @@ export default function App() {
     if (!canPack || !firestoreReady.current) return;
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(async () => {
+      // Lock'u save başlamadan AÇ — save inflight + echo bekleme süresi boyunca
+      // snapshot listener overwrite yapmasın.
+      savingLockUntilRef.current = Date.now() + SAVE_LOCK_BUFFER_MS;
       try {
         await setDoc(doc(db, "appData", "state"), data);
+        // Save tamamlandıktan sonra da echo'nun gelmesini bekle (1-2 sn) → buffer yenile
+        savingLockUntilRef.current = Date.now() + SAVE_LOCK_BUFFER_MS;
       } catch (e) { console.error("Save error:", e); }
     }, 1500);
   }, [canPack]);
