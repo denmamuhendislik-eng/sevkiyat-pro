@@ -104,6 +104,35 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
     return m;
   }, [products]);
 
+  // unitCosts.byStock → son alış fiyatı (BOM'u olmayan ürünler için maliyet fallback)
+  // Pattern: functions/inventoryCalcSimple.js:getLastPriceForStock ile birebir aynı
+  const lastPurchasePriceByCode = useMemo(() => {
+    const m = {};
+    const byStock = unitCosts?.byStock || {};
+    for (const [code, slot] of Object.entries(byStock)) {
+      const parts = slot?.partitions || [];
+      if (parts.length === 0) continue;
+      const sorted = [...parts].sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+      // En son tarihli fiyatlı parti — geriye doğru tara, 0 fiyatları atla
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const p = Number(sorted[i].unitPriceTl) || 0;
+        if (p > 0) { m[code] = p; break; }
+      }
+    }
+    return m;
+  }, [unitCosts]);
+
+  // BOM eşleşmesi için ters lookup: rootStockCode → model
+  const byModelByStockCode = useMemo(() => {
+    const m = {};
+    if (!calc?.byModel) return m;
+    for (const model of Object.values(calc.byModel)) {
+      const code = (model.rootStockCode || "").trim();
+      if (code) m[code] = model;
+    }
+    return m;
+  }, [calc]);
+
   // Diğer Müşteriler: stokKodu → en güncel aktif siparişin unitPriceTl (TL)
   // Birden fazla aktif sipariş varsa en güncel orderDate kazanır
   const salesPriceByStock = useMemo(() => {
@@ -129,33 +158,55 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
     return m;
   }, [salesOrders]);
 
-  // Karlılık satırları — her (model, kanal) çifti bir satır
+  // Karlılık satırları — kod-bazlı union: BOM modeli olan + Diğer Müşteriler'de aktif
+  // satışı olan + Sevkiyat Planı products. BOM eşleşmesi yoksa unitCosts son alış
+  // fiyatı maliyet sayılır (doğrudan alıp-satılan ürünler için).
   const rows = useMemo(() => {
-    if (!calc?.byModel) return [];
+    if (!calc) return [];
     const list = [];
     const eurRate = Number(rates?.eur) || 0;
 
-    for (const model of Object.values(calc.byModel)) {
-      const stockCode = (model.rootStockCode || "").trim();
-      const costTl = Number(model.rootCost) || 0;
+    // Tüm unique stok kodlarını topla
+    const allCodes = new Set();
+    Object.keys(byModelByStockCode).forEach(c => allCodes.add(c));
+    Object.keys(salesPriceByStock).forEach(c => allCodes.add(c));
+    // Sevkiyat Planı products vioCode'ları da ekle (BOM'u olmasa bile fiyatı olabilir)
+    Object.keys(productByVio).forEach(c => allCodes.add(c));
+
+    for (const stockCode of allCodes) {
+      const model = byModelByStockCode[stockCode];
+      const matchedProduct = productByVio[stockCode] || null;
+      const dmEntry = salesPriceByStock[stockCode] || null;
+
+      // Maliyet hiyerarşisi: BOM rootCost → unitCosts son alış → 0
+      let costTl = 0;
+      let costSource = "none";  // "production" | "purchase" | "none"
+      if (model && Number(model.rootCost) > 0) {
+        costTl = Number(model.rootCost);
+        costSource = "production";
+      } else if (lastPurchasePriceByCode[stockCode] > 0) {
+        costTl = lastPurchasePriceByCode[stockCode];
+        costSource = "purchase";
+      }
+
+      // Görünür isim ve modelKey (audit için)
+      const modelKey = model?.modelKey || stockCode;
+      const modelCode = model?.modelCode || stockCode;
+      const modelName = model?.modelName || matchedProduct?.nameTR || dmEntry?.stokAdi || stockCode;
 
       // Kanal 1: Sevkiyat Planı (vioCode eşleşmesi)
-      const matchedProduct = stockCode ? productByVio[stockCode] : null;
-      const eurPrice = matchedProduct ? Number(matchedProduct.salesPriceEur || 0) : 0;
       if (matchedProduct) {
-        // EUR fiyatı TL'ye çevirip karşılaştır (eurRate yoksa 0 olur → fiyatsız sayılır)
+        const eurPrice = Number(matchedProduct.salesPriceEur || 0);
         const priceTl = eurPrice > 0 && eurRate > 0 ? eurPrice * eurRate : 0;
         const profitTl = priceTl - costTl;
         const marginPct = costTl > 0 && priceTl > 0 ? (profitTl / costTl) * 100 : null;
         list.push({
-          key: `${model.modelKey}__sevkiyat`,
-          modelKey: model.modelKey,
-          modelName: model.modelName,
-          modelCode: model.modelCode,
+          key: `${modelKey}__sevkiyat`,
+          modelKey, modelName, modelCode,
           stockCode: stockCode || matchedProduct.vioCode,
-          productName: matchedProduct.nameTR || model.modelName,
+          productName: matchedProduct.nameTR || modelName,
           channel: "sevkiyat",
-          costTl,
+          costTl, costSource,
           priceTl,
           priceNative: eurPrice,
           priceNativeCurrency: "EUR",
@@ -166,21 +217,18 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
         });
       }
 
-      // Kanal 2: Diğer Müşteriler (stokKodu eşleşmesi)
-      const dmEntry = stockCode ? salesPriceByStock[stockCode] : null;
+      // Kanal 2: Diğer Müşteriler
       if (dmEntry) {
         const priceTl = Number(dmEntry.priceTl) || 0;
         const profitTl = priceTl - costTl;
         const marginPct = costTl > 0 && priceTl > 0 ? (profitTl / costTl) * 100 : null;
         list.push({
-          key: `${model.modelKey}__digerMusteriler`,
-          modelKey: model.modelKey,
-          modelName: model.modelName,
-          modelCode: model.modelCode,
+          key: `${modelKey}__digerMusteriler`,
+          modelKey, modelName, modelCode,
           stockCode,
-          productName: model.modelName,
+          productName: modelName,
           channel: "digerMusteriler",
-          costTl,
+          costTl, costSource,
           priceTl,
           priceNative: priceTl,
           priceNativeCurrency: "TRY",
@@ -191,17 +239,17 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
         });
       }
 
-      // Eşleşmeyen modeller (ne Sevkiyat Planı'nda ne Diğer Müşteriler'de) — noPrice listesi için
-      if (!matchedProduct && !dmEntry) {
+      // Eşleşmeyen kayıt (kanal=noPrice) — sadece BOM modeli olup hiç fiyatı olmayan
+      // ürünler için anlamlı; alış-bazlı maliyetli ama satışsız ürünleri liste dışı tut
+      // (gürültü olmasın diye — kullanıcı satılmıyorsa Karlılık'ta görmesin)
+      if (!matchedProduct && !dmEntry && model) {
         list.push({
-          key: `${model.modelKey}__noPrice`,
-          modelKey: model.modelKey,
-          modelName: model.modelName,
-          modelCode: model.modelCode,
+          key: `${modelKey}__noPrice`,
+          modelKey, modelName, modelCode,
           stockCode,
-          productName: model.modelName,
+          productName: modelName,
           channel: "noPrice",
-          costTl,
+          costTl, costSource,
           priceTl: 0,
           priceNative: 0,
           priceNativeCurrency: "TRY",
@@ -213,7 +261,7 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
       }
     }
     return list;
-  }, [calc, productByVio, salesPriceByStock, rates]);
+  }, [calc, byModelByStockCode, lastPurchasePriceByCode, productByVio, salesPriceByStock, rates]);
 
   // Filtre + sıralama
   // - "all": sadece hasPrice=true (gerçekten fiyatlı)
@@ -429,7 +477,24 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
                     )}
                     {r.customer && <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 2 }} title={r.customer}>{r.customer.length > 30 ? r.customer.slice(0, 30) + "…" : r.customer}</div>}
                   </td>
-                  <td style={{ padding: "6px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{f2(r.costTl)}</td>
+                  <td style={{ padding: "6px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {r.costTl > 0 ? f2(r.costTl) : <span style={{ color: "#9CA3AF" }}>—</span>}
+                    {r.costSource === "purchase" && (
+                      <div style={{ fontSize: 9, color: "#92400E", marginTop: 1 }} title="Maliyet son alış fiyatından alındı (BOM/üretim reçetesi yok)">
+                        🛒 alış
+                      </div>
+                    )}
+                    {r.costSource === "production" && (
+                      <div style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginTop: 1 }} title="Maliyet BOM mamul hesabından (rootCost) alındı">
+                        🏭 üretim
+                      </div>
+                    )}
+                    {r.costSource === "none" && r.costTl === 0 && (
+                      <div style={{ fontSize: 9, color: "#DC2626", marginTop: 1 }} title="Ne BOM ne alış fiyatı tanımlı — maliyet bilinmiyor">
+                        ⚠ yok
+                      </div>
+                    )}
+                  </td>
                   <td style={{ padding: "6px 10px", textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
                     {r.hasPrice ? f2(r.priceTl) : <span style={{ color: "#9CA3AF" }}>—</span>}
                     {r.hasPrice && r.priceNativeCurrency === "EUR" && (
@@ -453,7 +518,7 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
 
       <div style={{ marginTop: 10, fontSize: 10, color: "var(--color-text-tertiary)", lineHeight: 1.5 }}>
         ℹ Marj % = (Satış − Maliyet) / Maliyet · Renk eşikleri: ≥%20 yeşil · %0–20 sarı · &lt;0 kırmızı · Fiyatsız gri ·
-        Maliyet kaynağı: {monthLabel(selectedMonth)} mamul maliyeti (rootCost, TL) · Sevkiyat Planı fiyatı: products.salesPriceEur (EUR → TL kur ile çevrilir) · Diğer Müşteriler fiyatı: aktif siparişin unitPriceTl (TL, en güncel orderDate kazanır)
+        Maliyet kaynağı: 🏭 üretim = {monthLabel(selectedMonth)} mamul maliyeti (rootCost) · 🛒 alış = unitCosts son alış fiyatı (BOM'u olmayan doğrudan alıp-satılan ürünler için) · Sevkiyat Planı fiyatı: products.salesPriceEur (EUR → TL kur ile çevrilir) · Diğer Müşteriler fiyatı: aktif siparişin unitPriceTl (TL, en güncel orderDate kazanır)
       </div>
     </div>
   );
