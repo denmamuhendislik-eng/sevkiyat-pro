@@ -5640,6 +5640,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
 
   // Cloud Function otomasyon log'u (VIO mail otomasyonu)
   const [automationLog, setAutomationLog] = useState(null);
+  // laborCosts doc — monthlyOverheads + monthlySupplies (mail otomasyonu rapor listesi için status)
+  const [laborCostsDoc, setLaborCostsDoc] = useState(null);
 
   // Firestore listeners
   useEffect(() => {
@@ -5713,6 +5715,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     const autoLogRef = doc(db, APP_COL, "automationLog");
     unsubs.push(onSnapshot(autoLogRef, snap => {
       if (snap.exists()) setAutomationLog(snap.data());
+    }, () => {}));
+    // laborCosts (monthlyOverheads + monthlySupplies) — mail otomasyonu rapor listesi status için
+    const laborCostsRef = doc(db, APP_COL, "laborCosts");
+    unsubs.push(onSnapshot(laborCostsRef, snap => {
+      if (snap.exists()) setLaborCostsDoc(snap.data());
     }, () => {}));
     return () => unsubs.forEach(u => u());
   }, [db]);
@@ -9997,7 +10004,36 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
             loaded: !!requirements, date: requirements?.importedAt, dep: "Opsiyonel",
             stats: requirements ? `${reqItems} kalem` : null,
             optional: true, handler: handleReqImport, accept: ".xlsx,.xls",
-            note: "Kendi MRP kullanılıyorsa gereksiz" }
+            note: "Kendi MRP kullanılıyorsa gereksiz" },
+          // Mail otomasyonu — aylık raporlar (Maliyet modülü için, manuel yükleme orada)
+          (() => {
+            const months = laborCostsDoc?.monthlyOverheads || {};
+            const monthCount = Object.keys(months).length;
+            const latest = Object.values(months).reduce((a, m) => (m.receivedAt && (!a || m.receivedAt > a)) ? m.receivedAt : a, null);
+            const totalTl = Object.values(months).reduce((s, m) => s + (m.totalTl || 0), 0);
+            const fmtTl = (v) => v >= 1000000 ? `${(v / 1000000).toFixed(1)}M` : v >= 1000 ? `${Math.round(v / 1000)}K` : Math.round(v);
+            return {
+              id: "overhead", title: "Hizmet Total Raporu (Genel Giderler)", icon: "💼", order: "8",
+              loaded: monthCount > 0, date: latest, dep: "Aylık güncelle (mail)",
+              stats: monthCount > 0 ? `${monthCount} ay · ${fmtTl(totalTl)} TL` : null,
+              monthly: true, handler: null, accept: ".xlsx,.xls",
+              note: "Mail otomasyonundan gelir — manuel yükleme Maliyet → Aylık Genel Giderler",
+            };
+          })(),
+          (() => {
+            const months = laborCostsDoc?.monthlySupplies || {};
+            const monthCount = Object.keys(months).length;
+            const latest = Object.values(months).reduce((a, m) => (m.receivedAt && (!a || m.receivedAt > a)) ? m.receivedAt : a, null);
+            const totalTl = Object.values(months).reduce((s, m) => s + (m.totalTl || 0), 0);
+            const fmtTl = (v) => v >= 1000000 ? `${(v / 1000000).toFixed(1)}M` : v >= 1000 ? `${Math.round(v / 1000)}K` : Math.round(v);
+            return {
+              id: "supplies", title: "Özet - Aylık Alışlar (Stok Sarf)", icon: "🛢", order: "9",
+              loaded: monthCount > 0, date: latest, dep: "Aylık güncelle (mail)",
+              stats: monthCount > 0 ? `${monthCount} ay · ${fmtTl(totalTl)} TL` : null,
+              monthly: true, handler: null, accept: ".xlsx,.xls",
+              note: "Mail otomasyonundan gelir — manuel yükleme Maliyet → Stok Sarf Hareketleri",
+            };
+          })(),
         ];
 
         // Dosya tipini tanı (import yapmadan)
