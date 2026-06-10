@@ -1132,8 +1132,13 @@ function parseSuppliesExcel(workbook, fallbackYear) {
 
     const mm = parseSuppliesMonthHeader(firstCell);
     if (mm) {
+      // VIO Excel'inde aynı ay başlığı sayfa kırılması yüzünden birden çok kez gelebilir
+      // (Sayfa 1 sonu + Sayfa 2 başı). Aynı ay tekrar görüldüğünde items APPEND edilir,
+      // overwrite EDİLMEZ. Eskiden overwrite ile Ocak 440K → 122K düşüyordu.
       if (currentMonth) {
-        months[currentMonth] = finalizeSuppliesMonth(currentItems);
+        const prev = months[currentMonth];
+        const merged = prev ? [...prev.items, ...currentItems] : currentItems;
+        months[currentMonth] = finalizeSuppliesMonth(merged);
       }
       currentMonth = `${year}-${mm}`;
       currentItems = [];
@@ -1160,7 +1165,9 @@ function parseSuppliesExcel(workbook, fallbackYear) {
     }
   }
   if (currentMonth) {
-    months[currentMonth] = finalizeSuppliesMonth(currentItems);
+    const prev = months[currentMonth];
+    const merged = prev ? [...prev.items, ...currentItems] : currentItems;
+    months[currentMonth] = finalizeSuppliesMonth(merged);
   }
 
   const monthsList = Object.keys(months).sort();
