@@ -197,6 +197,24 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     return { state, ageDays, lastReceivedAt, monthCount, lastSource, lastMonth };
   }, [laborData]);
 
+  // Tüm aylar üzerinden özet (sayım + toplam + aylık ortalama)
+  // SuppliesTab pattern'iyle tutarlı — kullanıcı sekmeye girer girmez fotoğrafı görür
+  const overallSummary = useMemo(() => {
+    const mo = laborData?.monthlyOverheads || {};
+    let monthCount = 0, totalTl = 0, totalItems = 0;
+    for (const data of Object.values(mo)) {
+      monthCount++;
+      totalTl += Number(data?.totalTl || 0);
+      totalItems += (data?.items || []).length;
+    }
+    return {
+      monthCount,
+      totalTl,
+      totalItems,
+      avgPerMonth: monthCount > 0 ? totalTl / monthCount : 0,
+    };
+  }, [laborData]);
+
   if (!loaded) {
     return <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-tertiary)" }}>Yükleniyor...</div>;
   }
@@ -208,6 +226,13 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     <div>
       {/* Otomasyon durum rozetı */}
       <OverheadAutomationBadge status={automationStatus} />
+
+      {/* Özet KPI'lar — tüm aylar üzerinden (SuppliesTab pattern'iyle tutarlı) */}
+      <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
+        <KPI label="Yüklü ay" value={overallSummary.monthCount} sub="Tam aylar (kısmi atlanır)" />
+        <KPI label="Toplam gider" value={overallSummary.totalTl.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺"} sub={`${overallSummary.totalItems} kalem`} />
+        <KPI label="Aylık ortalama" value={overallSummary.avgPerMonth.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺"} sub={overallSummary.monthCount > 0 ? `${overallSummary.monthCount} ay üzerinden` : "veri yok"} />
+      </div>
 
       {/* Excel yükleme bandı (manuel yedek) */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
@@ -362,6 +387,16 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
 }
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+function KPI({ label, value, sub }) {
+  return (
+    <div style={{ padding: "8px 14px", background: "var(--color-background-secondary)", borderRadius: 6, minWidth: 140 }}>
+      <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{label}</div>
+      <div style={{ fontSize: 16, fontWeight: 700 }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{sub}</div>}
+    </div>
+  );
+}
 
 function OverheadAutomationBadge({ status }) {
   if (status.state === "none") {
