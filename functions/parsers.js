@@ -1079,13 +1079,31 @@ function parseSuppliesMonthHeader(s) {
   return mmNum;
 }
 
+// Newline + whitespace normalize + TR lowercase (VIO header'larında "Birim\nMaliyet" var)
 function suppliesNorm(s) {
-  return String(s || "").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
+  return String(s || "").replace(/[\n\r]+/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
 }
 
 function isSuppliesHeaderRow(row) {
   const c0 = suppliesNorm(row[0]);
   return c0 === "stok kod" || c0 === "stok kodu";
+}
+
+// Header satırından dinamik kolon index'leri (memory: parser_exact_match — exact eşleşme).
+// VIO Özet Excel'inde kolonlar ardışık değil: r[0]=Stok Kod, r[2]=Stok Adı,
+// r[5]=Kilo, r[6]=Ciro Bedeli, r[7]=Birim Maliyet — aralarda boş hücreler var.
+function findSuppliesCols(row) {
+  const cols = {};
+  row.forEach((cell, ci) => {
+    const h = suppliesNorm(cell);
+    if (!h) return;
+    if (h === "stok kod" || h === "stok kodu") cols.code = ci;
+    else if (h === "stok adı" || h === "stok adi") cols.name = ci;
+    else if (h === "kilo" || h === "kg") cols.kg = ci;
+    else if (h === "ciro bedeli" || h === "tutar" || h === "tutarı") cols.amountTl = ci;
+    else if (h === "birim maliyet" || h === "birim fiyat") cols.unitCost = ci;
+  });
+  return cols;
 }
 
 function finalizeSuppliesMonth(items) {
@@ -1106,6 +1124,7 @@ function parseSuppliesExcel(workbook, fallbackYear) {
   let currentMonth = null;
   let currentItems = [];
   let inDataSection = false;
+  let cols = null;
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const firstCell = String(r[0] != null ? r[0] : "").trim();
@@ -1119,21 +1138,23 @@ function parseSuppliesExcel(workbook, fallbackYear) {
       currentMonth = `${year}-${mm}`;
       currentItems = [];
       inDataSection = false;
+      cols = null;
       continue;
     }
 
     if (isSuppliesHeaderRow(r)) {
+      cols = findSuppliesCols(r);
       inDataSection = true;
       continue;
     }
 
-    if (inDataSection && currentMonth) {
-      const code = firstCell;
+    if (inDataSection && currentMonth && cols && cols.code != null) {
+      const code = String(r[cols.code] != null ? r[cols.code] : "").trim();
       if (!code) continue;
-      const name = String(r[1] != null ? r[1] : "").trim();
-      const kg = pNum(r[2]);
-      const amountTl = pNum(r[3]);
-      const unitCost = pNum(r[4]);
+      const name = cols.name != null ? String(r[cols.name] != null ? r[cols.name] : "").trim() : "";
+      const kg = cols.kg != null ? pNum(r[cols.kg]) : 0;
+      const amountTl = cols.amountTl != null ? pNum(r[cols.amountTl]) : 0;
+      const unitCost = cols.unitCost != null ? pNum(r[cols.unitCost]) : 0;
       if (amountTl <= 0) continue;
       currentItems.push({ code, name, kg, amountTl, unitCost });
     }

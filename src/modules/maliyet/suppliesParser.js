@@ -35,12 +35,31 @@ function parseMonthHeader(s) {
   return mmNum;
 }
 
-const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
+// Newline/whitespace normalize + lowercase (TR locale). VIO header'larında "Birim\nMaliyet"
+// gibi newline'lı kolon adları var → bunları boşluğa indirip eşleştirme yapıyoruz.
+const norm = (s) => String(s || "").replace(/[\n\r]+/g, " ").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
 
 function isHeaderRow(row) {
-  // "Stok Kod | Stok Adı | Kilo | Ciro Bedeli | Birim Maliyet"
+  // "Stok Kod" / "Stok Kodu" — header satırının ilk hücresi
   const c0 = norm(row[0]);
   return c0 === "stok kod" || c0 === "stok kodu";
+}
+
+// Header satırından kolon index'lerini dinamik bul (memory: parser_exact_match —
+// substring yerine exact match). VIO Özet Excel'inde kolonlar ardışık değil, aralarda
+// boş hücreler olabiliyor: r[0]=Stok Kod, r[2]=Stok Adı, r[5]=Kilo, r[6]=Ciro Bedeli, r[7]=Birim Maliyet.
+function findSuppliesCols(row) {
+  const cols = {};
+  row.forEach((cell, ci) => {
+    const h = norm(cell);
+    if (!h) return;
+    if (h === "stok kod" || h === "stok kodu") cols.code = ci;
+    else if (h === "stok adı" || h === "stok adi") cols.name = ci;
+    else if (h === "kilo" || h === "kg") cols.kg = ci;
+    else if (h === "ciro bedeli" || h === "tutar" || h === "tutarı") cols.amountTl = ci;
+    else if (h === "birim maliyet" || h === "birim fiyat") cols.unitCost = ci;
+  });
+  return cols;
 }
 
 export function parseSuppliesExcel(workbook, fallbackYear) {
@@ -52,7 +71,7 @@ export function parseSuppliesExcel(workbook, fallbackYear) {
   let currentMonth = null;
   let currentItems = [];
   let inDataSection = false;
-  // Excel hücre başlık metadata satırlarını atlamak için: ilk MM-Ay başlığı görülene kadar şeritte tarama
+  let cols = null;  // header satırından bulunan kolon index map'i
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const firstCell = String(r[0] ?? "").trim();
@@ -69,23 +88,25 @@ export function parseSuppliesExcel(workbook, fallbackYear) {
       currentMonth = `${year}-${mm}`;
       currentItems = [];
       inDataSection = false;
+      cols = null;  // yeni ay → header satırı yeniden okunacak
       continue;
     }
 
     // Header satırı
     if (isHeaderRow(r)) {
+      cols = findSuppliesCols(r);
       inDataSection = true;
       continue;
     }
 
-    // Veri satırı (sadece bir ay aktifken)
-    if (inDataSection && currentMonth) {
-      const code = firstCell;
+    // Veri satırı (sadece bir ay aktifken ve kolonlar bulundu)
+    if (inDataSection && currentMonth && cols && cols.code != null) {
+      const code = String(r[cols.code] ?? "").trim();
       if (!code) continue;  // boş kod = toplam satırı, atla
-      const name = String(r[1] ?? "").trim();
-      const kg = pNum(r[2]);
-      const amountTl = pNum(r[3]);
-      const unitCost = pNum(r[4]);
+      const name = cols.name != null ? String(r[cols.name] ?? "").trim() : "";
+      const kg = cols.kg != null ? pNum(r[cols.kg]) : 0;
+      const amountTl = cols.amountTl != null ? pNum(r[cols.amountTl]) : 0;
+      const unitCost = cols.unitCost != null ? pNum(r[cols.unitCost]) : 0;
       if (amountTl <= 0) continue;
       currentItems.push({ code, name, kg, amountTl, unitCost });
     }
