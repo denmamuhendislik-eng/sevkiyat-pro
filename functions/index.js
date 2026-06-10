@@ -302,6 +302,8 @@ exports.fetchVioReportsHttp = onRequest(
     secrets: [GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN],
     timeoutSeconds: 540, // 9 dakika — büyük dosyalar için yeterli
     memory: "512MiB",
+    cors: true,  // Cloud Run varsayılan auth'unu açar — manuel tetikleme browser'dan
+    invoker: "public",
   },
   async (req, res) => {
     // Basit guard: sadece GET ve POST kabul et
