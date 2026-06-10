@@ -1056,6 +1056,102 @@ function parseOverheadExcel(workbook) {
   };
 }
 
+// ====================================================================
+// SUPPLIES PARSER — "Özet - Aylık Alışlar" (Stok Sarf Hareketleri)
+// Frontend src/modules/maliyet/suppliesParser.js'in birebir kopyası
+// ====================================================================
+
+const SUPPLIES_MONTH_NAMES = {
+  ocak: "01", "şubat": "02", subat: "02", mart: "03", nisan: "04",
+  "mayıs": "05", mayis: "05", haziran: "06", temmuz: "07",
+  "ağustos": "08", agustos: "08", "eylül": "09", eylul: "09",
+  "ekim": "10", "kasım": "11", kasim: "11", "aralık": "12", aralik: "12",
+};
+
+function parseSuppliesMonthHeader(s) {
+  const m = String(s || "").trim().match(/^(\d{1,2})\s*-\s*(\S+)/);
+  if (!m) return null;
+  const mmNum = m[1].padStart(2, "0");
+  const nameLower = m[2].toLocaleLowerCase("tr-TR");
+  const mmFromName = SUPPLIES_MONTH_NAMES[nameLower];
+  if (mmFromName && mmFromName === mmNum) return mmNum;
+  if (mmFromName) return mmFromName;
+  return mmNum;
+}
+
+function suppliesNorm(s) {
+  return String(s || "").replace(/\s+/g, " ").trim().toLocaleLowerCase("tr-TR");
+}
+
+function isSuppliesHeaderRow(row) {
+  const c0 = suppliesNorm(row[0]);
+  return c0 === "stok kod" || c0 === "stok kodu";
+}
+
+function finalizeSuppliesMonth(items) {
+  const totalTl = items.reduce((s, it) => s + (it.amountTl || 0), 0);
+  return {
+    items,
+    totalTl: Math.round(totalTl * 100) / 100,
+    itemCount: items.length,
+  };
+}
+
+function parseSuppliesExcel(workbook, fallbackYear) {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  const year = Number(fallbackYear) || new Date().getFullYear();
+
+  const months = {};
+  let currentMonth = null;
+  let currentItems = [];
+  let inDataSection = false;
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const firstCell = String(r[0] != null ? r[0] : "").trim();
+    if (!firstCell && (!r[1] || !String(r[1]).trim()) && !r[3]) continue;
+
+    const mm = parseSuppliesMonthHeader(firstCell);
+    if (mm) {
+      if (currentMonth) {
+        months[currentMonth] = finalizeSuppliesMonth(currentItems);
+      }
+      currentMonth = `${year}-${mm}`;
+      currentItems = [];
+      inDataSection = false;
+      continue;
+    }
+
+    if (isSuppliesHeaderRow(r)) {
+      inDataSection = true;
+      continue;
+    }
+
+    if (inDataSection && currentMonth) {
+      const code = firstCell;
+      if (!code) continue;
+      const name = String(r[1] != null ? r[1] : "").trim();
+      const kg = pNum(r[2]);
+      const amountTl = pNum(r[3]);
+      const unitCost = pNum(r[4]);
+      if (amountTl <= 0) continue;
+      currentItems.push({ code, name, kg, amountTl, unitCost });
+    }
+  }
+  if (currentMonth) {
+    months[currentMonth] = finalizeSuppliesMonth(currentItems);
+  }
+
+  const monthsList = Object.keys(months).sort();
+  return {
+    months,
+    monthsList,
+    totalItems: Object.values(months).reduce((s, m) => s + m.itemCount, 0),
+    grandTotalTl: Object.values(months).reduce((s, m) => s + m.totalTl, 0),
+    importedAt: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   parseStockReport,
   parseAkibetExcel,
@@ -1063,4 +1159,5 @@ module.exports = {
   parsePurchaseWithPrices,
   parseSalesOrdersReport,
   parseOverheadExcel,
+  parseSuppliesExcel,
 };

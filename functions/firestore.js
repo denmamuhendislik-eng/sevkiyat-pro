@@ -101,6 +101,10 @@ async function saveReport(db, type, parserResult, fileName, opts = {}) {
     // Özel akış: çoklu ay yazımı + kategori mapping tahmin + mail tarihi bazlı kısmi-ay kontrolü
     const overheadOut = await saveOverheadReport(db, parserResult, { messageDate: opts.messageDate });
     return { docId: LABOR_COSTS_DOC, payload: null, overheadMeta: overheadOut };
+  } else if (type === "supplies") {
+    // Özel akış: monthlySupplies.{ym} dot-notation çoklu ay yazımı + mail tarihi bazlı kısmi-ay kontrolü
+    const suppliesOut = await saveSuppliesReport(db, parserResult, { messageDate: opts.messageDate });
+    return { docId: LABOR_COSTS_DOC, payload: null, suppliesMeta: suppliesOut };
   } else {
     throw new Error(`Bilinmeyen rapor tipi: ${type}`);
   }
@@ -481,6 +485,80 @@ async function saveOverheadReport(db, parserResult, opts = {}) {
 }
 
 /**
+ * Stok Sarf Hareketleri (Özet - Aylık Alışlar) — laborCosts.monthlySupplies field'ına
+ * çoklu ay dot-notation yazımı + mail tarihi bazlı kısmi-ay koruması (overhead ile aynı pattern).
+ *
+ * parserResult.months: { "YYYY-MM": { items: [{code, name, kg, amountTl, unitCost}], totalTl, itemCount } }
+ * opts.messageDate: Gmail internalDate (unix ms) — ay sonundan önce geldiyse o ay skip
+ */
+async function saveSuppliesReport(db, parserResult, opts = {}) {
+  if (!parserResult?.months || Object.keys(parserResult.months).length === 0) {
+    return { monthsWritten: 0, itemCount: 0 };
+  }
+  const importedAt = parserResult.importedAt || new Date().toISOString();
+  const currentMonth = new Date().toISOString().slice(0, 7);
+  const messageDateMs = Number(opts?.messageDate) || null;
+  const monthlySupplies = {};
+  const skippedMonths = [];
+  const skippedPartialMonths = [];
+
+  for (const [ym, m] of Object.entries(parserResult.months)) {
+    if (ym >= currentMonth) {
+      skippedMonths.push(ym);
+      continue;
+    }
+    if (messageDateMs) {
+      const [yy, mm] = ym.split("-").map(Number);
+      const lastDayOfYmMs = new Date(yy, mm, 0, 23, 59, 59, 999).getTime();
+      if (messageDateMs <= lastDayOfYmMs) {
+        skippedPartialMonths.push(ym);
+        continue;
+      }
+    }
+    // Aynı kod ay içinde birden fazla satırda olabilir — birleştir
+    const merged = {};
+    for (const it of m.items) {
+      if (!merged[it.code]) {
+        merged[it.code] = { code: it.code, name: it.name, kg: 0, amountTl: 0, unitCost: it.unitCost || 0 };
+      }
+      merged[it.code].kg += Number(it.kg) || 0;
+      merged[it.code].amountTl += Number(it.amountTl) || 0;
+    }
+    const items = Object.values(merged).filter(it => it.amountTl > 0);
+    const totalTl = items.reduce((s, it) => s + it.amountTl, 0);
+    monthlySupplies[ym] = {
+      source: "vio-mail",
+      receivedAt: importedAt,
+      items,
+      totalTl: Math.round(totalTl * 100) / 100,
+      itemCount: items.length,
+    };
+  }
+
+  if (Object.keys(monthlySupplies).length === 0) {
+    return { monthsWritten: 0, itemCount: 0, skippedMonths, skippedPartialMonths };
+  }
+
+  // Tek update — dot-notation ile sadece yeni ayları yaz (mevcut aylar korunur)
+  const laborRef = db.collection(APP_COL).doc(LABOR_COSTS_DOC);
+  const dotMap = {};
+  for (const [ym, data] of Object.entries(monthlySupplies)) dotMap[`monthlySupplies.${ym}`] = data;
+  try {
+    await laborRef.update(dotMap);
+  } catch (e) {
+    await laborRef.set({ monthlySupplies }, { merge: true });
+  }
+
+  return {
+    monthsWritten: Object.keys(monthlySupplies).length,
+    itemCount: Object.values(monthlySupplies).reduce((s, m) => s + (m.itemCount || 0), 0),
+    totalTl: Object.values(monthlySupplies).reduce((s, m) => s + (m.totalTl || 0), 0),
+    skippedMonths,
+    skippedPartialMonths,
+  };
+}
+
+/**
  * TCMB döviz kurlarını Firestore'a yaz — günlük cron için.
  * appData/currencyRates doc'una rates.{YYYY-MM-DD} field'ı eklenir (deep merge).
  * Not: set() + merge:true ile NESTED map yazılır; dot-notation string key olarak
@@ -558,6 +636,7 @@ module.exports = {
   saveSalesOrdersWithDiff,
   saveUnitCostPartitions,
   saveOverheadReport,
+  saveSuppliesReport,
   appendAutomationLog,
   getLatestAutomationLog,
   saveCurrencyRates,

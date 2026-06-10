@@ -54,6 +54,15 @@ const VIO_REPORTS = [
     lookbackHours: 35 * 24,
     monthly: true,
   },
+  {
+    type: "supplies",
+    docName: "laborCosts",  // monthlySupplies field'ı laborCosts doc'unun içinde
+    subjectMatch: "özet - aylık alışlar",
+    label: "Özet - Aylık Alışlar (Stok Sarf Hareketleri)",
+    // VIO bu raporu ayda bir gönderiyor (Hizmet Total ile aynı pattern).
+    lookbackHours: 35 * 24,
+    monthly: true,
+  },
 ];
 
 /**
