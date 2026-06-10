@@ -22,6 +22,8 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
   const [excelPreview, setExcelPreview] = useState(null);
   const [excelSaving, setExcelSaving] = useState(false);
   const fileInputRef = useRef(null);
+  // Accordion ay listesi — SuppliesTab pattern
+  const [expandedMonth, setExpandedMonth] = useState(null);
 
   useEffect(() => {
     const unsub = subscribeLaborCosts((data) => {
@@ -109,6 +111,11 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     return [...set].sort().reverse();
   }, [laborData, selectedMonth]);
 
+  // Accordion liste için yüklü tüm aylar (sadece kayıt edilenler, descending)
+  const loadedMonthsList = useMemo(() => {
+    return Object.keys(laborData?.monthlyOverheads || {}).sort().reverse();
+  }, [laborData]);
+
   const addItem = () => {
     setDraftItems(prev => [...prev, {
       id: Date.now() + "-" + Math.random().toString(36).slice(2, 6),
@@ -160,13 +167,15 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     setDirty(false);
   };
 
-  const handleDelete = async () => {
+  const handleDelete = async (ym = selectedMonth) => {
     if (!isAdmin) return;
-    if (!confirm(`${monthLabel(selectedMonth)} ayının tüm gider verilerini silmek istediğine emin misin?`)) return;
+    if (!confirm(`${monthLabel(ym)} ayının tüm gider verilerini silmek istediğine emin misin?`)) return;
     try {
-      await deleteMonthlyOverhead(selectedMonth, { canEdit, isAdmin });
-      setDraftItems([]);
-      setDirty(false);
+      await deleteMonthlyOverhead(ym, { canEdit, isAdmin });
+      if (ym === selectedMonth) {
+        setDraftItems([]);
+        setDirty(false);
+      }
     } catch (e) {
       alert("Silme hatası: " + e.message);
     }
@@ -233,6 +242,75 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
         <KPI label="Toplam gider" value={overallSummary.totalTl.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺"} sub={`${overallSummary.totalItems} kalem`} />
         <KPI label="Aylık ortalama" value={overallSummary.avgPerMonth.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺"} sub={overallSummary.monthCount > 0 ? `${overallSummary.monthCount} ay üzerinden` : "veri yok"} />
       </div>
+
+      {/* Accordion ay listesi — SuppliesTab pattern (kapalı başlar, ok ile aç) */}
+      {loadedMonthsList.length > 0 && (
+        <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 8, overflow: "hidden", marginBottom: 14 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "140px 1fr 100px 140px 80px 40px", padding: "6px 12px", background: "var(--color-background-secondary)", fontSize: 10, fontWeight: 500, color: "var(--color-text-secondary)", gap: 8 }}>
+            <span>Ay</span>
+            <span>Kaynak</span>
+            <span style={{ textAlign: "right" }}>Kalem</span>
+            <span style={{ textAlign: "right" }}>Toplam TL</span>
+            <span></span>
+            <span></span>
+          </div>
+          {loadedMonthsList.map(ym => {
+            const m = laborData?.monthlyOverheads?.[ym];
+            const isExpanded = expandedMonth === ym;
+            const isSelected = selectedMonth === ym;
+            return (
+              <div key={ym}>
+                <div
+                  onClick={() => setExpandedMonth(isExpanded ? null : ym)}
+                  style={{ display: "grid", gridTemplateColumns: "140px 1fr 100px 140px 80px 40px", padding: "6px 12px", borderTop: "0.5px solid var(--color-border-tertiary)", fontSize: 11, gap: 8, alignItems: "center", cursor: "pointer", background: isExpanded ? "var(--color-background-info-subtle, #EFF6FF)" : (isSelected ? "rgba(29, 158, 117, 0.05)" : "transparent") }}
+                >
+                  <span style={{ fontWeight: 500 }}>{isExpanded ? "▼" : "▶"} {monthLabel(ym)}</span>
+                  <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                    {m?.source === "vio-mail" ? "📧 Mail" : m?.source === "vio-mail-edited" ? "📧 Mail + manuel" : m?.source === "manual" ? "✏️ Manuel" : m?.source || "—"}
+                    {m?.receivedAt && ` · ${new Date(m.receivedAt).toLocaleDateString("tr-TR")}`}
+                  </span>
+                  <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: "var(--color-text-tertiary)" }}>{(m?.items || []).length}</span>
+                  <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmt(m?.totalTl || 0)}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setSelectedMonth(ym); }}
+                    title="Bu ayı seçili yap (manuel düzenleme için aşağıya)"
+                    style={{ background: "transparent", border: "1px solid var(--color-border-secondary)", borderRadius: 4, cursor: "pointer", fontSize: 10, padding: "2px 8px", color: "var(--color-text-secondary)" }}
+                  >
+                    Düzenle
+                  </button>
+                  {isAdmin && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); handleDelete(ym); }}
+                      title="Sil (admin)"
+                      style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 13, color: "var(--color-text-tertiary)", padding: 0 }}
+                    >
+                      ✕
+                    </button>
+                  )}
+                </div>
+                {isExpanded && (
+                  <div style={{ background: "var(--color-background-primary)", padding: "8px 16px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 140px", padding: "4px 0", fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", borderBottom: "1px solid var(--color-border-tertiary)", gap: 6 }}>
+                      <span>Kod</span>
+                      <span>Kategori</span>
+                      <span style={{ textAlign: "right" }}>Tutar (₺)</span>
+                    </div>
+                    {(m?.items || []).length === 0 ? (
+                      <div style={{ padding: "8px 0", fontSize: 10, color: "var(--color-text-tertiary)", textAlign: "center" }}>Bu ayda kategori yok</div>
+                    ) : (m?.items || []).map((it, i) => (
+                      <div key={i} style={{ display: "grid", gridTemplateColumns: "120px 1fr 140px", padding: "3px 0", fontSize: 10, gap: 6, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                        <span style={{ fontFamily: "var(--font-mono)" }}>{it.id || "—"}</span>
+                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.category}>{it.category || "—"}</span>
+                        <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(it.amount)}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Excel yükleme bandı (manuel yedek) */}
       <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12, flexWrap: "wrap", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8 }}>
