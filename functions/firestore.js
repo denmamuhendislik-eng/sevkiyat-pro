@@ -279,6 +279,32 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     }
   }
 
+  // 3) vio-resync — VIO sipariş raporundaki `sevkEdilen` ile bizim shipments'taki
+  //    totalShipped arasındaki sapmaları kapat. Kayıp B kalıcı çözümü:
+  //    - Replacement migration sonrası baseline kaybı (eski ID'nin sevkEdilen değeri yeni
+  //      ID'ye taşınmıyor) → yeni ID için ilk raporda bu fark resync event ile yakalanır.
+  //    - Diff arasında atlanan kayıt (rapor gelmediği günde sevkEdilen değişti) → fark
+  //      bir sonraki raporda resync ile kapanır.
+  //    Sadece vioTotal > ourTotal olan durumda yazılır (eksik sayım toleranslı).
+  //    `at` = importedAt (cari ekstredeki gerçek irsaliye tarihi bilinmiyor — yine de tutar yakalanır).
+  let resyncCount = 0;
+  for (const [id, newO] of Object.entries(newOrdersMap)) {
+    const vioTotal = Number(newO.sevkEdilen || 0);
+    if (vioTotal <= 0) continue;
+    const shipDoc = newShipments[id];
+    const ourTotal = Number(shipDoc?.totalShipped || 0);
+    if (vioTotal <= ourTotal) continue;
+    const delta = vioTotal - ourTotal;
+    ensureShipmentDoc(id, newO);
+    pushEvent(id, {
+      at: importedAt,
+      deltaQty: delta,
+      cumulative: vioTotal,
+      source: "vio-resync",  // audit kaynağı — diff'in atladığı sapmayı kapatıyor
+    });
+    resyncCount++;
+  }
+
   // Yaz: salesOrders her zaman, shipments sadece event üretildiyse,
   // planOverrides cancelled geçişi VEYA migration olduysa (merge ile diğerleri korunur).
   await ordersRef.set(newOrdersMap);
@@ -288,7 +314,7 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   if (Object.keys(overrideUpdates).length > 0) {
     await overridesRef.set(overrideUpdates, { merge: true });
   }
-  return { eventCount, cancelledCount, migratedCount, salesOrdersCount: Object.keys(newOrdersMap).length };
+  return { eventCount, cancelledCount, migratedCount, resyncCount, salesOrdersCount: Object.keys(newOrdersMap).length };
 }
 
 /**

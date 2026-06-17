@@ -331,11 +331,22 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   })();
 
   // Orphan override tespiti — planOverrides'ta olup salesOrders'ta artık olmayan kayıtlar.
-  // Replacement detection (3-tuple ID) yan etkisi: VIO'da teslim tarihi değişince yeni ID üretilir,
-  // eski ID'nin override'ı orphan kalır. Diff sırasında deferred→cancelled çevirme replacement
-  // durumunu yakalamaz. Admin uyarı paneli ile elle temizlenebilir.
+  // 2 kategoriye ayırıyoruz:
+  // - "replacement": Aynı (belgeNo+stokKodu) güncel salesOrders'ta farklı ID ile var
+  //   (VIO teslim tarihini güncelledi → 3-tuple ID değişti → migration atlandı). Bu durumda
+  //   eski ID'nin sevk geçmişi yeni ID'ye taşınmaz → shipments'ta kayıt eksik (Kayıp B).
+  // - "deleted": Gerçekten silinmiş, replacement yok. shipments'ta vio-removed event ile
+  //   yakalanmış olmalı (sevk kaybı yok), planOverrides'ta sadece ölü kayıt kaldı.
   const orphanOverrides = useMemo(() => {
     if (!allLoaded) return [];
+    // belgeNo+stokKodu → güncel salesOrders'taki ID'ler
+    const newBelgeStokIndex = {};
+    for (const [id, o] of Object.entries(salesOrders || {})) {
+      if (!o?.belgeNo || !o?.stokKodu) continue;
+      const key = `${o.belgeNo}|${o.stokKodu}`;
+      if (!newBelgeStokIndex[key]) newBelgeStokIndex[key] = [];
+      newBelgeStokIndex[key].push(id);
+    }
     return Object.entries(planOverrides || {})
       .filter(([id]) => !salesOrders[id])
       .map(([id, ov]) => {
@@ -346,10 +357,82 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           stokKodu = parts[parts.length - 2];
           belgeNo = parts.slice(0, parts.length - 2).join('_');
         }
-        return { id, belgeNo, stokKodu, teslimTarihi, ...ov };
+        // Replacement tespiti — aynı belgeNo+stokKodu yeni salesOrders'ta var mı?
+        const replacementIds = belgeNo && stokKodu
+          ? (newBelgeStokIndex[`${belgeNo}|${stokKodu}`] || [])
+          : [];
+        const isReplacement = replacementIds.length > 0;
+        return {
+          id, belgeNo, stokKodu, teslimTarihi,
+          orphanKind: isReplacement ? 'replacement' : 'deleted',
+          replacementIds,
+          ...ov,
+        };
       })
-      .sort((a, b) => (a.belgeNo || '').localeCompare(b.belgeNo || ''));
+      .sort((a, b) => {
+        // replacement orphanlar (kayıp riski olan) önce
+        if (a.orphanKind !== b.orphanKind) return a.orphanKind === 'replacement' ? -1 : 1;
+        return (a.belgeNo || '').localeCompare(b.belgeNo || '');
+      });
   }, [planOverrides, salesOrders, allLoaded]);
+
+  // VIO Sevk Senkron Audit — aktif siparişlerde shipments.totalShipped < salesOrders.sevkEdilen
+  // olan kayıtları tespit eder. Bu fark = Kayıp B'nin görünür yüzü: VIO daha fazla sevk gördüğünü
+  // raporluyor ama bizim shipments'a yazılmamış (replacement migration eksiği, baseline kaybı, vs.)
+  // Toplam kayıp tutarı tahmini: delta × birim fiyat. Vio-resync server-side eklenince otomatik
+  // düzelir; şimdilik sadece raporlama.
+  const vioSyncAudit = useMemo(() => {
+    if (!allLoaded) return { count: 0, totalDelta: 0, totalLostTl: 0, byCustomer: {}, items: [] };
+    const items = [];
+    let totalDelta = 0, totalLostTl = 0;
+    const byCustomer = {};
+    for (const [id, o] of Object.entries(salesOrders || {})) {
+      const vioShipped = Number(o?.sevkEdilen || 0);
+      const shipDoc = shipments?.[id];
+      const ourShipped = Number(shipDoc?.totalShipped || 0);
+      if (vioShipped <= ourShipped) continue;
+      const delta = vioShipped - ourShipped;
+      // Birim fiyat fallback: shipment snapshot → salesOrders bedeli
+      let unitPrice = Number(shipDoc?.unitPriceTl || 0);
+      if (!unitPrice) {
+        const orj = Number(o?.orijinalMiktar || 0);
+        const bedel = Number(o?.toplamBedel || 0);
+        if (orj > 0 && bedel > 0) unitPrice = bedel / orj;
+      }
+      const lostTl = delta * unitPrice;
+      totalDelta += delta;
+      totalLostTl += lostTl;
+      const ck = o.customerCode || '?';
+      if (!byCustomer[ck]) byCustomer[ck] = {
+        customerCode: ck, customerName: o.customerName || '', count: 0, delta: 0, lostTl: 0,
+      };
+      byCustomer[ck].count++;
+      byCustomer[ck].delta += delta;
+      byCustomer[ck].lostTl += lostTl;
+      items.push({
+        id,
+        belgeNo: o.belgeNo,
+        stokKodu: o.stokKodu,
+        stokAdi: o.stokAdi,
+        customerCode: ck,
+        customerName: o.customerName,
+        teslimTarihi: o.teslimTarihi,
+        ourShipped,
+        vioShipped,
+        delta,
+        unitPrice,
+        lostTl,
+      });
+    }
+    items.sort((a, b) => b.lostTl - a.lostTl);
+    return {
+      count: items.length,
+      totalDelta,
+      totalLostTl,
+      byCustomer: Object.values(byCustomer).sort((a, b) => b.lostTl - a.lostTl),
+      items,
+    };
+  }, [salesOrders, shipments, allLoaded]);
   const empty = allLoaded && rawOrderCount === 0;
 
   // Otomatik sıralama önerisi — kullanıcı seçimi öncelikli forward-fill.
@@ -733,6 +816,26 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           pushEvent(id, { at: importedAt, deltaQty: newShip, cumulative: newShip, source: 'vio-update' });
         }
       }
+      // 2b) vio-resync — VIO raporundaki sevkEdilen ile shipments.totalShipped sapması varsa kapat.
+      //     Kayıp B (replacement migration sonrası baseline kaybı, diff atlamaları) kalıcı çözümü.
+      //     Sadece vioTotal > ourTotal yönünde yazılır.
+      let resyncCount = 0;
+      for (const [id, newO] of Object.entries(result.ordersMap)) {
+        const vioTotal = Number(newO.sevkEdilen || 0);
+        if (vioTotal <= 0) continue;
+        const shipDoc = newShipments[id];
+        const ourTotal = Number(shipDoc?.totalShipped || 0);
+        if (vioTotal <= ourTotal) continue;
+        const delta = vioTotal - ourTotal;
+        ensureShipmentDoc(id, newO);
+        pushEvent(id, {
+          at: importedAt,
+          deltaQty: delta,
+          cumulative: vioTotal,
+          source: 'vio-resync',
+        });
+        resyncCount++;
+      }
       // 3) Backfill pass — tüm mevcut shipments için, salesOrders'ta hâlâ aktif olanlardan
       // unitPriceTl + toplamBedel doldur (önceki bug zamanında bu alanlar yazılmadıysa).
       // event üretmese bile mevcut shipment'ın TL field'ları güncellenir.
@@ -764,10 +867,11 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       const extra = result.aggregateCount > 0 ? ` (${result.aggregateCount} duplicate birleştirildi)` : '';
       const shipExtra = eventCount > 0 ? ` · ${eventCount} sevk hareketi` : '';
       const cancelExtra = cancelledCount > 0 ? ` · ${cancelledCount} iptal` : '';
+      const resyncExtra = resyncCount > 0 ? ` · ${resyncCount} VIO sapma kapatıldı` : '';
       const backfillExtra = backfillCount > 0 ? ` · ${backfillCount} birim fiyat backfill` : '';
       setUploadResult({
         ok: true,
-        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}${shipExtra}${cancelExtra}${backfillExtra}`,
+        message: `✓ ${result.rowCount} satır → ${result.orderCount} unique kayıt, ${result.customerCount} müşteri${extra}${shipExtra}${resyncExtra}${cancelExtra}${backfillExtra}`,
       });
     } catch (e) {
       setUploadResult({ ok: false, message: `✗ Hata: ${e.message || String(e)}` });
@@ -1467,10 +1571,73 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             </div>
           )}
 
+          {/* VIO Sevk Senkron Audit — admin only. salesOrders'taki sevkEdilen değeri ile
+              shipments'taki totalShipped arasında fark olan kayıtlar. Bu fark = Kayıp B
+              (replacement migration sonrası baseline kaybı, vs.) görünür yüzü. */}
+          {isAdmin && vioSyncAudit.count > 0 && (
+            <div style={{
+              marginTop: 16, padding: 12, borderRadius: 8,
+              background: '#fffbeb', border: '1px solid #fcd34d',
+            }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: '#92400e', marginBottom: 8 }}>
+                🔍 VIO Sevk Senkron Audit ({vioSyncAudit.count} sipariş · ~{formatMoney(vioSyncAudit.totalLostTl)} TL kayıp)
+              </div>
+              <div style={{ fontSize: 11, color: '#78716c', marginBottom: 10 }}>
+                Bu siparişlerin VIO'da raporlanan <b>sevkEdilen</b> değeri, bizim <b>shipments.totalShipped</b> değerinden büyük.
+                Yani VIO daha fazla sevk gördüğünü söylüyor ama bizim sevk geçmişinde kayıt yok (Kayıp B —
+                3-tuple ID değişimi sonrası baseline kaybı, vb.). Vio-resync server-side eklenince otomatik düzelir.
+              </div>
+              {/* Müşteri bazlı kırılım */}
+              <div style={{ marginBottom: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                {vioSyncAudit.byCustomer.map(c => (
+                  <div key={c.customerCode} style={{
+                    padding: '4px 10px', background: '#fff', borderRadius: 4,
+                    border: '1px solid #fde68a', fontSize: 11,
+                  }}>
+                    <b>{c.customerCode}</b> {c.customerName ? ` · ${c.customerName.slice(0, 30)}` : ''} —
+                    <span style={{ color: '#92400e', fontWeight: 600, marginLeft: 4 }}>
+                      {c.count} sipariş · {formatMoney(c.lostTl)} TL
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {/* İlk 30 detay (overflow ise toplam göster) */}
+              <div style={{ maxHeight: 240, overflowY: 'auto', background: '#fff', borderRadius: 6 }}>
+                {vioSyncAudit.items.slice(0, 30).map(it => (
+                  <div key={it.id} style={{
+                    display: 'grid', gridTemplateColumns: '80px 120px 1fr 80px 90px 110px',
+                    gap: 8, padding: '4px 10px', fontSize: 11, borderBottom: '1px solid #f5f5f4', alignItems: 'center',
+                  }}>
+                    <span style={{ fontFamily: 'monospace', fontSize: 10, color: '#57534e' }}>{it.belgeNo}</span>
+                    <span style={{ fontFamily: 'monospace', fontSize: 10 }}>{it.stokKodu}</span>
+                    <span style={{ fontSize: 10, color: '#78716c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={it.stokAdi}>{it.stokAdi}</span>
+                    <span style={{ fontSize: 10, color: '#57534e', textAlign: 'right' }}>
+                      <span style={{ color: '#a8a29e' }}>biz:</span> {it.ourShipped}
+                    </span>
+                    <span style={{ fontSize: 10, color: '#92400e', fontWeight: 600, textAlign: 'right' }}>
+                      <span style={{ color: '#a8a29e', fontWeight: 400 }}>VIO:</span> {it.vioShipped} <span style={{ color: '#dc2626' }}>(+{it.delta})</span>
+                    </span>
+                    <span style={{ fontSize: 10, color: '#dc2626', fontWeight: 600, textAlign: 'right' }}>
+                      {formatMoney(it.lostTl)} TL
+                    </span>
+                  </div>
+                ))}
+                {vioSyncAudit.items.length > 30 && (
+                  <div style={{ padding: 8, fontSize: 10, color: '#78716c', textAlign: 'center' }}>
+                    + {vioSyncAudit.items.length - 30} sipariş daha
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Orphan override uyarısı — admin only.
               salesOrders'ta artık olmayan ama planOverrides'ta hâlâ duran ölü kayıtlar.
               Replacement detection (3-tuple ID değişimi) sonucu kalan deferred/cancelled. */}
-          {isAdmin && orphanOverrides.length > 0 && (
+          {isAdmin && orphanOverrides.length > 0 && (() => {
+            const replacementCount = orphanOverrides.filter(o => o.orphanKind === 'replacement').length;
+            const deletedCount = orphanOverrides.length - replacementCount;
+            return (
             <div style={{
               marginTop: 16, padding: 12, borderRadius: 8,
               background: '#fef2f2', border: '1px solid #fecaca',
@@ -1481,7 +1648,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               }} onClick={() => setOrphanExpanded(!orphanExpanded)}>
                 <span>⚠️ Orphan Override ({orphanOverrides.length} kayıt)</span>
                 <span style={{ fontSize: 11, color: '#b91c1c', fontWeight: 400 }}>
-                  — salesOrders'ta yok, planOverrides'ta ölü kayıt
+                  — <b>{replacementCount}</b> replacement (sevk geçmişi kayıp riski) · <b>{deletedCount}</b> silinmiş (temiz)
                 </span>
                 <span style={{ marginLeft: 'auto', fontSize: 11 }}>
                   {orphanExpanded ? 'gizle ▲' : 'aç ▼'}
@@ -1496,11 +1663,19 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                     const statusColor = o.status === 'deferred' ? '#57534e'
                       : o.status === 'cancelled' ? '#a8a29e'
                       : '#c2410c';
+                    const kindBadge = o.orphanKind === 'replacement'
+                      ? { label: '↻ repl', bg: '#fef3c7', color: '#92400e', title: 'Replacement orphan — VIO\'da teslim tarihi değişmiş, sevk geçmişi kayıp riski yüksek' }
+                      : { label: '✓ silinmiş', bg: '#dcfce7', color: '#166534', title: 'Gerçek silinme — shipments\'a vio-removed event ile yakalandı, temiz' };
                     return (
                       <div key={o.id} style={{
                         display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
                         fontSize: 12, borderBottom: '1px solid #f5f5f4',
                       }}>
+                        <span style={{
+                          padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600,
+                          minWidth: 60, textAlign: 'center',
+                          background: kindBadge.bg, color: kindBadge.color,
+                        }} title={kindBadge.title}>{kindBadge.label}</span>
                         <span style={{
                           padding: '2px 6px', borderRadius: 4, fontSize: 10, fontWeight: 600,
                           minWidth: 50, textAlign: 'center',
@@ -1537,7 +1712,8 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 </div>
               )}
             </div>
-          )}
+            );
+          })()}
 
           {/* Plan Sırası Tutarsız — aynı stokKodu için müşteri teslim sırası ile bizim plan
               sırası uyuşmuyor. Filter-aware (deferred hariç). Tıkla → picker aç. */}
