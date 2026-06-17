@@ -758,6 +758,25 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
         if (event.final) sh.fullyDelivered = true;
         eventCount++;
       };
+      // Replacement (3-tuple ID değişimi) sırasında eski ID için kümülatif sevk değerini
+      // final event olarak kalıcı yazar. VIO yeni ID için sevkEdilen'i sıfırdan başlattığı
+      // için vio-resync de yakalayamıyordu (cron + client aynı pattern).
+      const captureReplacementFinal = (id, oldO) => {
+        const oldSevkEdilen = Number(oldO.sevkEdilen || 0);
+        if (oldSevkEdilen <= 0) return;
+        ensureShipmentDoc(id, oldO);
+        const sh = newShipments[id];
+        const currentTotal = Number(sh.totalShipped || 0);
+        if (oldSevkEdilen <= currentTotal) return;
+        const delta = oldSevkEdilen - currentTotal;
+        pushEvent(id, {
+          at: importedAt,
+          deltaQty: delta,
+          cumulative: oldSevkEdilen,
+          source: 'vio-replacement-final',
+          final: true,
+        });
+      };
       // 1) Eskide var olanları işle
       for (const [id, oldO] of Object.entries(salesOrders || {})) {
         const ov = planOverrides?.[id];
@@ -769,6 +788,8 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           if (!newO) {
             if (hasReplacementInVio(oldO)) {
               // Teslim tarihi VIO'da güncellenmiş — iptal değil; eski ID orphan kalır.
+              // Önleyici: eski ID için kümülatif sevkleri final event olarak yakala.
+              captureReplacementFinal(id, oldO);
               continue;
             }
             // Gerçekten kayboldu + deferred → İPTAL
@@ -790,6 +811,8 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
         } else {
           // VIO'dan kayboldu — gerçek kayıp mı yoksa teslim tarihi güncellemesi mi?
           if (hasReplacementInVio(oldO)) {
+            // Önleyici: eski ID için kümülatif sevkleri final event olarak yakala.
+            captureReplacementFinal(id, oldO);
             continue;
           }
           // Gerçekten kayboldu → kalan miktar tam sevk varsayımı, final event

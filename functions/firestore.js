@@ -237,6 +237,26 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     if (event.final) sh.fullyDelivered = true;
     eventCount++;
   };
+  // Replacement (3-tuple ID değişimi) sırasında eski ID için kümülatif sevk değerini
+  // final event olarak kalıcı yazar. VIO yeni ID için sevkEdilen'i sıfırdan başlattığı
+  // için vio-resync de yakalayamıyordu → bu çözüm 81 orphan'lık Mayıs-Haziran kayıp
+  // pattern'inden öğrenildi (2026-06-17 cari ekstre karşılaştırması).
+  const captureReplacementFinal = (id, oldO) => {
+    const oldSevkEdilen = Number(oldO.sevkEdilen || 0);
+    if (oldSevkEdilen <= 0) return;
+    ensureShipmentDoc(id, oldO);
+    const sh = newShipments[id];
+    const currentTotal = Number(sh.totalShipped || 0);
+    if (oldSevkEdilen <= currentTotal) return; // zaten eşit/fazla → ekleme yok
+    const delta = oldSevkEdilen - currentTotal;
+    pushEvent(id, {
+      at: importedAt,
+      deltaQty: delta,
+      cumulative: oldSevkEdilen,
+      source: "vio-replacement-final",
+      final: true,
+    });
+  };
 
   // 1) Eskide var olanları işle
   for (const [id, oldO] of Object.entries(oldOrders)) {
@@ -251,6 +271,10 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
         if (hasReplacementInVio(oldO)) {
           // Teslim tarihi VIO'da güncellenmiş — iptal değil. Override'ı yeni ID'ye taşı
           // (1-1 replacement varsa). Belirsizlik/çakışma varsa orphan kalır.
+          // ÖNLEYİCI FIX: Eski ID için kümülatif sevk değerini final event olarak kalıcı yaz —
+          // VIO yeni ID için sevkEdilen baseline'ını sıfırdan başlattığı için (test edildi),
+          // bu olmadan eski sevkler kalıcı kayıp.
+          captureReplacementFinal(id, oldO);
           migrateOverrideIfReplacement(id, oldO);
           continue;
         }
@@ -274,6 +298,9 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
       // VIO'dan kayboldu — gerçek kayıp mı yoksa teslim tarihi güncellemesi mi?
       // Aynı (belgeNo, stokKodu) yeni VIO'da varsa: teslim güncellemesi → sahte event yazma.
       if (hasReplacementInVio(oldO)) {
+        // ÖNLEYİCI FIX: Eski ID için kümülatif sevk değerini final event olarak kalıcı yaz —
+        // VIO yeni ID'ye sevkEdilen taşımıyor (test edildi). Bu olmadan eski sevkler kalıcı kayıp.
+        captureReplacementFinal(id, oldO);
         // Deferred olmayan override'lar (note / manuel hafta) için de migration çalışır.
         // ov undefined ise helper kendi içinde no-op döner.
         migrateOverrideIfReplacement(id, oldO);
