@@ -322,6 +322,35 @@ exports.fetchVioReportsHttp = onRequest(
   },
 );
 
+// Geçici audit endpoint — Aselsan ekstre karşılaştırma için 3 doc'u JSON olarak indirir.
+// Tek seferlik kullanım, public invoker; analiz bitince kaldırılacak.
+exports.exportAuditDataHttp = onRequest(
+  {
+    region: REGION,
+    timeoutSeconds: 60,
+    memory: "512MiB",
+    cors: true,
+    invoker: "public",
+  },
+  async (req, res) => {
+    try {
+      const [shipSnap, soSnap, ovSnap] = await Promise.all([
+        db.collection("appData").doc("shipments").get(),
+        db.collection("appData").doc("salesOrders").get(),
+        db.collection("appData").doc("planOverrides").get(),
+      ]);
+      res.json({
+        shipments: shipSnap.exists ? shipSnap.data() : {},
+        salesOrders: soSnap.exists ? soSnap.data() : {},
+        planOverrides: ovSnap.exists ? ovSnap.data() : {},
+        exportedAt: new Date().toISOString(),
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
 // ==================== SCHEDULED FONKSIYONU (Cloud Scheduler) ====================
 
 // Hibrit cron 1: Pzt-Cum, 08:00-09:50, her 10 dakikada bir

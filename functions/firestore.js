@@ -185,15 +185,24 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   };
 
   let eventCount = 0;
+  // Birim fiyat snapshot — Dashboard aylık TL hesabı için kritik. unitPriceTl yoksa
+  // shipment "fiyatsız" sayılır ve toplama dahil edilmez. Client (DigerMusteriler.jsx)
+  // ensureShipmentDoc ile BIREBIR AYNI mantık: yeni kayıtta unitPriceTl + toplamBedel,
+  // mevcut kayıtta unitPriceTl yoksa salesOrders'tan backfill.
   const ensureShipmentDoc = (id, o) => {
     if (!newShipments[id]) {
+      const orjMikt = Number(o.orijinalMiktar) || 0;
+      const toplamBedel = Number(o.toplamBedel) || 0;
+      const unitPriceTl = orjMikt > 0 ? toplamBedel / orjMikt : 0;
       newShipments[id] = {
         customerCode: o.customerCode || "",
         customerName: o.customerName || "",
         stokKodu: o.stokKodu || "",
         stokAdi: o.stokAdi || "",
         belgeNo: o.belgeNo || "",
-        orijinalMiktar: o.orijinalMiktar || 0,
+        orijinalMiktar: orjMikt,
+        toplamBedel,
+        unitPriceTl,
         teslimTarihi: o.teslimTarihi || "",
         events: [],
         totalShipped: 0,
@@ -202,6 +211,19 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
         finalShipAt: "",
         lastUpdate: importedAt,
       };
+    } else {
+      // Backfill: mevcut shipment'ta unitPriceTl yoksa, salesOrders verisinden doldur.
+      // Cron öncesi oluşan fiyatsız kayıtlar burada otomatik kapanır.
+      const sh = newShipments[id];
+      if (!sh.unitPriceTl || !sh.toplamBedel) {
+        const orjMikt = Number(o.orijinalMiktar) || sh.orijinalMiktar || 0;
+        const toplamBedel = Number(o.toplamBedel) || 0;
+        if (orjMikt > 0 && toplamBedel > 0) {
+          sh.toplamBedel = toplamBedel;
+          sh.unitPriceTl = toplamBedel / orjMikt;
+          if (!sh.orijinalMiktar) sh.orijinalMiktar = orjMikt;
+        }
+      }
     }
     return newShipments[id];
   };
@@ -305,16 +327,34 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     resyncCount++;
   }
 
-  // Yaz: salesOrders her zaman, shipments sadece event üretildiyse,
+  // 4) Backfill pass — tüm mevcut shipments için, salesOrders'ta hâlâ aktif olanlardan
+  //    unitPriceTl + toplamBedel doldur (eski cron veya bug zamanında fiyat alanı yazılmamış
+  //    kayıtlar için telafi). Event üretmez ama mevcut shipment'ın TL alanları güncellenir.
+  let backfillCount = 0;
+  for (const [id, sh] of Object.entries(newShipments)) {
+    if (sh.unitPriceTl && sh.toplamBedel) continue;
+    const so = newOrdersMap[id];
+    if (!so) continue;
+    const orjMikt = Number(so.orijinalMiktar) || 0;
+    const toplamBedel = Number(so.toplamBedel) || 0;
+    if (orjMikt > 0 && toplamBedel > 0) {
+      sh.toplamBedel = toplamBedel;
+      sh.unitPriceTl = toplamBedel / orjMikt;
+      if (!sh.orijinalMiktar) sh.orijinalMiktar = orjMikt;
+      backfillCount++;
+    }
+  }
+
+  // Yaz: salesOrders her zaman, shipments event VEYA backfill varsa,
   // planOverrides cancelled geçişi VEYA migration olduysa (merge ile diğerleri korunur).
   await ordersRef.set(newOrdersMap);
-  if (eventCount > 0) {
+  if (eventCount > 0 || backfillCount > 0) {
     await shipmentsRef.set(newShipments);
   }
   if (Object.keys(overrideUpdates).length > 0) {
     await overridesRef.set(overrideUpdates, { merge: true });
   }
-  return { eventCount, cancelledCount, migratedCount, resyncCount, salesOrdersCount: Object.keys(newOrdersMap).length };
+  return { eventCount, cancelledCount, migratedCount, resyncCount, backfillCount, salesOrdersCount: Object.keys(newOrdersMap).length };
 }
 
 /**
