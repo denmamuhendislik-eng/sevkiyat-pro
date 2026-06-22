@@ -35,6 +35,20 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
   const prevMonthDate = new Date(today.getFullYear(), today.getMonth() - 1, 1);
   const prevMonthKey = monthKey(prevMonthDate);
 
+  // Müşteri filtresi — Aselsan/Roketsan/A+R/Tümü. Tüm hesaplar bu filtreden geçer.
+  // Default A+R (kullanıcı kararı 2026-06-22): cari ekstre kapsamı.
+  const [customerFilter, setCustomerFilter] = useState('AR');
+  const customerMatches = useMemo(() => {
+    return (customerCode) => {
+      if (customerFilter === 'all') return true;
+      const c = String(customerCode || '').trim();
+      if (customerFilter === 'aselsan') return c === '120-0107' || c.startsWith('120-0107-');
+      if (customerFilter === 'roketsan') return c === '120-116' || c.startsWith('120-116-');
+      // AR (default): Aselsan veya Roketsan
+      return c === '120-0107' || c.startsWith('120-0107-') || c === '120-116' || c.startsWith('120-116-');
+    };
+  }, [customerFilter]);
+
   // BOM eksik tespiti (root stok kodları)
   const bomSet = useMemo(() => {
     const s = new Set();
@@ -52,6 +66,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     let prevMonthCount = 0, prevMonthBedel = 0;
     for (const o of Object.values(salesOrders || {})) {
       if (!o.orderDate) continue;
+      if (!customerMatches(o.customerCode)) continue;
       const k = o.orderDate.substring(0, 7);
       if (k === currentMonthKey) {
         thisMonthCount++;
@@ -63,7 +78,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     }
     const bedelChangePct = prevMonthBedel > 0 ? ((thisMonthBedel - prevMonthBedel) / prevMonthBedel) * 100 : null;
     return { thisMonthCount, thisMonthBedel, prevMonthCount, prevMonthBedel, bedelChangePct };
-  }, [salesOrders, currentMonthKey, prevMonthKey]);
+  }, [salesOrders, currentMonthKey, prevMonthKey, customerMatches]);
 
   // 2) Teslim yükü — bu hafta + 4 hafta sonrasına kadar (override veya orijinal teslim)
   const deliveryLoad = useMemo(() => {
@@ -72,6 +87,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     let thisWeekCount = 0, thisWeekBedel = 0;
     let next4WeekCount = 0, next4WeekBedel = 0;
     for (const [id, o] of Object.entries(salesOrders || {})) {
+      if (!customerMatches(o.customerCode)) continue;
       const ov = planOverrides?.[id];
       if (ov?.status === 'deferred') continue;
       const week = ov?.plannedWeek || (o.teslimTarihi ? getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z')) : '');
@@ -80,7 +96,6 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       if (remaining <= 0) continue;
       const bedel = Number(o.toplamBedel || 0);
       if (week === currentWeek) { thisWeekCount++; thisWeekBedel += bedel; }
-      // Sonraki 4 hafta için lexicographic karşılaştırma yeterli (ISO format YYYY-Www)
       const wkNum = parseInt(week.split('-W')[1] || '0');
       const curNum = parseInt(currentWeek.split('-W')[1] || '0');
       const diff = wkNum - curNum;
@@ -89,7 +104,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       }
     }
     return { thisWeekCount, thisWeekBedel, next4WeekCount, next4WeekBedel };
-  }, [salesOrders, planOverrides, currentWeek]);
+  }, [salesOrders, planOverrides, currentWeek, customerMatches]);
 
   // 3) Sevk performansı — cari ekstre (EKSTRE_*) kayıtlarından, musteriTermin bazlı.
   // KURAL (kullanıcı kararı 2026-06-22):
@@ -107,6 +122,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     for (const sh of Object.values(shipments || {})) {
       if (!sh) continue;
       if (sh.source !== 'ekstre') continue;
+      if (!customerMatches(sh.customerCode)) continue;
       if (sh.matchType === 'orphan' || !sh.musteriTermin) continue;
       const groupKey = sh.matchedOrderId || `${(sh.refNo || '').trim()}|${(sh.stokKodu || '').trim()}`;
       if (!byOrder[groupKey]) byOrder[groupKey] = {
@@ -190,19 +206,20 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       thisYearCompleted, thisYearOnTime, thisYearOtdPct,
       allFlat, flatLate,
     };
-  }, [shipments, salesOrders, today]);
+  }, [shipments, salesOrders, today, customerMatches]);
 
   // 4) Müşteri bedel pastası — top 5 (yıllık toplam)
   const customerPie = useMemo(() => {
     const map = {};
     for (const o of Object.values(salesOrders || {})) {
+      if (!customerMatches(o.customerCode)) continue;
       const cc = o.customerCode || '?';
       if (!map[cc]) map[cc] = { code: cc, name: o.customerName || cc, value: 0 };
       map[cc].value += Number(o.toplamBedel || 0);
     }
     const arr = Object.values(map).sort((a, b) => b.value - a.value).slice(0, 5);
     return arr;
-  }, [salesOrders]);
+  }, [salesOrders, customerMatches]);
 
   // 5) Aylık trend — son 6 ay: Alındı + Brüt Sevk + İade + Net Sevk (4 seri)
   // Cari ekstre EKSTRE_* kayıtları için toplamBedel zaten TL net (iade negatif).
@@ -221,6 +238,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     // Alındı (orderDate) — VIO sipariş raporundan
     for (const o of Object.values(salesOrders || {})) {
       if (!o.orderDate) continue;
+      if (!customerMatches(o.customerCode)) continue;
       const k = o.orderDate.substring(0, 7);
       if (map[k]) map[k].alindi += Number(o.toplamBedel || 0);
     }
@@ -228,6 +246,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     const missing = [];
     for (const [id, sh] of Object.entries(shipments || {})) {
       if (!sh) continue;
+      if (!customerMatches(sh.customerCode)) continue;
       const bedel = Number(sh.toplamBedel || 0);
       const dateRef = sh.finalShipAt || sh.firstShipAt || sh.lastUpdate || "";
       const k = String(dateRef).substring(0, 7);
@@ -262,7 +281,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     }
     for (const m of months) m.net = m.brut - m.iade;
     return { months, missing };
-  }, [salesOrders, shipments, today]);
+  }, [salesOrders, shipments, today, customerMatches]);
 
   // monthlyTrend artık { months, missing } döndürüyor; eski .map için months ayır
   const monthlyTrendMonths = monthlyTrend.months;
@@ -277,12 +296,13 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     for (const [id, sh] of Object.entries(shipments || {})) {
       if (sh?.source !== 'ekstre') continue;
       if (sh.matchType !== 'orphan') continue;
+      if (!customerMatches(sh.customerCode)) continue;
       list.push({ id, ...sh });
       totalBedel += Math.abs(Number(sh.toplamBedel || 0));
     }
     list.sort((a, b) => (b.teslimTarihi || '').localeCompare(a.teslimTarihi || ''));
     return { list, totalBedel, count: list.length };
-  }, [shipments]);
+  }, [shipments, customerMatches]);
 
   // 5b) Gelecek 6 ay yükü — bizim plan vs müşteri teslim (bedel)
   const futureLoad = useMemo(() => {
@@ -299,6 +319,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     // Sadece sapan siparişler dahil (eşit olanlar ortalamayı sıfıra çekmesin).
     let totalDriftWeeks = 0, driftCount = 0;
     for (const [id, o] of Object.entries(salesOrders || {})) {
+      if (!customerMatches(o.customerCode)) continue;
       const ov = planOverrides?.[id];
       if (ov?.status === 'deferred') continue;
       const remaining = Number(o.kalanMiktar || 0);
@@ -343,7 +364,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     }
     const avgDriftWeeks = driftCount > 0 ? totalDriftWeeks / driftCount : 0;
     return { months, totalPlan, totalMusteri, divergeCount, avgDriftWeeks, driftCount };
-  }, [salesOrders, planOverrides, today]);
+  }, [salesOrders, planOverrides, today, customerMatches]);
 
   // 6) Operasyonel uyarılar
   const ops = useMemo(() => {
@@ -355,6 +376,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     const bomMissingSet = new Set();
     const oldestLate = [];
     for (const [id, o] of Object.entries(salesOrders || {})) {
+      if (!customerMatches(o.customerCode)) continue;
       const ov = planOverrides?.[id];
       const isDeferred = ov?.status === 'deferred';
       if (isDeferred) {
@@ -388,7 +410,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       if (ov?.status === 'cancelled') cancelledCount++;
     }
     return { lateCount, lateBedel, staleCount, deferredCount, deferredBedel, bomMissingCount, cancelledCount, top5OldestLate };
-  }, [salesOrders, planOverrides, bomSet, currentWeek]);
+  }, [salesOrders, planOverrides, bomSet, currentWeek, customerMatches]);
 
   if (!allLoaded) {
     return <div style={{ padding: 24, color: '#78716c' }}>Dashboard yükleniyor…</div>;
@@ -398,9 +420,30 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
 
   return (
     <div style={{ padding: '20px 28px', maxWidth: 1400, margin: '0 auto' }}>
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: 14, marginBottom: 16 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 16, flexWrap: 'wrap' }}>
         <h1 style={{ fontSize: 22, fontWeight: 600, margin: 0 }}>📊 Müşteri Sipariş Dashboard</h1>
         <span style={{ fontSize: 11, color: '#a8a29e' }}>Bugün {currentWeek}</span>
+        <div style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+          <span style={{ color: '#57534e', fontWeight: 500, marginRight: 4 }}>Müşteri:</span>
+          {[
+            { v: 'AR', label: 'Aselsan + Roketsan' },
+            { v: 'aselsan', label: 'Aselsan' },
+            { v: 'roketsan', label: 'Roketsan' },
+            { v: 'all', label: 'Tümü' },
+          ].map(opt => (
+            <button
+              key={opt.v}
+              onClick={() => setCustomerFilter(opt.v)}
+              style={{
+                padding: '5px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500,
+                border: '1px solid ' + (customerFilter === opt.v ? '#534AB7' : '#d6d3d1'),
+                background: customerFilter === opt.v ? '#534AB7' : '#fff',
+                color: customerFilter === opt.v ? '#fff' : '#44403c',
+                cursor: 'pointer',
+              }}
+            >{opt.label}</button>
+          ))}
+        </div>
       </div>
 
       {/* Üst sıra — 3 kart */}
