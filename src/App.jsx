@@ -182,6 +182,7 @@ export default function App() {
   const [linkedExtras, setLinkedExtras] = useState({});
   const [editDateId, setEditDateId] = useState(null);
   const [editDateVal, setEditDateVal] = useState("");
+  const [containerMenuId, setContainerMenuId] = useState(null); // hangi sevkiyatın menüsü açık
   const [editOrderPid, setEditOrderPid] = useState(null);
   const [editOrderVal, setEditOrderVal] = useState("");
   const [selectedCids, setSelectedCids] = useState(new Set());
@@ -1326,6 +1327,45 @@ ${el.innerHTML}
       return{...prev,[selYear]:{...y,containers:cs}};
     });
     setShowAddC(false);setNewCDate("");
+  };
+
+  // Sevkiyat silme — sevk edilmemiş + güvenlik onayı. Sevk edilmiş olanlar engellenir.
+  // Silinince: containers'tan kaldır, quantities[cid] sil, packingData[cid] sil.
+  // Planlanan miktarlar otomatik P.KALAN'a döner (sipariş silinmediği için).
+  const removeContainer = (cid) => {
+    const c = yd.containers.find(x => x.id === cid);
+    if (!c) return;
+    if (isShipped(c)) {
+      alert("Sevk edilmiş sevkiyat silinemez. Önce sevk durumunu kaldır.");
+      return;
+    }
+    const items = Object.entries(yd.quantities?.[cid] || {}).filter(([,q]) => q > 0);
+    const hasPacking = !!yd.packingData?.[cid];
+    let msg = `${fmtDate(c.date)} tarihli sevkiyat silinecek.`;
+    if (items.length > 0) {
+      const totalQty = items.reduce((s,[,q]) => s + q, 0);
+      msg += `\n\n${items.length} farklı ürün (toplam ${totalQty} adet) planlanmış — plan iptal edilecek, ürünler P.KALAN'a dönecek.`;
+    }
+    if (hasPacking) msg += `\nPaketleme verisi de silinecek.`;
+    msg += `\n\nDevam edilsin mi?`;
+    if (!confirm(msg)) return;
+    setYearsData(prev => {
+      const y = {...prev[selYear]};
+      y.containers = y.containers.filter(x => x.id !== cid);
+      if (y.quantities) {
+        const q = {...y.quantities};
+        delete q[cid];
+        y.quantities = q;
+      }
+      if (y.packingData) {
+        const pd = {...y.packingData};
+        delete pd[cid];
+        y.packingData = pd;
+      }
+      return {...prev, [selYear]: y};
+    });
+    setSelectedCids(prev => { const s = new Set(prev); s.delete(cid); return s; });
+    setContainerMenuId(null);
   };
 
   const addProduct = () => {
@@ -2506,9 +2546,23 @@ ${el.innerHTML}
                       {editDateId===c.id?<div>
                         <input type="date" value={editDateVal} onChange={e=>setEditDateVal(e.target.value)} onBlur={()=>saveDate(c.id)} onKeyDown={e=>{if(e.key==="Enter")saveDate(c.id);if(e.key==="Escape")setEditDateId(null);}} autoFocus style={{width:58,fontSize:9,padding:"2px",border:"1px solid #534AB7",borderRadius:3,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                       </div>
-                      :<div onClick={()=>{if(isAdmin&&allowedYears.includes(selYear)){setEditDateId(c.id);setEditDateVal(c.date);}}} style={{cursor:isAdmin&&allowedYears.includes(selYear)?"pointer":"default"}} title={isAdmin&&allowedYears.includes(selYear)?"Tarihi değiştirmek için tıklayın":""}>
-                        <div style={{fontSize:9,fontWeight:500}}>{shortDate(c.date)}</div>
-                        <Badge status={isShipped(c)?"shipped":"planned"}/>
+                      :<div style={{position:"relative"}}>
+                        <div onClick={()=>{if(isAdmin&&allowedYears.includes(selYear))setContainerMenuId(containerMenuId===c.id?null:c.id);}} style={{cursor:isAdmin&&allowedYears.includes(selYear)?"pointer":"default"}} title={isAdmin&&allowedYears.includes(selYear)?"Seçenekleri aç":""}>
+                          <div style={{fontSize:9,fontWeight:500}}>{shortDate(c.date)}</div>
+                          <Badge status={isShipped(c)?"shipped":"planned"}/>
+                        </div>
+                        {containerMenuId===c.id && (
+                          <>
+                            {/* Outside click overlay */}
+                            <div onClick={()=>setContainerMenuId(null)} style={{position:"fixed",top:0,left:0,right:0,bottom:0,zIndex:50}}/>
+                            <div style={{position:"absolute",top:"100%",left:"50%",transform:"translateX(-50%)",marginTop:4,background:"#fff",border:"1px solid var(--color-border-secondary)",borderRadius:6,boxShadow:"0 4px 14px rgba(0,0,0,0.15)",zIndex:51,minWidth:130,padding:4}}>
+                              <button onClick={(e)=>{e.stopPropagation();setEditDateId(c.id);setEditDateVal(c.date);setContainerMenuId(null);}} style={{display:"block",width:"100%",textAlign:"left",padding:"6px 10px",fontSize:11,border:"none",background:"transparent",cursor:"pointer",borderRadius:4,color:"var(--color-text-primary)"}} onMouseEnter={e=>e.currentTarget.style.background="var(--color-background-secondary)"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>📅 Tarihi değiştir</button>
+                              {!isShipped(c) && (
+                                <button onClick={(e)=>{e.stopPropagation();removeContainer(c.id);}} style={{display:"block",width:"100%",textAlign:"left",padding:"6px 10px",fontSize:11,border:"none",background:"transparent",cursor:"pointer",borderRadius:4,color:"#dc2626"}} onMouseEnter={e=>e.currentTarget.style.background="#fef2f2"} onMouseLeave={e=>e.currentTarget.style.background="transparent"}>🗑 Sevkiyatı sil</button>
+                              )}
+                            </div>
+                          </>
+                        )}
                       </div>}
                     </th>
                   ))}
