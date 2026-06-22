@@ -546,11 +546,28 @@ async function saveCariEkstreReport(db, parserResult, opts = {}) {
       const newMatchedId = matchedOrderForExisting?.id || null;
       const newTermin = matchedOrderForExisting?.teslimTarihi || null;
       const newType = matchedOrderForExisting?.matchType || "orphan";
-      if (sh.matchedOrderId !== newMatchedId || sh.musteriTermin !== newTermin || sh.matchType !== newType) {
+      const newBedelTl = Number(it.bedelTl) || 0;
+      const newCurrency = it.currency || "TL";
+      const newDvzKur = Number(it.dvzKur) || 1;
+      // Eşleme alanları + bedel/currency güncelleme (parser fix sonrası bedel değişebilir)
+      const needsUpdate =
+        sh.matchedOrderId !== newMatchedId ||
+        sh.musteriTermin !== newTermin ||
+        sh.matchType !== newType ||
+        Math.abs((sh.toplamBedel || 0) - newBedelTl) > 0.01 ||
+        sh.currency !== newCurrency;
+      if (needsUpdate) {
         sh.matchedOrderId = newMatchedId;
         sh.musteriTermin = newTermin;
         sh.isOrphan = !matchedOrderForExisting;
         sh.matchType = newType;
+        const miktar = Number(it.miktar) || 0;
+        const orjMikt = Math.abs(miktar);
+        sh.toplamBedel = newBedelTl;
+        sh.unitPriceTl = orjMikt > 0 ? Math.abs(newBedelTl) / orjMikt : 0;
+        sh.currency = newCurrency;
+        sh.dvzKur = newDvzKur;
+        sh.bedelOrjinal = Number(it.bedelOrjinal) || 0;
         updated++;
       }
       if (matchedOrderForExisting?.matchType === "exact") matchExact++;
@@ -587,6 +604,9 @@ async function saveCariEkstreReport(db, parserResult, opts = {}) {
       matchedOrderId,          // eşlenen salesOrders 3-tuple ID'si (sadece exact match'te dolu)
       matchType,               // "exact" | "borrowed" | "orphan"
       isOrphan: !matchedOrder, // OTD'ye katılmaz, audit listesinde
+      currency: it.currency || "TL",
+      dvzKur: Number(it.dvzKur) || 1,
+      bedelOrjinal: Number(it.bedelOrjinal) || 0,
       isIade: !!it.isIade,
       source: "ekstre",
       events: [{

@@ -1227,17 +1227,19 @@ function parseCariEkstreExcel(workbook) {
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
 
-  const items = []; // her sevk/iade kalemi: {customerCode, customerName, tarih, belgeNo, refNo, isIade, stokKodu, stokAdi, miktar, bedelTl}
+  const items = []; // her sevk/iade kalemi
   let currentCustomer = null;
   let currentTransaction = null;
+  // Para birimi: müşteri başlığından sonraki satırda "TL" veya "DOLAR" yazıyor.
+  // Roketsan USD ile faturalanıyor → r[19] stok bedeli USD, kur ile TL'ye çevir.
+  // Aselsan TL → r[19] zaten TL, kur 1 kabul edilir.
+  let currentCurrency = "TL"; // "TL" | "DOLAR" | başka
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
     const c0 = r[0];
 
-    // Müşteri header satırı — VIO ekstresinde aynı müşteri başlığı sayfa break'lerinde
-    // 60+ kez tekrarlanıyor. Aynı müşterinin tekrarı için transaction'ı SIFIRLAMA
-    // (yoksa sayfa break ortasında kalan stoklar kaybolur). Sadece müşteri DEĞİŞTİĞİNDE sıfırla.
+    // Müşteri header satırı
     const cust = typeof c0 === "string" ? cariParseCustomerHeader(c0) : null;
     if (cust) {
       const newCustomer = TRACKED_CUSTOMERS.has(cust.customerCode) ? cust : null;
@@ -1245,8 +1247,18 @@ function parseCariEkstreExcel(workbook) {
       if (!sameCustomer) {
         currentCustomer = newCustomer;
         currentTransaction = null;
+        currentCurrency = "TL"; // varsayılan, sonraki satırda overwrite olur
       }
       continue;
+    }
+
+    // Para birimi satırı (müşteri başlığından hemen sonra "TL" / "DOLAR" / "EURO" vb)
+    if (currentCustomer && typeof c0 === "string") {
+      const upper = c0.trim().toUpperCase();
+      if (upper === "TL" || upper === "DOLAR" || upper === "USD" || upper === "EURO" || upper === "EUR") {
+        currentCurrency = upper === "USD" ? "DOLAR" : (upper === "EUR" ? "EURO" : upper);
+        continue;
+      }
     }
 
     // İşlem satırı (büyük tarih number + belge no)
@@ -1257,23 +1269,27 @@ function parseCariEkstreExcel(workbook) {
       const islemAdi = String(r[4] || "").replace(/[\n\r]+/g, " ").trim();
       const isSatis = /^Satış Faturası/.test(islemAdi) && !/İade/.test(islemAdi);
       const isIade = /İade/.test(islemAdi);
-      // Sadece Satış Faturası ve İade satırlarını işle, diğerleri (EFT, çek, devir) atla
       if (!isSatis && !isIade) { currentTransaction = null; continue; }
       const belgeNo = String(r[2] || "").trim();
       const refNo = String(r[6] || "").trim();
-      currentTransaction = { tarih, belgeNo, refNo, isIade };
+      // r[9] = Dvz Kur (TL/USD karşılığı). TL faturalarda boş veya 1.
+      const dvzKur = Number(r[9]) || 1;
+      currentTransaction = { tarih, belgeNo, refNo, isIade, dvzKur };
       continue;
     }
 
-    // Stok veri satırı — yapısal tespit: küçük fiş number + dolu stokKodu (string)
-    // Header satırı (Fiş ID | Kod) opsiyonel, bazen eksik → bayrak kullanma.
+    // Stok veri satırı — yapısal tespit
     if (currentCustomer && currentTransaction
         && typeof c0 === "number" && c0 > 0 && c0 < 1000000
         && typeof r[2] === "string" && r[2].trim()) {
       const stokKodu = String(r[2]).trim();
       const stokAdi = String(r[5] || "").trim();
       const miktar = Number(r[10]) || 0;
-      const bedelTl = Number(r[19]) || 0;
+      // r[19] = stok bedeli MÜŞTERİ DÖVİZİ cinsinden.
+      // Aselsan TL → r[19] zaten TL. Roketsan DOLAR → r[19] USD, kur ile TL'ye çevir.
+      const bedelRaw = Number(r[19]) || 0;
+      const isForeignCurrency = currentCurrency !== "TL";
+      const bedelTl = isForeignCurrency ? bedelRaw * currentTransaction.dvzKur : bedelRaw;
       if (miktar === 0 && bedelTl === 0) continue;
       items.push({
         customerCode: currentCustomer.customerCode,
@@ -1284,13 +1300,14 @@ function parseCariEkstreExcel(workbook) {
         isIade: currentTransaction.isIade,
         stokKodu,
         stokAdi,
-        miktar,       // İade ise negatif
-        bedelTl,      // İade ise negatif
+        miktar,
+        bedelTl,
+        bedelOrjinal: bedelRaw,        // orijinal döviz bedeli (audit)
+        currency: currentCurrency,     // TL / DOLAR / EURO
+        dvzKur: currentTransaction.dvzKur,
       });
       continue;
     }
-
-    // Diğer satırlar (Yer, İskonto/Nakliye/Kdv, footer, boş) — atla
   }
 
   // Özet istatistikler
