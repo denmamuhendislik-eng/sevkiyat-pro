@@ -105,6 +105,10 @@ async function saveReport(db, type, parserResult, fileName, opts = {}) {
     // Özel akış: monthlySupplies.{ym} dot-notation çoklu ay yazımı + mail tarihi bazlı kısmi-ay kontrolü
     const suppliesOut = await saveSuppliesReport(db, parserResult, { messageDate: opts.messageDate });
     return { docId: LABOR_COSTS_DOC, payload: null, suppliesMeta: suppliesOut };
+  } else if (type === "cariEkstre") {
+    // Özel akış: A+R için authoritative source, EKSTRE_* ID şeması ile shipments'a yazılır
+    const ekstreOut = await saveCariEkstreReport(db, parserResult, opts.cariEkstreOpts || {});
+    return { docId: SHIPMENTS_DOC, payload: null, ekstreMeta: ekstreOut };
   } else {
     throw new Error(`Bilinmeyen rapor tipi: ${type}`);
   }
@@ -184,12 +188,27 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     migratedCount++;
   };
 
+  // A+R müşterileri için shipments yazımı SKIPLENİR — cari ekstre authoritative source.
+  // (kullanıcı kararı 2026-06-22) VIO sipariş raporundaki sevkEdilen yaklaşık olduğu için
+  // A+R sevkleri sadece cari ekstreden saveCariEkstreReport ile yazılır.
+  const TRACKED_PREFIXES = ["120-0107", "120-116"];
+  const isTrackedCustomer = (code) => {
+    if (!code) return false;
+    const s = String(code).trim();
+    return TRACKED_PREFIXES.some(p => s === p || s.startsWith(p + "-"));
+  };
+
   let eventCount = 0;
+  let skippedTrackedCount = 0;
   // Birim fiyat snapshot — Dashboard aylık TL hesabı için kritik. unitPriceTl yoksa
   // shipment "fiyatsız" sayılır ve toplama dahil edilmez. Client (DigerMusteriler.jsx)
   // ensureShipmentDoc ile BIREBIR AYNI mantık: yeni kayıtta unitPriceTl + toplamBedel,
   // mevcut kayıtta unitPriceTl yoksa salesOrders'tan backfill.
   const ensureShipmentDoc = (id, o) => {
+    if (isTrackedCustomer(o?.customerCode)) {
+      skippedTrackedCount++;
+      return null; // A+R skip — cari ekstre authoritative
+    }
     if (!newShipments[id]) {
       const orjMikt = Number(o.orijinalMiktar) || 0;
       const toplamBedel = Number(o.toplamBedel) || 0;
@@ -229,6 +248,7 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   };
   const pushEvent = (id, event) => {
     const sh = newShipments[id];
+    if (!sh) return; // ensureShipmentDoc A+R için skip etti — no-op
     sh.events.push(event);
     sh.totalShipped = event.cumulative;
     sh.lastUpdate = importedAt;
@@ -246,6 +266,7 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
     if (oldSevkEdilen <= 0) return;
     ensureShipmentDoc(id, oldO);
     const sh = newShipments[id];
+    if (!sh) return; // A+R skip
     const currentTotal = Number(sh.totalShipped || 0);
     if (oldSevkEdilen <= currentTotal) return; // zaten eşit/fazla → ekleme yok
     const delta = oldSevkEdilen - currentTotal;
@@ -359,6 +380,7 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   //    kayıtlar için telafi). Event üretmez ama mevcut shipment'ın TL alanları güncellenir.
   let backfillCount = 0;
   for (const [id, sh] of Object.entries(newShipments)) {
+    if (isTrackedCustomer(sh?.customerCode)) continue; // A+R cari ekstreden besleniyor
     if (sh.unitPriceTl && sh.toplamBedel) continue;
     const so = newOrdersMap[id];
     if (!so) continue;
@@ -381,7 +403,7 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   if (Object.keys(overrideUpdates).length > 0) {
     await overridesRef.set(overrideUpdates, { merge: true });
   }
-  return { eventCount, cancelledCount, migratedCount, resyncCount, backfillCount, salesOrdersCount: Object.keys(newOrdersMap).length };
+  return { eventCount, cancelledCount, migratedCount, resyncCount, backfillCount, skippedTrackedCount, salesOrdersCount: Object.keys(newOrdersMap).length };
 }
 
 /**
@@ -406,6 +428,187 @@ async function appendAutomationLog(db, entry) {
   const MAX_ENTRIES = 50;
   const trimmed = entries.slice(-MAX_ENTRIES);
   await ref.set({ entries: trimmed }, { merge: false });
+}
+
+/**
+ * Cari ekstre items'ı shipments doc'una yazar — A+R için AUTHORITATIVE source.
+ *
+ * Mimari (kullanıcı kararı 2026-06-22):
+ *   - Cari ekstre = A+R sevkiyatları için %100 doğru kaynak (VIO sipariş raporu yaklaşık)
+ *   - Her ekstre satırı için ID: EKSTRE_{customerCode}_{tarih}_{belgeNo}_{stokKodu}
+ *   - Idempotent: aynı ID varsa atla (haftalık cron rerun safe)
+ *   - İade satırları negatif miktar/bedel → totalShipped negatif, dashboard'da
+ *     toplam sevk hesabı otomatik net (brüt - iade) gösterir
+ *   - VIO diff bu kayıtlara dokunmaz (saveSalesOrdersWithDiff'te A+R skip)
+ *
+ * @returns {Promise<{added, skipped, deletedNonExtre, totalItems}>}
+ */
+async function saveCariEkstreReport(db, parserResult, opts = {}) {
+  const items = parserResult.items || [];
+  const importedAt = new Date().toISOString();
+  const shipmentsRef = db.collection(APP_COL).doc(SHIPMENTS_DOC);
+  const ordersRef = db.collection(APP_COL).doc(SALES_ORDERS_DOC);
+  const [shipSnap, ordersSnap] = await Promise.all([shipmentsRef.get(), ordersRef.get()]);
+  const shipments = shipSnap.exists ? { ...(shipSnap.data() || {}) } : {};
+  const salesOrders = ordersSnap.exists ? (ordersSnap.data() || {}) : {};
+
+  // Opt: ilk dolumda mevcut A+R kayıtları (VIO diff'ten gelen, EKSTRE_ prefiksli olmayan)
+  // silinir → cari ekstre tek otorite. Sonraki run'larda gerekmez (idempotent).
+  const TRACKED_PREFIXES = ["120-0107", "120-116"];
+  const isTracked = (code) => {
+    if (!code) return false;
+    const s = String(code).trim();
+    return TRACKED_PREFIXES.some(p => s === p || s.startsWith(p + "-"));
+  };
+  let deletedNonExtre = 0;
+  if (opts.purgeNonExtreForTracked) {
+    for (const [id, sh] of Object.entries(shipments)) {
+      if (id.startsWith("EKSTRE_")) continue;
+      if (isTracked(sh?.customerCode)) {
+        delete shipments[id];
+        deletedNonExtre++;
+      }
+    }
+  }
+
+  // VIO cari ekstre refNo formatı: "1000017187" = "1000" prefix + VIO sipariş belge no ("17187")
+  // salesOrders.belgeNo formatı: "17187" (5-6 digit)
+  // Normalize: refNo "1000" prefix'ini kırp, leading zero'ları temizle.
+  const normalizeRefNo = (refNo) => {
+    const s = String(refNo || "").trim();
+    if (!s) return s;
+    // "1000XXXXX" pattern: 1000 prefix + sayısal belge no
+    if (/^1000\d+$/.test(s)) {
+      const without1000 = s.substring(4);
+      const n = Number(without1000);
+      if (Number.isFinite(n) && n > 0) return String(n);
+    }
+    return s;
+  };
+
+  // salesOrders lookup indeksleri
+  const orderIndex = {};        // (belgeNo|stokKodu) → [orders]
+  const orderByBelgeNo = {};    // belgeNo → [orders] (stokKodu fark etmez, fallback için)
+  for (const [id, o] of Object.entries(salesOrders)) {
+    if (!o || !o.belgeNo || !o.stokKodu) continue;
+    const belge = String(o.belgeNo).trim();
+    const stok = String(o.stokKodu).trim();
+    const key = `${belge}|${stok}`;
+    if (!orderIndex[key]) orderIndex[key] = [];
+    orderIndex[key].push({ id, ...o });
+    if (!orderByBelgeNo[belge]) orderByBelgeNo[belge] = [];
+    orderByBelgeNo[belge].push({ id, ...o });
+  }
+
+  // Eşleme stratejisi (öncelik sırası):
+  //   1) Tam eşleşme: refNo (normalize) + stokKodu → salesOrders 3-tuple
+  //   2) Fallback: refNo eşleşti ama stokKodu farklı → aynı belgeNo'daki başka order'ın
+  //      teslimTarihi'ni ödünç al (tam teslim olmuş diğer kalemlerden, sipariş başına
+  //      genelde aynı termin). matchedOrderId yazma, sadece termin ödünç al.
+  //   3) Hiç eşleşme → orphan
+  const matchOrder = (refNo, stokKodu, ekstreTarih) => {
+    const stok = String(stokKodu).trim();
+    const raw = String(refNo).trim();
+    const normalized = normalizeRefNo(refNo);
+    const tryKeys = [raw, normalized].filter((v, i, a) => v && a.indexOf(v) === i);
+
+    // 1) Tam eşleşme
+    for (const k of tryKeys) {
+      const candidates = orderIndex[`${k}|${stok}`];
+      if (candidates && candidates.length > 0) {
+        if (candidates.length === 1) return { ...candidates[0], matchType: "exact" };
+        const sorted = [...candidates].sort((a, b) => (a.teslimTarihi || "9999").localeCompare(b.teslimTarihi || "9999"));
+        const future = sorted.find(o => (o.teslimTarihi || "") >= ekstreTarih);
+        return { ...(future || sorted[0]), matchType: "exact" };
+      }
+    }
+    // 2) Fallback: aynı belgeNo'nun başka stok satırından termin ödünç al
+    for (const k of tryKeys) {
+      const fallbackList = orderByBelgeNo[k];
+      if (fallbackList && fallbackList.length > 0) {
+        const sorted = [...fallbackList].sort((a, b) => (a.teslimTarihi || "9999").localeCompare(b.teslimTarihi || "9999"));
+        const future = sorted.find(o => (o.teslimTarihi || "") >= ekstreTarih);
+        const chosen = future || sorted[0];
+        // Önemli: matchedOrderId YAZMA — bu siparişin spesifik 3-tuple'ı yok.
+        // Sadece termin bilgisi ödünç. OTD hesabında "borrowed termin" olarak kullanılır.
+        return { ...chosen, id: null, matchType: "borrowed" };
+      }
+    }
+    return null;
+  };
+
+  let added = 0, skipped = 0, updated = 0, matchExact = 0, matchBorrowed = 0, orphan = 0;
+  for (const it of items) {
+    const id = `EKSTRE_${it.customerCode}_${it.tarih}_${it.belgeNo}_${it.stokKodu}`;
+    const matchedOrderForExisting = matchOrder(it.refNo, it.stokKodu, it.tarih);
+    if (shipments[id]) {
+      const sh = shipments[id];
+      const newMatchedId = matchedOrderForExisting?.id || null;
+      const newTermin = matchedOrderForExisting?.teslimTarihi || null;
+      const newType = matchedOrderForExisting?.matchType || "orphan";
+      if (sh.matchedOrderId !== newMatchedId || sh.musteriTermin !== newTermin || sh.matchType !== newType) {
+        sh.matchedOrderId = newMatchedId;
+        sh.musteriTermin = newTermin;
+        sh.isOrphan = !matchedOrderForExisting;
+        sh.matchType = newType;
+        updated++;
+      }
+      if (matchedOrderForExisting?.matchType === "exact") matchExact++;
+      else if (matchedOrderForExisting?.matchType === "borrowed") matchBorrowed++;
+      else orphan++;
+      skipped++;
+      continue;
+    }
+    const miktar = Number(it.miktar) || 0;
+    const bedel = Number(it.bedelTl) || 0;
+    const orjMikt = Math.abs(miktar);
+    const unitPriceTl = orjMikt > 0 ? Math.abs(bedel) / orjMikt : 0;
+
+    const matchedOrder = matchedOrderForExisting;
+    const musteriTermin = matchedOrder?.teslimTarihi || null;
+    const matchedOrderId = matchedOrder?.id || null;
+    const matchType = matchedOrder?.matchType || "orphan";
+    if (matchType === "exact") matchExact++;
+    else if (matchType === "borrowed") matchBorrowed++;
+    else orphan++;
+
+    shipments[id] = {
+      customerCode: it.customerCode,
+      customerName: it.customerName,
+      stokKodu: it.stokKodu,
+      stokAdi: it.stokAdi || "",
+      belgeNo: it.belgeNo,
+      refNo: it.refNo || "",
+      orijinalMiktar: orjMikt,
+      toplamBedel: bedel,
+      unitPriceTl,
+      teslimTarihi: it.tarih, // cari ekstre fatura tarihi (gerçek sevk tarihi)
+      musteriTermin,           // salesOrders'tan eşlenen müşteri termini (OTD hesabı için)
+      matchedOrderId,          // eşlenen salesOrders 3-tuple ID'si (sadece exact match'te dolu)
+      matchType,               // "exact" | "borrowed" | "orphan"
+      isOrphan: !matchedOrder, // OTD'ye katılmaz, audit listesinde
+      isIade: !!it.isIade,
+      source: "ekstre",
+      events: [{
+        at: it.tarih + "T00:00:00.000Z",
+        deltaQty: miktar,
+        cumulative: miktar,
+        source: it.isIade ? "ekstre-iade" : "ekstre-sync",
+        final: true,
+      }],
+      totalShipped: miktar,
+      fullyDelivered: true,
+      firstShipAt: it.tarih,
+      finalShipAt: it.tarih,
+      lastUpdate: importedAt,
+    };
+    added++;
+  }
+
+  if (added > 0 || updated > 0 || deletedNonExtre > 0) {
+    await shipmentsRef.set(shipments);
+  }
+  return { added, skipped, updated, deletedNonExtre, totalItems: items.length, matchExact, matchBorrowed, orphan };
 }
 
 /**
@@ -730,6 +933,7 @@ module.exports = {
   saveUnitCostPartitions,
   saveOverheadReport,
   saveSuppliesReport,
+  saveCariEkstreReport,
   appendAutomationLog,
   getLatestAutomationLog,
   saveCurrencyRates,

@@ -91,37 +91,106 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     return { thisWeekCount, thisWeekBedel, next4WeekCount, next4WeekBedel };
   }, [salesOrders, planOverrides, currentWeek]);
 
-  // 3) Sevk performansı — shipments'tan
+  // 3) Sevk performansı — cari ekstre (EKSTRE_*) kayıtlarından, musteriTermin bazlı.
+  // KURAL (kullanıcı kararı 2026-06-22):
+  //   - OTD = "tam teslim zamanında" (Seçenek A): siparişin tüm sevkleri tamamlandığında
+  //     son sevk tarihi <= musteriTermin
+  //   - musteriTermin: salesOrders'tan eşlenen termin (exact veya borrowed match)
+  //   - Bu yıl içinde teslim edilen tamamlanmış siparişler OTD havuzu
+  //   - İade satırları: sevk olarak sayılmaz, sadece toplam miktar düzeltir
+  //   - Orphan (matchType === "orphan"): OTD'ye katılmaz
+  //   - planOverrides deferred: havuza katılmaz
   const shipmentPerf = useMemo(() => {
-    let thisMonthEvents = 0, thisMonthQty = 0;
-    let totalFullyDelivered = 0, totalOnTime = 0, totalLate = 0;
-    let totalLateDays = 0, lateCount = 0;
-    for (const [id, sh] of Object.entries(shipments || {})) {
+    const currentYear = String(today.getFullYear());
+    // Sipariş bazlı topla: matchedOrderId varsa onun altında, yoksa (refNo|stokKodu) altında
+    const byOrder = {}; // groupKey → { groupKey, musteriTermin, finalShipAt, sevkQty, iadeQty, sevks: [...] }
+    for (const sh of Object.values(shipments || {})) {
       if (!sh) continue;
-      // Bu ay olan event'ler
-      for (const ev of (sh.events || [])) {
-        if (ev.at && ev.at.substring(0, 7) === currentMonthKey) {
-          thisMonthEvents++;
-          thisMonthQty += Number(ev.deltaQty || 0);
-        }
-      }
-      // Tamamlanan siparişlerde teslim tarihi karşılaştırması
-      if (sh.fullyDelivered && sh.finalShipAt && sh.teslimTarihi) {
-        totalFullyDelivered++;
-        const finalShip = sh.finalShipAt.substring(0, 10);
-        if (finalShip <= sh.teslimTarihi) {
-          totalOnTime++;
-        } else {
-          totalLate++;
-          const diff = (new Date(finalShip).getTime() - new Date(sh.teslimTarihi).getTime()) / 86400000;
-          if (diff > 0) { totalLateDays += diff; lateCount++; }
-        }
+      if (sh.source !== 'ekstre') continue;
+      if (sh.matchType === 'orphan' || !sh.musteriTermin) continue;
+      const groupKey = sh.matchedOrderId || `${(sh.refNo || '').trim()}|${(sh.stokKodu || '').trim()}`;
+      if (!byOrder[groupKey]) byOrder[groupKey] = {
+        groupKey,
+        musteriTermin: sh.musteriTermin,
+        matchType: sh.matchType,
+        customerCode: sh.customerCode,
+        stokKodu: sh.stokKodu,
+        belgeNo: sh.belgeNo,
+        sevkQty: 0,
+        iadeQty: 0,
+        lastShipDate: '',
+        firstShipDate: '',
+      };
+      const grp = byOrder[groupKey];
+      const qty = Number(sh.totalShipped || 0);
+      if (sh.isIade) grp.iadeQty += Math.abs(qty);
+      else {
+        grp.sevkQty += qty;
+        // En son positive sevk tarihi (iadeler hariç)
+        if (!grp.lastShipDate || sh.teslimTarihi > grp.lastShipDate) grp.lastShipDate = sh.teslimTarihi;
+        if (!grp.firstShipDate || sh.teslimTarihi < grp.firstShipDate) grp.firstShipDate = sh.teslimTarihi;
       }
     }
-    const otdPct = totalFullyDelivered > 0 ? (totalOnTime / totalFullyDelivered) * 100 : null;
+    // Her grup için: salesOrders'ta orijinalMiktar varsa tam teslim kontrolü
+    const allFlat = [];
+    let totalCompleted = 0, totalOnTime = 0, totalLate = 0;
+    let totalLateDays = 0, lateCount = 0;
+    let thisYearCompleted = 0, thisYearOnTime = 0;
+    const flatLate = []; // geç olanlar listesi
+    for (const grp of Object.values(byOrder)) {
+      const order = grp.groupKey && grp.groupKey.includes('_') ? salesOrders?.[grp.groupKey] : null;
+      const orijinalMiktar = Number(order?.orijinalMiktar || 0);
+      const netSevk = grp.sevkQty - grp.iadeQty;
+      // Tam teslim mi? orijinal miktar biliniyorsa, net sevk >= orijinal (küçük tolerans)
+      // Bilinmiyorsa (borrowed match) → tüm sevkleri tamamlanmış say (matchType borrowed = eski sipariş)
+      const isCompleted = orijinalMiktar > 0
+        ? netSevk >= orijinalMiktar - 0.01
+        : grp.matchType === 'borrowed'; // borrowed = zaten tamamlanmış (salesOrders'tan düşmüş)
+      if (!isCompleted) continue;
+      if (!grp.lastShipDate || !grp.musteriTermin) continue;
+      const lastShip = grp.lastShipDate.substring(0, 10);
+      const onTime = lastShip <= grp.musteriTermin;
+      const item = {
+        groupKey: grp.groupKey,
+        customerCode: grp.customerCode,
+        stokKodu: grp.stokKodu,
+        belgeNo: grp.belgeNo,
+        musteriTermin: grp.musteriTermin,
+        firstShipDate: grp.firstShipDate,
+        lastShipDate: grp.lastShipDate,
+        sevkQty: grp.sevkQty,
+        iadeQty: grp.iadeQty,
+        netSevk,
+        orijinalMiktar,
+        onTime,
+        matchType: grp.matchType,
+        lateDays: onTime ? 0 : Math.round((new Date(lastShip).getTime() - new Date(grp.musteriTermin).getTime()) / 86400000),
+      };
+      allFlat.push(item);
+      totalCompleted++;
+      if (onTime) totalOnTime++;
+      else {
+        totalLate++;
+        if (item.lateDays > 0) { totalLateDays += item.lateDays; lateCount++; }
+        flatLate.push(item);
+      }
+      // Bu yıl içinde teslim edilenler
+      if (grp.musteriTermin.startsWith(currentYear)) {
+        thisYearCompleted++;
+        if (onTime) thisYearOnTime++;
+      }
+    }
+    const otdPct = totalCompleted > 0 ? (totalOnTime / totalCompleted) * 100 : null;
+    const thisYearOtdPct = thisYearCompleted > 0 ? (thisYearOnTime / thisYearCompleted) * 100 : null;
     const avgLateDays = lateCount > 0 ? totalLateDays / lateCount : null;
-    return { thisMonthEvents, thisMonthQty, totalFullyDelivered, totalOnTime, totalLate, otdPct, avgLateDays };
-  }, [shipments, currentMonthKey]);
+    // Geç olanları gecikme günü büyükten küçüğe sırala
+    flatLate.sort((a, b) => b.lateDays - a.lateDays);
+    return {
+      totalCompleted, totalOnTime, totalLate, otdPct, avgLateDays,
+      thisYearCompleted, thisYearOnTime, thisYearOtdPct,
+      allFlat, flatLate,
+    };
+  }, [shipments, salesOrders, today]);
 
   // 4) Müşteri bedel pastası — top 5 (yıllık toplam)
   const customerPie = useMemo(() => {
@@ -135,46 +204,43 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     return arr;
   }, [salesOrders]);
 
-  // 5) Aylık trend — son 6 ay alındı vs sevk edildi (bedel)
+  // 5) Aylık trend — son 6 ay: Alındı + Brüt Sevk + İade + Net Sevk (4 seri)
+  // Cari ekstre EKSTRE_* kayıtları için toplamBedel zaten TL net (iade negatif).
+  // Brüt = sadece positive toplamBedel, İade = negatif olanların abs, Net = Brüt - İade.
   const monthlyTrend = useMemo(() => {
     const months = [];
     for (let i = 5; i >= 0; i--) {
       const d = new Date(today.getFullYear(), today.getMonth() - i, 1);
-      months.push({ key: monthKey(d), label: ['Oca','Şub','Mar','Nis','May','Haz','Tem','Ağu','Eyl','Eki','Kas','Ara'][d.getMonth()] + ' ' + String(d.getFullYear()).slice(2), alindi: 0, sevk: 0 });
+      months.push({
+        key: monthKey(d),
+        label: ['Oca','Şub','Mar','Nis','May','Haz','Tem','Ağu','Eyl','Eki','Kas','Ara'][d.getMonth()] + ' ' + String(d.getFullYear()).slice(2),
+        alindi: 0, brut: 0, iade: 0, net: 0,
+      });
     }
     const map = Object.fromEntries(months.map(m => [m.key, m]));
-    // Alındı (orderDate)
+    // Alındı (orderDate) — VIO sipariş raporundan
     for (const o of Object.values(salesOrders || {})) {
       if (!o.orderDate) continue;
       const k = o.orderDate.substring(0, 7);
       if (map[k]) map[k].alindi += Number(o.toplamBedel || 0);
     }
-    // Sevk Edildi — shipment seviyesinde (totalShipped × birim fiyat).
-    // Fiyat öncelik zinciri (kayıp toleranslı):
-    //   1) shipment.unitPriceTl (snapshot, ensureShipmentDoc tarafından yazılan)
-    //   2) salesOrders[id].toplamBedel / orijinalMiktar (sipariş hâlâ aktifse)
-    //   3) stokKodu bazlı global lookup — aynı parçanın başka aktif/snapshot fiyatı
-    // (3) kritik: tam sevk olup VIO'dan düşmüş + shipment'a unitPriceTl yazılmamış
-    // shipments için bile aynı stokKodu başka siparişte varsa fiyat bulunur.
-
-    // 1. Stok kodu → unitPriceTl global haritası
-    const priceByStock = {};
-    for (const o of Object.values(salesOrders || {})) {
-      const orj = Number(o?.orijinalMiktar || 0);
-      const bedel = Number(o?.toplamBedel || 0);
-      if (o?.stokKodu && orj > 0 && bedel > 0) {
-        priceByStock[o.stokKodu] = bedel / orj;
-      }
-    }
-    for (const sh of Object.values(shipments || {})) {
-      if (sh?.stokKodu && Number(sh.unitPriceTl) > 0 && !priceByStock[sh.stokKodu]) {
-        priceByStock[sh.stokKodu] = Number(sh.unitPriceTl);
-      }
-    }
-
-    // 2. Shipments üzerinde iterate
-    const missing = [];  // fiyatı bulunamayan shipments (audit)
+    // Sevk + İade ayrı — EKSTRE_ kayıtları toplamBedel'i kullan (iadelerde negatif)
+    const missing = [];
     for (const [id, sh] of Object.entries(shipments || {})) {
+      if (!sh) continue;
+      const bedel = Number(sh.toplamBedel || 0);
+      const dateRef = sh.finalShipAt || sh.firstShipAt || sh.lastUpdate || "";
+      const k = String(dateRef).substring(0, 7);
+      if (!map[k]) continue;
+      if (sh.source === 'ekstre' && bedel !== 0) {
+        if (sh.isIade || bedel < 0) {
+          map[k].iade += Math.abs(bedel);
+        } else {
+          map[k].brut += bedel;
+        }
+        continue;
+      }
+      // Fallback: ekstre olmayan kayıtlar için eski mantık (unitPrice × totalShipped)
       const shipped = Number(sh?.totalShipped || 0);
       if (shipped <= 0) continue;
       let unitPrice = Number(sh?.unitPriceTl) || 0;
@@ -184,13 +250,7 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
         const toplamBedel = Number(so?.toplamBedel || 0);
         if (orjMikt > 0 && toplamBedel > 0) unitPrice = toplamBedel / orjMikt;
       }
-      if (!unitPrice && sh?.stokKodu) {
-        unitPrice = priceByStock[sh.stokKodu] || 0;
-      }
-      const dateRef = sh.finalShipAt || sh.firstShipAt || sh.lastUpdate || "";
-      const k = String(dateRef).substring(0, 7);
       if (unitPrice <= 0) {
-        // Fiyat bulunamadı — kayıp, audit listesine ekle
         missing.push({
           id, stokKodu: sh.stokKodu || "", stokAdi: sh.stokAdi || "",
           belgeNo: sh.belgeNo || "", customerCode: sh.customerCode || "",
@@ -198,14 +258,31 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
         });
         continue;
       }
-      if (map[k]) map[k].sevk += shipped * unitPrice;
+      map[k].brut += shipped * unitPrice;
     }
+    for (const m of months) m.net = m.brut - m.iade;
     return { months, missing };
   }, [salesOrders, shipments, today]);
 
   // monthlyTrend artık { months, missing } döndürüyor; eski .map için months ayır
   const monthlyTrendMonths = monthlyTrend.months;
   const monthlyTrendMissing = monthlyTrend.missing;
+
+  // Orphan ekstre kayıtları — salesOrders'ta eşleşmesi bulunamayan ekstre sevkleri
+  // (büyük ihtimalle tam teslim olup VIO'dan düşmüş eski siparişler).
+  // Termin bilgisi yok → OTD'ye katılmıyor. Audit listesinde görünür.
+  const orphanShipments = useMemo(() => {
+    const list = [];
+    let totalBedel = 0;
+    for (const [id, sh] of Object.entries(shipments || {})) {
+      if (sh?.source !== 'ekstre') continue;
+      if (sh.matchType !== 'orphan') continue;
+      list.push({ id, ...sh });
+      totalBedel += Math.abs(Number(sh.toplamBedel || 0));
+    }
+    list.sort((a, b) => (b.teslimTarihi || '').localeCompare(a.teslimTarihi || ''));
+    return { list, totalBedel, count: list.length };
+  }, [shipments]);
 
   // 5b) Gelecek 6 ay yükü — bizim plan vs müşteri teslim (bedel)
   const futureLoad = useMemo(() => {
@@ -358,29 +435,29 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
 • Önümüzdeki 4 hafta: bu hafta + sonraki 3`}
         />
         <KpiCard
-          onClick={() => setShipmentModal({ dateRange: 'thisMonth', status: 'all' })}
-          icon="✅" title="Sevk Performansı"
-          primary={shipmentPerf.otdPct !== null ? `%${shipmentPerf.otdPct.toFixed(0)} zamanında` : 'Veri yok'}
-          secondary={`${shipmentPerf.totalFullyDelivered} tam teslim · ${shipmentPerf.totalLate} gecikmeli`}
+          onClick={() => setShipmentModal({ dateRange: 'thisYear', status: 'all' })}
+          icon="✅" title="Sevk Performansı (OTD)"
+          primary={shipmentPerf.thisYearOtdPct !== null ? `%${shipmentPerf.thisYearOtdPct.toFixed(0)} zamanında` : 'Veri yok'}
+          secondary={`Bu yıl ${shipmentPerf.thisYearCompleted} tam teslim · ${shipmentPerf.thisYearCompleted - shipmentPerf.thisYearOnTime} gecikmeli`}
           extra={shipmentPerf.avgLateDays !== null
-            ? `Bu ay ${shipmentPerf.thisMonthEvents} sevk hareketi · ortalama ${shipmentPerf.avgLateDays.toFixed(1)} gün gecikme`
-            : `Bu ay ${shipmentPerf.thisMonthEvents} sevk hareketi`}
+            ? `Tümü: ${shipmentPerf.totalCompleted} tam teslim · ortalama ${shipmentPerf.avgLateDays.toFixed(1)} gün gecikme`
+            : `Tümü: ${shipmentPerf.totalCompleted} tam teslim`}
           info={
-`Veri kaynağı: shipments doc (VIO yüklemeleri arası diff'ten üretilir)
+`Veri kaynağı: shipments doc (cari ekstre EKSTRE_ kayıtları + salesOrders termin eşlemesi)
 
-Her VIO yüklemesinde:
-• sevkEdilen artmış → 'vio-update' event yazılır
-• Sipariş VIO'dan kaybolmuş → 'vio-removed' final event (kalan miktar tam sevk varsayımı)
-• Akibeti Belirsiz işaretliyse → diff'ten muaf, kayboldu ise 'iptal'
+Hesap (kullanıcı kararı 2026-06-22 — Seçenek A: tam teslim zamanında):
+• OTD = (zamanında tam teslim edilen sipariş) / (toplam tam teslim edilen)
+• "Zamanında" = son positive sevk tarihi ≤ müşteri termini
+• "Tam teslim" = net sevk (sevk − iade) ≥ orijinal miktar (exact match) veya borrowed match (eski sipariş)
 
-Hesaplamalar:
-• %X zamanında = (finalShipAt ≤ teslimTarihi olan tam teslim) / (toplam tam teslim)
-• Tam teslim = fullyDelivered=true sipariş sayısı
-• Gecikmeli = tam teslim ama finalShipAt > teslimTarihi
-• Bu ay sevk hareketi = bu ay tarihli tüm event sayısı
-• Ort. gün gecikme = gecikmeli teslimlerde (finalShipAt − teslimTarihi) ortalaması
+Eşleme türleri:
+• Exact = cari ekstre refNo + stokKodu → salesOrders.belgeNo birebir
+• Borrowed = aynı belgenin başka satırından termin ödünç (sipariş tamamlanmış)
+• Orphan = eşleşme yok, OTD'ye katılmaz (audit listesinde)
 
-⚠ Yaklaşık değer: gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır.`}
+KPI:
+• Bu yıl OTD = teslim tarihi ${today.getFullYear()} olan tam teslimler
+• Tümü = tüm tarihler dahil`}
         />
       </div>
 
@@ -399,7 +476,7 @@ Hesaplamalar:
             </ResponsiveContainer>
           )}
         </ChartCard>
-        <ChartCard title="Aylık Trend — Alınan vs Sevk Edilen (Son 6 Ay)">
+        <ChartCard title="Aylık Trend — Alındı / Brüt Sevk / İade / Net Sevk (Son 6 Ay)">
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={monthlyTrendMonths} margin={{ top: 8, right: 8, bottom: 0, left: 0 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#e7e5e4" />
@@ -408,7 +485,9 @@ Hesaplamalar:
               <Tooltip formatter={(v) => formatMoney(v) + ' TL'} />
               <Legend wrapperStyle={{ fontSize: 11 }} />
               <Bar dataKey="alindi" name="Alındı" fill="#534AB7" />
-              <Bar dataKey="sevk" name="Sevk Edildi" fill="#16a34a" />
+              <Bar dataKey="brut" name="Brüt Sevk" fill="#16a34a" />
+              <Bar dataKey="iade" name="İade" fill="#dc2626" />
+              <Bar dataKey="net" name="Net Sevk" fill="#0891b2" />
             </BarChart>
           </ResponsiveContainer>
           {monthlyTrendMissing.length > 0 && (
@@ -506,9 +585,70 @@ Hesaplamalar:
         )}
       </div>
 
+      {/* Orphan ekstre sevkleri — salesOrders'ta eşleşme yok (büyük ihtimalle tam teslim
+          olup VIO'dan düşmüş eski sipariş). Termin bilgisi yok → OTD'ye katılmıyor. */}
+      {orphanShipments.count > 0 && (
+        <div style={{ marginTop: 12, background: '#fff', border: '1px solid #fde68a', borderRadius: 8, padding: 14 }}>
+          <details>
+            <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600, color: '#92400e' }}>
+              ❓ Eşleşmeyen Cari Ekstre Sevkleri ({orphanShipments.count} kayıt · {formatMoney(orphanShipments.totalBedel)} TL)
+              <span style={{ fontSize: 11, fontWeight: 400, color: '#a16207', marginLeft: 8 }}>
+                — salesOrders'ta refNo bulunamadı (muhtemelen tam teslim olup arşive düşen eski siparişler)
+              </span>
+            </summary>
+            <div style={{ marginTop: 10, maxHeight: 320, overflowY: 'auto', background: '#fffbeb', borderRadius: 6, fontSize: 11 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse' }}>
+                <thead style={{ position: 'sticky', top: 0, background: '#fef3c7', zIndex: 1 }}>
+                  <tr>
+                    <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: '#78350f' }}>Sevk Tarihi</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: '#78350f' }}>Müşteri</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: '#78350f' }}>Fatura</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: '#78350f' }}>Ref No</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'left', fontWeight: 600, color: '#78350f' }}>Stok Kodu</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: '#78350f' }}>Miktar</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'right', fontWeight: 600, color: '#78350f' }}>Tutar TL</th>
+                    <th style={{ padding: '6px 8px', textAlign: 'center', fontWeight: 600, color: '#78350f' }}>Tip</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {orphanShipments.list.slice(0, 200).map(sh => {
+                    const b = customerBadge(sh.customerCode);
+                    return (
+                      <tr key={sh.id} style={{ borderBottom: '1px solid #fef3c7' }}>
+                        <td style={{ padding: '4px 8px', color: '#92400e', fontVariantNumeric: 'tabular-nums' }}>{sh.teslimTarihi}</td>
+                        <td style={{ padding: '4px 8px' }}>
+                          <span style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: b.bg, color: b.fg }}>{b.label}</span>
+                        </td>
+                        <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#57534e' }}>{sh.belgeNo}</td>
+                        <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#57534e' }}>{sh.refNo}</td>
+                        <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace' }}>{sh.stokKodu}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: sh.isIade ? '#dc2626' : '#44403c' }}>
+                          {sh.totalShipped}
+                        </td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: sh.isIade ? '#dc2626' : '#44403c' }}>
+                          {formatMoney(Math.abs(sh.toplamBedel || 0))}
+                        </td>
+                        <td style={{ padding: '4px 8px', textAlign: 'center', fontSize: 9, color: sh.isIade ? '#dc2626' : '#16a34a' }}>
+                          {sh.isIade ? 'İADE' : 'SEVK'}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              {orphanShipments.list.length > 200 && (
+                <div style={{ padding: 8, textAlign: 'center', color: '#a16207', fontSize: 10 }}>
+                  ... ve {orphanShipments.list.length - 200} kayıt daha
+                </div>
+              )}
+            </div>
+          </details>
+        </div>
+      )}
+
       <div style={{ marginTop: 14, display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 16 }}>
         <div style={{ fontSize: 10, color: '#a8a29e' }}>
-          Sevk performansı VIO yüklemelerine göre yaklaşık değerdir — gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır.
+          Sevk performansı = cari ekstre kayıtları + salesOrders termin eşlemesi. Orphan kayıtlar OTD'ye dahil değildir.
         </div>
         {isAdmin && (
           <button
@@ -535,50 +675,37 @@ Hesaplamalar:
       </div>
 
       {/* Sevk Performansı Detay Modal — KPI kartına tıklayınca açılır.
-          Filtre: tarih aralığı + durum. Sıralama: gecikme büyükten küçüğe (en problemli üstte). */}
+          Veri: shipmentPerf.allFlat (cari ekstre + salesOrders termin eşlemesi). */}
       {shipmentModal && (() => {
         const last3MonthsCutoff = (() => {
           const d = new Date(today.getFullYear(), today.getMonth() - 2, 1);
           return d.toISOString().substring(0, 10);
         })();
+        const currentYear = String(today.getFullYear());
         const rows = [];
-        for (const [id, sh] of Object.entries(shipments || {})) {
-          if (!sh || !sh.fullyDelivered || !sh.finalShipAt || !sh.teslimTarihi) continue;
-          const finalDate = sh.finalShipAt.substring(0, 10);
-          // Tarih aralığı filtresi
+        for (const r of shipmentPerf.allFlat) {
+          const termin = (r.musteriTermin || '').substring(0, 10);
+          if (!termin) continue;
           if (shipmentModal.dateRange === 'thisMonth') {
-            if (finalDate.substring(0, 7) !== currentMonthKey) continue;
+            if (termin.substring(0, 7) !== currentMonthKey) continue;
           } else if (shipmentModal.dateRange === 'last3Months') {
-            if (finalDate < last3MonthsCutoff) continue;
+            if (termin < last3MonthsCutoff) continue;
+          } else if (shipmentModal.dateRange === 'thisYear') {
+            if (!termin.startsWith(currentYear)) continue;
           }
-          const lateDays = Math.round((new Date(finalDate).getTime() - new Date(sh.teslimTarihi).getTime()) / 86400000);
-          const isLate = lateDays > 0;
-          if (shipmentModal.status === 'onTime' && isLate) continue;
-          if (shipmentModal.status === 'late' && !isLate) continue;
-          rows.push({
-            id,
-            customerCode: sh.customerCode,
-            customerName: sh.customerName,
-            belgeNo: sh.belgeNo,
-            stokKodu: sh.stokKodu,
-            stokAdi: sh.stokAdi,
-            orijinalMiktar: sh.orijinalMiktar,
-            totalShipped: sh.totalShipped,
-            firstShipAt: sh.firstShipAt ? sh.firstShipAt.substring(0, 10) : '',
-            finalShipAt: finalDate,
-            teslimTarihi: sh.teslimTarihi,
-            lateDays,
-            isLate,
-          });
+          if (shipmentModal.status === 'onTime' && !r.onTime) continue;
+          if (shipmentModal.status === 'late' && r.onTime) continue;
+          rows.push(r);
         }
-        rows.sort((a, b) => b.lateDays - a.lateDays);
+        rows.sort((a, b) => (b.lateDays || 0) - (a.lateDays || 0));
         const totalCount = rows.length;
-        const lateCount = rows.filter(r => r.isLate).length;
+        const lateCount = rows.filter(r => !r.onTime).length;
         const onTimeCount = totalCount - lateCount;
-        const avgLate = lateCount > 0 ? rows.filter(r => r.isLate).reduce((s, r) => s + r.lateDays, 0) / lateCount : 0;
+        const avgLate = lateCount > 0 ? rows.filter(r => !r.onTime).reduce((s, r) => s + (r.lateDays || 0), 0) / lateCount : 0;
 
         const dateLabel = shipmentModal.dateRange === 'thisMonth' ? 'Bu Ay'
-          : shipmentModal.dateRange === 'last3Months' ? 'Son 3 Ay' : 'Tümü';
+          : shipmentModal.dateRange === 'last3Months' ? 'Son 3 Ay'
+          : shipmentModal.dateRange === 'thisYear' ? `${currentYear} Yılı` : 'Tümü';
 
         return (
           <div
@@ -624,6 +751,7 @@ Hesaplamalar:
                 {[
                   { v: 'thisMonth', label: 'Bu Ay' },
                   { v: 'last3Months', label: 'Son 3 Ay' },
+                  { v: 'thisYear', label: `${today.getFullYear()} Yılı` },
                   { v: 'all', label: 'Tümü' },
                 ].map(opt => (
                   <button
@@ -669,22 +797,25 @@ Hesaplamalar:
                     <thead style={{ position: 'sticky', top: 0, background: '#f5f5f4', zIndex: 1 }}>
                       <tr style={{ fontSize: 10, color: '#57534e', textAlign: 'left' }}>
                         <th style={shTh}>Müş</th>
-                        <th style={shTh}>Belge</th>
+                        <th style={shTh}>Sipariş Belge</th>
                         <th style={shTh}>Stok Kodu</th>
-                        <th style={shTh}>Ad</th>
                         <th style={{ ...shTh, textAlign: 'right' }}>Orjinal</th>
                         <th style={{ ...shTh, textAlign: 'right' }}>Sevk</th>
+                        <th style={{ ...shTh, textAlign: 'right' }}>İade</th>
+                        <th style={{ ...shTh, textAlign: 'right' }}>Net</th>
                         <th style={shTh}>İlk Sevk</th>
                         <th style={shTh}>Son Sevk</th>
-                        <th style={shTh}>Müş. Teslim</th>
+                        <th style={shTh}>Müş. Termin</th>
+                        <th style={shTh}>Eşleme</th>
                         <th style={{ ...shTh, textAlign: 'right' }}>Gecikme</th>
                       </tr>
                     </thead>
                     <tbody>
                       {rows.map(r => {
                         const b = customerBadge(r.customerCode);
+                        const lateDays = r.lateDays || 0;
                         return (
-                          <tr key={r.id} style={{ borderTop: '1px solid #f5f5f4' }}>
+                          <tr key={r.groupKey} style={{ borderTop: '1px solid #f5f5f4' }}>
                             <td style={shTd}>
                               <span style={{
                                 padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
@@ -693,17 +824,27 @@ Hesaplamalar:
                             </td>
                             <td style={{ ...shTd, fontFamily: 'ui-monospace, monospace' }}>{r.belgeNo}</td>
                             <td style={{ ...shTd, fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{r.stokKodu}</td>
-                            <td style={{ ...shTd, color: '#44403c', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={r.stokAdi}>{r.stokAdi}</td>
-                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#78716c' }}>{r.orijinalMiktar}</td>
-                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>{r.totalShipped}</td>
-                            <td style={{ ...shTd, color: '#78716c' }}>{r.firstShipAt}</td>
-                            <td style={shTd}>{r.finalShipAt}</td>
-                            <td style={{ ...shTd, color: '#78716c' }}>{r.teslimTarihi}</td>
+                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: '#78716c' }}>{r.orijinalMiktar || '-'}</td>
+                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{r.sevkQty}</td>
+                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', color: r.iadeQty > 0 ? '#dc2626' : '#a8a29e' }}>
+                              {r.iadeQty || '-'}
+                            </td>
+                            <td style={{ ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 500 }}>{r.netSevk}</td>
+                            <td style={{ ...shTd, color: '#78716c' }}>{r.firstShipDate}</td>
+                            <td style={shTd}>{r.lastShipDate}</td>
+                            <td style={{ ...shTd, color: '#78716c' }}>{r.musteriTermin}</td>
+                            <td style={{ ...shTd, fontSize: 9 }}>
+                              <span style={{
+                                padding: '1px 5px', borderRadius: 3, fontWeight: 600,
+                                background: r.matchType === 'exact' ? '#dcfce7' : '#fef3c7',
+                                color: r.matchType === 'exact' ? '#166534' : '#92400e',
+                              }}>{r.matchType === 'exact' ? 'TAM' : 'ÖDÜNÇ'}</span>
+                            </td>
                             <td style={{
                               ...shTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600,
-                              color: r.isLate ? '#dc2626' : '#16a34a',
+                              color: !r.onTime ? '#dc2626' : '#16a34a',
                             }}>
-                              {r.isLate ? `+${r.lateDays} gün` : (r.lateDays === 0 ? 'tam zamanında' : `${r.lateDays} gün önce`)}
+                              {!r.onTime ? `+${lateDays} gün` : (lateDays === 0 ? 'tam zamanında' : `${Math.abs(lateDays)} gün önce`)}
                             </td>
                           </tr>
                         );
@@ -718,7 +859,9 @@ Hesaplamalar:
                 padding: '8px 20px', borderTop: '1px solid #e7e5e4',
                 fontSize: 10, color: '#a8a29e',
               }}>
-                ⚠ Yaklaşık değerler: gerçek sevk tarihi yerine "VIO'dan kaybolduğu yükleme tarihi" baz alınır. Replacement detection sonrası kalan eski kayıtlar varsa burada görünebilir.
+                Veri kaynağı: cari ekstre EKSTRE_* kayıtları + salesOrders termin eşlemesi.
+                TAM = refNo + stokKodu birebir eşleşti. ÖDÜNÇ = aynı belgenin başka satırından termin alındı (sipariş tamamlanmış).
+                Orphan kayıtlar (eşleşme yok) bu listede gösterilmez — ayrı bölümde audit listesinde.
               </div>
             </div>
           </div>

@@ -63,6 +63,15 @@ const VIO_REPORTS = [
     lookbackHours: 35 * 24,
     monthly: true,
   },
+  {
+    type: "cariEkstre",
+    docName: "shipments", // saveCariEkstreReport doğrudan shipments doc'una yazıyor
+    subjectMatch: "cari ekstre dövizli alt hesaplı",
+    label: "FR - Cari Ekstre Dövizli Alt Hesaplı + REFNO A4",
+    // Haftada bir (Pazartesi) gelir. 8 gün lookback tampon.
+    lookbackHours: 8 * 24,
+    weekly: true,
+  },
 ];
 
 /**
@@ -199,11 +208,13 @@ async function fetchAllVioReports(auth, lookbackHours = 24) {
       const reportLookback = report.lookbackHours || lookbackHours;
       const msg = await findLatestMessage(gmail, report.subjectMatch, reportLookback);
       if (!msg) {
-        // Monthly raporlar (örn. hizmet total) için fail değil "no_recent_monthly" — overallSuccess'i bozmaz
-        const status = report.monthly ? "no_recent_monthly" : "not_found";
+        // Monthly/weekly raporlar için fail değil "no_recent_*" — overallSuccess'i bozmaz
+        let status = "not_found";
+        if (report.monthly) status = "no_recent_monthly";
+        else if (report.weekly) status = "no_recent_weekly";
         const days = Math.round(reportLookback / 24);
-        const error = report.monthly
-          ? `Son ${days} günde "${report.subjectMatch}" yok (ayda bir gönderilen rapor — beklenen davranış)`
+        const error = (report.monthly || report.weekly)
+          ? `Son ${days} günde "${report.subjectMatch}" yok (${report.weekly ? "haftada" : "ayda"} bir gönderilen rapor — beklenen davranış)`
           : `Son ${reportLookback} saatte "${report.subjectMatch}" subject'li mail bulunamadı`;
         results.push({
           type: report.type,

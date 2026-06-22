@@ -1180,6 +1180,151 @@ function parseSuppliesExcel(workbook, fallbackYear) {
   };
 }
 
+// ====================================================================
+// CARİ EKSTRE PARSER — "FR - Cari Ekstre Dövizli Alt Hesaplı + REFNO A4"
+// Müşteri başına blok yapısı, Satış Faturası (sevk) + Satış Faturası(İade)
+// işlem tipleri çıkarılır. Bedel her zaman TL (Borç/Alacak Bedel kolonu).
+// İade satırlarında miktar ve bedel negatif olarak gelir.
+// ====================================================================
+
+// Sadece bu iki müşteri grubu takip ediliyor (kullanıcı kararı 2026-06-22)
+// Ana hesap + alt hesaplar prefix match: "120-116-1" gibi alt hesaplar dahil.
+const TRACKED_CUSTOMER_PREFIXES = ["120-0107", "120-116"];
+const TRACKED_CUSTOMERS = {
+  has: (code) => {
+    if (!code) return false;
+    const s = String(code).trim();
+    for (const p of TRACKED_CUSTOMER_PREFIXES) {
+      if (s === p || s.startsWith(p + "-")) return true;
+    }
+    return false;
+  },
+  prefixes: TRACKED_CUSTOMER_PREFIXES,
+};
+
+// ddmmyyyy veya dmmyyyy → ISO YYYY-MM-DD
+function cariTarihToIso(n) {
+  if (typeof n !== "number") return null;
+  const s = String(n).padStart(8, "0");
+  if (s.length < 7 || s.length > 8) return null;
+  const yyyy = s.slice(-4);
+  const mm = s.slice(-6, -4);
+  const dd = s.slice(0, s.length - 6).padStart(2, "0");
+  if (Number(yyyy) < 2020 || Number(yyyy) > 2100) return null;
+  if (Number(mm) < 1 || Number(mm) > 12) return null;
+  if (Number(dd) < 1 || Number(dd) > 31) return null;
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+// VIO ekstresinde müşteri header satırı: "120-XXXX - MÜŞTERİ ADI"
+function cariParseCustomerHeader(s) {
+  const m = String(s || "").trim().match(/^(\d{3}-\d{3,4})\s*-\s*(.+)/);
+  if (!m) return null;
+  return { customerCode: m[1].trim(), customerName: m[2].trim() };
+}
+
+function parseCariEkstreExcel(workbook) {
+  const sheet = workbook.Sheets[workbook.SheetNames[0]];
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+
+  const items = []; // her sevk/iade kalemi: {customerCode, customerName, tarih, belgeNo, refNo, isIade, stokKodu, stokAdi, miktar, bedelTl}
+  let currentCustomer = null;
+  let currentTransaction = null;
+
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const c0 = r[0];
+
+    // Müşteri header satırı — VIO ekstresinde aynı müşteri başlığı sayfa break'lerinde
+    // 60+ kez tekrarlanıyor. Aynı müşterinin tekrarı için transaction'ı SIFIRLAMA
+    // (yoksa sayfa break ortasında kalan stoklar kaybolur). Sadece müşteri DEĞİŞTİĞİNDE sıfırla.
+    const cust = typeof c0 === "string" ? cariParseCustomerHeader(c0) : null;
+    if (cust) {
+      const newCustomer = TRACKED_CUSTOMERS.has(cust.customerCode) ? cust : null;
+      const sameCustomer = currentCustomer && newCustomer && currentCustomer.customerCode === newCustomer.customerCode;
+      if (!sameCustomer) {
+        currentCustomer = newCustomer;
+        currentTransaction = null;
+      }
+      continue;
+    }
+
+    // İşlem satırı (büyük tarih number + belge no)
+    if (typeof c0 === "number" && c0 > 1000000 && c0 < 99999999 && typeof r[2] !== "undefined") {
+      if (!currentCustomer) { currentTransaction = null; continue; }
+      const tarih = cariTarihToIso(c0);
+      if (!tarih) { currentTransaction = null; continue; }
+      const islemAdi = String(r[4] || "").replace(/[\n\r]+/g, " ").trim();
+      const isSatis = /^Satış Faturası/.test(islemAdi) && !/İade/.test(islemAdi);
+      const isIade = /İade/.test(islemAdi);
+      // Sadece Satış Faturası ve İade satırlarını işle, diğerleri (EFT, çek, devir) atla
+      if (!isSatis && !isIade) { currentTransaction = null; continue; }
+      const belgeNo = String(r[2] || "").trim();
+      const refNo = String(r[6] || "").trim();
+      currentTransaction = { tarih, belgeNo, refNo, isIade };
+      continue;
+    }
+
+    // Stok veri satırı — yapısal tespit: küçük fiş number + dolu stokKodu (string)
+    // Header satırı (Fiş ID | Kod) opsiyonel, bazen eksik → bayrak kullanma.
+    if (currentCustomer && currentTransaction
+        && typeof c0 === "number" && c0 > 0 && c0 < 1000000
+        && typeof r[2] === "string" && r[2].trim()) {
+      const stokKodu = String(r[2]).trim();
+      const stokAdi = String(r[5] || "").trim();
+      const miktar = Number(r[10]) || 0;
+      const bedelTl = Number(r[19]) || 0;
+      if (miktar === 0 && bedelTl === 0) continue;
+      items.push({
+        customerCode: currentCustomer.customerCode,
+        customerName: currentCustomer.customerName,
+        tarih: currentTransaction.tarih,
+        belgeNo: currentTransaction.belgeNo,
+        refNo: currentTransaction.refNo,
+        isIade: currentTransaction.isIade,
+        stokKodu,
+        stokAdi,
+        miktar,       // İade ise negatif
+        bedelTl,      // İade ise negatif
+      });
+      continue;
+    }
+
+    // Diğer satırlar (Yer, İskonto/Nakliye/Kdv, footer, boş) — atla
+  }
+
+  // Özet istatistikler
+  const byCustomer = {};
+  for (const it of items) {
+    if (!byCustomer[it.customerCode]) {
+      byCustomer[it.customerCode] = {
+        customerCode: it.customerCode,
+        customerName: it.customerName,
+        satisCount: 0, satisBedel: 0, satisMiktar: 0,
+        iadeCount: 0, iadeBedel: 0, iadeMiktar: 0,
+      };
+    }
+    const c = byCustomer[it.customerCode];
+    if (it.isIade) {
+      c.iadeCount++;
+      c.iadeBedel += Math.abs(it.bedelTl);
+      c.iadeMiktar += Math.abs(it.miktar);
+    } else {
+      c.satisCount++;
+      c.satisBedel += it.bedelTl;
+      c.satisMiktar += it.miktar;
+    }
+  }
+
+  return {
+    items,
+    byCustomer: Object.values(byCustomer),
+    itemCount: items.length,
+    customerCount: Object.keys(byCustomer).length,
+    importedAt: new Date().toISOString(),
+  };
+}
+
 module.exports = {
   parseStockReport,
   parseAkibetExcel,
@@ -1188,4 +1333,6 @@ module.exports = {
   parseSalesOrdersReport,
   parseOverheadExcel,
   parseSuppliesExcel,
+  parseCariEkstreExcel,
+  TRACKED_CUSTOMERS,
 };

@@ -37,8 +37,8 @@ const admin = require("firebase-admin");
 const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
-const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel, parseSuppliesExcel } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
+const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel, parseSuppliesExcel, parseCariEkstreExcel, TRACKED_CUSTOMERS } = require("./parsers");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
 const { fetchTcmbRates } = require("./tcmb");
 const { calculateSimpleInventoryValue } = require("./inventoryCalcSimple");
 
@@ -70,6 +70,7 @@ function runParser(type, workbook, opts = {}) {
   if (type === "salesOrders") return parseSalesOrdersReport(workbook);
   if (type === "overhead") return parseOverheadExcel(workbook);
   if (type === "supplies") return parseSuppliesExcel(workbook, opts.fallbackYear);
+  if (type === "cariEkstre") return parseCariEkstreExcel(workbook);
   throw new Error(`Bilinmeyen tip: ${type}`);
 }
 
@@ -121,6 +122,12 @@ function summarizeResult(type, result) {
       grandTotalTl: Math.round(result.grandTotalTl || 0),
     };
   }
+  if (type === "cariEkstre") {
+    return {
+      itemCount: result.itemCount,
+      customerCount: result.customerCount,
+    };
+  }
   return {};
 }
 
@@ -155,12 +162,12 @@ async function runVioImport(source, secrets) {
           status: item.status,
           error: item.error,
         });
-        // Monthly rapor (ayda bir VIO tarafından gönderilen) için mail yokluğu fail sayılmaz
-        if (item.status !== "no_recent_monthly") {
+        // Monthly/weekly rapor için mail yokluğu fail sayılmaz
+        if (item.status !== "no_recent_monthly" && item.status !== "no_recent_weekly") {
           overallSuccess = false;
           logger.warn(`[VIO] ${item.label}: ${item.status}`, { error: item.error });
         } else {
-          logger.info(`[VIO] ${item.label}: ${item.status} (monthly — beklenen)`);
+          logger.info(`[VIO] ${item.label}: ${item.status} (periodic — beklenen)`);
         }
         continue;
       }
@@ -181,7 +188,8 @@ async function runVioImport(source, secrets) {
           (item.type === "purchase" && parserResult.totalParts === 0) ||
           (item.type === "salesOrders" && parserResult.orderCount === 0) ||
           (item.type === "overhead" && (parserResult.itemCount === 0 || (parserResult.monthsList?.length || 0) === 0)) ||
-          (item.type === "supplies" && (parserResult.totalItems === 0 || (parserResult.monthsList?.length || 0) === 0));
+          (item.type === "supplies" && (parserResult.totalItems === 0 || (parserResult.monthsList?.length || 0) === 0)) ||
+          (item.type === "cariEkstre" && parserResult.itemCount === 0);
 
         if (isEmpty) {
           reportResults.push({
@@ -215,6 +223,11 @@ async function runVioImport(source, secrets) {
           summary.suppliesMonthsWritten = saveOut.suppliesMeta.monthsWritten;
           summary.suppliesItemCount = saveOut.suppliesMeta.itemCount;
           summary.suppliesSkippedPartial = saveOut.suppliesMeta.skippedPartialMonths || [];
+        }
+        if (item.type === "cariEkstre" && saveOut?.ekstreMeta) {
+          summary.ekstreAdded = saveOut.ekstreMeta.added;
+          summary.ekstreSkipped = saveOut.ekstreMeta.skipped;
+          summary.ekstreDeletedNonExtre = saveOut.ekstreMeta.deletedNonExtre;
         }
         // purchase için paralel fiyat çıkarımı → unitCosts FIFO partileri
         if (item.type === "purchase") {
@@ -606,6 +619,272 @@ exports.deleteMonthlySnapshotHttp = onRequest(
       res.json({ success: true, monthKey: monthParam });
     } catch (err) {
       logger.error("[Snapshot delete] Hata", { error: err.message });
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ====================================================================
+// DEBUG: salesOrders Aselsan örnek refNo formatı vs cari ekstre formatı
+// ====================================================================
+exports.debugRefNoMatchHttp = onRequest(
+  { region: REGION, timeoutSeconds: 30, memory: "256MiB", cors: true, invoker: "public" },
+  async (req, res) => {
+    try {
+      const [ordSnap, shipSnap] = await Promise.all([
+        db.collection("appData").doc("salesOrders").get(),
+        db.collection("appData").doc("shipments").get(),
+      ]);
+      const orders = ordSnap.exists ? ordSnap.data() || {} : {};
+      const shipments = shipSnap.exists ? shipSnap.data() || {} : {};
+
+      // 10 Aselsan salesOrders örneği
+      const aselsanOrders = [];
+      for (const [id, o] of Object.entries(orders)) {
+        if (o.customerCode && String(o.customerCode).startsWith("120-0107")) {
+          aselsanOrders.push({ id, belgeNo: o.belgeNo, stokKodu: o.stokKodu, teslimTarihi: o.teslimTarihi, customerCode: o.customerCode });
+          if (aselsanOrders.length >= 10) break;
+        }
+      }
+      // 10 cari ekstre örneği
+      const ekstreSamples = [];
+      for (const [id, sh] of Object.entries(shipments)) {
+        if (!id.startsWith("EKSTRE_120-0107")) continue;
+        ekstreSamples.push({ id, belgeNo: sh.belgeNo, refNo: sh.refNo, stokKodu: sh.stokKodu, tarih: sh.teslimTarihi });
+        if (ekstreSamples.length >= 10) break;
+      }
+      // Stok kodu match analizi: eşleşen refNo+stokKodu vs sadece refNo
+      const aselsanOrdersList = Object.values(orders).filter(o => o.customerCode && String(o.customerCode).startsWith("120-0107"));
+      const orderBelgeNoStokSet = new Set(aselsanOrdersList.map(o => `${String(o.belgeNo).trim()}|${String(o.stokKodu).trim()}`));
+      const ekstreList = Object.entries(shipments).filter(([id]) => id.startsWith("EKSTRE_120-0107"));
+
+      let matchByRefAndStok = 0, matchByRefOnly = 0, noMatch = 0;
+      const mismatchedStoks = []; // refNo eşleşti ama stok eşleşmedi
+      for (const [id, sh] of ekstreList) {
+        const refNoRaw = String(sh.refNo || "").trim();
+        let refNoNorm = refNoRaw;
+        if (/^1000\d+$/.test(refNoRaw)) {
+          const n = Number(refNoRaw.substring(4));
+          if (Number.isFinite(n) && n > 0) refNoNorm = String(n);
+        }
+        const stok = String(sh.stokKodu || "").trim();
+        const fullKey = `${refNoNorm}|${stok}`;
+        if (orderBelgeNoStokSet.has(fullKey)) { matchByRefAndStok++; continue; }
+        // refNo eşleşti mi (stokKodu farklı olabilir)
+        const refMatch = aselsanOrdersList.find(o => String(o.belgeNo).trim() === refNoNorm);
+        if (refMatch) {
+          matchByRefOnly++;
+          if (mismatchedStoks.length < 10) mismatchedStoks.push({ id, ekstreStok: stok, orderStok: refMatch.stokKodu, refNoRaw, refNoNorm });
+        } else {
+          noMatch++;
+        }
+      }
+
+      const orderBelgeNos = new Set(aselsanOrdersList.map(o => String(o.belgeNo).trim()));
+      const ekstreRefNos = new Set();
+      const ekstreBelgeNos = new Set();
+      for (const [id, sh] of Object.entries(shipments)) {
+        if (!id.startsWith("EKSTRE_120-0107")) continue;
+        if (sh.refNo) ekstreRefNos.add(String(sh.refNo).trim());
+        if (sh.belgeNo) ekstreBelgeNos.add(String(sh.belgeNo).trim());
+      }
+      const matchedByRefNo = [...ekstreRefNos].filter(r => orderBelgeNos.has(r));
+      const matchedByBelgeNo = [...ekstreBelgeNos].filter(b => orderBelgeNos.has(b));
+
+      res.json({
+        matchAnalysis: {
+          totalEkstre: ekstreList.length,
+          matchByRefAndStok,
+          matchByRefOnly_stokMismatch: matchByRefOnly,
+          noRefMatch: noMatch,
+        },
+        mismatchedStoks,
+        aselsanOrdersTotal: [...orderBelgeNos].length,
+        ekstreUniqueRefNos: ekstreRefNos.size,
+        ekstreUniqueBelgeNos: ekstreBelgeNos.size,
+        matchedByRefNo_count: matchedByRefNo.length,
+        matchedByBelgeNo_count: matchedByBelgeNo.length,
+        sampleOrderBelgeNos: [...orderBelgeNos].slice(0, 10),
+        sampleEkstreRefNos: [...ekstreRefNos].slice(0, 10),
+        sampleEkstreBelgeNos: [...ekstreBelgeNos].slice(0, 10),
+        aselsanOrders,
+        ekstreSamples,
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ====================================================================
+// CLEANUP: A+R DIŞI SHIPMENTS KAYITLARI SİL
+// appData/shipments içinden Aselsan (120-0107) ve Roketsan (120-116)
+// dışındaki tüm kayıtları kaldırır. salesOrders'a DOKUNMAZ (MRP talebi
+// için kritik). Default dry-run; gerçek silme için ?execute=true gerekli.
+// ====================================================================
+exports.cleanupNonTrackedShipmentsHttp = onRequest(
+  { region: REGION, timeoutSeconds: 60, memory: "512MiB", cors: true, invoker: "public" },
+  async (req, res) => {
+    const execute = req.query?.execute === "true";
+    // mode=purgeNonExtreAR → EKSTRE_ olmayan A+R kayıtlarını sil (cari ekstre authoritative)
+    const mode = req.query?.mode || "nonTracked";
+    try {
+      const shipmentsRef = db.collection("appData").doc("shipments");
+      const shipSnap = await shipmentsRef.get();
+      const shipments = shipSnap.exists ? (shipSnap.data() || {}) : {};
+
+      const breakdown = {};
+      const toDelete = [];
+      for (const [id, v] of Object.entries(shipments)) {
+        const code = (v && v.customerCode) || "(boş)";
+        const name = (v && v.customerName) || "";
+        if (!breakdown[code]) breakdown[code] = { code, name, count: 0, willDelete: 0, sampleIds: [] };
+        breakdown[code].count++;
+        const isAR = TRACKED_CUSTOMERS.has((v && v.customerCode) || "");
+        const isEkstre = id.startsWith("EKSTRE_");
+        // Yeni format: EKSTRE_{customerCode}_..., eski format: EKSTRE_{tarih}_...
+        const isNewFormatEkstre = isEkstre && (id.startsWith("EKSTRE_120-0107") || id.startsWith("EKSTRE_120-116"));
+        const isOldFormatEkstre = isEkstre && !isNewFormatEkstre;
+        let shouldDelete = false;
+        if (mode === "purgeNonExtreAR") {
+          shouldDelete = isAR && !isEkstre; // non-EKSTRE A+R kayıtlarını sil
+        } else if (mode === "purgeOldEkstreFormat") {
+          shouldDelete = isOldFormatEkstre; // EKSTRE_ ama yeni format değil → eski kayıt
+        } else {
+          shouldDelete = !isAR; // tracked olmayanları sil (default)
+        }
+        if (shouldDelete) {
+          toDelete.push(id);
+          breakdown[code].willDelete++;
+          if (breakdown[code].sampleIds.length < 3) breakdown[code].sampleIds.push(id);
+        }
+      }
+      const customerBreakdown = Object.values(breakdown).sort((a, b) => b.count - a.count);
+
+      if (!execute) {
+        // Debug: prefix breakdown
+        const prefixBreakdown = { EKSTRE_: 0, "vio (other)": 0 };
+        const sampleNonEkstre = [];
+        for (const [id, v] of Object.entries(shipments)) {
+          if (id.startsWith("EKSTRE_")) prefixBreakdown.EKSTRE_++;
+          else {
+            prefixBreakdown["vio (other)"]++;
+            if (sampleNonEkstre.length < 5) sampleNonEkstre.push({ id, customerCode: v?.customerCode, totalShipped: v?.totalShipped });
+          }
+        }
+        res.json({
+          mode: `dry-run (${mode})`,
+          tracked: TRACKED_CUSTOMERS.prefixes,
+          totalBefore: Object.keys(shipments).length,
+          willDelete: toDelete.length,
+          willKeep: Object.keys(shipments).length - toDelete.length,
+          prefixBreakdown,
+          sampleNonEkstre,
+          customerBreakdown,
+          hint: "Gerçek silme için ?execute=true ekleyin (mode=purgeNonExtreAR de eklenebilir)",
+        });
+        return;
+      }
+
+      // Execute mode
+      const FV = admin.firestore.FieldValue;
+      const update = {};
+      for (const id of toDelete) update[id] = FV.delete();
+
+      // Firestore 1 MB limit — büyük update'leri parçala
+      const ids = Object.keys(update);
+      const CHUNK = 500;
+      for (let i = 0; i < ids.length; i += CHUNK) {
+        const slice = {};
+        for (const k of ids.slice(i, i + CHUNK)) slice[k] = update[k];
+        if (Object.keys(slice).length > 0) await shipmentsRef.update(slice);
+      }
+
+      logger.info(`[Cleanup] ✓ shipments A+R dışı silindi: ${toDelete.length}`);
+      res.json({
+        mode: "executed",
+        tracked: TRACKED_CUSTOMERS.prefixes,
+        deleted: toDelete.length,
+        remaining: Object.keys(shipments).length - toDelete.length,
+      });
+    } catch (err) {
+      logger.error("[Cleanup] Hata", { error: err.message });
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ====================================================================
+// CARİ EKSTRE — HAFTALIK CRON (Pzt 08:30 Europe/Istanbul)
+// VIO her Pazartesi sabah "FR - Cari Ekstre Dövizli Alt Hesaplı + REFNO A4"
+// subject'li maili gönderir. Cron Gmail'i tarar, parse eder, smart merge yapar.
+// İdempotent: aynı EKSTRE_* ID varsa atlar, idle haftada no-op.
+// ====================================================================
+exports.fetchCariEkstreWeekly = onSchedule(
+  {
+    region: REGION,
+    schedule: "30 8 * * 1",
+    timeZone: "Europe/Istanbul",
+    secrets: [GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REFRESH_TOKEN],
+    timeoutSeconds: 540,
+    memory: "512MiB",
+  },
+  async (event) => {
+    await runVioImport("scheduled-cari-ekstre-weekly", {
+      clientId: GMAIL_CLIENT_ID.value(),
+      clientSecret: GMAIL_CLIENT_SECRET.value(),
+      refreshToken: GMAIL_REFRESH_TOKEN.value(),
+    });
+  },
+);
+
+// ====================================================================
+// CARİ EKSTRE — MANUEL TEK SEFERLİK DOLUM (HTTP)
+// Mevcut A+R shipments kayıtlarını siler + cari ekstreden Ocak-Haziran dolumu.
+// İlk kurulumda Excel POST ile, sonraki çalıştırmalarda Gmail'den otomatik.
+// Body: multipart/form-data ile file alanında .xlsx | .xls dosyası
+// ?purgeNonExtre=true → mevcut A+R shipments silinir (ilk dolum için)
+// ====================================================================
+exports.uploadCariEkstreHttp = onRequest(
+  {
+    region: REGION,
+    timeoutSeconds: 540,
+    memory: "1GiB",
+    cors: true,
+    invoker: "public",
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "POST gerekli — body olarak Excel dosyası gönderin" });
+      return;
+    }
+    try {
+      // req.rawBody (Cloud Functions otomatik populate eder, binary)
+      const buffer = req.rawBody;
+      if (!buffer || buffer.length === 0) {
+        res.status(400).json({ error: "Body boş — Excel dosyası gönderilmedi" });
+        return;
+      }
+      const workbook = XLSX.read(buffer, { type: "buffer" });
+      const parserResult = parseCariEkstreExcel(workbook);
+      if (parserResult.itemCount === 0) {
+        res.status(400).json({ error: "Parser 0 satır çıkardı — dosya formatı doğru mu?" });
+        return;
+      }
+      const purgeNonExtre = req.query?.purgeNonExtre === "true";
+      const ekstreOut = await saveCariEkstreReport(db, parserResult, { purgeNonExtreForTracked: purgeNonExtre });
+      logger.info(`[CariEkstre Manuel] ✓ ${parserResult.itemCount} item parse edildi`, ekstreOut);
+      res.json({
+        success: true,
+        parsed: {
+          itemCount: parserResult.itemCount,
+          customerCount: parserResult.customerCount,
+          byCustomer: parserResult.byCustomer,
+        },
+        written: ekstreOut,
+      });
+    } catch (err) {
+      logger.error("[CariEkstre Manuel] Hata", { error: err.message, stack: err.stack });
       res.status(500).json({ error: err.message });
     }
   },
