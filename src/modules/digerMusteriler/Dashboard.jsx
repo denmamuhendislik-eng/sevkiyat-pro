@@ -157,11 +157,14 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       const order = grp.groupKey && grp.groupKey.includes('_') ? salesOrders?.[grp.groupKey] : null;
       const orijinalMiktar = Number(order?.orijinalMiktar || 0);
       const netSevk = grp.sevkQty - grp.iadeQty;
-      // Tam teslim mi? orijinal miktar biliniyorsa, net sevk >= orijinal (küçük tolerans)
-      // Bilinmiyorsa (borrowed match) → tüm sevkleri tamamlanmış say (matchType borrowed = eski sipariş)
+      // Tam teslim mi?
+      //   - orijinalMiktar biliniyorsa: net sevk >= orijinal (küçük tolerans)
+      //   - Bilinmiyorsa (salesOrders'ta yok): VIO'dan düşmüş = tam teslim varsayımı
+      //     Hem exact hem borrowed match için geçerli — exact match'in matchedOrderId
+      //     sonradan VIO cron ile salesOrders'tan kalkabilir (sipariş tam teslim olunca).
       const isCompleted = orijinalMiktar > 0
         ? netSevk >= orijinalMiktar - 0.01
-        : grp.matchType === 'borrowed'; // borrowed = zaten tamamlanmış (salesOrders'tan düşmüş)
+        : true; // salesOrders'ta yok = muhtemelen tam teslim olup arşive düşmüş
       if (!isCompleted) continue;
       if (!grp.lastShipDate || !grp.musteriTermin) continue;
       const lastShip = grp.lastShipDate.substring(0, 10);
