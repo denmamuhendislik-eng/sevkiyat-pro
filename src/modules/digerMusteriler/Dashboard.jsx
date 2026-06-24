@@ -504,6 +504,44 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
     return { lateCount, lateBedel, staleCount, deferredCount, deferredBedel, bomMissingCount, cancelledCount, top5OldestLate };
   }, [salesOrders, planOverrides, bomSet, currentWeek, customerMatches]);
 
+  // 7) Yıl Başından Beri (YTD) toplamlar + aylık ortalama
+  // Alındı: salesOrders.orderDate bu yıl olanlar
+  // Brüt/İade/Net: shipments EKSTRE_ kayıtlardan (cari ekstre = authoritative)
+  // Aylık ortalama = toplam / geçen ay sayısı (içinde bulunulan ay dahil)
+  const ytdStats = useMemo(() => {
+    const currentYear = String(today.getFullYear());
+    const monthsElapsed = today.getMonth() + 1; // 1-12 (Ocak=1, Haziran=6, vs.)
+    let orderCount = 0, orderBedel = 0;
+    let brutSevk = 0, iadeBedel = 0;
+    for (const o of Object.values(salesOrders || {})) {
+      if (!customerMatches(o.customerCode)) continue;
+      if (!o.orderDate || !o.orderDate.startsWith(currentYear)) continue;
+      orderCount++;
+      orderBedel += Number(o.toplamBedel || 0);
+    }
+    for (const sh of Object.values(shipments || {})) {
+      if (!sh) continue;
+      if (sh.source !== 'ekstre') continue;
+      if (!customerMatches(sh.customerCode)) continue;
+      const dateRef = sh.finalShipAt || sh.firstShipAt || sh.teslimTarihi || '';
+      if (!String(dateRef).startsWith(currentYear)) continue;
+      const bedel = Number(sh.toplamBedel || 0);
+      if (sh.isIade || bedel < 0) iadeBedel += Math.abs(bedel);
+      else brutSevk += bedel;
+    }
+    const netSevk = brutSevk - iadeBedel;
+    const avgOrderBedel = monthsElapsed > 0 ? orderBedel / monthsElapsed : 0;
+    const avgBrutSevk = monthsElapsed > 0 ? brutSevk / monthsElapsed : 0;
+    const avgIade = monthsElapsed > 0 ? iadeBedel / monthsElapsed : 0;
+    const avgNetSevk = monthsElapsed > 0 ? netSevk / monthsElapsed : 0;
+    const avgOrderCount = monthsElapsed > 0 ? orderCount / monthsElapsed : 0;
+    return {
+      orderCount, orderBedel, brutSevk, iadeBedel, netSevk,
+      avgOrderCount, avgOrderBedel, avgBrutSevk, avgIade, avgNetSevk,
+      monthsElapsed, currentYear,
+    };
+  }, [salesOrders, shipments, today, customerMatches]);
+
   if (!allLoaded) {
     return <div style={{ padding: 24, color: '#78716c' }}>Dashboard yükleniyor…</div>;
   }
@@ -593,6 +631,63 @@ Eşleme türleri:
 KPI:
 • Bu yıl OTD = teslim tarihi ${today.getFullYear()} olan tam teslimler
 • Tümü = tüm tarihler dahil`}
+        />
+      </div>
+
+      {/* İkinci sıra — Yıl Başından Beri (YTD) toplamlar + aylık ortalama */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: 12, marginBottom: 16 }}>
+        <KpiCard
+          icon="📋" title={`Toplam Alınan Sipariş (${ytdStats.currentYear})`}
+          primary={`${ytdStats.orderCount} sipariş`}
+          secondary={`${formatMoney(ytdStats.orderBedel)} TL`}
+          extra={
+            <span style={{ color: '#534AB7', fontWeight: 500 }}>
+              Aylık ort: {ytdStats.avgOrderCount.toFixed(1)} sipariş · {formatMoney(ytdStats.avgOrderBedel)} TL
+            </span>
+          }
+          info={
+`Veri kaynağı: salesOrders.orderDate ${ytdStats.currentYear} olan kayıtlar
+
+• Toplam = yıl başından bugüne tüm siparişler (deferred dahil)
+• Bedel = toplamBedel toplamı
+• Aylık ort = toplam / geçen ay sayısı (${ytdStats.monthsElapsed} ay)
+• Müşteri filtresi (üst sağ) uygulanır`}
+        />
+        <KpiCard
+          icon="✅" title={`Net Sevk (${ytdStats.currentYear})`}
+          primary={`${formatMoney(ytdStats.netSevk)} TL`}
+          secondary={`Brüt ${formatMoney(ytdStats.brutSevk)} − İade ${formatMoney(ytdStats.iadeBedel)}`}
+          extra={
+            <span style={{ color: '#16a34a', fontWeight: 500 }}>
+              Aylık ort: {formatMoney(ytdStats.avgNetSevk)} TL
+            </span>
+          }
+          info={
+`Veri kaynağı: cari ekstre EKSTRE_* kayıtları (source='ekstre')
+
+• Brüt = positive sevk toplamı
+• İade = negatif satırların mutlak değeri
+• Net = Brüt − İade
+• Tarih: finalShipAt veya teslimTarihi (cari fatura tarihi)
+• Aylık ort = net / ${ytdStats.monthsElapsed} ay`}
+        />
+        <KpiCard
+          icon="↩️" title={`İade (${ytdStats.currentYear})`}
+          primary={`${formatMoney(ytdStats.iadeBedel)} TL`}
+          secondary={ytdStats.brutSevk > 0
+            ? `Brüt sevkin %${((ytdStats.iadeBedel / ytdStats.brutSevk) * 100).toFixed(1)}'i`
+            : 'Brüt sevk yok'}
+          extra={
+            <span style={{ color: '#dc2626', fontWeight: 500 }}>
+              Aylık ort: {formatMoney(ytdStats.avgIade)} TL
+            </span>
+          }
+          info={
+`Veri kaynağı: cari ekstre EKSTRE_* kayıtlardan isIade=true veya negatif toplamBedel
+
+• İade TL = sevk faturasının ters yönü
+• Oran = iade / brüt sevk × 100
+• Aylık ort = iade / ${ytdStats.monthsElapsed} ay`}
         />
       </div>
 
