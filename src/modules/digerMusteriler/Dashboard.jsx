@@ -117,18 +117,78 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
   //   - planOverrides deferred: havuza katılmaz
   const shipmentPerf = useMemo(() => {
     const currentYear = String(today.getFullYear());
-    // Sipariş bazlı topla: matchedOrderId varsa onun altında, yoksa (refNo|stokKodu) altında
-    const byOrder = {}; // groupKey → { groupKey, musteriTermin, finalShipAt, sevkQty, iadeQty, sevks: [...] }
+
+    // RUNTIME LOOKUP — shipments doc'undaki cache'lenmiş matchedOrderId/musteriTermin'a
+    // güvenme. VIO cron salesOrders'ı her gün değiştiriyor, cache stale olabiliyor.
+    // Her dashboard render'ında refNo + stokKodu üzerinden salesOrders'tan canlı eşle.
+    const orderIndex = {};      // (belgeNo|stokKodu) → [orders]
+    const orderByBelgeNo = {};  // belgeNo → [orders]
+    for (const [oid, o] of Object.entries(salesOrders || {})) {
+      if (!o || !o.belgeNo || !o.stokKodu) continue;
+      const belge = String(o.belgeNo).trim();
+      const stok = String(o.stokKodu).trim();
+      const key = `${belge}|${stok}`;
+      if (!orderIndex[key]) orderIndex[key] = [];
+      orderIndex[key].push({ id: oid, ...o });
+      if (!orderByBelgeNo[belge]) orderByBelgeNo[belge] = [];
+      orderByBelgeNo[belge].push({ id: oid, ...o });
+    }
+    const normalizeRefNo = (refNo) => {
+      const s = String(refNo || '').trim();
+      if (!s) return s;
+      if (/^1000\d+$/.test(s)) {
+        const n = Number(s.substring(4));
+        if (Number.isFinite(n) && n > 0) return String(n);
+      }
+      return s;
+    };
+    const liveMatch = (refNo, stokKodu, ekstreTarih) => {
+      const stok = String(stokKodu).trim();
+      const raw = String(refNo).trim();
+      const normalized = normalizeRefNo(refNo);
+      const tryKeys = [raw, normalized].filter((v, i, a) => v && a.indexOf(v) === i);
+      // 1) Exact
+      for (const k of tryKeys) {
+        const candidates = orderIndex[`${k}|${stok}`];
+        if (candidates && candidates.length > 0) {
+          if (candidates.length === 1) return { ...candidates[0], matchType: 'exact' };
+          const sorted = [...candidates].sort((a, b) => (a.teslimTarihi || '9999').localeCompare(b.teslimTarihi || '9999'));
+          const future = sorted.find(o => (o.teslimTarihi || '') >= ekstreTarih);
+          return { ...(future || sorted[0]), matchType: 'exact' };
+        }
+      }
+      // 2) Borrowed
+      for (const k of tryKeys) {
+        const fallbackList = orderByBelgeNo[k];
+        if (fallbackList && fallbackList.length > 0) {
+          const sorted = [...fallbackList].sort((a, b) => (a.teslimTarihi || '9999').localeCompare(b.teslimTarihi || '9999'));
+          const future = sorted.find(o => (o.teslimTarihi || '') >= ekstreTarih);
+          const chosen = future || sorted[0];
+          return { ...chosen, id: null, matchType: 'borrowed' };
+        }
+      }
+      return null;
+    };
+
+    // Sipariş bazlı topla — runtime match ile
+    const byOrder = {};
     for (const sh of Object.values(shipments || {})) {
       if (!sh) continue;
       if (sh.source !== 'ekstre') continue;
       if (!customerMatches(sh.customerCode)) continue;
-      if (sh.matchType === 'orphan' || !sh.musteriTermin) continue;
-      const groupKey = sh.matchedOrderId || `${(sh.refNo || '').trim()}|${(sh.stokKodu || '').trim()}`;
+      // Live lookup (cache'a güvenmiyoruz)
+      const matched = liveMatch(sh.refNo, sh.stokKodu, sh.teslimTarihi);
+      if (!matched) continue; // orphan, OTD'ye katılmaz
+      const liveMatchedOrderId = matched.id;
+      const liveMusteriTermin = matched.teslimTarihi;
+      const liveMatchType = matched.matchType;
+      if (!liveMusteriTermin) continue;
+      const groupKey = liveMatchedOrderId || `${(sh.refNo || '').trim()}|${(sh.stokKodu || '').trim()}`;
       if (!byOrder[groupKey]) byOrder[groupKey] = {
         groupKey,
-        musteriTermin: sh.musteriTermin,
-        matchType: sh.matchType,
+        musteriTermin: liveMusteriTermin,
+        matchType: liveMatchType,
+        matchedOrderId: liveMatchedOrderId,
         customerCode: sh.customerCode,
         stokKodu: sh.stokKodu,
         belgeNo: sh.belgeNo,
@@ -142,7 +202,6 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
       if (sh.isIade) grp.iadeQty += Math.abs(qty);
       else {
         grp.sevkQty += qty;
-        // En son positive sevk tarihi (iadeler hariç)
         if (!grp.lastShipDate || sh.teslimTarihi > grp.lastShipDate) grp.lastShipDate = sh.teslimTarihi;
         if (!grp.firstShipDate || sh.teslimTarihi < grp.firstShipDate) grp.firstShipDate = sh.teslimTarihi;
       }
@@ -294,18 +353,48 @@ export default function MusteriDashboard({ isAdmin, isUretim, isSales }) {
   // (büyük ihtimalle tam teslim olup VIO'dan düşmüş eski siparişler).
   // Termin bilgisi yok → OTD'ye katılmıyor. Audit listesinde görünür.
   const orphanShipments = useMemo(() => {
+    // Runtime lookup — shipments.matchType cache'ine güvenme
+    const orderIndex = {};
+    const orderByBelgeNo = {};
+    for (const [oid, o] of Object.entries(salesOrders || {})) {
+      if (!o || !o.belgeNo || !o.stokKodu) continue;
+      const belge = String(o.belgeNo).trim();
+      const stok = String(o.stokKodu).trim();
+      orderIndex[`${belge}|${stok}`] = true;
+      orderByBelgeNo[belge] = true;
+    }
+    const normalizeRefNo = (refNo) => {
+      const s = String(refNo || '').trim();
+      if (!s) return s;
+      if (/^1000\d+$/.test(s)) {
+        const n = Number(s.substring(4));
+        if (Number.isFinite(n) && n > 0) return String(n);
+      }
+      return s;
+    };
+    const isMatched = (refNo, stokKodu) => {
+      const stok = String(stokKodu).trim();
+      const raw = String(refNo).trim();
+      const normalized = normalizeRefNo(refNo);
+      const tryKeys = [raw, normalized].filter((v, i, a) => v && a.indexOf(v) === i);
+      for (const k of tryKeys) {
+        if (orderIndex[`${k}|${stok}`]) return true;
+        if (orderByBelgeNo[k]) return true;
+      }
+      return false;
+    };
     const list = [];
     let totalBedel = 0;
     for (const [id, sh] of Object.entries(shipments || {})) {
       if (sh?.source !== 'ekstre') continue;
-      if (sh.matchType !== 'orphan') continue;
       if (!customerMatches(sh.customerCode)) continue;
+      if (isMatched(sh.refNo, sh.stokKodu)) continue; // eşleşme var, orphan değil
       list.push({ id, ...sh });
       totalBedel += Math.abs(Number(sh.toplamBedel || 0));
     }
     list.sort((a, b) => (b.teslimTarihi || '').localeCompare(a.teslimTarihi || ''));
     return { list, totalBedel, count: list.length };
-  }, [shipments, customerMatches]);
+  }, [shipments, salesOrders, customerMatches]);
 
   // 5b) Gelecek 6 ay yükü — bizim plan vs müşteri teslim (bedel)
   const futureLoad = useMemo(() => {
