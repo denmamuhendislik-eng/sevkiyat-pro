@@ -41,8 +41,32 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const currentYearStr = String(new Date().getFullYear());
   const { cocParts } = useCocParts();
   const { cocCertificates } = useCocCertificates(currentYearStr);
-  const [cocModalOrder, setCocModalOrder] = useState(null); // açıkken: o sipariş için modal göster
-  const openCocModal = setCocModalOrder; // alias — renderOrderRow ctx için
+  const [cocModalOrders, setCocModalOrders] = useState(null); // [order, ...] — açıkken modal göster
+  const [cocSelected, setCocSelected] = useState(new Set()); // toplu COC için seçilen sipariş id'leri
+  const toggleCocSelection = (orderId) => {
+    setCocSelected(prev => {
+      const s = new Set(prev);
+      if (s.has(orderId)) s.delete(orderId); else s.add(orderId);
+      return s;
+    });
+  };
+  // Tek satır için modal aç (mevcut tek-COC akışı)
+  const openCocModal = (order) => setCocModalOrders([order]);
+  // Çoklu sipariş için modal aç (toplu COC)
+  const openCocBulkModal = () => {
+    if (cocSelected.size === 0) return;
+    const list = [];
+    for (const id of cocSelected) {
+      const o = salesOrders[id];
+      if (o) list.push({ id, ...o });
+    }
+    if (list.length === 0) return;
+    setCocModalOrders(list);
+  };
+  const closeCocModal = () => {
+    setCocModalOrders(null);
+    setCocSelected(new Set()); // modal kapanınca seçim sıfırla
+  };
 
   // Son salesOrders başarılı çalıştırması — rozet için.
   // automationLog.entries içinde sondan başa tarayıp salesOrders ok olan en yeni entry'yi bulur.
@@ -1549,6 +1573,30 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           </div>
 
           {viewMode === 'orders' && (<>
+
+          {/* Toplu COC bar — sipariş satırı checkbox'larından seçim yapıldığında görünür */}
+          {cocSelected.size > 0 && (
+            <div style={{
+              marginTop: 14, padding: '10px 14px', borderRadius: 8,
+              background: '#eff6ff', border: '1px solid #bfdbfe',
+              display: 'flex', alignItems: 'center', gap: 12,
+            }}>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#1e40af' }}>📄 {cocSelected.size} sipariş satırı seçildi</span>
+              <span style={{ fontSize: 11, color: '#1e3a8a' }}>
+                — aynı stok kodlu satırlar tek COC'ta birleşir, farklıysa uyarı çıkar
+              </span>
+              <button onClick={() => setCocSelected(new Set())} style={{
+                marginLeft: 'auto', padding: '5px 12px', borderRadius: 6, fontSize: 12,
+                border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: 'pointer',
+              }}>Seçimi Temizle</button>
+              <button onClick={openCocBulkModal} disabled={!canEdit} style={{
+                padding: '5px 14px', borderRadius: 6, fontSize: 12, fontWeight: 600,
+                border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+                cursor: canEdit ? 'pointer' : 'not-allowed', opacity: canEdit ? 1 : 0.5,
+              }}>Toplu COC Oluştur</button>
+            </div>
+          )}
+
           {/* VIO Termin Değişti — override stale uyarısı (Aşama 2.4) */}
           {grouped.staleOverrides.length > 0 && (
             <div style={{
@@ -1875,7 +1923,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {deferredExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
+                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
                 </div>
               )}
             </div>
@@ -1901,7 +1949,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {lateExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
+                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
                 </div>
               )}
             </div>
@@ -1927,7 +1975,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {noWeekExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
+                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
                 </div>
               )}
             </div>
@@ -1995,7 +2043,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                       {isOpen ? 'gizle ▲' : 'aç ▼'}
                     </span>
                   </div>
-                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
+                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
                 </div>
                 );
               })
@@ -2131,13 +2179,13 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       {/* COC (Uygunluk Belgesi) oluşturma modal — sipariş satırı 📄 butonuna tıklanınca açılır.
           Pre-fill: müşteri/sipariş/stok/parça/FAİ/revizyon (cocParts master'dan). Kullanıcı düzenleyebilir:
           miktar (kısmi sevk), kontrol tarihi, seri no, feragat. Sertifika no auto-suggest (YYYYAA-NNN). */}
-      {cocModalOrder && (
+      {cocModalOrders && cocModalOrders.length > 0 && (
         <CocModal
-          order={cocModalOrder}
+          orders={cocModalOrders}
           cocParts={cocParts}
           cocCertificates={cocCertificates}
           canEdit={canEdit}
-          onClose={() => setCocModalOrder(null)}
+          onClose={closeCocModal}
         />
       )}
 
@@ -2778,7 +2826,7 @@ function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
 }
 
 function renderOrderRow(o, currentWeek, isLateContext, ctx) {
-  const { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts } = ctx;
+  const { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
@@ -2801,6 +2849,17 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         opacity: o.isDeferred ? 0.55 : 1,
         background: o.isDeferred ? 'rgba(120,113,108,0.05)' : 'transparent',
       }}>
+      {/* COC seçim checkbox — A+R + non-deferred */}
+      {toggleCocSelection && !o.isDeferred && (o.customerCode === '120-0107' || o.customerCode === '120-116' || String(o.customerCode || '').startsWith('120-0107-') || String(o.customerCode || '').startsWith('120-116-')) && (
+        <input
+          type="checkbox"
+          checked={cocSelected?.has(o.id) || false}
+          onChange={(e) => { e.stopPropagation(); toggleCocSelection(o.id); }}
+          onClick={(e) => e.stopPropagation()}
+          title="Toplu COC için seç"
+          style={{ cursor: 'pointer', width: 14, height: 14 }}
+        />
+      )}
       {o.isDeferred && <span title="Akibeti belirsiz — MRP demand'ına dahil değil" style={{ color: '#78716c', fontSize: 12, lineHeight: 1 }}>⏸</span>}
       <span style={{
         display: 'inline-block', padding: '2px 6px', borderRadius: 4,
@@ -2918,79 +2977,137 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
 // Form: müşteri+sipariş+stok+parça read-only, revizyon dropdown, miktar editable
 // (kısmi sevk), kontrol tarihi, seri no, feragat. Auto-suggest: sertifika no.
 // ====================================================================
-function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
+function CocModal({ orders, cocParts, cocCertificates, canEdit, onClose }) {
   const today = new Date();
   const yyyy = String(today.getFullYear());
   const mm = String(today.getMonth() + 1).padStart(2, '0');
-  const dd = String(today.getDate()).padStart(2, '0');
-  const todayIso = `${yyyy}-${mm}-${dd}`;
+  const todayIso = `${yyyy}-${mm}-${String(today.getDate()).padStart(2, '0')}`;
 
-  // Parça master'dan bilgileri çek (yoksa null kalır, kullanıcıya bildirir)
-  const partMaster = cocParts?.parts?.[order.stokKodu] || null;
+  // Çoklu sipariş kontrolü — hepsi aynı stokKodu mu?
+  const orderList = Array.isArray(orders) ? orders : [orders];
+  const firstOrder = orderList[0];
+  const uniqueStokKodlari = [...new Set(orderList.map(o => o.stokKodu))];
+  const stokMismatch = uniqueStokKodlari.length > 1;
 
-  // Sertifika no auto-suggest (YYYYAA-NNN, bu ay son sıra +1)
+  // Parça master (ilk siparişin stok kodu — tüm satırlar aynı stok varsayımı)
+  const partMaster = cocParts?.parts?.[firstOrder.stokKodu] || null;
+
+  // Sertifika no auto-suggest
   const suggestedCertNo = useMemo(() => suggestNextCertNo(cocCertificates?.certificates || {}, yyyy, mm), [cocCertificates, yyyy, mm]);
 
-  // Form state
+  // Ana form state
   const [certNo, setCertNo] = useState(suggestedCertNo);
   const [controlDate, setControlDate] = useState(todayIso);
   const [revision, setRevision] = useState(partMaster?.revisions?.[partMaster.revisions.length - 1] || '');
-  const [quantity, setQuantity] = useState(Number(order.kalanMiktar) || 0);
-  const [serialNo, setSerialNo] = useState('---');
   const [feragatVar, setFeragatVar] = useState(false);
   const [feragatText, setFeragatText] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  // ESC ile kapama
+  // Çoklu satır state — her sipariş için bir line item
+  const [lineItems, setLineItems] = useState(() => orderList.map((o, i) => ({
+    siraNo: i + 1,
+    orderId: o.id || '',
+    orderNo: (o.refNo && o.refNo.trim()) || o.belgeNo || '',
+    refNo: o.refNo || '',
+    vioBelgeNo: o.belgeNo || '',
+    quantity: Number(o.kalanMiktar) || 0,
+    serialNo: '---',
+    hasRefNo: !!(o.refNo && o.refNo.trim()),
+  })));
+
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !saving) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose, saving]);
 
-  // Müşteri adres meta (referans için sabit — Excel REFERANS VERİLER'den)
-  const customerMeta = (order.customerCode === '120-0107' || String(order.customerCode || '').startsWith('120-0107-'))
+  const customerMeta = (firstOrder.customerCode === '120-0107' || String(firstOrder.customerCode || '').startsWith('120-0107-'))
     ? { name: 'ASELSAN KONYA SİLAH SİSTEMLERİ A.Ş.', address: 'Aşağıpınarbaşı, Fatih Sultan Mehmet Cd. No:2, 42280 Selçuklu/Konya' }
-    : (order.customerCode === '120-116' || String(order.customerCode || '').startsWith('120-116-'))
+    : (firstOrder.customerCode === '120-116' || String(firstOrder.customerCode || '').startsWith('120-116-'))
     ? { name: 'ROKETSAN ROKET SANAYİİ VE TİCARET A.Ş.', address: 'Kemalpaşa Mah. Şehit Yüzbaşı Adem Kutlu Sok., Elmadağ/Ankara' }
-    : { name: order.customerName || '', address: '' };
+    : { name: firstOrder.customerName || '', address: '' };
 
-  // Sertifika objesini hazırlar (kaydet ve PDF için ortak)
-  const buildCertObject = () => ({
+  const totalQty = lineItems.reduce((s, li) => s + (Number(li.quantity) || 0), 0);
+
+  const updateLine = (idx, key, val) => {
+    setLineItems(prev => prev.map((li, i) => i === idx ? { ...li, [key]: val } : li));
+  };
+  const removeLine = (idx) => {
+    setLineItems(prev => prev.filter((_, i) => i !== idx).map((li, i) => ({ ...li, siraNo: i + 1 })));
+  };
+
+  // Tek line için sertifika objesi (her line ayrı kayıt yazılır)
+  const buildCertForLine = (li) => ({
     certNo,
-    siraNo: '1',
+    siraNo: String(li.siraNo),
     controlDateIso: controlDate,
     kayitTarihi: `${yyyy} - ${mm}`,
-    customerCode: order.customerCode,
+    customerCode: firstOrder.customerCode,
     customerName: customerMeta.name,
     customerAddress: customerMeta.address,
-    // Sipariş no: müşteri referansı varsa onu kullan (Aselsan: "1000018777",
-    // Roketsan: "P0334497"), yoksa VIO belge no'ya fallback (eski parse'lar için).
-    orderNo: (order.refNo && order.refNo.trim()) || order.belgeNo,
-    refNo: order.refNo || '',         // ham referans (audit için)
-    vioBelgeNo: order.belgeNo || '',  // VIO sipariş belge no (audit için)
-    stokKodu: order.stokKodu,
-    description: partMaster?.description || order.stokAdi || '',
+    orderNo: li.orderNo,
+    refNo: li.refNo,
+    vioBelgeNo: li.vioBelgeNo,
+    stokKodu: firstOrder.stokKodu,
+    description: partMaster?.description || firstOrder.stokAdi || '',
     faiNo: partMaster?.faiNo || '',
     revisionCode: revision,
-    quantity: String(quantity),
-    serialNo,
+    quantity: String(li.quantity),
+    serialNo: li.serialNo,
     feragatText: feragatVar ? feragatText : '',
     feragatStatus: feragatVar ? 'VAR' : 'YOK',
     source: 'ui',
   });
 
+  // PDF için tek cert objesi — birden fazla line varsa lineItems array'i ekle
+  const buildCertForPdf = () => {
+    const base = buildCertForLine(lineItems[0]);
+    return {
+      ...base,
+      siraNo: '1', // PDF'de hep 1'den başlar
+      lineItems: lineItems.map(li => ({
+        siraNo: li.siraNo,
+        orderNo: li.orderNo,
+        quantity: li.quantity,
+        serialNo: li.serialNo,
+      })),
+      // Multi-line için: toplam adet base.quantity'ye yazılır (geriye dönük PDF için)
+      quantity: String(totalQty),
+    };
+  };
+
   const validate = () => {
+    if (stokMismatch) {
+      setError(`Farklı stok kodları seçildi (${uniqueStokKodlari.join(', ')}). Her stok için ayrı COC oluştur.`);
+      return false;
+    }
     if (!certNo || !/^\d{6}-\d{3,}$/.test(certNo)) {
       setError('Sertifika no formatı: YYYYAA-NNN (örn. 202606-038)');
       return false;
     }
-    if (quantity <= 0) {
-      setError('Miktar 0\'dan büyük olmalı');
+    if (lineItems.length === 0) {
+      setError('En az 1 satır olmalı');
       return false;
     }
+    for (const li of lineItems) {
+      if (!li.orderNo || !li.orderNo.trim()) {
+        setError(`Sıra ${li.siraNo}: Sipariş no boş`);
+        return false;
+      }
+      if (!li.quantity || li.quantity <= 0) {
+        setError(`Sıra ${li.siraNo}: Miktar 0'dan büyük olmalı`);
+        return false;
+      }
+    }
     return true;
+  };
+
+  const saveAllLines = async () => {
+    // Her line için ayrı saveCocCertificate çağrısı (siraNo farklı → ID farklı)
+    for (const li of lineItems) {
+      await saveCocCertificate(buildCertForLine(li), { canEdit });
+    }
   };
 
   const handleSave = async () => {
@@ -2998,7 +3115,7 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
     setSaving(true);
     setError('');
     try {
-      await saveCocCertificate(buildCertObject(), { canEdit });
+      await saveAllLines();
       onClose();
     } catch (e) {
       setError(e.message || 'Kaydetme hatası');
@@ -3010,10 +3127,9 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
     if (!canEdit || !validate()) return;
     setSaving(true);
     setError('');
-    const cert = buildCertObject();
     try {
-      await saveCocCertificate(cert, { canEdit });
-      await generateCocPdf(cert);
+      await saveAllLines();
+      await generateCocPdf(buildCertForPdf());
       onClose();
     } catch (e) {
       setError(e.message || 'Kaydetme veya PDF hatası');
@@ -3032,40 +3148,38 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
     >
       <div style={{
         background: '#fff', borderRadius: 10, padding: 0,
-        maxWidth: 720, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        maxWidth: 860, width: '100%', maxHeight: '92vh', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
       }}>
         {/* Başlık */}
         <div style={{ padding: '14px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 22 }}>📄</span>
-          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>Uygunluk Belgesi (COC) Oluştur</h3>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>
+            Uygunluk Belgesi (COC) Oluştur
+            {lineItems.length > 1 && <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 500, color: '#1e3a8a' }}>· {lineItems.length} satır</span>}
+          </h3>
           <button onClick={() => !saving && onClose()} disabled={saving} style={{
             marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
             border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: saving ? 'not-allowed' : 'pointer',
           }}>Kapat ✕</button>
         </div>
 
-        {/* Sipariş + müşteri özet (read-only) */}
+        {/* Müşteri + stok özet (read-only) */}
         <div style={{ padding: '14px 20px', background: '#f9fafb', borderBottom: '1px solid #e7e5e4', fontSize: 12 }}>
+          {stokMismatch && (
+            <div style={{ marginBottom: 10, padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
+              ⚠ Farklı stok kodlu satırlar seçildi: <b>{uniqueStokKodlari.join(', ')}</b>. COC tek bir parça için olur — her stok için ayrı seçim yapıp ayrı COC oluştur.
+            </div>
+          )}
           <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '6px 12px' }}>
             <span style={{ color: '#78716c' }}>Müşteri:</span>
             <span style={{ fontWeight: 500 }}>{customerMeta.name}</span>
             <span style={{ color: '#78716c' }}>Adres:</span>
             <span style={{ fontSize: 11, color: '#57534e' }}>{customerMeta.address}</span>
-            <span style={{ color: '#78716c' }}>Sipariş No:</span>
-            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>
-              {(order.refNo && order.refNo.trim()) || order.belgeNo}
-              {order.refNo && order.refNo.trim() && order.refNo !== order.belgeNo && (
-                <span style={{ fontSize: 10, color: '#a8a29e', marginLeft: 8 }}>(VIO belge: {order.belgeNo})</span>
-              )}
-              {!order.refNo && (
-                <span style={{ fontSize: 10, color: '#92400e', marginLeft: 8 }}>⚠ Ref.No yok — sipariş raporu güncellemesi gerekli</span>
-              )}
-            </span>
             <span style={{ color: '#78716c' }}>Stok Kodu:</span>
-            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{order.stokKodu}</span>
+            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{firstOrder.stokKodu}</span>
             <span style={{ color: '#78716c' }}>Parça Adı:</span>
-            <span>{partMaster?.description || order.stokAdi || <span style={{ color: '#a8a29e', fontStyle: 'italic' }}>(parça master'da yok)</span>}</span>
+            <span>{partMaster?.description || firstOrder.stokAdi || <span style={{ color: '#a8a29e', fontStyle: 'italic' }}>(parça master'da yok)</span>}</span>
             <span style={{ color: '#78716c' }}>FAİ Kodu:</span>
             <span style={{ fontFamily: 'ui-monospace, monospace' }}>
               {partMaster?.faiNo || <span style={{ color: '#a8a29e', fontStyle: 'italic' }}>—</span>}
@@ -3123,36 +3237,6 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
             )}
           </div>
 
-          {/* Miktar */}
-          <div>
-            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>
-              Miktar * <span style={{ color: '#a8a29e', fontWeight: 400 }}>(sipariş kalan: {order.kalanMiktar})</span>
-            </label>
-            <input
-              type="number"
-              value={quantity}
-              onChange={(e) => setQuantity(Number(e.target.value) || 0)}
-              disabled={saving}
-              min="1"
-              style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12 }}
-            />
-          </div>
-
-          {/* Seri no */}
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>
-              Seri No <span style={{ color: '#a8a29e', fontWeight: 400 }}>(yoksa "---")</span>
-            </label>
-            <input
-              type="text"
-              value={serialNo}
-              onChange={(e) => setSerialNo(e.target.value)}
-              disabled={saving}
-              placeholder='örn. 001-...-011 (001, 002 ve 009 HARİÇ)'
-              style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12 }}
-            />
-          </div>
-
           {/* Feragat */}
           <div style={{ gridColumn: '1 / -1' }}>
             <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
@@ -3169,6 +3253,80 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
                 style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 11, fontFamily: 'inherit' }}
               />
             )}
+          </div>
+        </div>
+
+        {/* Sevkiyat tablosu (multi-line) */}
+        <div style={{ padding: '0 20px 14px', fontSize: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500 }}>
+              Sevkiyat Satırları ({lineItems.length}) · Toplam: <b>{totalQty}</b> adet
+            </label>
+          </div>
+          <div style={{ border: '1px solid #e7e5e4', borderRadius: 6, overflow: 'hidden' }}>
+            <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: '#f5f5f4', textAlign: 'left', color: '#44403c' }}>
+                  <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 40 }}>SIRA</th>
+                  <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>SİPARİŞ NO *</th>
+                  <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 100, textAlign: 'right' }}>MİKTAR *</th>
+                  <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>SERİ NO</th>
+                  <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 40, textAlign: 'center' }}></th>
+                </tr>
+              </thead>
+              <tbody>
+                {lineItems.map((li, idx) => (
+                  <tr key={idx} style={{ borderTop: '1px solid #f5f5f4' }}>
+                    <td style={{ padding: '4px 8px', fontWeight: 600, color: '#1e40af', textAlign: 'center' }}>{li.siraNo}</td>
+                    <td style={{ padding: '4px 8px' }}>
+                      <input
+                        type="text"
+                        value={li.orderNo}
+                        onChange={(e) => updateLine(idx, 'orderNo', e.target.value)}
+                        disabled={saving}
+                        style={{ width: '100%', padding: '4px 6px', border: '1px solid #d6d3d1', borderRadius: 3, fontSize: 11, fontFamily: 'ui-monospace, monospace' }}
+                      />
+                      {!li.hasRefNo && (
+                        <div style={{ fontSize: 9, color: '#92400e', marginTop: 2 }}>⚠ Ref.No yok — VIO belge no kullanıldı</div>
+                      )}
+                    </td>
+                    <td style={{ padding: '4px 8px' }}>
+                      <input
+                        type="number"
+                        value={li.quantity}
+                        onChange={(e) => updateLine(idx, 'quantity', Number(e.target.value) || 0)}
+                        disabled={saving}
+                        min="1"
+                        style={{ width: '100%', padding: '4px 6px', border: '1px solid #d6d3d1', borderRadius: 3, fontSize: 11, textAlign: 'right' }}
+                      />
+                    </td>
+                    <td style={{ padding: '4px 8px' }}>
+                      <input
+                        type="text"
+                        value={li.serialNo}
+                        onChange={(e) => updateLine(idx, 'serialNo', e.target.value)}
+                        disabled={saving}
+                        placeholder="---"
+                        style={{ width: '100%', padding: '4px 6px', border: '1px solid #d6d3d1', borderRadius: 3, fontSize: 11 }}
+                      />
+                    </td>
+                    <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                      {lineItems.length > 1 && (
+                        <button
+                          onClick={() => removeLine(idx)}
+                          disabled={saving}
+                          title="Bu satırı kaldır"
+                          style={{
+                            padding: '2px 6px', borderRadius: 3, fontSize: 11, cursor: saving ? 'not-allowed' : 'pointer',
+                            border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
+                          }}
+                        >🗑</button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         </div>
 

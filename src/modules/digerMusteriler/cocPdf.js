@@ -119,12 +119,30 @@ function buildCocHtml(cert) {
         </tr>
       </thead>
       <tbody>
-        <tr style="background:#fff; border-bottom:1px solid #e7e5e4;">
-          <td style="padding:10px; font-weight:500;">${escapeHtml(String(cert.siraNo || "1"))}</td>
-          <td style="padding:10px; font-family:'JetBrains Mono','Courier New',monospace; font-weight:500;">${escapeHtml(cert.orderNo || "")}</td>
-          <td style="padding:10px; text-align:right; font-weight:600;">${escapeHtml(String(cert.quantity || ""))}</td>
-          <td style="padding:10px; font-family:'JetBrains Mono','Courier New',monospace;">${escapeHtml(cert.serialNo || "—")}</td>
-        </tr>
+        ${(cert.lineItems && cert.lineItems.length > 0
+          ? cert.lineItems.map(li => `
+            <tr style="background:#fff; border-bottom:1px solid #e7e5e4;">
+              <td style="padding:10px; font-weight:500;">${escapeHtml(String(li.siraNo || ""))}</td>
+              <td style="padding:10px; font-family:'JetBrains Mono','Courier New',monospace; font-weight:500;">${escapeHtml(li.orderNo || "")}</td>
+              <td style="padding:10px; text-align:right; font-weight:600;">${escapeHtml(String(li.quantity || ""))}</td>
+              <td style="padding:10px; font-family:'JetBrains Mono','Courier New',monospace;">${escapeHtml(li.serialNo || "—")}</td>
+            </tr>
+          `).join("")
+          : `
+            <tr style="background:#fff; border-bottom:1px solid #e7e5e4;">
+              <td style="padding:10px; font-weight:500;">${escapeHtml(String(cert.siraNo || "1"))}</td>
+              <td style="padding:10px; font-family:'JetBrains Mono','Courier New',monospace; font-weight:500;">${escapeHtml(cert.orderNo || "")}</td>
+              <td style="padding:10px; text-align:right; font-weight:600;">${escapeHtml(String(cert.quantity || ""))}</td>
+              <td style="padding:10px; font-family:'JetBrains Mono','Courier New',monospace;">${escapeHtml(cert.serialNo || "—")}</td>
+            </tr>
+          `)}
+        ${cert.lineItems && cert.lineItems.length > 1
+          ? `<tr style="background:#eff6ff; border-top:2px solid #1e40af;">
+              <td colspan="2" style="padding:10px; text-align:right; font-weight:600; color:#1e40af;">TOPLAM / TOTAL</td>
+              <td style="padding:10px; text-align:right; font-weight:700; color:#1e40af; font-size:11px;">${escapeHtml(String(cert.quantity || cert.lineItems.reduce((s, li) => s + (Number(li.quantity) || 0), 0)))}</td>
+              <td></td>
+            </tr>`
+          : ""}
       </tbody>
     </table>
   </div>
