@@ -120,6 +120,55 @@ async function saveReport(db, type, parserResult, fileName, opts = {}) {
 }
 
 /**
+ * salesOrders'taki tüm sipariş kalemleri için cocParts master'a iskelet kayıt ekle.
+ * Idempotent: aynı stokKodu varsa atla, yoksa iskelet ekle.
+ * İskelet: {stokKodu, description, customerCode, faiNo: null, revisions: [], isSkeleton: true}
+ * Kullanıcı sonradan Parça Master tab'ından FAİ + revizyon ekler.
+ *
+ * Tüm müşteriler için çalışır (A+R sınırı yok) — COC her müşteri için talep
+ * üzerine düzenlenebilir.
+ */
+async function upsertCocPartsSkeletonsFromOrders(db, ordersMap) {
+  if (!ordersMap || Object.keys(ordersMap).length === 0) return { added: 0 };
+  const ref = db.collection(APP_COL).doc("cocParts");
+  const snap = await ref.get();
+  const existing = snap.exists ? (snap.data() || {}) : { parts: {} };
+  const existingParts = existing.parts || {};
+
+  // Tüm sipariş kalemlerinden unique stokKodu listesi (ilk gelen description+customerCode kazanır)
+  const newSkeletons = {};
+  for (const o of Object.values(ordersMap)) {
+    if (!o?.stokKodu) continue;
+    const key = String(o.stokKodu).trim();
+    if (!key) continue;
+    if (existingParts[key]) continue; // master'da zaten var
+    if (newSkeletons[key]) continue;   // bu yüklemede başka kalemde de var, ilk gelen
+    newSkeletons[key] = {
+      stokKodu: key,
+      description: String(o.stokAdi || "").trim(),
+      faiNo: null,
+      revisions: [],
+      customerCode: o.customerCode || "",
+      isSkeleton: true, // UI'da "Eksik" rozeti için
+      createdAt: new Date().toISOString(),
+      source: "auto-from-salesOrders",
+    };
+  }
+
+  const addedCount = Object.keys(newSkeletons).length;
+  if (addedCount === 0) return { added: 0 };
+
+  const merged = { ...existingParts, ...newSkeletons };
+  await ref.set({
+    parts: merged,
+    totalCount: Object.keys(merged).length,
+    lastSkeletonImportAt: new Date().toISOString(),
+  }, { merge: true });
+
+  return { added: addedCount };
+}
+
+/**
  * salesOrders + shipments birleşik yazımı — sevk geçmişi diff hesabı.
  *
  * VIO sadece aktif siparişleri verir; tam teslim olunca rapordan düşer. Diff:
@@ -405,7 +454,22 @@ async function saveSalesOrdersWithDiff(db, parserResult) {
   if (Object.keys(overrideUpdates).length > 0) {
     await overridesRef.set(overrideUpdates, { merge: true });
   }
-  return { eventCount, cancelledCount, migratedCount, resyncCount, backfillCount, skippedTrackedCount, salesOrdersCount: Object.keys(newOrdersMap).length };
+
+  // cocParts master'a iskelet kayıt ekle (yeni stok kodları için, tüm müşteriler)
+  let cocSkeletonsAdded = 0;
+  try {
+    const skel = await upsertCocPartsSkeletonsFromOrders(db, newOrdersMap);
+    cocSkeletonsAdded = skel.added || 0;
+  } catch (err) {
+    // cocParts hatası salesOrders akışını engellemesin — log + devam
+    console.error("[cocParts skeleton] Hata:", err.message);
+  }
+
+  return {
+    eventCount, cancelledCount, migratedCount, resyncCount, backfillCount,
+    skippedTrackedCount, salesOrdersCount: Object.keys(newOrdersMap).length,
+    cocSkeletonsAdded,
+  };
 }
 
 /**

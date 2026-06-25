@@ -46,6 +46,54 @@ export async function saveSalesOrders(ordersMap, { canEdit }) {
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
   const ref = doc(db, APP_COL, SALES_ORDERS_DOC);
   await setDoc(ref, ordersMap);
+  // cocParts master'a iskelet ekleme — paralel, hata salesOrders'ı bozmaz
+  try {
+    await upsertCocPartsSkeletonsFromOrders(ordersMap);
+  } catch (err) {
+    console.error("[cocParts skeleton] Hata:", err);
+  }
+}
+
+// salesOrders'tan unique stokKodu'ları çıkarıp cocParts master'a iskelet ekler.
+// Idempotent — mevcut parçaları korur, sadece yeni stokKodu için iskelet yazar.
+// Tüm müşteriler için çalışır (A+R sınırı yok).
+async function upsertCocPartsSkeletonsFromOrders(ordersMap) {
+  if (!ordersMap || Object.keys(ordersMap).length === 0) return { added: 0 };
+  if (!db) return { added: 0 };
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  // Mevcut master'ı oku (tek seferlik, listener kullanmıyoruz)
+  const { getDoc } = await import("firebase/firestore");
+  const snap = await getDoc(ref);
+  const existing = snap.exists() ? (snap.data() || {}) : { parts: {} };
+  const existingParts = existing.parts || {};
+
+  const newSkeletons = {};
+  for (const o of Object.values(ordersMap)) {
+    if (!o?.stokKodu) continue;
+    const key = String(o.stokKodu).trim();
+    if (!key) continue;
+    if (existingParts[key]) continue;
+    if (newSkeletons[key]) continue;
+    newSkeletons[key] = {
+      stokKodu: key,
+      description: String(o.stokAdi || "").trim(),
+      faiNo: null,
+      revisions: [],
+      customerCode: o.customerCode || "",
+      isSkeleton: true,
+      createdAt: new Date().toISOString(),
+      source: "auto-from-salesOrders",
+    };
+  }
+
+  const added = Object.keys(newSkeletons).length;
+  if (added === 0) return { added: 0 };
+  await setDoc(ref, {
+    parts: { ...existingParts, ...newSkeletons },
+    totalCount: Object.keys(existingParts).length + added,
+    lastSkeletonImportAt: new Date().toISOString(),
+  }, { merge: true });
+  return { added };
 }
 
 // shipments — sevk geçmişi (orderId → { events: [...], totalShipped, fullyDelivered, ... }).

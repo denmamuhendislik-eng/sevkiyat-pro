@@ -3655,6 +3655,10 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
 function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
   const [partsSearch, setPartsSearch] = useState('');
   const [editingPart, setEditingPart] = useState(null); // obj veya {new:true}
+  const [completionFilter, setCompletionFilter] = useState('all'); // 'all' | 'complete' | 'skeleton'
+
+  // Iskelet/Tam tespiti: revisions boş = iskelet (auto-from-salesOrders eklenmiş ama henüz revizyon yok)
+  const isSkeleton = (p) => !p.revisions || p.revisions.length === 0;
 
   const filtered = useMemo(() => {
     const qMain = (searchText || '').trim().toLocaleLowerCase('tr-TR');
@@ -3662,6 +3666,9 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
     const list = Object.values(cocParts?.parts || {}).filter(p => {
       if (!p?.stokKodu) return false;
       if (customerFilter && customerFilter !== 'all' && p.customerCode !== customerFilter) return false;
+      const skel = isSkeleton(p);
+      if (completionFilter === 'complete' && skel) return false;
+      if (completionFilter === 'skeleton' && !skel) return false;
       const hay = `${p.stokKodu} ${p.description || ''} ${p.faiNo || ''} ${(p.revisions || []).join(' ')}`.toLocaleLowerCase('tr-TR');
       if (qMain && !hay.includes(qMain)) return false;
       if (qLocal && !hay.includes(qLocal)) return false;
@@ -3669,10 +3676,46 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
     });
     list.sort((a, b) => (a.stokKodu || '').localeCompare(b.stokKodu || ''));
     return list;
-  }, [cocParts, customerFilter, searchText, partsSearch]);
+  }, [cocParts, customerFilter, searchText, partsSearch, completionFilter]);
+
+  const counts = useMemo(() => {
+    let total = 0, complete = 0, skel = 0;
+    for (const p of Object.values(cocParts?.parts || {})) {
+      if (!p?.stokKodu) continue;
+      if (customerFilter && customerFilter !== 'all' && p.customerCode !== customerFilter) continue;
+      total++;
+      if (isSkeleton(p)) skel++; else complete++;
+    }
+    return { total, complete, skel };
+  }, [cocParts, customerFilter]);
 
   return (
     <div>
+      {/* Completion filtresi — Tümü / Tam / Eksik */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10,
+        padding: '8px 10px', background: '#f9fafb', borderRadius: 8, border: '1px solid #e7e5e4',
+      }}>
+        <span style={{ fontSize: 11, color: '#57534e', fontWeight: 500, marginRight: 4 }}>Durum:</span>
+        {[
+          { v: 'all', label: 'Tümü', count: counts.total },
+          { v: 'complete', label: 'Tam tanımlı', count: counts.complete },
+          { v: 'skeleton', label: '⚠ Eksik (revizyonsuz)', count: counts.skel },
+        ].map(opt => (
+          <button key={opt.v} onClick={() => setCompletionFilter(opt.v)} style={{
+            padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+            border: '1px solid ' + (completionFilter === opt.v ? '#1e40af' : '#d6d3d1'),
+            background: completionFilter === opt.v ? '#1e40af' : '#fff',
+            color: completionFilter === opt.v ? '#fff' : (opt.v === 'skeleton' && opt.count > 0 ? '#92400e' : '#44403c'),
+          }}>{opt.label} ({opt.count})</button>
+        ))}
+        {counts.skel > 0 && completionFilter !== 'skeleton' && (
+          <span style={{ marginLeft: 'auto', fontSize: 11, color: '#92400e' }}>
+            ⚠ {counts.skel} parçanın revizyonu eksik
+          </span>
+        )}
+      </div>
+
       {/* Toolbar — arama + yeni parça */}
       <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
         <input
@@ -3718,15 +3761,19 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
               </td></tr>
             ) : filtered.slice(0, 500).map(p => {
               const badge = customerBadge(p.customerCode);
+              const skel = isSkeleton(p);
               return (
-                <tr key={p.stokKodu} style={{ borderTop: '1px solid #f5f5f4' }}>
+                <tr key={p.stokKodu} style={{ borderTop: '1px solid #f5f5f4', background: skel ? '#fffbeb' : 'transparent' }}>
                   <td style={cocTd}>
                     <span style={{
                       padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
                       background: badge.bg, color: badge.fg,
                     }}>{badge.label}</span>
                   </td>
-                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: '#1e40af' }}>{p.stokKodu}</td>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: '#1e40af' }}>
+                    {p.stokKodu}
+                    {skel && <span title="Revizyon eksik — sipariş raporundan otomatik eklenmiş iskelet" style={{ marginLeft: 6, padding: '1px 4px', borderRadius: 3, fontSize: 8, fontWeight: 600, background: '#fef3c7', color: '#92400e' }}>⚠ EKSİK</span>}
+                  </td>
                   <td style={{ ...cocTd, color: '#44403c' }} title={p.description}>{p.description || '—'}</td>
                   <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>{p.faiNo || '—'}</td>
                   <td style={cocTd}>
