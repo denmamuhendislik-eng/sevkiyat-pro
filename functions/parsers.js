@@ -662,6 +662,9 @@ function findHeaderColumnsSO(row) {
     if (!h) return;
     if (h === "tarih") cols.orderDate = ci;
     else if (h === "belge no") cols.belgeNo = ci;
+    // Müşteri sipariş referans no — Aselsan'da "1000018777", Roketsan'da "P0334497" gibi.
+    // COC'ta sipariş no olarak bu kullanılır (müşteri kendi sistemindeki sipariş takibi).
+    else if (h === "ref.no" || h === "ref no" || h === "referans no") cols.refNo = ci;
     else if (h === "stok kodu") cols.stokKodu = ci;
     else if (h === "stok adı" || h === "stok adi") cols.stokAdi = ci;
     else if (h === "teslim tarihi") cols.teslimTarihi = ci;
@@ -726,11 +729,14 @@ function parseSalesOrdersReport(workbook) {
     const orderDateIso = parseSerialDateSO(r[currentCols.orderDate]);
     const idKey = teslimTarihi || orderDateIso || `row${i}`;
     const id = `${belgeNo}_${stokKodu}_${idKey}`;
+    const refNoVal = currentCols.refNo !== undefined ? r[currentCols.refNo] : "";
+    const refNo = refNoVal !== "" && refNoVal !== undefined ? String(refNoVal).trim() : "";
     const row = {
       customerCode: currentCustomerCode,
       customerName: currentCustomerName,
       orderDate: orderDateIso,
       belgeNo,
+      refNo, // Müşteri sipariş referansı — COC'ta sipariş no olarak kullanılır
       stokKodu,
       stokAdi: String(r[currentCols.stokAdi] || "").trim(),
       teslimTarihi,

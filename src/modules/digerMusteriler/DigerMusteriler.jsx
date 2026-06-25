@@ -2965,7 +2965,11 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
     customerCode: order.customerCode,
     customerName: customerMeta.name,
     customerAddress: customerMeta.address,
-    orderNo: order.belgeNo,
+    // Sipariş no: müşteri referansı varsa onu kullan (Aselsan: "1000018777",
+    // Roketsan: "P0334497"), yoksa VIO belge no'ya fallback (eski parse'lar için).
+    orderNo: (order.refNo && order.refNo.trim()) || order.belgeNo,
+    refNo: order.refNo || '',         // ham referans (audit için)
+    vioBelgeNo: order.belgeNo || '',  // VIO sipariş belge no (audit için)
     stokKodu: order.stokKodu,
     description: partMaster?.description || order.stokAdi || '',
     faiNo: partMaster?.faiNo || '',
@@ -3049,7 +3053,15 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
             <span style={{ color: '#78716c' }}>Adres:</span>
             <span style={{ fontSize: 11, color: '#57534e' }}>{customerMeta.address}</span>
             <span style={{ color: '#78716c' }}>Sipariş No:</span>
-            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{order.belgeNo}</span>
+            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>
+              {(order.refNo && order.refNo.trim()) || order.belgeNo}
+              {order.refNo && order.refNo.trim() && order.refNo !== order.belgeNo && (
+                <span style={{ fontSize: 10, color: '#a8a29e', marginLeft: 8 }}>(VIO belge: {order.belgeNo})</span>
+              )}
+              {!order.refNo && (
+                <span style={{ fontSize: 10, color: '#92400e', marginLeft: 8 }}>⚠ Ref.No yok — sipariş raporu güncellemesi gerekli</span>
+              )}
+            </span>
             <span style={{ color: '#78716c' }}>Stok Kodu:</span>
             <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{order.stokKodu}</span>
             <span style={{ color: '#78716c' }}>Parça Adı:</span>
