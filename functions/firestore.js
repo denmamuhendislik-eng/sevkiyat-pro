@@ -25,6 +25,8 @@ const OVERHEAD_MAPPINGS_DOC = "overheadCategoryMappings";
 const SHIPMENTS_DOC = "shipments";
 const PLAN_OVERRIDES_DOC = "planOverrides";
 const AUTOMATION_LOG_DOC = "automationLog";
+const COC_PARTS_DOC = "cocParts";
+const COC_CERTIFICATES_DOC = "cocCertificates";
 
 /**
  * Stock parser çıktısını Sevkiyat Pro'nun beklediği compact formata çevir.
@@ -632,6 +634,106 @@ async function saveCariEkstreReport(db, parserResult, opts = {}) {
 }
 
 /**
+ * COC parça master'ı yazar (KONF Excel'den parse edilen).
+ * Yapı: appData/cocParts = { parts: { [stokKodu]: {description, faiNo, revisions, customerCode} }, ... }
+ *
+ * Idempotent: mevcut parts ile merge edilir. Excel'de olmayan parçalar silinmez
+ * (kullanıcı UI'dan yeni parça eklerse korunur). Çakışma: Excel öncelikli.
+ */
+async function saveCocPartsReport(db, parserResult, opts = {}) {
+  const newParts = parserResult.parts || {};
+  const ref = db.collection(APP_COL).doc(COC_PARTS_DOC);
+  const snap = await ref.get();
+  const existing = snap.exists ? (snap.data() || {}) : { parts: {} };
+  const existingParts = existing.parts || {};
+
+  let added = 0, updated = 0, unchanged = 0;
+  const merged = { ...existingParts };
+  for (const [stokKodu, p] of Object.entries(newParts)) {
+    const cur = merged[stokKodu];
+    if (!cur) {
+      merged[stokKodu] = p;
+      added++;
+    } else {
+      // Aynı parça — değişim var mı?
+      const changed = cur.description !== p.description ||
+                      cur.faiNo !== p.faiNo ||
+                      JSON.stringify(cur.revisions || []) !== JSON.stringify(p.revisions || []) ||
+                      cur.customerCode !== p.customerCode;
+      if (changed) {
+        merged[stokKodu] = { ...cur, ...p, updatedAt: new Date().toISOString() };
+        updated++;
+      } else {
+        unchanged++;
+      }
+    }
+  }
+
+  await ref.set({
+    parts: merged,
+    aselsanCount: parserResult.aselsanCount || 0,
+    roketsanCount: parserResult.roketsanCount || 0,
+    totalCount: Object.keys(merged).length,
+    lastImportAt: parserResult.importedAt,
+  });
+
+  return { added, updated, unchanged, totalCount: Object.keys(merged).length };
+}
+
+/**
+ * Geçmiş COC sertifika kayıtlarını yazar (Liste sheet'inden).
+ * Yapı: appData/cocCertificates_{YYYY} = { certificates: { [id]: {...} }, totalCount, ... }
+ * ID şeması: `${certNo}_${siraNo}` (1 sertifika no'da çoklu satır için)
+ *
+ * Year-bazlı doc bölünmesi: Firestore tek doc başına 40K index entry limiti var.
+ * 1680 kayıt × 12 field = ~20K alan tek doc'a sığmaz. Yıl bazlı bölersek yılda max
+ * ~1500 sertifika güvenli.
+ *
+ * Idempotent: aynı ID varsa atla.
+ */
+async function saveCocCertificatesReport(db, parserResult, opts = {}) {
+  const newCerts = parserResult.certificates || {};
+
+  // Yıl bazlı grupla
+  const certByYear = {};
+  for (const [id, c] of Object.entries(newCerts)) {
+    const year = c.certNo.substring(0, 4);
+    if (!certByYear[year]) certByYear[year] = {};
+    certByYear[year][id] = c;
+  }
+
+  let totalAdded = 0, totalSkipped = 0;
+  const yearStats = {};
+  for (const [year, certs] of Object.entries(certByYear)) {
+    const ref = db.collection(APP_COL).doc(`${COC_CERTIFICATES_DOC}_${year}`);
+    const snap = await ref.get();
+    const existing = snap.exists ? (snap.data() || {}) : { certificates: {} };
+    const existingCerts = existing.certificates || {};
+
+    let added = 0, skipped = 0;
+    const merged = { ...existingCerts };
+    for (const [id, c] of Object.entries(certs)) {
+      if (merged[id]) { skipped++; continue; }
+      merged[id] = c;
+      added++;
+    }
+
+    await ref.set({
+      certificates: merged,
+      year,
+      totalCount: Object.keys(merged).length,
+      lastImportAt: parserResult.importedAt || new Date().toISOString(),
+    });
+
+    totalAdded += added;
+    totalSkipped += skipped;
+    yearStats[year] = { added, skipped, total: Object.keys(merged).length };
+  }
+
+  return { added: totalAdded, skipped: totalSkipped, byYear: yearStats };
+}
+
+/**
  * Son otomasyon log entry'sini çek (UI'da göstermek için)
  */
 async function getLatestAutomationLog(db) {
@@ -954,6 +1056,8 @@ module.exports = {
   saveOverheadReport,
   saveSuppliesReport,
   saveCariEkstreReport,
+  saveCocPartsReport,
+  saveCocCertificatesReport,
   appendAutomationLog,
   getLatestAutomationLog,
   saveCurrencyRates,

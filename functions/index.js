@@ -37,8 +37,8 @@ const admin = require("firebase-admin");
 const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
-const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel, parseSuppliesExcel, parseCariEkstreExcel, TRACKED_CUSTOMERS } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
+const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel, parseSuppliesExcel, parseCariEkstreExcel, parseCocPartsKonf, parseCocCertificatesListesi, TRACKED_CUSTOMERS } = require("./parsers");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCocPartsReport, saveCocCertificatesReport, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
 const { fetchTcmbRates } = require("./tcmb");
 const { calculateSimpleInventoryValue } = require("./inventoryCalcSimple");
 
@@ -793,6 +793,63 @@ exports.uploadCariEkstreHttp = onRequest(
       });
     } catch (err) {
       logger.error("[CariEkstre Manuel] Hata", { error: err.message, stack: err.stack });
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ====================================================================
+// COC (Uygunluk Belgesi) — MANUEL EXCEL YÜKLEME (HTTP)
+// FR-70 Uygunluk Belgesi.xlsm dosyasını alıp:
+//   1) ASELSAN KONF + ROKETSAN KONF → cocParts master
+//   2) "Uygunluk Belgesi Listesi" → cocCertificates geçmiş arşiv
+// İdempotent: aynı sertifika no'su atlanır, mevcut parça master merge edilir.
+// ====================================================================
+exports.uploadCocFileHttp = onRequest(
+  {
+    region: REGION,
+    timeoutSeconds: 540,
+    memory: "1GiB",
+    cors: true,
+    invoker: "public",
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "POST gerekli — body olarak Excel dosyası gönderin" });
+      return;
+    }
+    try {
+      const buffer = req.rawBody;
+      if (!buffer || buffer.length === 0) {
+        res.status(400).json({ error: "Body boş — Excel dosyası gönderilmedi" });
+        return;
+      }
+      const workbook = XLSX.read(buffer, { type: "buffer" });
+
+      // 1) KONF master parse
+      const partsResult = parseCocPartsKonf(workbook);
+      const partsOut = await saveCocPartsReport(db, partsResult);
+
+      // 2) Liste (geçmiş arşiv) parse
+      const certResult = parseCocCertificatesListesi(workbook);
+      const certOut = await saveCocCertificatesReport(db, certResult);
+
+      logger.info("[COC Manuel] ✓ Yüklendi", { partsOut, certOut });
+      res.json({
+        success: true,
+        parts: {
+          parsed: partsResult.totalCount,
+          aselsan: partsResult.aselsanCount,
+          roketsan: partsResult.roketsanCount,
+          ...partsOut,
+        },
+        certificates: {
+          parsed: certResult.count,
+          ...certOut,
+        },
+      });
+    } catch (err) {
+      logger.error("[COC Manuel] Hata", { error: err.message, stack: err.stack });
       res.status(500).json({ error: err.message });
     }
   },

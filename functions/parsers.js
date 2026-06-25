@@ -1342,6 +1342,110 @@ function parseCariEkstreExcel(workbook) {
   };
 }
 
+// ====================================================================
+// COC (Certificate of Conformity / Uygunluk Belgesi) PARSERS
+// FR-70 UYGUNLUK BELGESİ Rev01.xlsm formatı
+// İki kaynak:
+//   1) KONF sheet (Aselsan + Roketsan) → parça master (stokKodu, açıklama, FAİ no, revizyonlar)
+//   2) "Uygunluk Belgesi Listesi" sheet → geçmiş arşiv (1680+ kayıt)
+// ====================================================================
+
+// KONF sheet parser — ilk 3 satır başlık, sonra her satır 1 parça.
+// Kolonlar: [0]Kod, [1]Açıklama, [2]Fai No, [3..11]Revizyon No (9 versiyon)
+function parseCocKonfSheet(workbook, sheetName, customerCode) {
+  const sheet = workbook.Sheets[sheetName];
+  if (!sheet) return {};
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  const parts = {};
+  for (let i = 3; i < rows.length; i++) {
+    const r = rows[i];
+    const kod = String(r[0] || "").trim();
+    if (!kod) continue;
+    const description = String(r[1] || "").replace(/[\r\n]+/g, " ").trim();
+    const faiNoRaw = r[2];
+    const faiNo = (faiNoRaw === "" || faiNoRaw === "-" || faiNoRaw === undefined || faiNoRaw === null)
+      ? null
+      : String(faiNoRaw).trim();
+    const revisions = [];
+    for (let col = 3; col <= 11; col++) {
+      const rev = String(r[col] || "").trim();
+      if (rev && rev !== "-") revisions.push(rev);
+    }
+    parts[kod] = {
+      stokKodu: kod,
+      description,
+      faiNo,
+      revisions,
+      customerCode,
+    };
+  }
+  return parts;
+}
+
+// COC master Excel parser — Aselsan + Roketsan KONF birleşik.
+// Tek upload'ta her iki müşteri parça master'ı yazılır.
+function parseCocPartsKonf(workbook) {
+  const aselsan = parseCocKonfSheet(workbook, "ASELSAN KONF", "120-0107");
+  const roketsan = parseCocKonfSheet(workbook, "ROKETSAN KONF", "120-116");
+  const allParts = { ...aselsan, ...roketsan };
+  return {
+    parts: allParts,
+    aselsanCount: Object.keys(aselsan).length,
+    roketsanCount: Object.keys(roketsan).length,
+    totalCount: Object.keys(allParts).length,
+    importedAt: new Date().toISOString(),
+  };
+}
+
+// "Uygunluk Belgesi Listesi" sheet parser — geçmiş arşiv.
+// Kolonlar: [0]Sertifika No, [1]Kontrol Tarihi, [2]Kayıt Tarihi, [3]Müşteri Adı, [4]Müşteri Adresi,
+//           [5]Sipariş Numarası, [6]Feragat Durumu, [7]Sıra Numarası, [8]Stok Numarası,
+//           [9]Tanım, [10]Miktar, [11]Seri Numarası
+function parseCocCertificatesListesi(workbook) {
+  const sheet = workbook.Sheets["Uygunluk Belgesi Listesi"];
+  if (!sheet) return { certificates: {}, count: 0 };
+  const rows = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: "" });
+  const certificates = {};
+  const excelDateToIso = (n) => {
+    if (typeof n !== "number") return null;
+    const ms = (n - 25569) * 86400 * 1000;
+    const d = new Date(ms);
+    if (isNaN(d.getTime())) return null;
+    return d.toISOString().substring(0, 10);
+  };
+  // certNo + siraNo kombinasyonu unique ID olarak kullanılır (1 sertifika no'da
+  // çoklu satır olabilir — 202411-077 vakası gibi).
+  for (let i = 1; i < rows.length; i++) {
+    const r = rows[i];
+    const certNo = String(r[0] || "").trim();
+    if (!certNo) continue;
+    const siraNo = String(r[7] || "1").trim() || "1";
+    const id = `${certNo}_${siraNo}`;
+    const customerName = String(r[3] || "").trim();
+    const customerCode = customerName.includes("ASELSAN") ? "120-0107"
+                       : customerName.includes("ROKETSAN") ? "120-116"
+                       : "";
+    certificates[id] = {
+      certNo,
+      siraNo,
+      controlDateIso: excelDateToIso(r[1]) || String(r[1] || ""),
+      kayitTarihi: String(r[2] || "").trim(),
+      customerCode,
+      customerName,
+      customerAddress: String(r[4] || "").trim(),
+      orderNo: String(r[5] || "").trim(),
+      feragatText: String(r[6] || "").trim(),
+      stokKodu: String(r[8] || "").trim(),
+      description: String(r[9] || "").trim(),
+      quantity: r[10],
+      serialNo: String(r[11] || "").trim(),
+      source: "excel-import",
+      importedAt: new Date().toISOString(),
+    };
+  }
+  return { certificates, count: Object.keys(certificates).length };
+}
+
 module.exports = {
   parseStockReport,
   parseAkibetExcel,
@@ -1351,5 +1455,7 @@ module.exports = {
   parseOverheadExcel,
   parseSuppliesExcel,
   parseCariEkstreExcel,
+  parseCocPartsKonf,
+  parseCocCertificatesListesi,
   TRACKED_CUSTOMERS,
 };
