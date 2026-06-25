@@ -100,6 +100,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const [staleExpanded, setStaleExpanded] = useState(false);
   const [orphanExpanded, setOrphanExpanded] = useState(false);
   const [inconsistentExpanded, setInconsistentExpanded] = useState(false);
+  const [vioSyncExpanded, setVioSyncExpanded] = useState(false);
   // Hafta listesi default kapalı — kullanıcı tıklayarak açar (accordion).
   const [weekExpanded, setWeekExpanded] = useState({});
   const toggleWeek = (w) => setWeekExpanded(prev => ({ ...prev, [w]: !prev[w] }));
@@ -1574,6 +1575,61 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
           {viewMode === 'orders' && (<>
 
+          {/* Uyarılar Çubuğu — 5 paneli kompakt rozetler halinde göster, tıkla → ilgili
+              panel açılır. Default tüm paneller kapalı. Sayı 0 ise rozet gizli. */}
+          {(grouped.staleOverrides.length > 0 || grouped.deferred.length > 0 ||
+            (isAdmin && orphanOverrides.length > 0) ||
+            grouped.inconsistentPairs.length > 0 ||
+            (isAdmin && vioSyncAudit.count > 0)) && (
+            <div style={{
+              marginTop: 14, padding: '8px 12px', borderRadius: 8,
+              background: '#fafaf9', border: '1px solid #e7e5e4',
+              display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+            }}>
+              <span style={{ fontSize: 11, color: '#78716c', fontWeight: 500, marginRight: 4 }}>⚠ Uyarılar:</span>
+              {grouped.staleOverrides.length > 0 && (
+                <button onClick={() => setStaleExpanded(!staleExpanded)} style={{
+                  padding: '4px 10px', borderRadius: 16, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                  border: '1px solid ' + (staleExpanded ? '#ca8a04' : '#fde68a'),
+                  background: staleExpanded ? '#ca8a04' : '#fef3c7',
+                  color: staleExpanded ? '#fff' : '#854d0e',
+                }}>● {grouped.staleOverrides.length} VIO Termin Değişti</button>
+              )}
+              {grouped.deferred.length > 0 && (
+                <button onClick={() => setDeferredExpanded(!deferredExpanded)} style={{
+                  padding: '4px 10px', borderRadius: 16, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                  border: '1px solid ' + (deferredExpanded ? '#57534e' : '#e7e5e4'),
+                  background: deferredExpanded ? '#57534e' : '#f5f5f4',
+                  color: deferredExpanded ? '#fff' : '#44403c',
+                }}>⏸ {grouped.deferred.length} Akibeti Belirsiz</button>
+              )}
+              {isAdmin && orphanOverrides.length > 0 && (
+                <button onClick={() => setOrphanExpanded(!orphanExpanded)} style={{
+                  padding: '4px 10px', borderRadius: 16, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                  border: '1px solid ' + (orphanExpanded ? '#b91c1c' : '#fecaca'),
+                  background: orphanExpanded ? '#b91c1c' : '#fef2f2',
+                  color: orphanExpanded ? '#fff' : '#991b1b',
+                }}>⚠ {orphanOverrides.length} Orphan Override</button>
+              )}
+              {grouped.inconsistentPairs.length > 0 && (
+                <button onClick={() => setInconsistentExpanded(!inconsistentExpanded)} style={{
+                  padding: '4px 10px', borderRadius: 16, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                  border: '1px solid ' + (inconsistentExpanded ? '#6b21a8' : '#ddd6fe'),
+                  background: inconsistentExpanded ? '#6b21a8' : '#f3e8ff',
+                  color: inconsistentExpanded ? '#fff' : '#6b21a8',
+                }}>⇅ {grouped.inconsistentPairs.length} Plan Sırası Tutarsız</button>
+              )}
+              {isAdmin && vioSyncAudit.count > 0 && (
+                <button onClick={() => setVioSyncExpanded(!vioSyncExpanded)} style={{
+                  padding: '4px 10px', borderRadius: 16, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+                  border: '1px solid ' + (vioSyncExpanded ? '#92400e' : '#fde68a'),
+                  background: vioSyncExpanded ? '#92400e' : '#fffbeb',
+                  color: vioSyncExpanded ? '#fff' : '#92400e',
+                }}>🔍 {vioSyncAudit.count} VIO Sevk Audit</button>
+              )}
+            </div>
+          )}
+
           {/* Toplu COC bar — sipariş satırı checkbox'larından seçim yapıldığında görünür */}
           {cocSelected.size > 0 && (
             <div style={{
@@ -1597,8 +1653,8 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             </div>
           )}
 
-          {/* VIO Termin Değişti — override stale uyarısı (Aşama 2.4) */}
-          {grouped.staleOverrides.length > 0 && (
+          {/* VIO Termin Değişti — sadece expand edilince görünür (uyarılar çubuğundan tetiklenir) */}
+          {grouped.staleOverrides.length > 0 && staleExpanded && (
             <div style={{
               marginTop: 16, padding: 12, borderRadius: 8,
               background: '#fefce8', border: '1px solid #fde047',
@@ -1666,15 +1722,16 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           {/* VIO Sevk Senkron Audit — admin only. salesOrders'taki sevkEdilen değeri ile
               shipments'taki totalShipped arasında fark olan kayıtlar. Bu fark = Kayıp B
               (replacement migration sonrası baseline kaybı, vs.) görünür yüzü. */}
-          {isAdmin && vioSyncAudit.count > 0 && (
+          {isAdmin && vioSyncAudit.count > 0 && vioSyncExpanded && (
             <div style={{
               marginTop: 16, padding: 12, borderRadius: 8,
               background: '#fffbeb', border: '1px solid #fcd34d',
             }}>
-              <div style={{ fontSize: 13, fontWeight: 500, color: '#92400e', marginBottom: 8 }}>
+              <div style={{ fontSize: 13, fontWeight: 500, color: '#92400e' }}>
                 🔍 VIO Sevk Senkron Audit ({vioSyncAudit.count} sipariş · ~{formatMoney(vioSyncAudit.totalLostTl)} TL kayıp)
               </div>
-              <div style={{ fontSize: 11, color: '#78716c', marginBottom: 10 }}>
+              {true && (<>
+              <div style={{ fontSize: 11, color: '#78716c', marginTop: 10, marginBottom: 10 }}>
                 Bu siparişlerin VIO'da raporlanan <b>sevkEdilen</b> değeri, bizim <b>shipments.totalShipped</b> değerinden büyük.
                 Yani VIO daha fazla sevk gördüğünü söylüyor ama bizim sevk geçmişinde kayıt yok (Kayıp B —
                 3-tuple ID değişimi sonrası baseline kaybı, vb.). Vio-resync server-side eklenince otomatik düzelir.
@@ -1720,13 +1777,14 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                   </div>
                 )}
               </div>
+              </>)}
             </div>
           )}
 
           {/* Orphan override uyarısı — admin only.
               salesOrders'ta artık olmayan ama planOverrides'ta hâlâ duran ölü kayıtlar.
               Replacement detection (3-tuple ID değişimi) sonucu kalan deferred/cancelled. */}
-          {isAdmin && orphanOverrides.length > 0 && (() => {
+          {isAdmin && orphanOverrides.length > 0 && orphanExpanded && (() => {
             const replacementCount = orphanOverrides.filter(o => o.orphanKind === 'replacement').length;
             const deletedCount = orphanOverrides.length - replacementCount;
             return (
@@ -1807,9 +1865,8 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             );
           })()}
 
-          {/* Plan Sırası Tutarsız — aynı stokKodu için müşteri teslim sırası ile bizim plan
-              sırası uyuşmuyor. Filter-aware (deferred hariç). Tıkla → picker aç. */}
-          {grouped.inconsistentPairs.length > 0 && (
+          {/* Plan Sırası Tutarsız — uyarılar çubuğundan tetiklenir */}
+          {grouped.inconsistentPairs.length > 0 && inconsistentExpanded && (
             <div style={{
               marginTop: 16, padding: 12, borderRadius: 8,
               background: '#faf5ff', border: '1px solid #d8b4fe',
@@ -1903,8 +1960,8 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             </div>
           )}
 
-          {/* Akibeti belirsiz kutusu — gecikenin üstünde, MRP demand'ına dahil değil */}
-          {grouped.deferred.length > 0 && (
+          {/* Akibeti belirsiz kutusu — uyarılar çubuğundan tetiklenir */}
+          {grouped.deferred.length > 0 && deferredExpanded && (
             <div style={{
               marginTop: 16, padding: 12, borderRadius: 8,
               background: '#f5f5f4', border: '1px solid #d6d3d1',
