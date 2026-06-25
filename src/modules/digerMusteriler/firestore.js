@@ -120,6 +120,44 @@ export async function saveCocCertificate(cert, { canEdit }) {
   return { id, year };
 }
 
+// COC sertifikasını günceller (düzenleme). Mevcut kaydı overwrite eder, updatedAt damgalar.
+// Sertifika no değişimi desteklenmez (yıl/ID değişir, ayrı doc'a taşıma gerekir).
+export async function updateCocCertificate(cert, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!cert.certNo || !cert.stokKodu) throw new Error("certNo ve stokKodu zorunlu");
+  const year = cert.certNo.substring(0, 4);
+  if (!/^\d{4}$/.test(year)) throw new Error(`Geçersiz sertifika no formatı: ${cert.certNo}`);
+  const siraNo = String(cert.siraNo || "1").trim() || "1";
+  const id = `${cert.certNo}_${siraNo}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        ...cert,
+        siraNo,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    year,
+  }, { merge: true });
+  return { id, year };
+}
+
+// COC sertifikasını siler (year-bazlı doc'tan FieldValue.delete ile kaldır).
+export async function deleteCocCertificate(certNo, siraNo, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok — silme sadece admin/üretim/satış rolüne açık");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!certNo) throw new Error("certNo zorunlu");
+  const year = certNo.substring(0, 4);
+  if (!/^\d{4}$/.test(year)) throw new Error(`Geçersiz sertifika no formatı: ${certNo}`);
+  const sira = String(siraNo || "1").trim() || "1";
+  const id = `${certNo}_${sira}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await updateDoc(ref, { [`certificates.${id}`]: deleteField() });
+  return { id, year };
+}
+
 // Sertifika no auto-suggest helper — verilen yıl+ay için mevcut sertifikalardan
 // en yüksek sıra no'yu bul ve +1 öner. Format: YYYYAA-NNN (NNN 3 digit padding).
 export function suggestNextCertNo(certificatesMap, year, month) {

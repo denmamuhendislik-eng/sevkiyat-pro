@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates, useCocCertificatesMulti } from './hooks';
-import { saveCocCertificate, suggestNextCertNo } from './firestore';
+import { saveCocCertificate, updateCocCertificate, deleteCocCertificate, suggestNextCertNo } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
 import { generateCocPdf } from './cocPdf';
 import { parseSalesOrderExcel } from './parser';
@@ -3198,33 +3198,30 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
 function CocArchiveView({ searchText, customerFilter, canEdit }) {
   const currentYear = new Date().getFullYear();
   const yearList = useMemo(() => {
-    // Mevcut yıl + son 4 yıl (2022-2026 dahil)
     return [currentYear - 4, currentYear - 3, currentYear - 2, currentYear - 1, currentYear].map(String);
   }, [currentYear]);
   const { certificates, byYear, loaded } = useCocCertificatesMulti(yearList);
   const [yearFilter, setYearFilter] = useState('all');
   const [detailCert, setDetailCert] = useState(null);
+  // COC-specific arama: stok kodu + cert no + sipariş no + tanım
+  const [cocSearch, setCocSearch] = useState('');
 
-  // Filtreleme + sıralama
+  // Filtreleme + sıralama — üst ana arama VE coc-specific aramayı birleştir
   const filtered = useMemo(() => {
-    const q = (searchText || '').trim().toLocaleLowerCase('tr-TR');
+    const qMain = (searchText || '').trim().toLocaleLowerCase('tr-TR');
+    const qCoc = (cocSearch || '').trim().toLocaleLowerCase('tr-TR');
     const list = Object.values(certificates).filter(c => {
       if (!c?.certNo) return false;
-      // Yıl filtresi
       if (yearFilter !== 'all' && c.certNo.substring(0, 4) !== yearFilter) return false;
-      // Müşteri filtresi (DigerMusteriler ana filtresinden geliyor)
       if (customerFilter && customerFilter !== 'all' && c.customerCode !== customerFilter) return false;
-      // Arama
-      if (q) {
-        const hay = `${c.certNo} ${c.orderNo || ''} ${c.stokKodu || ''} ${c.description || ''}`.toLocaleLowerCase('tr-TR');
-        if (!hay.includes(q)) return false;
-      }
+      const hay = `${c.certNo} ${c.orderNo || ''} ${c.stokKodu || ''} ${c.description || ''} ${c.serialNo || ''}`.toLocaleLowerCase('tr-TR');
+      if (qMain && !hay.includes(qMain)) return false;
+      if (qCoc && !hay.includes(qCoc)) return false;
       return true;
     });
-    // Yeniden eskiye sırala (sertifika no üzerinden)
     list.sort((a, b) => (b.certNo || '').localeCompare(a.certNo || ''));
     return list;
-  }, [certificates, yearFilter, customerFilter, searchText]);
+  }, [certificates, yearFilter, customerFilter, searchText, cocSearch]);
 
   const yearCounts = useMemo(() => {
     const out = {};
@@ -3257,6 +3254,26 @@ function CocArchiveView({ searchText, customerFilter, canEdit }) {
         <span style={{ marginLeft: 'auto', fontSize: 11, color: '#78716c' }}>
           {loaded ? `${filtered.length} kayıt görüntüleniyor` : 'yükleniyor…'}
         </span>
+      </div>
+
+      {/* COC-specific arama */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <input
+          type="text"
+          placeholder="🔍 Sertifika no, sipariş no, stok kodu, tanım, seri no ile ara..."
+          value={cocSearch}
+          onChange={(e) => setCocSearch(e.target.value)}
+          style={{
+            flex: 1, padding: '7px 12px', borderRadius: 6, border: '1px solid #d6d3d1',
+            fontSize: 12, outline: 'none',
+          }}
+        />
+        {cocSearch && (
+          <button onClick={() => setCocSearch('')} style={{
+            padding: '6px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c',
+          }}>Temizle</button>
+        )}
       </div>
 
       {/* Tablo */}
@@ -3333,14 +3350,26 @@ function CocArchiveView({ searchText, customerFilter, canEdit }) {
 const cocTh = { padding: '8px 10px', fontWeight: 600, fontSize: 10, borderBottom: '1px solid #e7e5e4' };
 const cocTd = { padding: '6px 10px', fontSize: 11 };
 
-// COC Detay Modal — geçmiş sertifika bilgileri + PDF tekrar üret
-function CocDetailModal({ cert, canEdit, onClose }) {
+// COC Detay Modal — geçmiş sertifika bilgileri + PDF tekrar üret + düzenle + sil
+function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
+  const [cert, setCert] = useState(initialCert);
   const [generating, setGenerating] = useState(false);
+  const [editMode, setEditMode] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState('');
+
+  // Edit form state
+  const [editForm, setEditForm] = useState(cert);
+
+  const busy = generating || saving || deleting;
+
   useEffect(() => {
-    const onKey = (e) => { if (e.key === 'Escape' && !generating) onClose(); };
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose(); };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [onClose, generating]);
+  }, [onClose, busy]);
 
   const handleDownload = async () => {
     setGenerating(true);
@@ -3353,11 +3382,74 @@ function CocDetailModal({ cert, canEdit, onClose }) {
     }
   };
 
+  const handleStartEdit = () => {
+    setEditForm({ ...cert });
+    setEditMode(true);
+    setError('');
+  };
+
+  const handleCancelEdit = () => {
+    setEditMode(false);
+    setEditForm(cert);
+    setError('');
+  };
+
+  const handleSaveEdit = async () => {
+    if (!canEdit) return;
+    if (!editForm.certNo || !/^\d{6}[-/]\d{3,}$/.test(editForm.certNo)) {
+      setError('Sertifika no formatı: YYYYAA-NNN');
+      return;
+    }
+    // Sertifika no yıl değişimini engelle (year-bazlı doc'a göre yazılıyor)
+    if (editForm.certNo.substring(0, 4) !== cert.certNo.substring(0, 4)) {
+      setError('Sertifika no yıl değiştirilemez (kayıt başka yıl doc\'una taşınmaz)');
+      return;
+    }
+    const qty = Number(editForm.quantity);
+    if (!qty || qty <= 0) {
+      setError('Miktar 0\'dan büyük olmalı');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      const updated = {
+        ...editForm,
+        feragatStatus: editForm.feragatText ? 'VAR' : 'YOK',
+      };
+      await updateCocCertificate(updated, { canEdit });
+      setCert(updated);
+      setEditMode(false);
+    } catch (e) {
+      setError(e.message || 'Güncelleme hatası');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!canEdit) return;
+    setDeleting(true);
+    setError('');
+    try {
+      await deleteCocCertificate(cert.certNo, cert.siraNo || '1', { canEdit });
+      onClose();
+    } catch (e) {
+      setError(e.message || 'Silme hatası');
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  };
+
   const fStatus = cert.feragatStatus || (cert.feragatText ? 'VAR' : 'YOK');
+
+  // Edit form helper
+  const updateField = (key, val) => setEditForm(prev => ({ ...prev, [key]: val }));
+  const editInput = { padding: '4px 8px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12, width: '100%', boxSizing: 'border-box' };
 
   return (
     <div
-      onClick={(e) => { if (e.target === e.currentTarget && !generating) onClose(); }}
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
       style={{
         position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
         background: 'rgba(0,0,0,0.45)', zIndex: 9999,
@@ -3366,67 +3458,165 @@ function CocDetailModal({ cert, canEdit, onClose }) {
     >
       <div style={{
         background: '#fff', borderRadius: 10, padding: 0,
-        maxWidth: 640, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        maxWidth: 680, width: '100%', maxHeight: '90vh', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
       }}>
         <div style={{ padding: '14px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 22 }}>📄</span>
           <div>
-            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>{cert.certNo}</h3>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>
+              {cert.certNo}{editMode && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: '#c2410c' }}>(düzenleniyor)</span>}
+            </h3>
             <div style={{ fontSize: 10, color: '#78716c' }}>{cert.controlDateIso} · {cert.customerName}</div>
           </div>
-          <button onClick={() => !generating && onClose()} disabled={generating} style={{
+          <button onClick={() => !busy && onClose()} disabled={busy} style={{
             marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
-            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: generating ? 'not-allowed' : 'pointer',
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: busy ? 'not-allowed' : 'pointer',
           }}>Kapat ✕</button>
         </div>
 
-        <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '140px 1fr', gap: '8px 14px', fontSize: 12 }}>
+        <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '140px 1fr', gap: '8px 14px', fontSize: 12, alignItems: 'center' }}>
           <span style={{ color: '#78716c' }}>Sertifika No:</span>
           <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.certNo}</span>
+
           <span style={{ color: '#78716c' }}>Kontrol Tarihi:</span>
-          <span>{cert.controlDateIso || '—'}</span>
+          {editMode
+            ? <input type="date" value={editForm.controlDateIso || ''} onChange={(e) => updateField('controlDateIso', e.target.value)} style={editInput} />
+            : <span>{cert.controlDateIso || '—'}</span>}
+
           <span style={{ color: '#78716c' }}>Müşteri:</span>
           <span style={{ fontWeight: 500 }}>{cert.customerName}</span>
+
           <span style={{ color: '#78716c' }}>Adres:</span>
           <span style={{ fontSize: 11, color: '#57534e' }}>{cert.customerAddress || '—'}</span>
+
           <span style={{ color: '#78716c' }}>Sipariş No:</span>
-          <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.orderNo || '—'}</span>
+          {editMode
+            ? <input type="text" value={editForm.orderNo || ''} onChange={(e) => updateField('orderNo', e.target.value)} style={{ ...editInput, fontFamily: 'ui-monospace, monospace' }} />
+            : <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.orderNo || '—'}</span>}
+
           <span style={{ color: '#78716c' }}>Stok Kodu:</span>
           <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.stokKodu || '—'}</span>
+
           <span style={{ color: '#78716c' }}>Parça Adı:</span>
-          <span>{cert.description || '—'}</span>
+          {editMode
+            ? <input type="text" value={editForm.description || ''} onChange={(e) => updateField('description', e.target.value)} style={editInput} />
+            : <span>{cert.description || '—'}</span>}
+
           <span style={{ color: '#78716c' }}>FAİ Kodu:</span>
-          <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.faiNo || '—'}</span>
+          {editMode
+            ? <input type="text" value={editForm.faiNo || ''} onChange={(e) => updateField('faiNo', e.target.value)} style={{ ...editInput, fontFamily: 'ui-monospace, monospace' }} />
+            : <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.faiNo || '—'}</span>}
+
           <span style={{ color: '#78716c' }}>Revizyon:</span>
-          <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.revisionCode || '—'}</span>
+          {editMode
+            ? <input type="text" value={editForm.revisionCode || ''} onChange={(e) => updateField('revisionCode', e.target.value)} style={{ ...editInput, fontFamily: 'ui-monospace, monospace' }} />
+            : <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.revisionCode || '—'}</span>}
+
           <span style={{ color: '#78716c' }}>Miktar:</span>
-          <span style={{ fontWeight: 600 }}>{cert.quantity || '—'}</span>
+          {editMode
+            ? <input type="number" min="1" value={editForm.quantity || ''} onChange={(e) => updateField('quantity', e.target.value)} style={editInput} />
+            : <span style={{ fontWeight: 600 }}>{cert.quantity || '—'}</span>}
+
           <span style={{ color: '#78716c' }}>Seri No:</span>
-          <span>{cert.serialNo || '—'}</span>
+          {editMode
+            ? <input type="text" value={editForm.serialNo || ''} onChange={(e) => updateField('serialNo', e.target.value)} style={editInput} />
+            : <span>{cert.serialNo || '—'}</span>}
+
           <span style={{ color: '#78716c' }}>Feragat:</span>
-          <span style={{
-            padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, alignSelf: 'start',
-            background: fStatus === 'VAR' ? '#fef2f2' : '#f0fdf4',
-            color: fStatus === 'VAR' ? '#991b1b' : '#166534',
-            width: 'fit-content',
-          }}>{fStatus}</span>
-          {fStatus === 'VAR' && cert.feragatText && (<>
+          {editMode ? (
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11 }}>
+              <input type="checkbox" checked={!!editForm.feragatText} onChange={(e) => updateField('feragatText', e.target.checked ? (editForm.feragatText || ' ') : '')} />
+              Feragat var
+            </label>
+          ) : (
+            <span style={{
+              padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+              background: fStatus === 'VAR' ? '#fef2f2' : '#f0fdf4',
+              color: fStatus === 'VAR' ? '#991b1b' : '#166534',
+              width: 'fit-content',
+            }}>{fStatus}</span>
+          )}
+
+          {editMode && editForm.feragatText !== '' && (<>
+            <span style={{ color: '#78716c' }}>Feragat Metni:</span>
+            <textarea
+              value={editForm.feragatText || ''}
+              onChange={(e) => updateField('feragatText', e.target.value)}
+              rows={3}
+              style={{ ...editInput, fontFamily: 'inherit', resize: 'vertical' }}
+              placeholder="Feragat açıklaması..."
+            />
+          </>)}
+
+          {!editMode && fStatus === 'VAR' && cert.feragatText && (<>
             <span style={{ color: '#78716c' }}>Feragat Metni:</span>
             <span style={{ fontSize: 11, whiteSpace: 'pre-wrap', color: '#44403c' }}>{cert.feragatText}</span>
           </>)}
         </div>
 
-        <div style={{ padding: '12px 20px', borderTop: '1px solid #e7e5e4', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
-          <button onClick={() => !generating && onClose()} disabled={generating} style={{
-            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
-            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: generating ? 'not-allowed' : 'pointer',
-          }}>Kapat</button>
-          <button onClick={handleDownload} disabled={generating} style={{
-            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
-            border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
-            cursor: generating ? 'not-allowed' : 'pointer', opacity: generating ? 0.6 : 1,
-          }}>📄 {generating ? 'Üretiliyor...' : 'PDF Tekrar İndir'}</button>
+        {error && (
+          <div style={{ margin: '0 20px 12px', padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        {confirmDelete && (
+          <div style={{ margin: '0 20px 12px', padding: 12, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 12 }}>
+            <div style={{ color: '#991b1b', fontWeight: 600, marginBottom: 8 }}>⚠ Bu sertifikayı silmek istediğine emin misin?</div>
+            <div style={{ color: '#7f1d1d', marginBottom: 10 }}>
+              <b>{cert.certNo}</b> · {cert.stokKodu} · {cert.customerName} — bu işlem <b>geri alınamaz</b>.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setConfirmDelete(false)} disabled={deleting} style={{
+                padding: '6px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+                border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: deleting ? 'not-allowed' : 'pointer',
+              }}>İptal</button>
+              <button onClick={handleDelete} disabled={deleting} style={{
+                padding: '6px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+                border: '1px solid #b91c1c', background: '#b91c1c', color: '#fff',
+                cursor: deleting ? 'not-allowed' : 'pointer', opacity: deleting ? 0.6 : 1,
+              }}>{deleting ? 'Siliniyor...' : 'Evet, sil'}</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e7e5e4', display: 'flex', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+          {editMode ? (<>
+            <button onClick={handleCancelEdit} disabled={busy} style={{
+              padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+              border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: busy ? 'not-allowed' : 'pointer',
+            }}>İptal</button>
+            <button onClick={handleSaveEdit} disabled={busy} style={{
+              padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+              border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+              cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1,
+            }}>{saving ? 'Kaydediliyor...' : '✓ Değişiklikleri Kaydet'}</button>
+          </>) : (<>
+            {canEdit && (
+              <button onClick={() => setConfirmDelete(true)} disabled={busy} style={{
+                padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b',
+                cursor: busy ? 'not-allowed' : 'pointer', marginRight: 'auto',
+              }}>🗑 Sil</button>
+            )}
+            <button onClick={() => !busy && onClose()} disabled={busy} style={{
+              padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+              border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: busy ? 'not-allowed' : 'pointer',
+            }}>Kapat</button>
+            {canEdit && (
+              <button onClick={handleStartEdit} disabled={busy} style={{
+                padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+                border: '1px solid #1e40af', background: '#fff', color: '#1e40af',
+                cursor: busy ? 'not-allowed' : 'pointer',
+              }}>✎ Düzenle</button>
+            )}
+            <button onClick={handleDownload} disabled={busy} style={{
+              padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+              border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+              cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1,
+            }}>📄 {generating ? 'Üretiliyor...' : 'PDF İndir'}</button>
+          </>)}
         </div>
       </div>
     </div>
