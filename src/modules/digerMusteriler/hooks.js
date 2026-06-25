@@ -93,6 +93,34 @@ export function useCocCertificates(year) {
   return { cocCertificates: data, loaded };
 }
 
+// Çoklu yıl COC arşivi — birden fazla year doc'una paralel abone ol, birleştir.
+// Arşiv sayfası için (2024-2025-2026 hepsi tek listede gösterilir).
+export function useCocCertificatesMulti(years) {
+  const [byYear, setByYear] = useState({});
+  const [loadedYears, setLoadedYears] = useState(new Set());
+  const yearsKey = (years || []).join(",");
+  useEffect(() => {
+    if (!years || years.length === 0) return;
+    const unsubs = years.map(y => subscribeCocCertificates(y, (d) => {
+      setByYear(prev => ({ ...prev, [y]: d?.certificates || {} }));
+      setLoadedYears(prev => new Set([...prev, y]));
+    }));
+    return () => unsubs.forEach(fn => fn && fn());
+  }, [yearsKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  // Birleştirilmiş map: { id: cert } (ID'ler year doc'larında unique olduğu varsayılıyor)
+  const certificates = useMemo(() => {
+    const merged = {};
+    for (const y of Object.keys(byYear)) {
+      for (const [id, c] of Object.entries(byYear[y] || {})) {
+        merged[id] = c;
+      }
+    }
+    return merged;
+  }, [byYear]);
+  const allLoaded = years.every(y => loadedYears.has(y));
+  return { certificates, byYear, loaded: allLoaded };
+}
+
 // Siparişleri filter + sort + ISO-hafta gruplama + KPI hesabı
 // Adım 5: override görünümde yok ama hook zaten override-aware — Adım 6'da UI eklendiğinde mantık hazır
 // "Akibeti belirsiz" siparişler ayrı `deferred[]` array'ine düşer (geciken/hafta gruplarına dahil değil) —

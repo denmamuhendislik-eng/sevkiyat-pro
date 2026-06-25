@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates } from './hooks';
+import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates, useCocCertificatesMulti } from './hooks';
 import { saveCocCertificate, suggestNextCertNo } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
 import { generateCocPdf } from './cocPdf';
@@ -1376,11 +1376,23 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                   borderLeft: '1px solid #d6d3d1',
                 }}
               >🧮 Ürün Özeti</button>
+              <button
+                onClick={() => setViewMode('coc')}
+                style={{
+                  padding: '5px 10px', fontSize: 12, border: 'none',
+                  background: viewMode === 'coc' ? '#534AB7' : '#fff',
+                  color: viewMode === 'coc' ? '#fff' : '#44403c',
+                  cursor: 'pointer', fontWeight: viewMode === 'coc' ? 500 : 400,
+                  borderLeft: '1px solid #d6d3d1',
+                }}
+              >📄 Uygunluk Belgeleri</button>
             </div>
             <div style={{ marginLeft: 'auto', fontSize: 11, color: '#78716c' }}>
               {viewMode === 'orders'
                 ? `${grouped.kpi.totalRows} kayıt filtrede · ${overrideLabel}`
-                : `${productSummary.length} ürün · ${grouped.kpi.totalRows} sipariş`}
+                : viewMode === 'products'
+                ? `${productSummary.length} ürün · ${grouped.kpi.totalRows} sipariş`
+                : 'COC arşivi'}
             </div>
           </div>
 
@@ -2045,6 +2057,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 </tbody>
               </table>
             </div>
+          )}
+
+          {viewMode === 'coc' && (
+            <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} />
           )}
         </>
       )}
@@ -3167,6 +3183,250 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
             border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
             cursor: (saving || !canEdit) ? 'not-allowed' : 'pointer', opacity: (saving || !canEdit) ? 0.6 : 1,
           }}>📄 {saving ? 'İşleniyor...' : 'Kaydet ve PDF İndir'}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
+// COC (Uygunluk Belgesi) Arşiv Görünümü — viewMode='coc' altında.
+// 2024-2025-2026 yıllarındaki tüm sertifikalar (1679 + UI'dan eklenenler) tek listede.
+// Filtreler: müşteri (DigerMusteriler üst filtresinden), yıl, arama (certNo/orderNo/stokKodu/desc).
+// Tıkla → detay modal + PDF tekrar üret.
+// ====================================================================
+function CocArchiveView({ searchText, customerFilter, canEdit }) {
+  const currentYear = new Date().getFullYear();
+  const yearList = useMemo(() => {
+    // Mevcut yıl + son 4 yıl (2022-2026 dahil)
+    return [currentYear - 4, currentYear - 3, currentYear - 2, currentYear - 1, currentYear].map(String);
+  }, [currentYear]);
+  const { certificates, byYear, loaded } = useCocCertificatesMulti(yearList);
+  const [yearFilter, setYearFilter] = useState('all');
+  const [detailCert, setDetailCert] = useState(null);
+
+  // Filtreleme + sıralama
+  const filtered = useMemo(() => {
+    const q = (searchText || '').trim().toLocaleLowerCase('tr-TR');
+    const list = Object.values(certificates).filter(c => {
+      if (!c?.certNo) return false;
+      // Yıl filtresi
+      if (yearFilter !== 'all' && c.certNo.substring(0, 4) !== yearFilter) return false;
+      // Müşteri filtresi (DigerMusteriler ana filtresinden geliyor)
+      if (customerFilter && customerFilter !== 'all' && c.customerCode !== customerFilter) return false;
+      // Arama
+      if (q) {
+        const hay = `${c.certNo} ${c.orderNo || ''} ${c.stokKodu || ''} ${c.description || ''}`.toLocaleLowerCase('tr-TR');
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+    // Yeniden eskiye sırala (sertifika no üzerinden)
+    list.sort((a, b) => (b.certNo || '').localeCompare(a.certNo || ''));
+    return list;
+  }, [certificates, yearFilter, customerFilter, searchText]);
+
+  const yearCounts = useMemo(() => {
+    const out = {};
+    for (const y of yearList) out[y] = Object.keys(byYear[y] || {}).length;
+    return out;
+  }, [byYear, yearList]);
+
+  return (
+    <div style={{ marginTop: 16 }}>
+      {/* Üst kontrol — yıl filtreleri */}
+      <div style={{
+        display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
+        padding: '8px 10px', background: '#f9fafb', borderRadius: 8, border: '1px solid #e7e5e4',
+      }}>
+        <span style={{ fontSize: 11, color: '#57534e', fontWeight: 500, marginRight: 4 }}>Yıl:</span>
+        <button onClick={() => setYearFilter('all')} style={{
+          padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+          border: '1px solid ' + (yearFilter === 'all' ? '#1e40af' : '#d6d3d1'),
+          background: yearFilter === 'all' ? '#1e40af' : '#fff',
+          color: yearFilter === 'all' ? '#fff' : '#44403c',
+        }}>Hepsi ({Object.values(yearCounts).reduce((s, n) => s + n, 0)})</button>
+        {yearList.map(y => (
+          <button key={y} onClick={() => setYearFilter(y)} style={{
+            padding: '4px 10px', borderRadius: 4, fontSize: 11, fontWeight: 500, cursor: 'pointer',
+            border: '1px solid ' + (yearFilter === y ? '#1e40af' : '#d6d3d1'),
+            background: yearFilter === y ? '#1e40af' : '#fff',
+            color: yearFilter === y ? '#fff' : '#44403c',
+          }}>{y} ({yearCounts[y] || 0})</button>
+        ))}
+        <span style={{ marginLeft: 'auto', fontSize: 11, color: '#78716c' }}>
+          {loaded ? `${filtered.length} kayıt görüntüleniyor` : 'yükleniyor…'}
+        </span>
+      </div>
+
+      {/* Tablo */}
+      <div style={{ background: '#fff', border: '1px solid #e7e5e4', borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr style={{ background: '#f5f5f4', textAlign: 'left', color: '#44403c' }}>
+              <th style={cocTh}>Sertifika No</th>
+              <th style={cocTh}>Kontrol Tarihi</th>
+              <th style={cocTh}>Müşteri</th>
+              <th style={cocTh}>Sipariş No</th>
+              <th style={cocTh}>Stok Kodu</th>
+              <th style={{ ...cocTh, minWidth: 240 }}>Tanım</th>
+              <th style={{ ...cocTh, textAlign: 'right' }}>Miktar</th>
+              <th style={cocTh}>Seri No</th>
+              <th style={{ ...cocTh, textAlign: 'center' }}>Feragat</th>
+              <th style={{ ...cocTh, textAlign: 'center', width: 50 }}>Aksiyon</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr><td colSpan={10} style={{ padding: 30, textAlign: 'center', color: '#a8a29e', fontSize: 12 }}>
+                {loaded ? 'Filtre/aramaya uyan COC kaydı bulunamadı' : 'Yükleniyor…'}
+              </td></tr>
+            ) : filtered.slice(0, 500).map(c => {
+              const badge = customerBadge(c.customerCode);
+              const fStatus = c.feragatStatus || (c.feragatText ? 'VAR' : 'YOK');
+              return (
+                <tr key={`${c.certNo}_${c.siraNo || '1'}`} style={{ borderTop: '1px solid #f5f5f4' }}>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: '#1e40af' }}>{c.certNo}</td>
+                  <td style={{ ...cocTd, color: '#57534e' }}>{c.controlDateIso || '—'}</td>
+                  <td style={cocTd}>
+                    <span style={{
+                      padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                      background: badge.bg, color: badge.fg,
+                    }}>{badge.label}</span>
+                  </td>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>{c.orderNo || '—'}</td>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{c.stokKodu || '—'}</td>
+                  <td style={{ ...cocTd, color: '#44403c', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.description}>{c.description || '—'}</td>
+                  <td style={{ ...cocTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{c.quantity || '—'}</td>
+                  <td style={{ ...cocTd, color: '#78716c', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.serialNo}>{c.serialNo || '—'}</td>
+                  <td style={{ ...cocTd, textAlign: 'center' }}>
+                    <span style={{
+                      padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                      background: fStatus === 'VAR' ? '#fef2f2' : '#f0fdf4',
+                      color: fStatus === 'VAR' ? '#991b1b' : '#166534',
+                    }}>{fStatus}</span>
+                  </td>
+                  <td style={{ ...cocTd, textAlign: 'center' }}>
+                    <button onClick={() => setDetailCert(c)} title="Detay göster" style={{
+                      padding: '2px 6px', borderRadius: 3, fontSize: 11, cursor: 'pointer',
+                      border: '1px solid #d6d3d1', background: '#fff', color: '#44403c',
+                    }}>👁</button>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filtered.length > 500 && (
+          <div style={{ padding: 10, fontSize: 11, color: '#78716c', textAlign: 'center', background: '#fafaf9', borderTop: '1px solid #e7e5e4' }}>
+            İlk 500 kayıt gösteriliyor — arama veya yıl filtresiyle daraltın
+          </div>
+        )}
+      </div>
+
+      {/* Detay modal */}
+      {detailCert && <CocDetailModal cert={detailCert} canEdit={canEdit} onClose={() => setDetailCert(null)} />}
+    </div>
+  );
+}
+
+const cocTh = { padding: '8px 10px', fontWeight: 600, fontSize: 10, borderBottom: '1px solid #e7e5e4' };
+const cocTd = { padding: '6px 10px', fontSize: 11 };
+
+// COC Detay Modal — geçmiş sertifika bilgileri + PDF tekrar üret
+function CocDetailModal({ cert, canEdit, onClose }) {
+  const [generating, setGenerating] = useState(false);
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !generating) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, generating]);
+
+  const handleDownload = async () => {
+    setGenerating(true);
+    try {
+      await generateCocPdf(cert);
+    } catch (e) {
+      alert('PDF üretim hatası: ' + (e.message || e));
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const fStatus = cert.feragatStatus || (cert.feragatText ? 'VAR' : 'YOK');
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !generating) onClose(); }}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.45)', zIndex: 9999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div style={{
+        background: '#fff', borderRadius: 10, padding: 0,
+        maxWidth: 640, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+      }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 22 }}>📄</span>
+          <div>
+            <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>{cert.certNo}</h3>
+            <div style={{ fontSize: 10, color: '#78716c' }}>{cert.controlDateIso} · {cert.customerName}</div>
+          </div>
+          <button onClick={() => !generating && onClose()} disabled={generating} style={{
+            marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: generating ? 'not-allowed' : 'pointer',
+          }}>Kapat ✕</button>
+        </div>
+
+        <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '140px 1fr', gap: '8px 14px', fontSize: 12 }}>
+          <span style={{ color: '#78716c' }}>Sertifika No:</span>
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.certNo}</span>
+          <span style={{ color: '#78716c' }}>Kontrol Tarihi:</span>
+          <span>{cert.controlDateIso || '—'}</span>
+          <span style={{ color: '#78716c' }}>Müşteri:</span>
+          <span style={{ fontWeight: 500 }}>{cert.customerName}</span>
+          <span style={{ color: '#78716c' }}>Adres:</span>
+          <span style={{ fontSize: 11, color: '#57534e' }}>{cert.customerAddress || '—'}</span>
+          <span style={{ color: '#78716c' }}>Sipariş No:</span>
+          <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.orderNo || '—'}</span>
+          <span style={{ color: '#78716c' }}>Stok Kodu:</span>
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.stokKodu || '—'}</span>
+          <span style={{ color: '#78716c' }}>Parça Adı:</span>
+          <span>{cert.description || '—'}</span>
+          <span style={{ color: '#78716c' }}>FAİ Kodu:</span>
+          <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.faiNo || '—'}</span>
+          <span style={{ color: '#78716c' }}>Revizyon:</span>
+          <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.revisionCode || '—'}</span>
+          <span style={{ color: '#78716c' }}>Miktar:</span>
+          <span style={{ fontWeight: 600 }}>{cert.quantity || '—'}</span>
+          <span style={{ color: '#78716c' }}>Seri No:</span>
+          <span>{cert.serialNo || '—'}</span>
+          <span style={{ color: '#78716c' }}>Feragat:</span>
+          <span style={{
+            padding: '2px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600, alignSelf: 'start',
+            background: fStatus === 'VAR' ? '#fef2f2' : '#f0fdf4',
+            color: fStatus === 'VAR' ? '#991b1b' : '#166534',
+            width: 'fit-content',
+          }}>{fStatus}</span>
+          {fStatus === 'VAR' && cert.feragatText && (<>
+            <span style={{ color: '#78716c' }}>Feragat Metni:</span>
+            <span style={{ fontSize: 11, whiteSpace: 'pre-wrap', color: '#44403c' }}>{cert.feragatText}</span>
+          </>)}
+        </div>
+
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e7e5e4', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={() => !generating && onClose()} disabled={generating} style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: generating ? 'not-allowed' : 'pointer',
+          }}>Kapat</button>
+          <button onClick={handleDownload} disabled={generating} style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+            cursor: generating ? 'not-allowed' : 'pointer', opacity: generating ? 0.6 : 1,
+          }}>📄 {generating ? 'Üretiliyor...' : 'PDF Tekrar İndir'}</button>
         </div>
       </div>
     </div>
