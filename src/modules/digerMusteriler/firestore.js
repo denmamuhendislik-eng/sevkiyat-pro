@@ -144,6 +144,39 @@ export async function updateCocCertificate(cert, { canEdit }) {
   return { id, year };
 }
 
+// COC parça master upsert — yeni parça ekler veya mevcut revizyonları günceller.
+// stokKodu top-level key olarak appData/cocParts.parts içine yazılır.
+export async function saveCocPart(part, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!part.stokKodu) throw new Error("stokKodu zorunlu");
+  if (!part.customerCode) throw new Error("customerCode zorunlu");
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  await setDoc(ref, {
+    parts: {
+      [part.stokKodu]: {
+        stokKodu: part.stokKodu,
+        description: part.description || '',
+        faiNo: part.faiNo || null,
+        revisions: Array.isArray(part.revisions) ? part.revisions : [],
+        customerCode: part.customerCode,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  }, { merge: true });
+  return { stokKodu: part.stokKodu };
+}
+
+// COC parça master kaydını siler.
+export async function deleteCocPart(stokKodu, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!stokKodu) throw new Error("stokKodu zorunlu");
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  await updateDoc(ref, { [`parts.${stokKodu}`]: deleteField() });
+  return { stokKodu };
+}
+
 // COC sertifikasını siler (year-bazlı doc'tan FieldValue.delete ile kaldır).
 export async function deleteCocCertificate(certNo, siraNo, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok — silme sadece admin/üretim/satış rolüne açık");

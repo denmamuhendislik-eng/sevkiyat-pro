@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates, useCocCertificatesMulti } from './hooks';
-import { saveCocCertificate, updateCocCertificate, deleteCocCertificate, suggestNextCertNo } from './firestore';
+import { saveCocCertificate, updateCocCertificate, deleteCocCertificate, saveCocPart, deleteCocPart, suggestNextCertNo } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
 import { generateCocPdf } from './cocPdf';
 import { parseSalesOrderExcel } from './parser';
@@ -2060,7 +2060,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           )}
 
           {viewMode === 'coc' && (
-            <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} />
+            <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} cocParts={cocParts} />
           )}
         </>
       )}
@@ -3195,7 +3195,7 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
 // Filtreler: müşteri (DigerMusteriler üst filtresinden), yıl, arama (certNo/orderNo/stokKodu/desc).
 // Tıkla → detay modal + PDF tekrar üret.
 // ====================================================================
-function CocArchiveView({ searchText, customerFilter, canEdit }) {
+function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
   const currentYear = new Date().getFullYear();
   const yearList = useMemo(() => {
     return [currentYear - 4, currentYear - 3, currentYear - 2, currentYear - 1, currentYear].map(String);
@@ -3203,8 +3203,9 @@ function CocArchiveView({ searchText, customerFilter, canEdit }) {
   const { certificates, byYear, loaded } = useCocCertificatesMulti(yearList);
   const [yearFilter, setYearFilter] = useState('all');
   const [detailCert, setDetailCert] = useState(null);
-  // COC-specific arama: stok kodu + cert no + sipariş no + tanım
   const [cocSearch, setCocSearch] = useState('');
+  // Alt-tab: 'certificates' (sertifika arşivi) | 'parts' (parça master yönetimi)
+  const [subTab, setSubTab] = useState('certificates');
 
   // Filtreleme + sıralama — üst ana arama VE coc-specific aramayı birleştir
   const filtered = useMemo(() => {
@@ -3231,6 +3232,29 @@ function CocArchiveView({ searchText, customerFilter, canEdit }) {
 
   return (
     <div style={{ marginTop: 16 }}>
+      {/* Alt-tab geçişi: Sertifikalar / Parça Master */}
+      <div style={{ display: 'flex', gap: 6, marginBottom: 12, borderBottom: '1px solid #e7e5e4' }}>
+        <button onClick={() => setSubTab('certificates')} style={{
+          padding: '8px 14px', fontSize: 12, border: 'none', background: 'transparent',
+          color: subTab === 'certificates' ? '#1e40af' : '#78716c',
+          fontWeight: subTab === 'certificates' ? 600 : 400,
+          borderBottom: '2px solid ' + (subTab === 'certificates' ? '#1e40af' : 'transparent'),
+          cursor: 'pointer', marginBottom: -1,
+        }}>📋 Sertifikalar ({Object.keys(certificates).length})</button>
+        <button onClick={() => setSubTab('parts')} style={{
+          padding: '8px 14px', fontSize: 12, border: 'none', background: 'transparent',
+          color: subTab === 'parts' ? '#1e40af' : '#78716c',
+          fontWeight: subTab === 'parts' ? 600 : 400,
+          borderBottom: '2px solid ' + (subTab === 'parts' ? '#1e40af' : 'transparent'),
+          cursor: 'pointer', marginBottom: -1,
+        }}>🔧 Parça Master ({Object.keys(cocParts?.parts || {}).length})</button>
+      </div>
+
+      {subTab === 'parts' && (
+        <CocPartsView cocParts={cocParts} customerFilter={customerFilter} searchText={searchText} canEdit={canEdit} />
+      )}
+
+      {subTab === 'certificates' && (<>
       {/* Üst kontrol — yıl filtreleri */}
       <div style={{
         display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12,
@@ -3343,6 +3367,7 @@ function CocArchiveView({ searchText, customerFilter, canEdit }) {
 
       {/* Detay modal */}
       {detailCert && <CocDetailModal cert={detailCert} canEdit={canEdit} onClose={() => setDetailCert(null)} />}
+      </>)}
     </div>
   );
 }
@@ -3617,6 +3642,334 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
               cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? 0.6 : 1,
             }}>📄 {generating ? 'Üretiliyor...' : 'PDF İndir'}</button>
           </>)}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
+// COC Parça Master Yönetimi — KONF Excel'den gelen parçalar + UI'dan eklenen.
+// Yeni revizyon geldiğinde Excel re-import beklemeden buradan ekle/güncelle.
+// ====================================================================
+function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
+  const [partsSearch, setPartsSearch] = useState('');
+  const [editingPart, setEditingPart] = useState(null); // obj veya {new:true}
+
+  const filtered = useMemo(() => {
+    const qMain = (searchText || '').trim().toLocaleLowerCase('tr-TR');
+    const qLocal = (partsSearch || '').trim().toLocaleLowerCase('tr-TR');
+    const list = Object.values(cocParts?.parts || {}).filter(p => {
+      if (!p?.stokKodu) return false;
+      if (customerFilter && customerFilter !== 'all' && p.customerCode !== customerFilter) return false;
+      const hay = `${p.stokKodu} ${p.description || ''} ${p.faiNo || ''} ${(p.revisions || []).join(' ')}`.toLocaleLowerCase('tr-TR');
+      if (qMain && !hay.includes(qMain)) return false;
+      if (qLocal && !hay.includes(qLocal)) return false;
+      return true;
+    });
+    list.sort((a, b) => (a.stokKodu || '').localeCompare(b.stokKodu || ''));
+    return list;
+  }, [cocParts, customerFilter, searchText, partsSearch]);
+
+  return (
+    <div>
+      {/* Toolbar — arama + yeni parça */}
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+        <input
+          type="text"
+          placeholder="🔍 Stok kodu, tanım, FAİ no veya revizyon ile ara..."
+          value={partsSearch}
+          onChange={(e) => setPartsSearch(e.target.value)}
+          style={{ flex: 1, padding: '7px 12px', borderRadius: 6, border: '1px solid #d6d3d1', fontSize: 12, outline: 'none' }}
+        />
+        {partsSearch && (
+          <button onClick={() => setPartsSearch('')} style={{
+            padding: '6px 10px', borderRadius: 4, fontSize: 11, cursor: 'pointer',
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c',
+          }}>Temizle</button>
+        )}
+        {canEdit && (
+          <button onClick={() => setEditingPart({ new: true })} style={{
+            padding: '6px 14px', borderRadius: 6, fontSize: 12, fontWeight: 500,
+            border: '1px solid #1e40af', background: '#1e40af', color: '#fff', cursor: 'pointer',
+          }}>+ Yeni Parça</button>
+        )}
+      </div>
+
+      {/* Liste */}
+      <div style={{ background: '#fff', border: '1px solid #e7e5e4', borderRadius: 8, overflow: 'hidden' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr style={{ background: '#f5f5f4', textAlign: 'left', color: '#44403c' }}>
+              <th style={cocTh}>Müşteri</th>
+              <th style={cocTh}>Stok Kodu</th>
+              <th style={{ ...cocTh, minWidth: 280 }}>Tanım</th>
+              <th style={cocTh}>FAİ No</th>
+              <th style={cocTh}>Revizyonlar</th>
+              <th style={{ ...cocTh, textAlign: 'center', width: 90 }}>Aksiyon</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.length === 0 ? (
+              <tr><td colSpan={6} style={{ padding: 30, textAlign: 'center', color: '#a8a29e', fontSize: 12 }}>
+                {Object.keys(cocParts?.parts || {}).length === 0
+                  ? 'Henüz parça master yok — KONF Excel yükle veya yukarıdaki "+ Yeni Parça" butonu ile ekle'
+                  : 'Filtre/aramaya uyan parça bulunamadı'}
+              </td></tr>
+            ) : filtered.slice(0, 500).map(p => {
+              const badge = customerBadge(p.customerCode);
+              return (
+                <tr key={p.stokKodu} style={{ borderTop: '1px solid #f5f5f4' }}>
+                  <td style={cocTd}>
+                    <span style={{
+                      padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                      background: badge.bg, color: badge.fg,
+                    }}>{badge.label}</span>
+                  </td>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: '#1e40af' }}>{p.stokKodu}</td>
+                  <td style={{ ...cocTd, color: '#44403c' }} title={p.description}>{p.description || '—'}</td>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>{p.faiNo || '—'}</td>
+                  <td style={cocTd}>
+                    {(p.revisions || []).length === 0 ? (
+                      <span style={{ color: '#a8a29e' }}>—</span>
+                    ) : (
+                      <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
+                        {p.revisions.map(r => (
+                          <span key={r} style={{
+                            padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                            background: '#eff6ff', color: '#1e40af', fontFamily: 'ui-monospace, monospace',
+                          }}>{r}</span>
+                        ))}
+                      </div>
+                    )}
+                  </td>
+                  <td style={{ ...cocTd, textAlign: 'center' }}>
+                    {canEdit ? (
+                      <button onClick={() => setEditingPart(p)} title="Düzenle" style={{
+                        padding: '2px 8px', borderRadius: 3, fontSize: 11, cursor: 'pointer',
+                        border: '1px solid #d6d3d1', background: '#fff', color: '#44403c',
+                      }}>✎</button>
+                    ) : <span style={{ color: '#a8a29e' }}>—</span>}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        {filtered.length > 500 && (
+          <div style={{ padding: 10, fontSize: 11, color: '#78716c', textAlign: 'center', background: '#fafaf9', borderTop: '1px solid #e7e5e4' }}>
+            İlk 500 parça gösteriliyor — arama ile daraltın
+          </div>
+        )}
+      </div>
+
+      {/* Edit/Create modal */}
+      {editingPart && (
+        <CocPartModal
+          part={editingPart.new ? null : editingPart}
+          canEdit={canEdit}
+          onClose={() => setEditingPart(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// COC Parça Düzenle/Yeni Ekle Modal
+function CocPartModal({ part, canEdit, onClose }) {
+  const isNew = !part;
+  const [stokKodu, setStokKodu] = useState(part?.stokKodu || '');
+  const [customerCode, setCustomerCode] = useState(part?.customerCode || '120-0107');
+  const [description, setDescription] = useState(part?.description || '');
+  const [faiNo, setFaiNo] = useState(part?.faiNo || '');
+  const [revisions, setRevisions] = useState(part?.revisions || []);
+  const [newRev, setNewRev] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [error, setError] = useState('');
+
+  const busy = saving || deleting;
+
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, busy]);
+
+  const addRevision = () => {
+    const v = newRev.trim();
+    if (!v) return;
+    if (revisions.includes(v)) { setError(`Revizyon "${v}" zaten var`); return; }
+    setRevisions([...revisions, v]);
+    setNewRev('');
+    setError('');
+  };
+
+  const removeRevision = (r) => setRevisions(revisions.filter(x => x !== r));
+
+  const handleSave = async () => {
+    if (!canEdit) return;
+    if (!stokKodu.trim()) { setError('Stok kodu zorunlu'); return; }
+    if (!customerCode) { setError('Müşteri seçimi zorunlu'); return; }
+    if (revisions.length === 0) { setError('En az 1 revizyon eklemelisin'); return; }
+    setSaving(true);
+    setError('');
+    try {
+      await saveCocPart({
+        stokKodu: stokKodu.trim(),
+        customerCode,
+        description: description.trim(),
+        faiNo: faiNo.trim() || null,
+        revisions,
+      }, { canEdit });
+      onClose();
+    } catch (e) {
+      setError(e.message || 'Kaydetme hatası');
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    if (!canEdit || !part) return;
+    setDeleting(true);
+    setError('');
+    try {
+      await deleteCocPart(part.stokKodu, { canEdit });
+      onClose();
+    } catch (e) {
+      setError(e.message || 'Silme hatası');
+      setDeleting(false);
+      setConfirmDelete(false);
+    }
+  };
+
+  const inp = { padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12, width: '100%', boxSizing: 'border-box' };
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !busy) onClose(); }}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.45)', zIndex: 9999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div style={{
+        background: '#fff', borderRadius: 10, padding: 0,
+        maxWidth: 560, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+      }}>
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 22 }}>🔧</span>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>
+            {isNew ? 'Yeni Parça Ekle' : `Parça Düzenle — ${part.stokKodu}`}
+          </h3>
+          <button onClick={() => !busy && onClose()} disabled={busy} style={{
+            marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: busy ? 'not-allowed' : 'pointer',
+          }}>Kapat ✕</button>
+        </div>
+
+        <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>Müşteri *</label>
+            <select value={customerCode} onChange={(e) => setCustomerCode(e.target.value)} disabled={!isNew || busy} style={inp}>
+              <option value="120-0107">Aselsan</option>
+              <option value="120-116">Roketsan</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>Stok Kodu *</label>
+            <input type="text" value={stokKodu} onChange={(e) => setStokKodu(e.target.value)} disabled={!isNew || busy} placeholder="örn. MM-9111-0944" style={{ ...inp, fontFamily: 'ui-monospace, monospace' }} />
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>Tanım</label>
+            <input type="text" value={description} onChange={(e) => setDescription(e.target.value)} disabled={busy} placeholder="Parça açıklaması" style={inp} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>FAİ No</label>
+            <input type="text" value={faiNo} onChange={(e) => setFaiNo(e.target.value)} disabled={busy} placeholder="opsiyonel" style={{ ...inp, fontFamily: 'ui-monospace, monospace' }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>Yeni Revizyon Ekle</label>
+            <div style={{ display: 'flex', gap: 4 }}>
+              <input type="text" value={newRev} onChange={(e) => setNewRev(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRevision(); } }} disabled={busy} placeholder="örn. AB, D02" style={{ ...inp, fontFamily: 'ui-monospace, monospace' }} />
+              <button onClick={addRevision} disabled={busy || !newRev.trim()} style={{
+                padding: '6px 10px', borderRadius: 4, fontSize: 12, cursor: busy ? 'not-allowed' : 'pointer',
+                border: '1px solid #1e40af', background: '#1e40af', color: '#fff', whiteSpace: 'nowrap',
+              }}>+</button>
+            </div>
+          </div>
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 6 }}>
+              Revizyonlar ({revisions.length}) {revisions.length === 0 && <span style={{ color: '#dc2626', fontWeight: 400 }}>— en az 1 gerekli</span>}
+            </label>
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, minHeight: 36, padding: 8, border: '1px solid #e7e5e4', borderRadius: 4, background: '#fafaf9' }}>
+              {revisions.length === 0 ? (
+                <span style={{ fontSize: 11, color: '#a8a29e', alignSelf: 'center' }}>Yukarıdan revizyon ekle</span>
+              ) : revisions.map(r => (
+                <span key={r} style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '3px 4px 3px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
+                  background: '#eff6ff', color: '#1e40af', fontFamily: 'ui-monospace, monospace',
+                }}>
+                  {r}
+                  {!busy && (
+                    <button onClick={() => removeRevision(r)} title="Kaldır" style={{
+                      border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
+                      fontSize: 12, color: '#dc2626', lineHeight: 1, fontWeight: 700,
+                    }}>×</button>
+                  )}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {error && (
+          <div style={{ margin: '0 20px 12px', padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        {confirmDelete && (
+          <div style={{ margin: '0 20px 12px', padding: 12, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 12 }}>
+            <div style={{ color: '#991b1b', fontWeight: 600, marginBottom: 8 }}>⚠ Parça master kaydını silmek istediğine emin misin?</div>
+            <div style={{ color: '#7f1d1d', marginBottom: 10 }}>
+              <b>{part?.stokKodu}</b> — bu parça için yeni COC oluştururken master verisi olmayacak (manuel girersin). Geçmiş sertifikalar etkilenmez.
+            </div>
+            <div style={{ display: 'flex', gap: 8 }}>
+              <button onClick={() => setConfirmDelete(false)} disabled={deleting} style={{
+                padding: '6px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+                border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: deleting ? 'not-allowed' : 'pointer',
+              }}>İptal</button>
+              <button onClick={handleDelete} disabled={deleting} style={{
+                padding: '6px 12px', borderRadius: 4, fontSize: 12, fontWeight: 500,
+                border: '1px solid #b91c1c', background: '#b91c1c', color: '#fff',
+                cursor: deleting ? 'not-allowed' : 'pointer', opacity: deleting ? 0.6 : 1,
+              }}>{deleting ? 'Siliniyor...' : 'Evet, sil'}</button>
+            </div>
+          </div>
+        )}
+
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e7e5e4', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          {!isNew && canEdit && (
+            <button onClick={() => setConfirmDelete(true)} disabled={busy} style={{
+              padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+              border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b',
+              cursor: busy ? 'not-allowed' : 'pointer', marginRight: 'auto',
+            }}>🗑 Sil</button>
+          )}
+          <button onClick={() => !busy && onClose()} disabled={busy} style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: busy ? 'not-allowed' : 'pointer',
+          }}>İptal</button>
+          <button onClick={handleSave} disabled={busy || !canEdit} style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+            cursor: (busy || !canEdit) ? 'not-allowed' : 'pointer', opacity: (busy || !canEdit) ? 0.6 : 1,
+          }}>{saving ? 'Kaydediliyor...' : (isNew ? 'Ekle' : 'Kaydet')}</button>
         </div>
       </div>
     </div>
