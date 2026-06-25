@@ -7,6 +7,8 @@ const PLAN_OVERRIDES_DOC = "planOverrides";
 const BOM_MODELS_DOC = "bomModels";
 const SHIPMENTS_DOC = "shipments";
 const AUTOMATION_LOG_DOC = "automationLog";
+const COC_PARTS_DOC = "cocParts";
+const COC_CERTIFICATES_DOC = "cocCertificates"; // year suffix eklenir: cocCertificates_2026
 
 export function subscribeSalesOrders(callback) {
   if (!db) return () => {};
@@ -63,6 +65,81 @@ export async function saveShipments(shipmentsMap, { canEdit }) {
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
   const ref = doc(db, APP_COL, SHIPMENTS_DOC);
   await setDoc(ref, shipmentsMap);
+}
+
+// ====================================================================
+// COC (Uygunluk Belgesi) — parça master + year-bazlı sertifika arşivi
+// ====================================================================
+
+// cocParts subscribe — parça master ({ parts: { [stokKodu]: {description, faiNo, revisions, customerCode} } })
+export function subscribeCocParts(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? snap.data() : { parts: {} }),
+    (err) => { console.error("cocParts listener:", err); callback({ parts: {} }); }
+  );
+}
+
+// cocCertificates year-bazlı subscribe — appData/cocCertificates_{YYYY}
+// Yapı: { certificates: { [id]: {...} }, year, totalCount }
+export function subscribeCocCertificates(year, callback) {
+  if (!db || !year) return () => {};
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? snap.data() : { certificates: {}, year }),
+    (err) => { console.error(`cocCertificates_${year} listener:`, err); callback({ certificates: {}, year }); }
+  );
+}
+
+// Yeni COC sertifikası yaz (UI'dan oluşturulan).
+// ID şeması: `${certNo}_${siraNo}` (Excel import ile aynı), siraNo default "1".
+// Year-bazlı doc'a yazar. Mevcut sertifika no çakışırsa hata fırlatır (override engelle).
+export async function saveCocCertificate(cert, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok — COC oluşturma sadece admin/üretim/satış rolüne açık");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!cert.certNo || !cert.stokKodu) throw new Error("certNo ve stokKodu zorunlu");
+  const year = cert.certNo.substring(0, 4);
+  if (!/^\d{4}$/.test(year)) throw new Error(`Geçersiz sertifika no formatı: ${cert.certNo}`);
+  const siraNo = String(cert.siraNo || "1").trim() || "1";
+  const id = `${cert.certNo}_${siraNo}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        ...cert,
+        siraNo,
+        source: cert.source || "ui",
+        createdAt: cert.createdAt || new Date().toISOString(),
+      },
+    },
+    year,
+  }, { merge: true });
+  return { id, year };
+}
+
+// Sertifika no auto-suggest helper — verilen yıl+ay için mevcut sertifikalardan
+// en yüksek sıra no'yu bul ve +1 öner. Format: YYYYAA-NNN (NNN 3 digit padding).
+export function suggestNextCertNo(certificatesMap, year, month) {
+  const prefix = `${year}${String(month).padStart(2, '0')}`;
+  let maxSeq = 0;
+  for (const c of Object.values(certificatesMap || {})) {
+    if (!c?.certNo) continue;
+    // Yeni format: YYYYAA-NNN
+    const mNew = c.certNo.match(/^(\d{4})(\d{2})-(\d{3,})$/);
+    if (mNew && mNew[1] === year && mNew[2] === String(month).padStart(2, '0')) {
+      maxSeq = Math.max(maxSeq, parseInt(mNew[3], 10) || 0);
+      continue;
+    }
+    // Eski format: YYYYAA/NNN (geriye dönük)
+    const mOld = c.certNo.match(/^(\d{4})(\d{2})\/(\d{3,})$/);
+    if (mOld && mOld[1] === year && mOld[2] === String(month).padStart(2, '0')) {
+      maxSeq = Math.max(maxSeq, parseInt(mOld[3], 10) || 0);
+    }
+  }
+  return `${prefix}-${String(maxSeq + 1).padStart(3, '0')}`;
 }
 
 // Cloud Function çalıştırma log'u — son salesOrders güncelleme zamanını gösteren rozet için.

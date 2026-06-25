@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo } from './hooks';
+import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates } from './hooks';
+import { saveCocCertificate, suggestNextCertNo } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
@@ -34,6 +35,13 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const { bomModels, loaded: bomLoaded } = useBomModels();
   const { shipments } = useShipments();
   const { automationLog } = useAutomationLog();
+
+  // COC (Uygunluk Belgesi)
+  const currentYearStr = String(new Date().getFullYear());
+  const { cocParts } = useCocParts();
+  const { cocCertificates } = useCocCertificates(currentYearStr);
+  const [cocModalOrder, setCocModalOrder] = useState(null); // açıkken: o sipariş için modal göster
+  const openCocModal = setCocModalOrder; // alias — renderOrderRow ctx için
 
   // Son salesOrders başarılı çalıştırması — rozet için.
   // automationLog.entries içinde sondan başa tarayıp salesOrders ok olan en yeni entry'yi bulur.
@@ -1854,7 +1862,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {deferredExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
+                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
                 </div>
               )}
             </div>
@@ -1880,7 +1888,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {lateExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet })}
+                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
                 </div>
               )}
             </div>
@@ -1906,7 +1914,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {noWeekExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
+                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
                 </div>
               )}
             </div>
@@ -1974,7 +1982,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                       {isOpen ? 'gizle ▲' : 'aç ▼'}
                     </span>
                   </div>
-                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet })}
+                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts })}
                 </div>
                 );
               })
@@ -2101,6 +2109,19 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
             </div>
           </div>
         </div>
+      )}
+
+      {/* COC (Uygunluk Belgesi) oluşturma modal — sipariş satırı 📄 butonuna tıklanınca açılır.
+          Pre-fill: müşteri/sipariş/stok/parça/FAİ/revizyon (cocParts master'dan). Kullanıcı düzenleyebilir:
+          miktar (kısmi sevk), kontrol tarihi, seri no, feragat. Sertifika no auto-suggest (YYYYAA-NNN). */}
+      {cocModalOrder && (
+        <CocModal
+          order={cocModalOrder}
+          cocParts={cocParts}
+          cocCertificates={cocCertificates}
+          canEdit={canEdit}
+          onClose={() => setCocModalOrder(null)}
+        />
       )}
 
       {/* Otomatik Plan modal — admin only, iki view (form + preview).
@@ -2740,7 +2761,7 @@ function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
 }
 
 function renderOrderRow(o, currentWeek, isLateContext, ctx) {
-  const { canEdit, openPicker, planOverrides, bomSet } = ctx;
+  const { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
@@ -2827,6 +2848,37 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         {planOverrides?.[o.id]?.note && <span title={planOverrides[o.id].note} style={{ marginLeft: 3, fontSize: 10 }}>💬</span>}
         {vioChanged && <span title={`VIO teslim değişti: ${override.origWeek} → ${vioCurrentWeek} — üstteki "VIO Termin Değişti" kutusundan güncelle`} style={{ marginLeft: 3, color: '#ca8a04', fontSize: 14, lineHeight: 1, fontWeight: 700 }}>●</span>}
       </button>
+      {/* COC (Uygunluk Belgesi) butonu — sadece A+R + canEdit + non-deferred */}
+      {openCocModal && !o.isDeferred && (o.customerCode === '120-0107' || o.customerCode === '120-116' || String(o.customerCode || '').startsWith('120-0107-') || String(o.customerCode || '').startsWith('120-116-')) && (() => {
+        // Bu sipariş için zaten COC var mı? (orderNo = belgeNo eşleşmesi + stokKodu)
+        const existingCert = Object.values(cocCertificates?.certificates || {}).find(c =>
+          c.orderNo === o.belgeNo && c.stokKodu === o.stokKodu
+        );
+        if (existingCert) {
+          return (
+            <span
+              title={`COC mevcut: ${existingCert.certNo} (${existingCert.controlDateIso || ''})`}
+              style={{
+                padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 600,
+                background: '#dcfce7', color: '#166534',
+                cursor: 'default', minWidth: 70, textAlign: 'center',
+              }}
+            >✓ {existingCert.certNo}</span>
+          );
+        }
+        return (
+          <button
+            onClick={(e) => { e.stopPropagation(); openCocModal(o); }}
+            disabled={!canEdit}
+            title="Uygunluk Belgesi (COC) oluştur"
+            style={{
+              padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+              border: '1px solid #2563eb', background: '#eff6ff', color: '#1e40af',
+              cursor: canEdit ? 'pointer' : 'not-allowed', opacity: canEdit ? 1 : 0.5,
+            }}
+          >📄 COC</button>
+        );
+      })()}
       {isLateContext && lateWeeks > 0 && (() => {
         const lc = lateWeeks >= 7 ? { bg: '#fecaca', fg: '#991b1b' }
                 : lateWeeks >= 3 ? { bg: '#fed7aa', fg: '#9a3412' }
@@ -2840,6 +2892,255 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
           </span>
         );
       })()}
+    </div>
+  );
+}
+
+// ====================================================================
+// COC (Uygunluk Belgesi) Modal — sipariş satırı 📄 butonundan açılır.
+// Form: müşteri+sipariş+stok+parça read-only, revizyon dropdown, miktar editable
+// (kısmi sevk), kontrol tarihi, seri no, feragat. Auto-suggest: sertifika no.
+// ====================================================================
+function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
+  const today = new Date();
+  const yyyy = String(today.getFullYear());
+  const mm = String(today.getMonth() + 1).padStart(2, '0');
+  const dd = String(today.getDate()).padStart(2, '0');
+  const todayIso = `${yyyy}-${mm}-${dd}`;
+
+  // Parça master'dan bilgileri çek (yoksa null kalır, kullanıcıya bildirir)
+  const partMaster = cocParts?.parts?.[order.stokKodu] || null;
+
+  // Sertifika no auto-suggest (YYYYAA-NNN, bu ay son sıra +1)
+  const suggestedCertNo = useMemo(() => suggestNextCertNo(cocCertificates?.certificates || {}, yyyy, mm), [cocCertificates, yyyy, mm]);
+
+  // Form state
+  const [certNo, setCertNo] = useState(suggestedCertNo);
+  const [controlDate, setControlDate] = useState(todayIso);
+  const [revision, setRevision] = useState(partMaster?.revisions?.[partMaster.revisions.length - 1] || '');
+  const [quantity, setQuantity] = useState(Number(order.kalanMiktar) || 0);
+  const [serialNo, setSerialNo] = useState('---');
+  const [feragatVar, setFeragatVar] = useState(false);
+  const [feragatText, setFeragatText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  // ESC ile kapama
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape' && !saving) onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose, saving]);
+
+  // Müşteri adres meta (referans için sabit — Excel REFERANS VERİLER'den)
+  const customerMeta = (order.customerCode === '120-0107' || String(order.customerCode || '').startsWith('120-0107-'))
+    ? { name: 'ASELSAN KONYA SİLAH SİSTEMLERİ A.Ş.', address: 'Aşağıpınarbaşı, Fatih Sultan Mehmet Cd. No:2, 42280 Selçuklu/Konya' }
+    : (order.customerCode === '120-116' || String(order.customerCode || '').startsWith('120-116-'))
+    ? { name: 'ROKETSAN ROKET SANAYİİ VE TİCARET A.Ş.', address: 'Kemalpaşa Mah. Şehit Yüzbaşı Adem Kutlu Sok., Elmadağ/Ankara' }
+    : { name: order.customerName || '', address: '' };
+
+  const handleSave = async () => {
+    if (!canEdit) return;
+    if (!certNo || !/^\d{6}-\d{3,}$/.test(certNo)) {
+      setError('Sertifika no formatı: YYYYAA-NNN (örn. 202606-038)');
+      return;
+    }
+    if (quantity <= 0) {
+      setError('Miktar 0\'dan büyük olmalı');
+      return;
+    }
+    setSaving(true);
+    setError('');
+    try {
+      await saveCocCertificate({
+        certNo,
+        siraNo: '1',
+        controlDateIso: controlDate,
+        kayitTarihi: `${yyyy} - ${mm}`,
+        customerCode: order.customerCode,
+        customerName: customerMeta.name,
+        customerAddress: customerMeta.address,
+        orderNo: order.belgeNo,
+        stokKodu: order.stokKodu,
+        description: partMaster?.description || order.stokAdi || '',
+        faiNo: partMaster?.faiNo || '',
+        revisionCode: revision,
+        quantity: String(quantity),
+        serialNo,
+        feragatText: feragatVar ? feragatText : '',
+        feragatStatus: feragatVar ? 'VAR' : 'YOK',
+        source: 'ui',
+      }, { canEdit });
+      onClose();
+    } catch (e) {
+      setError(e.message || 'Kaydetme hatası');
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div
+      onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
+      style={{
+        position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+        background: 'rgba(0,0,0,0.45)', zIndex: 9999,
+        display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20,
+      }}
+    >
+      <div style={{
+        background: '#fff', borderRadius: 10, padding: 0,
+        maxWidth: 720, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
+      }}>
+        {/* Başlık */}
+        <div style={{ padding: '14px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 22 }}>📄</span>
+          <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>Uygunluk Belgesi (COC) Oluştur</h3>
+          <button onClick={() => !saving && onClose()} disabled={saving} style={{
+            marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: saving ? 'not-allowed' : 'pointer',
+          }}>Kapat ✕</button>
+        </div>
+
+        {/* Sipariş + müşteri özet (read-only) */}
+        <div style={{ padding: '14px 20px', background: '#f9fafb', borderBottom: '1px solid #e7e5e4', fontSize: 12 }}>
+          <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', gap: '6px 12px' }}>
+            <span style={{ color: '#78716c' }}>Müşteri:</span>
+            <span style={{ fontWeight: 500 }}>{customerMeta.name}</span>
+            <span style={{ color: '#78716c' }}>Adres:</span>
+            <span style={{ fontSize: 11, color: '#57534e' }}>{customerMeta.address}</span>
+            <span style={{ color: '#78716c' }}>Sipariş No:</span>
+            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{order.belgeNo}</span>
+            <span style={{ color: '#78716c' }}>Stok Kodu:</span>
+            <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{order.stokKodu}</span>
+            <span style={{ color: '#78716c' }}>Parça Adı:</span>
+            <span>{partMaster?.description || order.stokAdi || <span style={{ color: '#a8a29e', fontStyle: 'italic' }}>(parça master'da yok)</span>}</span>
+            <span style={{ color: '#78716c' }}>FAİ Kodu:</span>
+            <span style={{ fontFamily: 'ui-monospace, monospace' }}>
+              {partMaster?.faiNo || <span style={{ color: '#a8a29e', fontStyle: 'italic' }}>—</span>}
+            </span>
+          </div>
+        </div>
+
+        {/* Form alanları */}
+        <div style={{ padding: '14px 20px', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          {/* Sertifika no */}
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>
+              Sertifika No * <span style={{ color: '#a8a29e', fontWeight: 400 }}>(önerilen: {suggestedCertNo})</span>
+            </label>
+            <input
+              type="text"
+              value={certNo}
+              onChange={(e) => setCertNo(e.target.value)}
+              disabled={saving}
+              style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12, fontFamily: 'ui-monospace, monospace' }}
+            />
+          </div>
+
+          {/* Kontrol tarihi */}
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>Kontrol Tarihi *</label>
+            <input
+              type="date"
+              value={controlDate}
+              onChange={(e) => setControlDate(e.target.value)}
+              disabled={saving}
+              style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12 }}
+            />
+          </div>
+
+          {/* Revizyon */}
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>
+              Revizyon Kodu * {!partMaster && <span style={{ color: '#dc2626' }}>(parça master'da yok — manuel gir)</span>}
+            </label>
+            {partMaster && partMaster.revisions?.length > 0 ? (
+              <select value={revision} onChange={(e) => setRevision(e.target.value)} disabled={saving}
+                style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12 }}>
+                {partMaster.revisions.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            ) : (
+              <input
+                type="text"
+                value={revision}
+                onChange={(e) => setRevision(e.target.value)}
+                disabled={saving}
+                placeholder="örn. AA, D01"
+                style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12, fontFamily: 'ui-monospace, monospace' }}
+              />
+            )}
+          </div>
+
+          {/* Miktar */}
+          <div>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>
+              Miktar * <span style={{ color: '#a8a29e', fontWeight: 400 }}>(sipariş kalan: {order.kalanMiktar})</span>
+            </label>
+            <input
+              type="number"
+              value={quantity}
+              onChange={(e) => setQuantity(Number(e.target.value) || 0)}
+              disabled={saving}
+              min="1"
+              style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12 }}
+            />
+          </div>
+
+          {/* Seri no */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>
+              Seri No <span style={{ color: '#a8a29e', fontWeight: 400 }}>(yoksa "---")</span>
+            </label>
+            <input
+              type="text"
+              value={serialNo}
+              onChange={(e) => setSerialNo(e.target.value)}
+              disabled={saving}
+              placeholder='örn. 001-...-011 (001, 002 ve 009 HARİÇ)'
+              style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 12 }}
+            />
+          </div>
+
+          {/* Feragat */}
+          <div style={{ gridColumn: '1 / -1' }}>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+              <input type="checkbox" checked={feragatVar} onChange={(e) => setFeragatVar(e.target.checked)} disabled={saving} />
+              Feragat var
+            </label>
+            {feragatVar && (
+              <textarea
+                value={feragatText}
+                onChange={(e) => setFeragatText(e.target.value)}
+                disabled={saving}
+                rows={3}
+                placeholder="Feragat metni..."
+                style={{ width: '100%', padding: '6px 10px', border: '1px solid #d6d3d1', borderRadius: 4, fontSize: 11, fontFamily: 'inherit' }}
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Hata */}
+        {error && (
+          <div style={{ margin: '0 20px 12px', padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        {/* Footer */}
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e7e5e4', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+          <button onClick={() => !saving && onClose()} disabled={saving} style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: saving ? 'not-allowed' : 'pointer',
+          }}>İptal</button>
+          <button onClick={handleSave} disabled={saving || !canEdit} style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+            cursor: (saving || !canEdit) ? 'not-allowed' : 'pointer', opacity: (saving || !canEdit) ? 0.6 : 1,
+          }}>{saving ? 'Kaydediliyor...' : 'Kaydet'}</button>
+        </div>
+      </div>
     </div>
   );
 }

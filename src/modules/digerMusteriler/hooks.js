@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments, subscribeAutomationLog } from "./firestore";
+import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments, subscribeAutomationLog, subscribeCocParts, subscribeCocCertificates } from "./firestore";
 import { getISOWeek } from "../../shared/weekUtils";
 
 export function useSalesOrders() {
@@ -61,6 +61,36 @@ export function useAutomationLog() {
     return unsub;
   }, []);
   return { automationLog };
+}
+
+// COC parça master — appData/cocParts ({ parts: {...}, totalCount })
+export function useCocParts() {
+  const [cocParts, setCocParts] = useState({ parts: {} });
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    const unsub = subscribeCocParts((data) => {
+      setCocParts(data || { parts: {} });
+      setLoaded(true);
+    });
+    return unsub;
+  }, []);
+  return { cocParts, loaded };
+}
+
+// COC sertifika arşivi — year-bazlı (appData/cocCertificates_{YYYY})
+// Default: içinde bulunulan yıl + bir önceki yıl (sertifika no auto-suggest için son sıra)
+export function useCocCertificates(year) {
+  const [data, setData] = useState({ certificates: {}, year });
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    if (!year) return;
+    const unsub = subscribeCocCertificates(year, (d) => {
+      setData(d || { certificates: {}, year });
+      setLoaded(true);
+    });
+    return unsub;
+  }, [year]);
+  return { cocCertificates: data, loaded };
 }
 
 // Siparişleri filter + sort + ISO-hafta gruplama + KPI hesabı
