@@ -3,6 +3,7 @@ import * as XLSX from 'xlsx';
 import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates } from './hooks';
 import { saveCocCertificate, suggestNextCertNo } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
+import { generateCocPdf } from './cocPdf';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
@@ -2939,41 +2940,63 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
     ? { name: 'ROKETSAN ROKET SANAYİİ VE TİCARET A.Ş.', address: 'Kemalpaşa Mah. Şehit Yüzbaşı Adem Kutlu Sok., Elmadağ/Ankara' }
     : { name: order.customerName || '', address: '' };
 
-  const handleSave = async () => {
-    if (!canEdit) return;
+  // Sertifika objesini hazırlar (kaydet ve PDF için ortak)
+  const buildCertObject = () => ({
+    certNo,
+    siraNo: '1',
+    controlDateIso: controlDate,
+    kayitTarihi: `${yyyy} - ${mm}`,
+    customerCode: order.customerCode,
+    customerName: customerMeta.name,
+    customerAddress: customerMeta.address,
+    orderNo: order.belgeNo,
+    stokKodu: order.stokKodu,
+    description: partMaster?.description || order.stokAdi || '',
+    faiNo: partMaster?.faiNo || '',
+    revisionCode: revision,
+    quantity: String(quantity),
+    serialNo,
+    feragatText: feragatVar ? feragatText : '',
+    feragatStatus: feragatVar ? 'VAR' : 'YOK',
+    source: 'ui',
+  });
+
+  const validate = () => {
     if (!certNo || !/^\d{6}-\d{3,}$/.test(certNo)) {
       setError('Sertifika no formatı: YYYYAA-NNN (örn. 202606-038)');
-      return;
+      return false;
     }
     if (quantity <= 0) {
       setError('Miktar 0\'dan büyük olmalı');
-      return;
+      return false;
     }
+    return true;
+  };
+
+  const handleSave = async () => {
+    if (!canEdit || !validate()) return;
     setSaving(true);
     setError('');
     try {
-      await saveCocCertificate({
-        certNo,
-        siraNo: '1',
-        controlDateIso: controlDate,
-        kayitTarihi: `${yyyy} - ${mm}`,
-        customerCode: order.customerCode,
-        customerName: customerMeta.name,
-        customerAddress: customerMeta.address,
-        orderNo: order.belgeNo,
-        stokKodu: order.stokKodu,
-        description: partMaster?.description || order.stokAdi || '',
-        faiNo: partMaster?.faiNo || '',
-        revisionCode: revision,
-        quantity: String(quantity),
-        serialNo,
-        feragatText: feragatVar ? feragatText : '',
-        feragatStatus: feragatVar ? 'VAR' : 'YOK',
-        source: 'ui',
-      }, { canEdit });
+      await saveCocCertificate(buildCertObject(), { canEdit });
       onClose();
     } catch (e) {
       setError(e.message || 'Kaydetme hatası');
+      setSaving(false);
+    }
+  };
+
+  const handleSaveAndPdf = async () => {
+    if (!canEdit || !validate()) return;
+    setSaving(true);
+    setError('');
+    const cert = buildCertObject();
+    try {
+      await saveCocCertificate(cert, { canEdit });
+      await generateCocPdf(cert);
+      onClose();
+    } catch (e) {
+      setError(e.message || 'Kaydetme veya PDF hatası');
       setSaving(false);
     }
   };
@@ -3136,9 +3159,14 @@ function CocModal({ order, cocParts, cocCertificates, canEdit, onClose }) {
           }}>İptal</button>
           <button onClick={handleSave} disabled={saving || !canEdit} style={{
             padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
-            border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+            border: '1px solid #1e40af', background: '#fff', color: '#1e40af',
             cursor: (saving || !canEdit) ? 'not-allowed' : 'pointer', opacity: (saving || !canEdit) ? 0.6 : 1,
           }}>{saving ? 'Kaydediliyor...' : 'Kaydet'}</button>
+          <button onClick={handleSaveAndPdf} disabled={saving || !canEdit} style={{
+            padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
+            border: '1px solid #1e40af', background: '#1e40af', color: '#fff',
+            cursor: (saving || !canEdit) ? 'not-allowed' : 'pointer', opacity: (saving || !canEdit) ? 0.6 : 1,
+          }}>📄 {saving ? 'İşleniyor...' : 'Kaydet ve PDF İndir'}</button>
         </div>
       </div>
     </div>
