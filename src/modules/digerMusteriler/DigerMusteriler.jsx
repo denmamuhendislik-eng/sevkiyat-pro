@@ -3378,7 +3378,8 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
   const [subTab, setSubTab] = useState('certificates');
 
   // Filtreleme + sıralama — üst ana arama VE coc-specific aramayı birleştir
-  const filtered = useMemo(() => {
+  // Filtreden geçen ham satırlar
+  const filteredRaw = useMemo(() => {
     const qMain = (searchText || '').trim().toLocaleLowerCase('tr-TR');
     const qCoc = (cocSearch || '').trim().toLocaleLowerCase('tr-TR');
     const list = Object.values(certificates).filter(c => {
@@ -3390,9 +3391,32 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
       if (qCoc && !hay.includes(qCoc)) return false;
       return true;
     });
-    list.sort((a, b) => (b.certNo || '').localeCompare(a.certNo || ''));
     return list;
   }, [certificates, yearFilter, customerFilter, searchText, cocSearch]);
+
+  // certNo bazlı grupla — multi-line COC'larda her satır ayrı kayıt olarak Firestore'da
+  // saklanıyor ama UI'da tek bir COC gibi göstermek gerek (kullanıcı görüş).
+  // Grup içindeki tüm satırlar lines[] array'inde, üst satır gösterim için ilk satır kullanılır.
+  const filtered = useMemo(() => {
+    const byCertNo = {};
+    for (const c of filteredRaw) {
+      if (!byCertNo[c.certNo]) byCertNo[c.certNo] = [];
+      byCertNo[c.certNo].push(c);
+    }
+    const groups = Object.entries(byCertNo).map(([certNo, lines]) => {
+      const sortedLines = [...lines].sort((a, b) => (Number(a.siraNo) || 1) - (Number(b.siraNo) || 1));
+      const first = sortedLines[0];
+      const totalQty = sortedLines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
+      return {
+        ...first,                  // ilk satır metadata (müşteri, kontrol tarihi, stok, vs.)
+        lines: sortedLines,        // tüm satırlar (detay modal + PDF için)
+        lineCount: sortedLines.length,
+        totalQty,
+      };
+    });
+    groups.sort((a, b) => (b.certNo || '').localeCompare(a.certNo || ''));
+    return groups;
+  }, [filteredRaw]);
 
   const yearCounts = useMemo(() => {
     const out = {};
@@ -3495,9 +3519,13 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
             ) : filtered.slice(0, 500).map(c => {
               const badge = customerBadge(c.customerCode);
               const fStatus = c.feragatStatus || (c.feragatText ? 'VAR' : 'YOK');
+              const isMulti = c.lineCount > 1;
               return (
-                <tr key={`${c.certNo}_${c.siraNo || '1'}`} style={{ borderTop: '1px solid #f5f5f4' }}>
-                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: '#1e40af' }}>{c.certNo}</td>
+                <tr key={c.certNo} style={{ borderTop: '1px solid #f5f5f4' }}>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 600, color: '#1e40af' }}>
+                    {c.certNo}
+                    {isMulti && <span title={`${c.lineCount} satırlı COC`} style={{ marginLeft: 6, padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: '#dbeafe', color: '#1e40af' }}>{c.lineCount} satır</span>}
+                  </td>
                   <td style={{ ...cocTd, color: '#57534e' }}>{c.controlDateIso || '—'}</td>
                   <td style={cocTd}>
                     <span style={{
@@ -3505,11 +3533,15 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
                       background: badge.bg, color: badge.fg,
                     }}>{badge.label}</span>
                   </td>
-                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>{c.orderNo || '—'}</td>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>
+                    {isMulti ? <span style={{ color: '#78716c', fontSize: 10 }} title={c.lines.map(l => l.orderNo).join(', ')}>{c.lineCount} sipariş</span> : (c.orderNo || '—')}
+                  </td>
                   <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{c.stokKodu || '—'}</td>
                   <td style={{ ...cocTd, color: '#44403c', maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.description}>{c.description || '—'}</td>
-                  <td style={{ ...cocTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{c.quantity || '—'}</td>
-                  <td style={{ ...cocTd, color: '#78716c', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={c.serialNo}>{c.serialNo || '—'}</td>
+                  <td style={{ ...cocTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: isMulti ? 600 : 400 }}>{isMulti ? c.totalQty : (c.quantity || '—')}</td>
+                  <td style={{ ...cocTd, color: '#78716c', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={isMulti ? c.lines.map(l => l.serialNo).join(' | ') : c.serialNo}>
+                    {isMulti ? <span style={{ fontSize: 10 }}>(çoklu)</span> : (c.serialNo || '—')}
+                  </td>
                   <td style={{ ...cocTd, textAlign: 'center' }}>
                     <span style={{
                       padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
@@ -3569,7 +3601,19 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
   const handleDownload = async () => {
     setGenerating(true);
     try {
-      await generateCocPdf(cert);
+      // Multi-line COC: cert.lines varsa hepsini lineItems formatına çevir, PDF tek belgede basar
+      const certForPdf = (cert.lines && cert.lines.length > 1) ? {
+        ...cert,
+        siraNo: '1',
+        lineItems: cert.lines.map(l => ({
+          siraNo: l.siraNo,
+          orderNo: l.orderNo,
+          quantity: l.quantity,
+          serialNo: l.serialNo,
+        })),
+        quantity: String(cert.totalQty || cert.lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0)),
+      } : cert;
+      await generateCocPdf(certForPdf);
     } catch (e) {
       alert('PDF üretim hatası: ' + (e.message || e));
     } finally {
@@ -3627,7 +3671,14 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
     setDeleting(true);
     setError('');
     try {
-      await deleteCocCertificate(cert.certNo, cert.siraNo || '1', { canEdit });
+      // Multi-line: tüm satırları sil (cert.lines varsa her birinin siraNo'su için ayrı çağrı)
+      if (cert.lines && cert.lines.length > 1) {
+        for (const l of cert.lines) {
+          await deleteCocCertificate(cert.certNo, l.siraNo || '1', { canEdit });
+        }
+      } else {
+        await deleteCocCertificate(cert.certNo, cert.siraNo || '1', { canEdit });
+      }
       onClose();
     } catch (e) {
       setError(e.message || 'Silme hatası');
@@ -3685,10 +3736,12 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
           <span style={{ color: '#78716c' }}>Adres:</span>
           <span style={{ fontSize: 11, color: '#57534e' }}>{cert.customerAddress || '—'}</span>
 
-          <span style={{ color: '#78716c' }}>Sipariş No:</span>
-          {editMode
-            ? <input type="text" value={editForm.orderNo || ''} onChange={(e) => updateField('orderNo', e.target.value)} style={{ ...editInput, fontFamily: 'ui-monospace, monospace' }} />
-            : <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.orderNo || '—'}</span>}
+          {(!cert.lines || cert.lines.length <= 1) && (<>
+            <span style={{ color: '#78716c' }}>Sipariş No:</span>
+            {editMode
+              ? <input type="text" value={editForm.orderNo || ''} onChange={(e) => updateField('orderNo', e.target.value)} style={{ ...editInput, fontFamily: 'ui-monospace, monospace' }} />
+              : <span style={{ fontFamily: 'ui-monospace, monospace' }}>{cert.orderNo || '—'}</span>}
+          </>)}
 
           <span style={{ color: '#78716c' }}>Stok Kodu:</span>
           <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.stokKodu || '—'}</span>
@@ -3708,15 +3761,48 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
             ? <input type="text" value={editForm.revisionCode || ''} onChange={(e) => updateField('revisionCode', e.target.value)} style={{ ...editInput, fontFamily: 'ui-monospace, monospace' }} />
             : <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 600 }}>{cert.revisionCode || '—'}</span>}
 
-          <span style={{ color: '#78716c' }}>Miktar:</span>
-          {editMode
-            ? <input type="number" min="1" value={editForm.quantity || ''} onChange={(e) => updateField('quantity', e.target.value)} style={editInput} />
-            : <span style={{ fontWeight: 600 }}>{cert.quantity || '—'}</span>}
+          {(!cert.lines || cert.lines.length <= 1) && (<>
+            <span style={{ color: '#78716c' }}>Miktar:</span>
+            {editMode
+              ? <input type="number" min="1" value={editForm.quantity || ''} onChange={(e) => updateField('quantity', e.target.value)} style={editInput} />
+              : <span style={{ fontWeight: 600 }}>{cert.quantity || '—'}</span>}
 
-          <span style={{ color: '#78716c' }}>Seri No:</span>
-          {editMode
-            ? <input type="text" value={editForm.serialNo || ''} onChange={(e) => updateField('serialNo', e.target.value)} style={editInput} />
-            : <span>{cert.serialNo || '—'}</span>}
+            <span style={{ color: '#78716c' }}>Seri No:</span>
+            {editMode
+              ? <input type="text" value={editForm.serialNo || ''} onChange={(e) => updateField('serialNo', e.target.value)} style={editInput} />
+              : <span>{cert.serialNo || '—'}</span>}
+          </>)}
+
+          {cert.lines && cert.lines.length > 1 && (<>
+            <span style={{ color: '#78716c', alignSelf: 'start', paddingTop: 4 }}>Satırlar:</span>
+            <div style={{ border: '1px solid #e7e5e4', borderRadius: 6, overflow: 'hidden' }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead>
+                  <tr style={{ background: '#f5f5f4', textAlign: 'left' }}>
+                    <th style={{ padding: '5px 8px', fontSize: 10, fontWeight: 600, width: 36 }}>SIRA</th>
+                    <th style={{ padding: '5px 8px', fontSize: 10, fontWeight: 600 }}>SİPARİŞ NO</th>
+                    <th style={{ padding: '5px 8px', fontSize: 10, fontWeight: 600, textAlign: 'right', width: 70 }}>MİKTAR</th>
+                    <th style={{ padding: '5px 8px', fontSize: 10, fontWeight: 600 }}>SERİ NO</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {cert.lines.map(l => (
+                    <tr key={l.siraNo} style={{ borderTop: '1px solid #f5f5f4' }}>
+                      <td style={{ padding: '4px 8px', fontWeight: 600, color: '#1e40af', textAlign: 'center' }}>{l.siraNo}</td>
+                      <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace' }}>{l.orderNo || '—'}</td>
+                      <td style={{ padding: '4px 8px', textAlign: 'right', fontWeight: 500 }}>{l.quantity || '—'}</td>
+                      <td style={{ padding: '4px 8px' }}>{l.serialNo || '—'}</td>
+                    </tr>
+                  ))}
+                  <tr style={{ background: '#eff6ff', borderTop: '2px solid #1e40af' }}>
+                    <td colSpan={2} style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 600, color: '#1e40af', fontSize: 10 }}>TOPLAM</td>
+                    <td style={{ padding: '5px 8px', textAlign: 'right', fontWeight: 700, color: '#1e40af' }}>{cert.totalQty}</td>
+                    <td></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </>)}
 
           <span style={{ color: '#78716c' }}>Feragat:</span>
           {editMode ? (
@@ -3789,17 +3875,17 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
             }}>{saving ? 'Kaydediliyor...' : '✓ Değişiklikleri Kaydet'}</button>
           </>) : (<>
             {canEdit && (
-              <button onClick={() => setConfirmDelete(true)} disabled={busy} style={{
+              <button onClick={() => setConfirmDelete(true)} disabled={busy} title={cert.lines && cert.lines.length > 1 ? `Bu COC'un ${cert.lines.length} satırının tümü silinir` : ''} style={{
                 padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
                 border: '1px solid #fecaca', background: '#fef2f2', color: '#991b1b',
                 cursor: busy ? 'not-allowed' : 'pointer', marginRight: 'auto',
-              }}>🗑 Sil</button>
+              }}>🗑 Sil{cert.lines && cert.lines.length > 1 ? ` (${cert.lines.length} satır)` : ''}</button>
             )}
             <button onClick={() => !busy && onClose()} disabled={busy} style={{
               padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
               border: '1px solid #d6d3d1', background: '#fff', color: '#44403c', cursor: busy ? 'not-allowed' : 'pointer',
             }}>Kapat</button>
-            {canEdit && (
+            {canEdit && (!cert.lines || cert.lines.length <= 1) && (
               <button onClick={handleStartEdit} disabled={busy} style={{
                 padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
                 border: '1px solid #1e40af', background: '#fff', color: '#1e40af',
