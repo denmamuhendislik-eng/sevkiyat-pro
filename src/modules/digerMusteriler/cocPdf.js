@@ -10,9 +10,9 @@ import html2canvas from "html2canvas";
 // (ileride shared/assets.js'e taşınacak)
 import { LOGO_DENMA } from "./cocLogo";
 
-// Sabit kalite beyanı metinleri (Excel template'ten)
-const QUALITY_DECLARATION_EN = "The products with the description, part number and revision indicated below has been controlled and conformed to the requirements indicated in the engineering drawing of which is provided to the supplier.";
-const QUALITY_DECLARATION_TR = "Aşağıda tanım, parça numarası, revizyonu belirtilen ürünler, müşteri tarafından firmamıza ulaştırılan mühendislik çiziminde belirtilen gerekliliklere göre kontrol edilmiş ve uygun bulunmuştur.";
+// Sabit kalite beyanı metinleri — eski FR-70 UYGUNLUK BELGESİ Rev01.xlsm'den birebir
+const QUALITY_DECLARATION_EN = "The products with the description, part number, revision, quantity, and serial number given below are hereby certified to meet the contract requirements and are verified by inspection and/or testing in accordance with the Quality Management System of DENMA MÜHENDİSLİK MAK. OTOM. İNŞ. SAN. TİC. LTD. ŞTİ.";
+const QUALITY_DECLARATION_TR = "Aşağıda tanım, parça numarası, revizyonu, adedi, ve seri numarası verilen ürünlerin sözleşme gereksinimlerini karşıladığının, DENMA MÜHENDİSLİK MAK. OTOM. İNŞ. SAN. TİC. LTD. ŞTİ. Kalite Yönetim Sistemine uygun olarak denetim ve/veya test ile doğrulandığı iş bu belge ile taahhüt edilmektedir.";
 
 // İmza meta — şimdilik sabit, ileride Settings'ten gelecek
 const SIGNATURES = {
