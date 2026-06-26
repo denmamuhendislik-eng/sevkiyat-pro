@@ -6,6 +6,7 @@ import {
   saveCocPart, deleteCocPart, suggestNextCertNo,
   uploadCocAttachment, deleteCocAttachment, downloadCocAttachmentBlob,
   appendCocCertificateAttachment, setCocCertificateAttachmentList, setCocCertificateOthers,
+  setCocCertificateNaCategories,
   uploadCocPartStandardAttachment, setCocPartStandardAttachmentList,
   getReusableAttachmentList, getCocAttachmentList,
   COC_ATTACHMENT_CATEGORIES,
@@ -4505,9 +4506,12 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const { cocCertificates } = useCocCertificates(year);
   const certId = `${initialCert.certNo}_${initialCert.siraNo || '1'}`;
   const liveCert = cocCertificates?.certificates?.[certId];
-  const cert = liveCert ? { ...initialCert, attachments: liveCert.attachments || {} } : initialCert;
+  const cert = liveCert
+    ? { ...initialCert, attachments: liveCert.attachments || {}, naCategories: liveCert.naCategories || [] }
+    : initialCert;
   const attachments = cert.attachments || {};
   const others = Array.isArray(attachments.others) ? attachments.others : [];
+  const naCategories = Array.isArray(cert.naCategories) ? cert.naCategories : [];
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState('');
   const [masterOpen, setMasterOpen] = useState({}); // {[cat.key]: bool}
@@ -4659,9 +4663,26 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
 
   const triggerFileInput = (key) => { if (fileInputs.current[key]) fileInputs.current[key].click(); };
 
-  // Sayım (kategori dolu sayısı + ek dosya sayısı)
-  const filledCategories = COC_ATTACHMENT_CATEGORIES.filter(c => getCocAttachmentList(cert, c.key).length > 0).length;
+  // Sayım — Uygulanmaz işaretli kategoriler hariç (paydadan da düşer)
+  const applicableCategories = COC_ATTACHMENT_CATEGORIES.filter(c => !naCategories.includes(c.key));
+  const filledCategories = applicableCategories.filter(c => getCocAttachmentList(cert, c.key).length > 0).length;
   const totalFiles = COC_ATTACHMENT_CATEGORIES.reduce((s, c) => s + getCocAttachmentList(cert, c.key).length, 0) + others.length;
+
+  const toggleNaCategory = async (catKey) => {
+    if (!canEdit) return;
+    const newList = naCategories.includes(catKey)
+      ? naCategories.filter(k => k !== catKey)
+      : [...naCategories, catKey];
+    setBusy(catKey);
+    setError('');
+    try {
+      await setCocCertificateNaCategories(cert.certNo, cert.siraNo || '1', newList, { canEdit });
+    } catch (e) {
+      setError(e.message || 'Uygulanmaz durumu güncellenemedi');
+    } finally {
+      setBusy(null);
+    }
+  };
 
   // Toplu ZIP indirme — kategoriye göre klasörlenmiş + uygunluk belgesi PDF kökte
   const sanitize = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_').trim();
@@ -4740,7 +4761,12 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: '#1c1917' }}>📎 Dokümanlar</span>
         <span style={{ fontSize: 11, color: '#78716c' }}>
-          {filledCategories}/{COC_ATTACHMENT_CATEGORIES.length} kategori dolu · toplam {totalFiles} dosya
+          {filledCategories}/{applicableCategories.length} kategori dolu · toplam {totalFiles} dosya
+          {naCategories.length > 0 && (
+            <span style={{ marginLeft: 6, color: '#a8a29e' }}>
+              ({naCategories.length} uygulanmaz)
+            </span>
+          )}
         </span>
         <button
           onClick={handleDownloadZip}
@@ -4775,20 +4801,31 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
           // Master'da var ama bu COC'a henüz eklenmeyenler
           const unusedReusable = reusable.filter(r => !list.some(l => l.storagePath === r.storagePath));
           const isBusy = busy === cat.key;
+          const isNa = naCategories.includes(cat.key);
           return (
-            <div key={cat.key} style={{ background: '#fff', border: '1px solid #e7e5e4', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: list.length > 0 ? 6 : 0 }}>
-                <span style={{ fontWeight: 500 }}>
+            <div key={cat.key} style={{
+              background: isNa ? '#f5f5f4' : '#fff',
+              border: '1px solid #e7e5e4',
+              borderRadius: 6, padding: '8px 10px', fontSize: 12,
+              opacity: isNa ? 0.6 : 1,
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: !isNa && list.length > 0 ? 6 : 0 }}>
+                <span style={{ fontWeight: 500, textDecoration: isNa ? 'line-through' : 'none' }}>
                   {cat.icon} {cat.label}
-                  {cat.reuseScope && (
+                  {cat.reuseScope && !isNa && (
                     <span title={`Tekrar kullanım: ${cat.reuseScope}`} style={{ marginLeft: 5, padding: '1px 4px', fontSize: 8, fontWeight: 600, background: '#dbeafe', color: '#1e40af', borderRadius: 3 }}>
                       {cat.reuseScope === 'stok+revizyon' ? 'STOK+REV' : 'STOK'}
                     </span>
                   )}
-                  {list.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: '#78716c' }}>({list.length} dosya)</span>}
+                  {isNa && (
+                    <span style={{ marginLeft: 5, padding: '1px 5px', fontSize: 9, fontWeight: 600, background: '#e7e5e4', color: '#57534e', borderRadius: 3 }}>
+                      UYGULANMAZ
+                    </span>
+                  )}
+                  {!isNa && list.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: '#78716c' }}>({list.length} dosya)</span>}
                 </span>
                 <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-                  {unusedReusable.length > 0 && canEdit && (
+                  {!isNa && unusedReusable.length > 0 && canEdit && (
                     <select
                       onChange={(e) => {
                         const idx = Number(e.target.value);
@@ -4807,7 +4844,7 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                       ))}
                     </select>
                   )}
-                  {cat.reuseScope && reusable.length > 0 && canEdit && (
+                  {!isNa && cat.reuseScope && reusable.length > 0 && canEdit && (
                     <button
                       onClick={() => setMasterOpen(prev => ({ ...prev, [cat.key]: !prev[cat.key] }))}
                       title="Master dosyalarını görüntüle / sil"
@@ -4816,7 +4853,7 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                         border: '1px solid #a8a29e', background: masterOpen[cat.key] ? '#f5f5f4' : '#fff', color: '#44403c',
                       }}>⚙ Master ({reusable.length})</button>
                   )}
-                  {canEdit && (
+                  {!isNa && canEdit && (
                     <>
                       <input
                         ref={(el) => { fileInputs.current[cat.key] = el; }}
@@ -4834,6 +4871,18 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                           border: '1px solid #1e40af', background: isBusy ? '#fff' : '#eff6ff', color: '#1e40af',
                         }}>{isBusy ? 'Yükleniyor...' : '⬆ Yükle (Çoklu)'}</button>
                     </>
+                  )}
+                  {canEdit && (
+                    <button
+                      onClick={() => toggleNaCategory(cat.key)}
+                      disabled={isBusy}
+                      title={isNa ? "Tekrar aktif yap" : "Bu kategori bu COC için uygulanmıyor — paydadan çıkar"}
+                      style={{
+                        padding: '3px 8px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
+                        border: '1px solid ' + (isNa ? '#16a34a' : '#a8a29e'),
+                        background: isNa ? '#dcfce7' : '#fff',
+                        color: isNa ? '#166534' : '#57534e',
+                      }}>{isNa ? '✓ Aktif Et' : '⊘ Uygulanmaz'}</button>
                   )}
                 </div>
               </div>

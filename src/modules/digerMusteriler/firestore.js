@@ -433,6 +433,21 @@ export async function setCocCertificateAttachmentList(certNo, siraNo, category, 
   }, { merge: true });
 }
 
+// Bu COC için "Uygulanmaz" işaretli kategoriler — paydaya dahil edilmez.
+export async function setCocCertificateNaCategories(certNo, siraNo, naCategories, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const year = certNo.substring(0, 4);
+  const id = `${certNo}_${String(siraNo || "1").trim() || "1"}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        naCategories: Array.isArray(naCategories) ? naCategories : [],
+      },
+    },
+  }, { merge: true });
+}
+
 // "others" listesine ekleme/silme (free-form kategori).
 export async function setCocCertificateOthers(certNo, siraNo, othersList, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok");
