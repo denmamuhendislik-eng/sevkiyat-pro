@@ -155,11 +155,13 @@ function buildCocHtml(cert) {
       <div style="font-size:9px; color:#78716c; font-weight:600;">CHECKED BY / KONTROL EDEN</div>
       <div style="font-size:11px; font-weight:600; color:#1c1917; margin-top:8px;">${SIGNATURES.engineer}</div>
       <div style="font-size:9px; color:#78716c;">ENGINEER / MÜHENDİS</div>
+      <div style="font-size:8px; color:#16a34a; font-style:italic; margin-top:6px;">Elektronik olarak onaylanmıştır / Electronically approved</div>
     </div>
     <div style="text-align:center; padding-top:40px; border-top:1px solid #1c1917;">
       <div style="font-size:9px; color:#78716c; font-weight:600;">APPROVED BY / ONAYLAYAN</div>
       <div style="font-size:11px; font-weight:600; color:#1c1917; margin-top:8px;">${SIGNATURES.manager}</div>
       <div style="font-size:9px; color:#78716c;">MANAGER / MÜDÜR</div>
+      <div style="font-size:8px; color:#16a34a; font-style:italic; margin-top:6px;">Elektronik olarak onaylanmıştır / Electronically approved</div>
     </div>
   </div>
 
