@@ -4507,11 +4507,18 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const certId = `${initialCert.certNo}_${initialCert.siraNo || '1'}`;
   const liveCert = cocCertificates?.certificates?.[certId];
   const cert = liveCert
-    ? { ...initialCert, attachments: liveCert.attachments || {}, naCategories: liveCert.naCategories || [] }
+    ? { ...initialCert, ...liveCert, attachments: liveCert.attachments || {}, naCategories: liveCert.naCategories || [] }
     : initialCert;
   const attachments = cert.attachments || {};
   const others = Array.isArray(attachments.others) ? attachments.others : [];
-  const naCategories = Array.isArray(cert.naCategories) ? cert.naCategories : [];
+  const naCategoriesRaw = Array.isArray(cert.naCategories) ? cert.naCategories : [];
+  // Otomatik N/A kuralları: feragat YOK ise Feragat kategorisi otomatik uygulanmaz
+  const feragatYok = (cert.feragatStatus || (cert.feragatText ? 'VAR' : 'YOK')) === 'YOK';
+  const isAutoNa = (catKey) => catKey === 'waiver' && feragatYok;
+  const naCategories = [...new Set([
+    ...naCategoriesRaw,
+    ...(feragatYok ? ['waiver'] : []),
+  ])];
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState('');
   const [masterOpen, setMasterOpen] = useState({}); // {[cat.key]: bool}
@@ -4818,8 +4825,10 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                     </span>
                   )}
                   {isNa && (
-                    <span style={{ marginLeft: 5, padding: '1px 5px', fontSize: 9, fontWeight: 600, background: '#e7e5e4', color: '#57534e', borderRadius: 3 }}>
-                      UYGULANMAZ
+                    <span
+                      title={isAutoNa(cat.key) ? "Bu COC'ta 'Feragat yok' işaretli — otomatik uygulanmaz" : undefined}
+                      style={{ marginLeft: 5, padding: '1px 5px', fontSize: 9, fontWeight: 600, background: '#e7e5e4', color: '#57534e', borderRadius: 3 }}>
+                      {isAutoNa(cat.key) ? 'UYGULANMAZ (FERAGAT YOK)' : 'UYGULANMAZ'}
                     </span>
                   )}
                   {!isNa && list.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: '#78716c' }}>({list.length} dosya)</span>}
@@ -4872,7 +4881,7 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                         }}>{isBusy ? 'Yükleniyor...' : '⬆ Yükle (Çoklu)'}</button>
                     </>
                   )}
-                  {canEdit && (
+                  {canEdit && !isAutoNa(cat.key) && (
                     <button
                       onClick={() => toggleNaCategory(cat.key)}
                       disabled={isBusy}
@@ -5009,9 +5018,12 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
 
 // COC için doluluk hesabı (liste gösterimleri için): tüm kategorilerin file count toplamı + others
 // Uygulanmaz işaretli kategoriler hem paydadan hem dolu sayımından düşülür.
+// Otomatik kural: feragatStatus === 'YOK' ise Feragat kategorisi de uygulanmaz sayılır.
 function getCocAttachmentStats(cert) {
-  const naCategories = Array.isArray(cert?.naCategories) ? cert.naCategories : [];
-  const applicableCats = COC_ATTACHMENT_CATEGORIES.filter(c => !naCategories.includes(c.key));
+  const naRaw = Array.isArray(cert?.naCategories) ? cert.naCategories : [];
+  const feragatYok = (cert?.feragatStatus || (cert?.feragatText ? 'VAR' : 'YOK')) === 'YOK';
+  const naCategories = new Set([...naRaw, ...(feragatYok ? ['waiver'] : [])]);
+  const applicableCats = COC_ATTACHMENT_CATEGORIES.filter(c => !naCategories.has(c.key));
   let filled = 0, totalFiles = 0;
   for (const cat of applicableCats) {
     const list = getCocAttachmentList(cert, cat.key);
@@ -5024,6 +5036,6 @@ function getCocAttachmentStats(cert) {
     totalCats: applicableCats.length,
     totalFiles: totalFiles + others,
     othersCount: others,
-    naCount: naCategories.length,
+    naCount: naCategories.size,
   };
 }
