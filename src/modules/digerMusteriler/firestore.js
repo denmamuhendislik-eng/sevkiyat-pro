@@ -1,5 +1,5 @@
 import { doc, onSnapshot, setDoc, updateDoc, deleteField, deleteDoc } from "firebase/firestore";
-import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject, getBlob } from "firebase/storage";
 import { db, storage } from "../../firebase";
 
 const APP_COL = "appData";
@@ -388,6 +388,13 @@ export async function deleteCocAttachment(storagePath, { canEdit }) {
     // Storage'da yoksa sessizce geç
     if (e?.code !== "storage/object-not-found") throw e;
   }
+}
+
+// Storage'dan dosyayı Blob olarak indir — ZIP üretimi için (fetch CORS sorununu aşar).
+export async function downloadCocAttachmentBlob(storagePath) {
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!storagePath) throw new Error("storagePath gerekli");
+  return await getBlob(storageRef(storage, storagePath));
 }
 
 // Sertifika kategorisine yeni dosya EKLE — array yapısı (birden fazla dosya/kategori).

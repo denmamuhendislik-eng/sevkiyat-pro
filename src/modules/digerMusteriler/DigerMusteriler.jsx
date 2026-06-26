@@ -4,7 +4,7 @@ import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutoma
 import {
   saveCocCertificate, updateCocCertificate, deleteCocCertificate,
   saveCocPart, deleteCocPart, suggestNextCertNo,
-  uploadCocAttachment, deleteCocAttachment,
+  uploadCocAttachment, deleteCocAttachment, downloadCocAttachmentBlob,
   appendCocCertificateAttachment, setCocCertificateAttachmentList, setCocCertificateOthers,
   uploadCocPartStandardAttachment, setCocPartStandardAttachmentList,
   getReusableAttachmentList, getCocAttachmentList,
@@ -4631,7 +4631,7 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
       const pdfBlob = await buildCocPdfBlob(cert);
       zip.file(`Uygunluk Belgesi ${sanitize(cert.certNo)}.pdf`, pdfBlob);
 
-      // 2) Kategori bazlı klasörler — sadece dolu olanlar
+      // 2) Kategori bazlı klasörler — sadece dolu olanlar (storagePath üzerinden, fetch yerine SDK getBlob — CORS uyumlu)
       const fetchAll = [];
       for (const cat of COC_ATTACHMENT_CATEGORIES) {
         const list = getCocAttachmentList(cert, cat.key);
@@ -4639,10 +4639,10 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
         const folder = zip.folder(sanitize(cat.label));
         const used = new Set();
         for (const att of list) {
-          if (!att?.downloadUrl) continue;
+          if (!att?.storagePath) continue;
           const name = dedupeName(used, sanitize(att.filename));
           fetchAll.push(
-            fetch(att.downloadUrl).then(r => r.blob()).then(b => folder.file(name, b))
+            downloadCocAttachmentBlob(att.storagePath).then(b => folder.file(name, b))
           );
         }
       }
@@ -4651,11 +4651,11 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
         const folder = zip.folder('Diğer Dokümanlar');
         const used = new Set();
         for (const o of others) {
-          if (!o?.downloadUrl) continue;
+          if (!o?.storagePath) continue;
           const display = o.customName ? `${sanitize(o.customName)}__${sanitize(o.filename)}` : sanitize(o.filename);
           const name = dedupeName(used, display);
           fetchAll.push(
-            fetch(o.downloadUrl).then(r => r.blob()).then(b => folder.file(name, b))
+            downloadCocAttachmentBlob(o.storagePath).then(b => folder.file(name, b))
           );
         }
       }
