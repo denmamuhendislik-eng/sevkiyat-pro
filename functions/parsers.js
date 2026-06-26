@@ -663,8 +663,9 @@ function findHeaderColumnsSO(row) {
     if (h === "tarih") cols.orderDate = ci;
     else if (h === "belge no") cols.belgeNo = ci;
     // Müşteri sipariş referans no — Aselsan'da "1000018777", Roketsan'da "P0334497" gibi.
-    // COC'ta sipariş no olarak bu kullanılır (müşteri kendi sistemindeki sipariş takibi).
-    else if (h === "ref.no" || h === "ref no" || h === "referans no") cols.refNo = ci;
+    // COC'ta sipariş no olarak bu kullanılır. Excel header varyasyonları: "Ref. No",
+    // "Ref.No", "Ref No", "Referans No" — regex ile esnek eşleşme.
+    else if (/^ref\.?\s*no$/.test(h) || h === "referans no") cols.refNo = ci;
     else if (h === "stok kodu") cols.stokKodu = ci;
     else if (h === "stok adı" || h === "stok adi") cols.stokAdi = ci;
     else if (h === "teslim tarihi") cols.teslimTarihi = ci;

@@ -63,8 +63,9 @@ function findHeaderColumns(row) {
     if (!h) return;
     if (h === "tarih") cols.orderDate = ci;
     else if (h === "belge no") cols.belgeNo = ci;
-    // Müşteri sipariş referans no — COC'ta sipariş no olarak kullanılır
-    else if (h === "ref.no" || h === "ref no" || h === "referans no") cols.refNo = ci;
+    // Müşteri sipariş referans no — COC'ta sipariş no olarak kullanılır.
+    // VIO Excel'inde "Ref. No" formatı (nokta + boşluk). Regex ile esnek eşleşme.
+    else if (/^ref\.?\s*no$/.test(h) || h === "referans no") cols.refNo = ci;
     else if (h === "stok kodu") cols.stokKodu = ci;
     else if (h === "stok adı" || h === "stok adi") cols.stokAdi = ci;
     else if (h === "teslim tarihi") cols.teslimTarihi = ci;
