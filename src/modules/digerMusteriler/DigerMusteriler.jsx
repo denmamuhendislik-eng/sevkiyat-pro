@@ -4561,6 +4561,41 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
     }
   };
 
+  // Çoklu dosya yükleme — Storage paralel, Firestore tek yazım (race condition'sız)
+  const handleUploadMultiple = async (cat, fileList) => {
+    if (!fileList?.length || !canEdit) return;
+    if (fileList.length === 1) return handleUpload(cat, fileList[0]);
+    setBusy(cat.key);
+    setError('');
+    try {
+      const files = Array.from(fileList);
+      // 1) Tüm dosyaları COC storage'a paralel yükle
+      const certMetas = await Promise.all(
+        files.map(file => uploadCocAttachment(cert.certNo, year, cat.key, file))
+      );
+      // 2) COC list'i tek seferde güncelle (race condition yok)
+      const currentList = getCocAttachmentList(cert, cat.key);
+      const newList = [...currentList, ...certMetas];
+      await setCocCertificateAttachmentList(cert.certNo, cert.siraNo || '1', cat.key, newList, { canEdit });
+      // 3) Master'a da ekle (reuseScope varsa)
+      if (cat.reuseScope) {
+        const opts2 = cat.reuseScope === 'stok+revizyon' && cert.revisionCode ? { revision: cert.revisionCode } : {};
+        const partMetas = await Promise.all(
+          files.map(file => uploadCocPartStandardAttachment(cert.stokKodu, cat.key, file, opts2))
+        );
+        const existingMaster = getReusableAttachmentList(cocParts, cert.stokKodu, cat.key, cert.revisionCode, cat.reuseScope);
+        const newMasterList = [...existingMaster, ...partMetas];
+        await setCocPartStandardAttachmentList(cert.stokKodu, cat.key, newMasterList, {
+          canEdit, scope: cat.reuseScope, revision: cert.revisionCode,
+        });
+      }
+    } catch (e) {
+      setError(e.message || 'Yükleme hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const handleReuse = async (cat, reusableMeta) => {
     if (!reusableMeta || !canEdit) return;
     setBusy(cat.key);
@@ -4756,13 +4791,18 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                       <input
                         ref={(el) => { fileInputs.current[cat.key] = el; }}
                         type="file"
+                        multiple
                         style={{ display: 'none' }}
-                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(cat, f); e.target.value = ''; }}
+                        onChange={(e) => { const fs = e.target.files; if (fs?.length) handleUploadMultiple(cat, fs); e.target.value = ''; }}
                       />
-                      <button onClick={() => triggerFileInput(cat.key)} disabled={isBusy} style={{
-                        padding: '3px 10px', borderRadius: 3, fontSize: 11, fontWeight: 500, cursor: isBusy ? 'not-allowed' : 'pointer',
-                        border: '1px solid #1e40af', background: isBusy ? '#fff' : '#eff6ff', color: '#1e40af',
-                      }}>{isBusy ? 'Yükleniyor...' : '⬆ Yeni Yükle'}</button>
+                      <button
+                        onClick={() => triggerFileInput(cat.key)}
+                        disabled={isBusy}
+                        title="Birden fazla dosya seçebilirsiniz (Cmd/Ctrl + tıklama)"
+                        style={{
+                          padding: '3px 10px', borderRadius: 3, fontSize: 11, fontWeight: 500, cursor: isBusy ? 'not-allowed' : 'pointer',
+                          border: '1px solid #1e40af', background: isBusy ? '#fff' : '#eff6ff', color: '#1e40af',
+                        }}>{isBusy ? 'Yükleniyor...' : '⬆ Yükle (Çoklu)'}</button>
                     </>
                   )}
                 </div>
