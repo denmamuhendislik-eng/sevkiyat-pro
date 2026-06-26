@@ -2991,14 +2991,11 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
       </button>
       {/* COC (Uygunluk Belgesi) butonu — sadece A+R + canEdit + non-deferred */}
       {openCocModal && !o.isDeferred && (o.customerCode === '120-0107' || o.customerCode === '120-116' || String(o.customerCode || '').startsWith('120-0107-') || String(o.customerCode || '').startsWith('120-116-')) && (() => {
-        // Bu sipariş için zaten COC var mı? Eşleşme stratejisi (çoklu yöntem):
-        //   - c.orderNo === o.refNo: yeni COC ile yeni sipariş (Ref.No formatı "1000018777")
-        //   - c.orderNo === o.belgeNo: eski COC ile eski sipariş (5-6 digit belgeNo)
-        //   - c.refNo === o.refNo: direkt refNo eşleşmesi (audit alanı)
-        //   - c.vioBelgeNo === o.belgeNo: yeni COC vioBelgeNo audit ile eşleşme
+        // Bu sipariş için tüm geçmiş COC'lar (çoklu eşleşme — kısmi sevkler için
+        // aynı stok için birden fazla COC olabilir).
         const oRefNo = (o.refNo || '').trim();
         const oBelgeNo = (o.belgeNo || '').trim();
-        const existingCert = Object.values(cocCertificates?.certificates || {}).find(c => {
+        const matchingCerts = Object.values(cocCertificates?.certificates || {}).filter(c => {
           if (c.stokKodu !== o.stokKodu) return false;
           const cOrderNo = (c.orderNo || '').trim();
           const cRefNo = (c.refNo || '').trim();
@@ -3007,23 +3004,45 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
           if (oBelgeNo && (cOrderNo === oBelgeNo || cVioBelgeNo === oBelgeNo)) return true;
           return false;
         });
-        if (existingCert) {
-          const stats = getCocAttachmentStats(existingCert);
+        // Grupla (multi-line COC = aynı certNo'nun N satırı tek belge)
+        const uniqueCerts = [...new Set(matchingCerts.map(c => c.certNo))];
+        // En yeni certNo'yu önde göster (sıralama DESC)
+        uniqueCerts.sort((a, b) => b.localeCompare(a));
+        const latestCert = uniqueCerts.length > 0 ? matchingCerts.find(c => c.certNo === uniqueCerts[0]) : null;
+
+        if (latestCert) {
+          const stats = getCocAttachmentStats(latestCert);
           const isFull = stats.totalFiles > 0 && stats.filled === stats.totalCats;
           const isEmpty = stats.totalFiles === 0;
           const bg = isFull ? '#dcfce7' : isEmpty ? '#fef2f2' : '#fef3c7';
           const fg = isFull ? '#166534' : isEmpty ? '#991b1b' : '#92400e';
+          const multiCocLabel = uniqueCerts.length > 1 ? ` +${uniqueCerts.length - 1}` : '';
+          const tooltip = uniqueCerts.length > 1
+            ? `Mevcut COC'lar: ${uniqueCerts.join(', ')}\nKısmi sevk için yeni COC eklemek için ➕ butonu`
+            : `COC: ${latestCert.certNo} (${latestCert.controlDateIso || ''}) · ${stats.filled}/${stats.totalCats} doküman${stats.othersCount > 0 ? ` + ${stats.othersCount} ek` : ''}\nKısmi sevk varsa yeni COC için ➕ butonu`;
           return (
-            <span
-              title={`COC: ${existingCert.certNo} (${existingCert.controlDateIso || ''}) · Dokümanlar: ${stats.filled}/${stats.totalCats} kategori${stats.othersCount > 0 ? ` + ${stats.othersCount} ek` : ''}`}
-              style={{
-                padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 600,
-                background: bg, color: fg,
-                cursor: 'default', minWidth: 70, textAlign: 'center', display: 'inline-flex', alignItems: 'center', gap: 4,
-              }}
-            >
-              <span>✓ {existingCert.certNo}</span>
-              <span style={{ fontSize: 8, padding: '0 3px', borderRadius: 2, background: 'rgba(0,0,0,0.08)' }}>{stats.filled}/{stats.totalCats}</span>
+            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+              <span
+                title={tooltip}
+                style={{
+                  padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 600,
+                  background: bg, color: fg, cursor: 'default',
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                }}
+              >
+                <span>✓ {latestCert.certNo}{multiCocLabel}</span>
+                <span style={{ fontSize: 8, padding: '0 3px', borderRadius: 2, background: 'rgba(0,0,0,0.08)' }}>{stats.filled}/{stats.totalCats}</span>
+              </span>
+              {canEdit && (
+                <button
+                  onClick={(e) => { e.stopPropagation(); openCocModal(o); }}
+                  title={`Kısmi sevk veya yeni teslim için ek COC oluştur (mevcut: ${uniqueCerts.length} COC)`}
+                  style={{
+                    padding: '1px 5px', borderRadius: 3, fontSize: 11, fontWeight: 600, lineHeight: 1,
+                    border: '1px solid #2563eb', background: '#eff6ff', color: '#1e40af', cursor: 'pointer',
+                  }}
+                >➕</button>
+              )}
             </span>
           );
         }
