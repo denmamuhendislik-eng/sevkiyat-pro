@@ -2900,22 +2900,62 @@ function renderKpi(label, count, bedel, bg, fg) {
   );
 }
 
+// CSS Grid kolon tanımı — tüm satırlar (header + data) bu grid'i kullanır.
+// Sıra: [seçim] [müşteri] [stok kodu] [stok adı (flex)] [kalan] [bedel] [teslim] [plan] [COC] [geç]
+const ORDER_ROW_GRID = '20px 36px 170px minmax(180px, 1fr) 70px 90px 70px 110px 145px 50px';
+
+function OrderRowHeader({ isLateContext, hasCocColumn }) {
+  return (
+    <div style={{
+      display: 'grid',
+      gridTemplateColumns: ORDER_ROW_GRID,
+      gap: 8, padding: '4px 10px',
+      fontSize: 9, fontWeight: 600, color: '#78716c',
+      borderBottom: '1px solid #e7e5e4', background: '#fafaf9',
+      textTransform: 'uppercase', letterSpacing: 0.3,
+    }}>
+      <span />
+      <span style={{ textAlign: 'center' }}>MÜŞ</span>
+      <span>STOK KODU</span>
+      <span>STOK ADI</span>
+      <span style={{ textAlign: 'right' }}>KALAN</span>
+      <span style={{ textAlign: 'right' }}>BEDEL</span>
+      <span style={{ textAlign: 'right' }}>TESLİM</span>
+      <span style={{ textAlign: 'center' }}>PLAN</span>
+      <span style={{ textAlign: 'center' }}>{hasCocColumn ? 'COC' : ''}</span>
+      <span style={{ textAlign: 'center' }}>{isLateContext ? 'GEÇ' : ''}</span>
+    </div>
+  );
+}
+
 function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
-  return groupByBelgeNo(orders).map((g, idx) => {
-    const multi = g.items.length > 1;
-    return (
-      <div key={g.belgeNo + '_' + idx} style={{
-        borderLeft: multi ? '3px solid #c7d2fe' : '3px solid transparent',
-        background: multi ? 'rgba(199,210,254,0.06)' : 'transparent',
-        marginBottom: 2, borderRadius: '0 4px 4px 0',
-      }}>
-        <div style={{
-          fontSize: 10, color: '#64748b', padding: '3px 10px', fontWeight: 500,
-        }}>Belge {g.belgeNo}{multi ? ` · ${g.items.length} satır` : ''}</div>
-        {g.items.map(o => renderOrderRow(o, currentWeek, isLateContext, ctx))}
-      </div>
-    );
-  });
+  if (!orders || orders.length === 0) return null;
+  // COC kolonu sadece A+R için anlamlı — listede A+R varsa kolon başlığı gösterilir
+  const hasCocColumn = orders.some(o =>
+    o.customerCode === '120-0107' || o.customerCode === '120-116' ||
+    String(o.customerCode || '').startsWith('120-0107-') ||
+    String(o.customerCode || '').startsWith('120-116-')
+  );
+  return (
+    <>
+      <OrderRowHeader isLateContext={isLateContext} hasCocColumn={hasCocColumn} />
+      {groupByBelgeNo(orders).map((g, idx) => {
+        const multi = g.items.length > 1;
+        return (
+          <div key={g.belgeNo + '_' + idx} style={{
+            borderLeft: multi ? '3px solid #c7d2fe' : '3px solid transparent',
+            background: multi ? 'rgba(199,210,254,0.06)' : 'transparent',
+            marginBottom: 2, borderRadius: '0 4px 4px 0',
+          }}>
+            <div style={{
+              fontSize: 10, color: '#64748b', padding: '3px 10px', fontWeight: 500,
+            }}>Belge {g.belgeNo}{multi ? ` · ${g.items.length} satır` : ''}</div>
+            {g.items.map(o => renderOrderRow(o, currentWeek, isLateContext, ctx))}
+          </div>
+        );
+      })}
+    </>
+  );
 }
 
 function renderOrderRow(o, currentWeek, isLateContext, ctx) {
@@ -2927,6 +2967,9 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
   const vioCurrentWeek = teslim ? getISOWeek(teslim) : '';
   const vioChanged = override && override.origWeek && vioCurrentWeek && vioCurrentWeek !== override.origWeek;
   const bomMissing = bomSet && !bomSet.has(o.stokKodu);
+  const isAR = o.customerCode === '120-0107' || o.customerCode === '120-116' ||
+    String(o.customerCode || '').startsWith('120-0107-') ||
+    String(o.customerCode || '').startsWith('120-116-');
   return (
     <div
       key={o.id}
@@ -2936,48 +2979,60 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         e.dataTransfer.effectAllowed = 'move';
       } : undefined}
       style={{
-        display: 'flex', alignItems: 'center', gap: 10, padding: '5px 10px',
+        display: 'grid',
+        gridTemplateColumns: ORDER_ROW_GRID,
+        gap: 8, alignItems: 'center', padding: '5px 10px',
         fontSize: 12, borderBottom: '1px solid #f5f5f4',
         cursor: canEdit ? 'grab' : 'default',
         opacity: o.isDeferred ? 0.55 : 1,
         background: o.isDeferred ? 'rgba(120,113,108,0.05)' : 'transparent',
       }}>
-      {/* COC seçim checkbox — A+R + non-deferred */}
-      {toggleCocSelection && !o.isDeferred && (o.customerCode === '120-0107' || o.customerCode === '120-116' || String(o.customerCode || '').startsWith('120-0107-') || String(o.customerCode || '').startsWith('120-116-')) && (
-        <input
-          type="checkbox"
-          checked={cocSelected?.has(o.id) || false}
-          onChange={(e) => { e.stopPropagation(); toggleCocSelection(o.id); }}
-          onClick={(e) => e.stopPropagation()}
-          title="Toplu COC için seç"
-          style={{ cursor: 'pointer', width: 14, height: 14 }}
-        />
-      )}
-      {o.isDeferred && <span title="Akibeti belirsiz — MRP demand'ına dahil değil" style={{ color: '#78716c', fontSize: 12, lineHeight: 1 }}>⏸</span>}
+      {/* 1) Seçim checkbox veya deferred ikonu */}
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {o.isDeferred ? (
+          <span title="Akibeti belirsiz — MRP demand'ına dahil değil" style={{ color: '#78716c', fontSize: 12, lineHeight: 1 }}>⏸</span>
+        ) : (toggleCocSelection && isAR ? (
+          <input
+            type="checkbox"
+            checked={cocSelected?.has(o.id) || false}
+            onChange={(e) => { e.stopPropagation(); toggleCocSelection(o.id); }}
+            onClick={(e) => e.stopPropagation()}
+            title="Toplu COC için seç"
+            style={{ cursor: 'pointer', width: 14, height: 14, margin: 0 }}
+          />
+        ) : null)}
+      </span>
+      {/* 2) Müşteri rozeti */}
       <span style={{
         display: 'inline-block', padding: '2px 6px', borderRadius: 4,
-        fontSize: 10, fontWeight: 600, minWidth: 30, textAlign: 'center',
-        background: badge.bg, color: badge.fg,
+        fontSize: 10, fontWeight: 600, textAlign: 'center',
+        background: badge.bg, color: badge.fg, whiteSpace: 'nowrap',
       }}>{badge.label}</span>
+      {/* 3) Stok kodu */}
       <span style={{
         fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11,
-        minWidth: 170, color: '#1c1917',
+        color: '#1c1917', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }}>
         {bomMissing && <span title="BOM yok — MRP → Ürün Ağacı'nda yükle" style={{ color: '#dc2626', marginRight: 4, fontWeight: 700 }}>❓</span>}
         {o.stokKodu}
       </span>
+      {/* 4) Stok adı (esnek) */}
       <span style={{
-        flex: 1, color: '#44403c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+        color: '#44403c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
       }} title={o.stokAdi}>{o.stokAdi}</span>
-      <span style={{ color: '#78716c', minWidth: 70, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+      {/* 5) Kalan miktar */}
+      <span style={{ color: '#78716c', textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
         {o.kalanMiktar} {o.brm}
       </span>
-      <span style={{ fontWeight: 500, minWidth: 80, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+      {/* 6) Bedel */}
+      <span style={{ fontWeight: 500, textAlign: 'right', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
         {formatMoney(o.toplamBedel)} TL
       </span>
-      <span style={{ color: '#78716c', minWidth: 60, textAlign: 'right', fontSize: 11 }}>
+      {/* 7) Teslim tarihi */}
+      <span style={{ color: '#78716c', textAlign: 'right', fontSize: 11, whiteSpace: 'nowrap' }}>
         {teslim ? formatDateShort(teslim) : '—'}
       </span>
+      {/* 8) Plan butonu */}
       <button
         data-picker-container
         onClick={(e) => openPicker(e, o)}
@@ -2991,7 +3046,7 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
           cursor: canEdit ? 'pointer' : 'not-allowed',
           opacity: canEdit ? 1 : 0.6,
           fontVariantNumeric: 'tabular-nums',
-          minWidth: 110, textAlign: 'center',
+          textAlign: 'center', whiteSpace: 'nowrap',
         }}
       >
         {(() => {
@@ -3017,91 +3072,90 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
         {planOverrides?.[o.id]?.note && <span title={planOverrides[o.id].note} style={{ marginLeft: 3, fontSize: 10 }}>💬</span>}
         {vioChanged && <span title={`VIO teslim değişti: ${override.origWeek} → ${vioCurrentWeek} — üstteki "VIO Termin Değişti" kutusundan güncelle`} style={{ marginLeft: 3, color: '#ca8a04', fontSize: 14, lineHeight: 1, fontWeight: 700 }}>●</span>}
       </button>
-      {/* COC (Uygunluk Belgesi) butonu — sadece A+R + canEdit + non-deferred */}
-      {openCocModal && !o.isDeferred && (o.customerCode === '120-0107' || o.customerCode === '120-116' || String(o.customerCode || '').startsWith('120-0107-') || String(o.customerCode || '').startsWith('120-116-')) && (() => {
-        // Bu sipariş için tüm geçmiş COC'lar (çoklu eşleşme — kısmi sevkler için
-        // aynı stok için birden fazla COC olabilir).
-        const oRefNo = (o.refNo || '').trim();
-        const oBelgeNo = (o.belgeNo || '').trim();
-        const matchingCerts = Object.values(cocCertificates?.certificates || {}).filter(c => {
-          if (c.stokKodu !== o.stokKodu) return false;
-          const cOrderNo = (c.orderNo || '').trim();
-          const cRefNo = (c.refNo || '').trim();
-          const cVioBelgeNo = (c.vioBelgeNo || '').trim();
-          if (oRefNo && (cOrderNo === oRefNo || cRefNo === oRefNo)) return true;
-          if (oBelgeNo && (cOrderNo === oBelgeNo || cVioBelgeNo === oBelgeNo)) return true;
-          return false;
-        });
-        // Grupla (multi-line COC = aynı certNo'nun N satırı tek belge)
-        const uniqueCerts = [...new Set(matchingCerts.map(c => c.certNo))];
-        // En yeni certNo'yu önde göster (sıralama DESC)
-        uniqueCerts.sort((a, b) => b.localeCompare(a));
-        const latestCert = uniqueCerts.length > 0 ? matchingCerts.find(c => c.certNo === uniqueCerts[0]) : null;
-
-        if (latestCert) {
-          const stats = getCocAttachmentStats(latestCert);
-          const isFull = stats.totalFiles > 0 && stats.filled === stats.totalCats;
-          const isEmpty = stats.totalFiles === 0;
-          const bg = isFull ? '#dcfce7' : isEmpty ? '#fef2f2' : '#fef3c7';
-          const fg = isFull ? '#166534' : isEmpty ? '#991b1b' : '#92400e';
-          const multiCocLabel = uniqueCerts.length > 1 ? ` +${uniqueCerts.length - 1}` : '';
-          const tooltip = uniqueCerts.length > 1
-            ? `Mevcut COC'lar: ${uniqueCerts.join(', ')}\nKısmi sevk için yeni COC eklemek için ➕ butonu`
-            : `COC: ${latestCert.certNo} (${latestCert.controlDateIso || ''}) · ${stats.filled}/${stats.totalCats} doküman${stats.othersCount > 0 ? ` + ${stats.othersCount} ek` : ''}\nKısmi sevk varsa yeni COC için ➕ butonu`;
-          return (
-            <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-              <button
-                onClick={(e) => { e.stopPropagation(); if (openCocDetailFromBadge) openCocDetailFromBadge(latestCert.certNo); }}
-                title={tooltip + '\n(Tıkla → COC detayını aç)'}
-                style={{
-                  padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 600,
-                  background: bg, color: fg, cursor: 'pointer',
-                  border: 'none',
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                }}
-              >
-                <span>✓ {latestCert.certNo}{multiCocLabel}</span>
-                <span style={{ fontSize: 8, padding: '0 3px', borderRadius: 2, background: 'rgba(0,0,0,0.08)' }}>{stats.filled}/{stats.totalCats}</span>
-              </button>
-              {canEdit && (
+      {/* 9) COC kolonu — sadece A+R için (kolonu hep göster, içerik şarta bağlı) */}
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', minWidth: 0 }}>
+        {openCocModal && !o.isDeferred && isAR && (() => {
+          const oRefNo = (o.refNo || '').trim();
+          const oBelgeNo = (o.belgeNo || '').trim();
+          const matchingCerts = Object.values(cocCertificates?.certificates || {}).filter(c => {
+            if (c.stokKodu !== o.stokKodu) return false;
+            const cOrderNo = (c.orderNo || '').trim();
+            const cRefNo = (c.refNo || '').trim();
+            const cVioBelgeNo = (c.vioBelgeNo || '').trim();
+            if (oRefNo && (cOrderNo === oRefNo || cRefNo === oRefNo)) return true;
+            if (oBelgeNo && (cOrderNo === oBelgeNo || cVioBelgeNo === oBelgeNo)) return true;
+            return false;
+          });
+          const uniqueCerts = [...new Set(matchingCerts.map(c => c.certNo))];
+          uniqueCerts.sort((a, b) => b.localeCompare(a));
+          const latestCert = uniqueCerts.length > 0 ? matchingCerts.find(c => c.certNo === uniqueCerts[0]) : null;
+          if (latestCert) {
+            const stats = getCocAttachmentStats(latestCert);
+            const isFull = stats.totalFiles > 0 && stats.filled === stats.totalCats;
+            const isEmpty = stats.totalFiles === 0;
+            const bg = isFull ? '#dcfce7' : isEmpty ? '#fef2f2' : '#fef3c7';
+            const fg = isFull ? '#166534' : isEmpty ? '#991b1b' : '#92400e';
+            const multiCocLabel = uniqueCerts.length > 1 ? ` +${uniqueCerts.length - 1}` : '';
+            const tooltip = uniqueCerts.length > 1
+              ? `Mevcut COC'lar: ${uniqueCerts.join(', ')}\nKısmi sevk için yeni COC eklemek için ➕ butonu`
+              : `COC: ${latestCert.certNo} (${latestCert.controlDateIso || ''}) · ${stats.filled}/${stats.totalCats} doküman${stats.othersCount > 0 ? ` + ${stats.othersCount} ek` : ''}\nKısmi sevk varsa yeni COC için ➕ butonu`;
+            return (
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
                 <button
-                  onClick={(e) => { e.stopPropagation(); openCocModal(o); }}
-                  title={`Kısmi sevk veya yeni teslim için ek COC oluştur (mevcut: ${uniqueCerts.length} COC)`}
+                  onClick={(e) => { e.stopPropagation(); if (openCocDetailFromBadge) openCocDetailFromBadge(latestCert.certNo); }}
+                  title={tooltip + '\n(Tıkla → COC detayını aç)'}
                   style={{
-                    padding: '1px 5px', borderRadius: 3, fontSize: 11, fontWeight: 600, lineHeight: 1,
-                    border: '1px solid #2563eb', background: '#eff6ff', color: '#1e40af', cursor: 'pointer',
+                    padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 600,
+                    background: bg, color: fg, cursor: 'pointer', border: 'none',
+                    display: 'inline-flex', alignItems: 'center', gap: 4, whiteSpace: 'nowrap',
                   }}
-                >➕</button>
-              )}
+                >
+                  <span>✓ {latestCert.certNo}{multiCocLabel}</span>
+                  <span style={{ fontSize: 8, padding: '0 3px', borderRadius: 2, background: 'rgba(0,0,0,0.08)' }}>{stats.filled}/{stats.totalCats}</span>
+                </button>
+                {canEdit && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); openCocModal(o); }}
+                    title={`Kısmi sevk veya yeni teslim için ek COC oluştur (mevcut: ${uniqueCerts.length} COC)`}
+                    style={{
+                      padding: '1px 5px', borderRadius: 3, fontSize: 11, fontWeight: 600, lineHeight: 1,
+                      border: '1px solid #2563eb', background: '#eff6ff', color: '#1e40af', cursor: 'pointer',
+                    }}
+                  >➕</button>
+                )}
+              </span>
+            );
+          }
+          return (
+            <button
+              onClick={(e) => { e.stopPropagation(); openCocModal(o); }}
+              disabled={!canEdit}
+              title="Uygunluk Belgesi (COC) oluştur"
+              style={{
+                padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500,
+                border: '1px solid #2563eb', background: '#eff6ff', color: '#1e40af',
+                cursor: canEdit ? 'pointer' : 'not-allowed', opacity: canEdit ? 1 : 0.5, whiteSpace: 'nowrap',
+              }}
+            >📄 COC</button>
+          );
+        })()}
+      </span>
+      {/* 10) Geç rozet kolonu */}
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+        {isLateContext && lateWeeks > 0 && (() => {
+          const lc = lateWeeks >= 7 ? { bg: '#fecaca', fg: '#991b1b' }
+                  : lateWeeks >= 3 ? { bg: '#fed7aa', fg: '#9a3412' }
+                  : { bg: '#fef3c7', fg: '#854d0e' };
+          return (
+            <span style={{
+              fontSize: 10, padding: '1px 6px', borderRadius: 3,
+              background: lc.bg, color: lc.fg, fontWeight: 600, textAlign: 'center', whiteSpace: 'nowrap',
+            }}>
+              {lateWeeks} hf
             </span>
           );
-        }
-        return (
-          <button
-            onClick={(e) => { e.stopPropagation(); openCocModal(o); }}
-            disabled={!canEdit}
-            title="Uygunluk Belgesi (COC) oluştur"
-            style={{
-              padding: '2px 8px', borderRadius: 4, fontSize: 10, fontWeight: 500,
-              border: '1px solid #2563eb', background: '#eff6ff', color: '#1e40af',
-              cursor: canEdit ? 'pointer' : 'not-allowed', opacity: canEdit ? 1 : 0.5,
-            }}
-          >📄 COC</button>
-        );
-      })()}
-      {isLateContext && lateWeeks > 0 && (() => {
-        const lc = lateWeeks >= 7 ? { bg: '#fecaca', fg: '#991b1b' }
-                : lateWeeks >= 3 ? { bg: '#fed7aa', fg: '#9a3412' }
-                : { bg: '#fef3c7', fg: '#854d0e' };
-        return (
-          <span style={{
-            fontSize: 10, padding: '1px 6px', borderRadius: 3,
-            background: lc.bg, color: lc.fg, fontWeight: 600, minWidth: 40, textAlign: 'center',
-          }}>
-            {lateWeeks} hf geç
-          </span>
-        );
-      })()}
+        })()}
+      </span>
     </div>
   );
 }
