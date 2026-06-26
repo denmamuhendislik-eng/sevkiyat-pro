@@ -4,8 +4,10 @@ import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutoma
 import {
   saveCocCertificate, updateCocCertificate, deleteCocCertificate,
   saveCocPart, deleteCocPart, suggestNextCertNo,
-  uploadCocAttachment, deleteCocAttachment, setCocCertificateAttachment, setCocCertificateOthers,
-  uploadCocPartStandardAttachment, setCocPartStandardAttachment, getReusableAttachment,
+  uploadCocAttachment, deleteCocAttachment,
+  appendCocCertificateAttachment, setCocCertificateAttachmentList, setCocCertificateOthers,
+  uploadCocPartStandardAttachment, setCocPartStandardAttachmentList,
+  getReusableAttachmentList, getCocAttachmentList,
   COC_ATTACHMENT_CATEGORIES,
 } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
@@ -2994,15 +2996,23 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
           c.orderNo === o.belgeNo && c.stokKodu === o.stokKodu
         );
         if (existingCert) {
+          const stats = getCocAttachmentStats(existingCert);
+          const isFull = stats.totalFiles > 0 && stats.filled === stats.totalCats;
+          const isEmpty = stats.totalFiles === 0;
+          const bg = isFull ? '#dcfce7' : isEmpty ? '#fef2f2' : '#fef3c7';
+          const fg = isFull ? '#166534' : isEmpty ? '#991b1b' : '#92400e';
           return (
             <span
-              title={`COC mevcut: ${existingCert.certNo} (${existingCert.controlDateIso || ''})`}
+              title={`COC: ${existingCert.certNo} (${existingCert.controlDateIso || ''}) · Dokümanlar: ${stats.filled}/${stats.totalCats} kategori${stats.othersCount > 0 ? ` + ${stats.othersCount} ek` : ''}`}
               style={{
                 padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 600,
-                background: '#dcfce7', color: '#166534',
-                cursor: 'default', minWidth: 70, textAlign: 'center',
+                background: bg, color: fg,
+                cursor: 'default', minWidth: 70, textAlign: 'center', display: 'inline-flex', alignItems: 'center', gap: 4,
               }}
-            >✓ {existingCert.certNo}</span>
+            >
+              <span>✓ {existingCert.certNo}</span>
+              <span style={{ fontSize: 8, padding: '0 3px', borderRadius: 2, background: 'rgba(0,0,0,0.08)' }}>{stats.filled}/{stats.totalCats}</span>
+            </span>
           );
         }
         return (
@@ -3570,13 +3580,14 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
               <th style={{ ...cocTh, minWidth: 240 }}>Tanım</th>
               <th style={{ ...cocTh, textAlign: 'right' }}>Miktar</th>
               <th style={cocTh}>Seri No</th>
+              <th style={{ ...cocTh, textAlign: 'center' }}>Doküman</th>
               <th style={{ ...cocTh, textAlign: 'center' }}>Feragat</th>
               <th style={{ ...cocTh, textAlign: 'center', width: 50 }}>Aksiyon</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
-              <tr><td colSpan={10} style={{ padding: 30, textAlign: 'center', color: '#a8a29e', fontSize: 12 }}>
+              <tr><td colSpan={11} style={{ padding: 30, textAlign: 'center', color: '#a8a29e', fontSize: 12 }}>
                 {loaded ? 'Filtre/aramaya uyan COC kaydı bulunamadı' : 'Yükleniyor…'}
               </td></tr>
             ) : filtered.slice(0, 500).map(c => {
@@ -3604,6 +3615,24 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
                   <td style={{ ...cocTd, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: isMulti ? 600 : 400 }}>{isMulti ? c.totalQty : (c.quantity || '—')}</td>
                   <td style={{ ...cocTd, color: '#78716c', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={isMulti ? c.lines.map(l => l.serialNo).join(' | ') : c.serialNo}>
                     {isMulti ? <span style={{ fontSize: 10 }}>(çoklu)</span> : (c.serialNo || '—')}
+                  </td>
+                  <td style={{ ...cocTd, textAlign: 'center' }}>
+                    {(() => {
+                      const stats = getCocAttachmentStats(c);
+                      if (stats.totalFiles === 0) {
+                        return <span title="Hiç doküman yok" style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: '#fef2f2', color: '#991b1b' }}>0/{stats.totalCats}</span>;
+                      }
+                      const isFull = stats.filled === stats.totalCats;
+                      return (
+                        <span title={`${stats.filled}/${stats.totalCats} kategori dolu · toplam ${stats.totalFiles} dosya`} style={{
+                          padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                          background: isFull ? '#dcfce7' : '#fef3c7',
+                          color: isFull ? '#166534' : '#92400e',
+                        }}>
+                          {isFull ? '✓' : '⚠'} {stats.filled}/{stats.totalCats}{stats.othersCount > 0 ? `+${stats.othersCount}` : ''}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td style={{ ...cocTd, textAlign: 'center' }}>
                     <span style={{
@@ -4353,87 +4382,19 @@ function CocPartModal({ part, canEdit, onClose }) {
 // Master tekrar kullanım: hammadde sertifikası (stok bazlı), balonlu resim
 // (stok+revizyon bazlı) — kullanıcı önceki seçimleri yeniden kullanabilir.
 // ====================================================================
-function CocAttachmentsSection({ cert, canEdit }) {
+function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const { cocParts } = useCocParts();
+  // Live cert subscriber — yüklemeden sonra anında güncellenir, modal kapatmaya gerek yok
+  const year = initialCert.certNo.substring(0, 4);
+  const { cocCertificates } = useCocCertificates(year);
+  const certId = `${initialCert.certNo}_${initialCert.siraNo || '1'}`;
+  const liveCert = cocCertificates?.certificates?.[certId];
+  const cert = liveCert ? { ...initialCert, attachments: liveCert.attachments || {} } : initialCert;
   const attachments = cert.attachments || {};
   const others = Array.isArray(attachments.others) ? attachments.others : [];
-  const [busy, setBusy] = useState(null); // category that's currently uploading
+  const [busy, setBusy] = useState(null);
   const [error, setError] = useState('');
   const fileInputs = useRef({});
-
-  const handleUpload = async (cat, file, opts = {}) => {
-    if (!file || !canEdit) return;
-    setBusy(cat.key);
-    setError('');
-    try {
-      const year = cert.certNo.substring(0, 4);
-      const meta = await uploadCocAttachment(cert.certNo, year, cat.key, file);
-      if (cat.key === 'others') {
-        const newOthers = [...others, { ...meta, customName: opts.customName || file.name }];
-        await setCocCertificateOthers(cert.certNo, cert.siraNo || '1', newOthers, { canEdit });
-      } else {
-        await setCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, meta, { canEdit });
-      }
-      // Master'a da kopyala (tekrar kullanım için)
-      if (cat.reuseScope === 'stok') {
-        const partMeta = await uploadCocPartStandardAttachment(cert.stokKodu, cat.key, file);
-        await setCocPartStandardAttachment(cert.stokKodu, cat.key, partMeta, { canEdit });
-      } else if (cat.reuseScope === 'stok+revizyon' && cert.revisionCode) {
-        const partMeta = await uploadCocPartStandardAttachment(cert.stokKodu, cat.key, file, { revision: cert.revisionCode });
-        await setCocPartStandardAttachment(cert.stokKodu, cat.key, partMeta, { canEdit, revision: cert.revisionCode });
-      }
-    } catch (e) {
-      setError(e.message || 'Yükleme hatası');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const handleReuse = async (cat) => {
-    const reusable = getReusableAttachment(cocParts, cert.stokKodu, cat.key, cert.revisionCode);
-    if (!reusable || !canEdit) return;
-    setBusy(cat.key);
-    setError('');
-    try {
-      await setCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, {
-        ...reusable,
-        sourceType: 'reuse',
-        reusedAt: new Date().toISOString(),
-      }, { canEdit });
-    } catch (e) {
-      setError(e.message || 'Tekrar kullanım hatası');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const handleDelete = async (cat, attachmentMeta, otherIdx) => {
-    if (!canEdit) return;
-    if (!confirm(`"${attachmentMeta.filename}" silinsin mi?`)) return;
-    setBusy(cat.key);
-    setError('');
-    try {
-      // Master'dan reuse ise storage path silmiyoruz (master'da kullanılıyor)
-      // Sadece bu COC'tan kaldırılır
-      if (attachmentMeta.sourceType !== 'reuse') {
-        await deleteCocAttachment(attachmentMeta.storagePath, { canEdit });
-      }
-      if (cat.key === 'others') {
-        const newOthers = others.filter((_, i) => i !== otherIdx);
-        await setCocCertificateOthers(cert.certNo, cert.siraNo || '1', newOthers, { canEdit });
-      } else {
-        await setCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, null, { canEdit });
-      }
-    } catch (e) {
-      setError(e.message || 'Silme hatası');
-    } finally {
-      setBusy(null);
-    }
-  };
-
-  const triggerFileInput = (key) => {
-    if (fileInputs.current[key]) fileInputs.current[key].click();
-  };
 
   const fmtSize = (bytes) => {
     if (!bytes) return '';
@@ -4442,16 +4403,100 @@ function CocAttachmentsSection({ cert, canEdit }) {
     return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   };
 
-  // Sayım
-  const totalCount = COC_ATTACHMENT_CATEGORIES.length + 1; // 6 sabit + 1 others slot
-  const filledCount = COC_ATTACHMENT_CATEGORIES.filter(c => attachments[c.key]).length + (others.length > 0 ? 1 : 0);
+  // Master tekrar kullanım: aynı parça+revizyon için yüklenmiş tüm dosyaları çek
+  const getReusable = (cat) => {
+    if (!cat.reuseScope) return [];
+    return getReusableAttachmentList(cocParts, cert.stokKodu, cat.key, cert.revisionCode, cat.reuseScope);
+  };
+
+  // Master listesine yeni dosya ekle (her upload sonrası master güncellenir)
+  const appendToMaster = async (cat, partMeta) => {
+    if (!cat.reuseScope) return;
+    const existing = getReusableAttachmentList(cocParts, cert.stokKodu, cat.key, cert.revisionCode, cat.reuseScope);
+    const newList = [...existing, partMeta];
+    await setCocPartStandardAttachmentList(cert.stokKodu, cat.key, newList, {
+      canEdit, scope: cat.reuseScope, revision: cert.revisionCode,
+    });
+  };
+
+  const handleUpload = async (cat, file, opts = {}) => {
+    if (!file || !canEdit) return;
+    setBusy(cat.key);
+    setError('');
+    try {
+      const meta = await uploadCocAttachment(cert.certNo, year, cat.key, file);
+      if (cat.key === 'others') {
+        const newOthers = [...others, { ...meta, customName: opts.customName || file.name }];
+        await setCocCertificateOthers(cert.certNo, cert.siraNo || '1', newOthers, { canEdit });
+      } else {
+        const currentList = getCocAttachmentList(cert, cat.key);
+        await appendCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, meta, currentList, { canEdit });
+        // Master'a da ekle
+        if (cat.reuseScope) {
+          const opts2 = cat.reuseScope === 'stok+revizyon' && cert.revisionCode ? { revision: cert.revisionCode } : {};
+          const partMeta = await uploadCocPartStandardAttachment(cert.stokKodu, cat.key, file, opts2);
+          await appendToMaster(cat, partMeta);
+        }
+      }
+    } catch (e) {
+      setError(e.message || 'Yükleme hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleReuse = async (cat, reusableMeta) => {
+    if (!reusableMeta || !canEdit) return;
+    setBusy(cat.key);
+    setError('');
+    try {
+      const currentList = getCocAttachmentList(cert, cat.key);
+      const reused = { ...reusableMeta, sourceType: 'reuse', reusedAt: new Date().toISOString() };
+      await appendCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, reused, currentList, { canEdit });
+    } catch (e) {
+      setError(e.message || 'Tekrar kullanım hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDelete = async (cat, att, idx) => {
+    if (!canEdit) return;
+    if (!confirm(`"${att.filename}" silinsin mi?`)) return;
+    setBusy(cat.key);
+    setError('');
+    try {
+      // Reuse ise storage path master'da, dokunma. Yoksa Storage'dan da sil.
+      if (att.sourceType !== 'reuse') {
+        await deleteCocAttachment(att.storagePath, { canEdit });
+      }
+      if (cat.key === 'others') {
+        const newOthers = others.filter((_, i) => i !== idx);
+        await setCocCertificateOthers(cert.certNo, cert.siraNo || '1', newOthers, { canEdit });
+      } else {
+        const currentList = getCocAttachmentList(cert, cat.key);
+        const newList = currentList.filter((_, i) => i !== idx);
+        await setCocCertificateAttachmentList(cert.certNo, cert.siraNo || '1', cat.key, newList, { canEdit });
+      }
+    } catch (e) {
+      setError(e.message || 'Silme hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const triggerFileInput = (key) => { if (fileInputs.current[key]) fileInputs.current[key].click(); };
+
+  // Sayım (kategori dolu sayısı + ek dosya sayısı)
+  const filledCategories = COC_ATTACHMENT_CATEGORIES.filter(c => getCocAttachmentList(cert, c.key).length > 0).length;
+  const totalFiles = COC_ATTACHMENT_CATEGORIES.reduce((s, c) => s + getCocAttachmentList(cert, c.key).length, 0) + others.length;
 
   return (
     <div style={{ padding: '14px 20px', borderTop: '1px solid #e7e5e4', background: '#fafaf9' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
         <span style={{ fontSize: 14, fontWeight: 600, color: '#1c1917' }}>📎 Dokümanlar</span>
         <span style={{ fontSize: 11, color: '#78716c' }}>
-          {filledCount}/{totalCount} kategori dolu · {others.length > 0 && `${others.length} ek dosya`}
+          {filledCategories}/{COC_ATTACHMENT_CATEGORIES.length} kategori dolu · toplam {totalFiles} dosya
         </span>
       </div>
       {error && (
@@ -4461,50 +4506,44 @@ function CocAttachmentsSection({ cert, canEdit }) {
       )}
 
       {/* Sabit kategoriler */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {COC_ATTACHMENT_CATEGORIES.map(cat => {
-          const att = attachments[cat.key];
-          const reusable = !att ? getReusableAttachment(cocParts, cert.stokKodu, cat.key, cert.revisionCode) : null;
+          const list = getCocAttachmentList(cert, cat.key);
+          const reusable = getReusable(cat);
+          // Master'da var ama bu COC'a henüz eklenmeyenler
+          const unusedReusable = reusable.filter(r => !list.some(l => l.storagePath === r.storagePath));
           const isBusy = busy === cat.key;
           return (
-            <div key={cat.key} style={{
-              display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
-              background: '#fff', border: '1px solid #e7e5e4', borderRadius: 6, fontSize: 12,
-            }}>
-              <span style={{ minWidth: 200, fontWeight: 500 }}>
-                {cat.icon} {cat.label}
-                {cat.reuseScope && (
-                  <span title={`Tekrar kullanılabilir: ${cat.reuseScope}`} style={{ marginLeft: 5, padding: '1px 4px', fontSize: 8, fontWeight: 600, background: '#dbeafe', color: '#1e40af', borderRadius: 3 }}>
-                    {cat.reuseScope === 'stok+revizyon' ? 'STOK+REV' : 'STOK'}
-                  </span>
-                )}
-              </span>
-              {att ? (
-                <>
-                  <a href={att.downloadUrl} target="_blank" rel="noopener noreferrer" style={{
-                    flex: 1, color: '#1e40af', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
-                  }}>
-                    📄 {att.filename}
-                  </a>
-                  <span style={{ fontSize: 10, color: '#78716c' }}>{fmtSize(att.size)}</span>
-                  {att.sourceType === 'reuse' && (
-                    <span title="Master'dan tekrar kullanıldı" style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, background: '#dcfce7', color: '#166534', borderRadius: 3 }}>↻ Tekrar</span>
+            <div key={cat.key} style={{ background: '#fff', border: '1px solid #e7e5e4', borderRadius: 6, padding: '8px 10px', fontSize: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: list.length > 0 ? 6 : 0 }}>
+                <span style={{ fontWeight: 500 }}>
+                  {cat.icon} {cat.label}
+                  {cat.reuseScope && (
+                    <span title={`Tekrar kullanım: ${cat.reuseScope}`} style={{ marginLeft: 5, padding: '1px 4px', fontSize: 8, fontWeight: 600, background: '#dbeafe', color: '#1e40af', borderRadius: 3 }}>
+                      {cat.reuseScope === 'stok+revizyon' ? 'STOK+REV' : 'STOK'}
+                    </span>
                   )}
-                  {canEdit && (
-                    <button onClick={() => handleDelete(cat, att)} disabled={isBusy} title="Sil" style={{
-                      padding: '3px 8px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
-                      border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
-                    }}>🗑</button>
-                  )}
-                </>
-              ) : (
-                <>
-                  <span style={{ flex: 1, color: '#a8a29e', fontStyle: 'italic' }}>— yüklenmemiş</span>
-                  {reusable && canEdit && (
-                    <button onClick={() => handleReuse(cat)} disabled={isBusy} title={`Master'dan: ${reusable.filename}`} style={{
-                      padding: '3px 10px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
-                      border: '1px solid #16a34a', background: '#dcfce7', color: '#166534',
-                    }}>↻ Master'dan Kullan</button>
+                  {list.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: '#78716c' }}>({list.length} dosya)</span>}
+                </span>
+                <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
+                  {unusedReusable.length > 0 && canEdit && (
+                    <select
+                      onChange={(e) => {
+                        const idx = Number(e.target.value);
+                        if (idx >= 0) handleReuse(cat, unusedReusable[idx]);
+                        e.target.value = '';
+                      }}
+                      disabled={isBusy}
+                      style={{
+                        padding: '3px 6px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
+                        border: '1px solid #16a34a', background: '#dcfce7', color: '#166534',
+                      }}
+                    >
+                      <option value="">↻ Master'dan Kullan ({unusedReusable.length})</option>
+                      {unusedReusable.map((r, i) => (
+                        <option key={i} value={i}>{r.filename}</option>
+                      ))}
+                    </select>
                   )}
                   {canEdit && (
                     <>
@@ -4515,12 +4554,35 @@ function CocAttachmentsSection({ cert, canEdit }) {
                         onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(cat, f); e.target.value = ''; }}
                       />
                       <button onClick={() => triggerFileInput(cat.key)} disabled={isBusy} style={{
-                        padding: '3px 10px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
+                        padding: '3px 10px', borderRadius: 3, fontSize: 11, fontWeight: 500, cursor: isBusy ? 'not-allowed' : 'pointer',
                         border: '1px solid #1e40af', background: isBusy ? '#fff' : '#eff6ff', color: '#1e40af',
-                      }}>{isBusy ? 'Yükleniyor...' : '⬆ Yükle'}</button>
+                      }}>{isBusy ? 'Yükleniyor...' : '⬆ Yeni Yükle'}</button>
                     </>
                   )}
-                </>
+                </div>
+              </div>
+              {list.length === 0 ? (
+                <div style={{ fontSize: 11, color: '#a8a29e', fontStyle: 'italic', paddingLeft: 24 }}>— henüz dosya yok</div>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 3, paddingLeft: 24 }}>
+                  {list.map((att, idx) => (
+                    <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 6px', fontSize: 11, background: '#fafaf9', borderRadius: 3 }}>
+                      <a href={att.downloadUrl} target="_blank" rel="noopener noreferrer" style={{
+                        flex: 1, color: '#1e40af', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                      }}>📄 {att.filename}</a>
+                      <span style={{ fontSize: 10, color: '#78716c' }}>{fmtSize(att.size)}</span>
+                      {att.sourceType === 'reuse' && (
+                        <span title="Master'dan tekrar kullanıldı" style={{ padding: '1px 4px', fontSize: 9, fontWeight: 600, background: '#dcfce7', color: '#166534', borderRadius: 3 }}>↻ Tekrar</span>
+                      )}
+                      {canEdit && (
+                        <button onClick={() => handleDelete(cat, att, idx)} title="Sil" style={{
+                          padding: '2px 6px', borderRadius: 3, fontSize: 10, cursor: 'pointer',
+                          border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
+                        }}>🗑</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           );
@@ -4555,7 +4617,7 @@ function CocAttachmentsSection({ cert, canEdit }) {
         </div>
         {others.length === 0 ? (
           <div style={{ fontSize: 11, color: '#a8a29e', fontStyle: 'italic', padding: 6 }}>
-            Henüz ek doküman yok. + Ekle ile FAİ, ısıl işlem, kaplama, boyama sertifikası vb. yükleyebilirsiniz.
+            Henüz ek doküman yok. Standart kategorilerin dışındaki belgeler için kullanın.
           </div>
         ) : (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
@@ -4582,4 +4644,17 @@ function CocAttachmentsSection({ cert, canEdit }) {
       </div>
     </div>
   );
+}
+
+// COC için doluluk hesabı (liste gösterimleri için): tüm kategorilerin file count toplamı + others
+function getCocAttachmentStats(cert) {
+  const cats = COC_ATTACHMENT_CATEGORIES;
+  let filled = 0, totalFiles = 0;
+  for (const cat of cats) {
+    const list = getCocAttachmentList(cert, cat.key);
+    if (list.length > 0) filled++;
+    totalFiles += list.length;
+  }
+  const others = Array.isArray(cert?.attachments?.others) ? cert.attachments.others.length : 0;
+  return { filled, totalCats: cats.length, totalFiles: totalFiles + others, othersCount: others };
 }

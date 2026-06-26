@@ -339,13 +339,16 @@ export async function removePlanOverride(orderId, { canEdit }) {
 //   - Diğerleri: COC kaydına özel, master'da tutulmaz
 
 const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+// Tüm sabit kategoriler için master tekrar kullanım aktif (kullanıcı kararı 2026-06-26).
+// Yeni dosya yüklendiğinde master da güncellenir → her zaman son sürüm master'da.
+// reuseScope: "stok" = revize bağımsız, "stok+revizyon" = revizyon bazlı ayrı dosya.
 export const COC_ATTACHMENT_CATEGORIES = [
   { key: "rawMaterialCert", label: "Hammadde Kalite Sertifikası", icon: "🧪", reuseScope: "stok" },
-  { key: "measurement",     label: "Ölçüm Raporu",                icon: "📏", reuseScope: null },
+  { key: "measurement",     label: "Ölçüm Raporu",                icon: "📏", reuseScope: "stok+revizyon" },
   { key: "bubbleDrawing",   label: "Balonlu Resim",               icon: "🎈", reuseScope: "stok+revizyon" },
-  { key: "fai",             label: "FAİ Raporu",                  icon: "📋", reuseScope: null },
-  { key: "surfaceTreatment",label: "Isıl İşlem / Kaplama / Boya", icon: "🔥", reuseScope: null },
-  { key: "waiver",          label: "Feragat",                     icon: "⚠️", reuseScope: null },
+  { key: "fai",             label: "FAİ Raporu",                  icon: "📋", reuseScope: "stok" },
+  { key: "surfaceTreatment",label: "Isıl İşlem / Kaplama / Boya", icon: "🔥", reuseScope: "stok" },
+  { key: "waiver",          label: "Feragat",                     icon: "⚠️", reuseScope: "stok+revizyon" },
 ];
 
 const safeFilename = (s) => String(s || "").replace(/[^\w.\-]/g, "_").substring(0, 120);
@@ -387,8 +390,29 @@ export async function deleteCocAttachment(storagePath, { canEdit }) {
   }
 }
 
-// Sertifikanın attachments field'ını güncelle (single set).
-export async function setCocCertificateAttachment(certNo, siraNo, category, attachmentMeta, { canEdit }) {
+// Sertifika kategorisine yeni dosya EKLE — array yapısı (birden fazla dosya/kategori).
+// Geriye dönük uyumluluk: mevcut field obje (tekli) ise array'e çevrilir, sonra eklenir.
+export async function appendCocCertificateAttachment(certNo, siraNo, category, attachmentMeta, currentList, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const year = certNo.substring(0, 4);
+  const id = `${certNo}_${String(siraNo || "1").trim() || "1"}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  // currentList: mevcut attachments[category] — obje veya array veya yok
+  let list = [];
+  if (Array.isArray(currentList)) list = [...currentList];
+  else if (currentList && typeof currentList === "object") list = [currentList];
+  list.push(attachmentMeta);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        attachments: { [category]: list },
+      },
+    },
+  }, { merge: true });
+}
+
+// Sertifika kategorisinin tüm dosya listesini overwrite (silme sonrası).
+export async function setCocCertificateAttachmentList(certNo, siraNo, category, list, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok");
   const year = certNo.substring(0, 4);
   const id = `${certNo}_${String(siraNo || "1").trim() || "1"}`;
@@ -396,7 +420,7 @@ export async function setCocCertificateAttachment(certNo, siraNo, category, atta
   await setDoc(ref, {
     certificates: {
       [id]: {
-        attachments: { [category]: attachmentMeta },
+        attachments: { [category]: Array.isArray(list) ? list : [] },
       },
     },
   }, { merge: true });
@@ -449,16 +473,19 @@ export async function uploadCocPartStandardAttachment(stokKodu, category, file, 
   };
 }
 
-// Parça master'a standart attachment field'ı yaz.
-export async function setCocPartStandardAttachment(stokKodu, category, attachmentMeta, { canEdit, revision }) {
+// Parça master'a standart attachment listesi ekle/overwrite.
+// Stok+revizyon scope'da: byRevision[rev] = array
+// Stok scope'da: [category] = array
+export async function setCocPartStandardAttachmentList(stokKodu, category, list, { canEdit, revision, scope }) {
   if (!canEdit) throw new Error("Yetki yok");
   const ref = doc(db, APP_COL, COC_PARTS_DOC);
-  if (category === "bubbleDrawing" && revision) {
+  const arr = Array.isArray(list) ? list : (list ? [list] : []);
+  if (scope === "stok+revizyon" && revision) {
     await setDoc(ref, {
       parts: {
         [stokKodu]: {
           standardAttachments: {
-            bubbleDrawing: { byRevision: { [revision]: attachmentMeta } },
+            [category]: { byRevision: { [revision]: arr } },
           },
         },
       },
@@ -467,20 +494,35 @@ export async function setCocPartStandardAttachment(stokKodu, category, attachmen
     await setDoc(ref, {
       parts: {
         [stokKodu]: {
-          standardAttachments: { [category]: attachmentMeta },
+          standardAttachments: { [category]: arr },
         },
       },
     }, { merge: true });
   }
 }
 
-// Parça master'dan standart attachment çek (tekrar kullanım için).
-export function getReusableAttachment(cocParts, stokKodu, category, revision) {
+// Parça master'dan tekrar kullanım listesi (array).
+// Geriye dönük: tek obje varsa array'e dönüştür.
+export function getReusableAttachmentList(cocParts, stokKodu, category, revision, scope) {
   const part = cocParts?.parts?.[stokKodu];
-  if (!part?.standardAttachments) return null;
-  if (category === "bubbleDrawing") {
-    if (!revision) return null;
-    return part.standardAttachments?.bubbleDrawing?.byRevision?.[revision] || null;
+  if (!part?.standardAttachments) return [];
+  let raw;
+  if (scope === "stok+revizyon" && revision) {
+    raw = part.standardAttachments?.[category]?.byRevision?.[revision];
+  } else {
+    raw = part.standardAttachments?.[category];
   }
-  return part.standardAttachments?.[category] || null;
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "object") return [raw];
+  return [];
+}
+
+// COC kategorisinin mevcut dosya listesini al (array veya obje → array).
+export function getCocAttachmentList(cert, category) {
+  const raw = cert?.attachments?.[category];
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "object") return [raw];
+  return [];
 }
