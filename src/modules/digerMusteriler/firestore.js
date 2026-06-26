@@ -1,5 +1,6 @@
 import { doc, onSnapshot, setDoc, updateDoc, deleteField, deleteDoc } from "firebase/firestore";
-import { db } from "../../firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import { db, storage } from "../../firebase";
 
 const APP_COL = "appData";
 const SALES_ORDERS_DOC = "salesOrders";
@@ -318,4 +319,168 @@ export async function removePlanOverride(orderId, { canEdit }) {
     if (e?.code === "not-found") return;
     throw e;
   }
+}
+
+// ====================================================================
+// COC ATTACHMENT (Doküman) YÖNETİMİ — Firebase Storage + Firestore meta
+// ====================================================================
+//
+// Storage path yapısı:
+//   appData/cocCertificates/{year}/{certNo}/{category}_{timestamp}_{filename}
+//   appData/cocParts/{stokKodu}/standardAttachments/{category}/{revision?}_{timestamp}_{filename}
+//
+// Kategori listesi (UI'da görünen):
+//   Sabit: rawMaterialCert, measurement, bubbleDrawing, waiver, fai, surfaceTreatment
+//   Serbest: others[] (kullanıcı isim verir)
+//
+// Tekrar kullanım stratejisi:
+//   - rawMaterialCert: stok bazlı (revision ile karıştırılmaz) — master'da tek snapshot
+//   - bubbleDrawing: stok + revision bazlı (revision değişirse farklı dosya)
+//   - Diğerleri: COC kaydına özel, master'da tutulmaz
+
+const MAX_FILE_BYTES = 50 * 1024 * 1024; // 50 MB
+export const COC_ATTACHMENT_CATEGORIES = [
+  { key: "rawMaterialCert", label: "Hammadde Kalite Sertifikası", icon: "🧪", reuseScope: "stok" },
+  { key: "measurement",     label: "Ölçüm Raporu",                icon: "📏", reuseScope: null },
+  { key: "bubbleDrawing",   label: "Balonlu Resim",               icon: "🎈", reuseScope: "stok+revizyon" },
+  { key: "fai",             label: "FAİ Raporu",                  icon: "📋", reuseScope: null },
+  { key: "surfaceTreatment",label: "Isıl İşlem / Kaplama / Boya", icon: "🔥", reuseScope: null },
+  { key: "waiver",          label: "Feragat",                     icon: "⚠️", reuseScope: null },
+];
+
+const safeFilename = (s) => String(s || "").replace(/[^\w.\-]/g, "_").substring(0, 120);
+
+// COC sertifikası için doküman yükle. Cert kaydındaki attachments.{category} field'ı güncellenir.
+export async function uploadCocAttachment(certNo, year, category, file, opts = {}) {
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!certNo || !year || !category || !file) throw new Error("certNo, year, category ve file zorunlu");
+  if (file.size > MAX_FILE_BYTES) {
+    throw new Error(`Dosya çok büyük (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 50 MB.`);
+  }
+  const timestamp = Date.now();
+  const filename = safeFilename(file.name);
+  const path = `appData/cocCertificates/${year}/${certNo}/${category}_${timestamp}_${filename}`;
+  const ref = storageRef(storage, path);
+  await uploadBytes(ref, file, { contentType: file.type || "application/octet-stream" });
+  const url = await getDownloadURL(ref);
+  return {
+    storagePath: path,
+    downloadUrl: url,
+    filename: file.name,
+    size: file.size,
+    contentType: file.type || "application/octet-stream",
+    uploadedAt: new Date().toISOString(),
+    sourceType: "upload",
+  };
+}
+
+// Doküman silme — Storage + (varsa) Firestore field'ı.
+export async function deleteCocAttachment(storagePath, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!storagePath) return;
+  try {
+    await deleteObject(storageRef(storage, storagePath));
+  } catch (e) {
+    // Storage'da yoksa sessizce geç
+    if (e?.code !== "storage/object-not-found") throw e;
+  }
+}
+
+// Sertifikanın attachments field'ını güncelle (single set).
+export async function setCocCertificateAttachment(certNo, siraNo, category, attachmentMeta, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const year = certNo.substring(0, 4);
+  const id = `${certNo}_${String(siraNo || "1").trim() || "1"}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        attachments: { [category]: attachmentMeta },
+      },
+    },
+  }, { merge: true });
+}
+
+// "others" listesine ekleme/silme (free-form kategori).
+export async function setCocCertificateOthers(certNo, siraNo, othersList, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const year = certNo.substring(0, 4);
+  const id = `${certNo}_${String(siraNo || "1").trim() || "1"}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        attachments: { others: othersList },
+      },
+    },
+  }, { merge: true });
+}
+
+// Parça master'a "standart" doküman yükle — yeni COC oluştururken tekrar kullanım için.
+// rawMaterialCert: stok bazlı tek snapshot (revizyon önemsiz)
+// bubbleDrawing: stok + revizyon bazlı (her revizyon ayrı dosya)
+export async function uploadCocPartStandardAttachment(stokKodu, category, file, opts = {}) {
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!stokKodu || !category || !file) throw new Error("stokKodu, category ve file zorunlu");
+  if (file.size > MAX_FILE_BYTES) {
+    throw new Error(`Dosya çok büyük (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 50 MB.`);
+  }
+  const timestamp = Date.now();
+  const filename = safeFilename(file.name);
+  const safeStok = safeFilename(stokKodu);
+  let path;
+  if (category === "bubbleDrawing" && opts.revision) {
+    const safeRev = safeFilename(opts.revision);
+    path = `appData/cocParts/${safeStok}/${category}/${safeRev}/${timestamp}_${filename}`;
+  } else {
+    path = `appData/cocParts/${safeStok}/${category}/${timestamp}_${filename}`;
+  }
+  const ref = storageRef(storage, path);
+  await uploadBytes(ref, file, { contentType: file.type || "application/octet-stream" });
+  const url = await getDownloadURL(ref);
+  return {
+    storagePath: path,
+    downloadUrl: url,
+    filename: file.name,
+    size: file.size,
+    contentType: file.type || "application/octet-stream",
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
+// Parça master'a standart attachment field'ı yaz.
+export async function setCocPartStandardAttachment(stokKodu, category, attachmentMeta, { canEdit, revision }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  if (category === "bubbleDrawing" && revision) {
+    await setDoc(ref, {
+      parts: {
+        [stokKodu]: {
+          standardAttachments: {
+            bubbleDrawing: { byRevision: { [revision]: attachmentMeta } },
+          },
+        },
+      },
+    }, { merge: true });
+  } else {
+    await setDoc(ref, {
+      parts: {
+        [stokKodu]: {
+          standardAttachments: { [category]: attachmentMeta },
+        },
+      },
+    }, { merge: true });
+  }
+}
+
+// Parça master'dan standart attachment çek (tekrar kullanım için).
+export function getReusableAttachment(cocParts, stokKodu, category, revision) {
+  const part = cocParts?.parts?.[stokKodu];
+  if (!part?.standardAttachments) return null;
+  if (category === "bubbleDrawing") {
+    if (!revision) return null;
+    return part.standardAttachments?.bubbleDrawing?.byRevision?.[revision] || null;
+  }
+  return part.standardAttachments?.[category] || null;
 }

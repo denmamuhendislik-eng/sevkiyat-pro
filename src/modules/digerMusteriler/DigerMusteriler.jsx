@@ -1,7 +1,13 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates, useCocCertificatesMulti } from './hooks';
-import { saveCocCertificate, updateCocCertificate, deleteCocCertificate, saveCocPart, deleteCocPart, suggestNextCertNo } from './firestore';
+import {
+  saveCocCertificate, updateCocCertificate, deleteCocCertificate,
+  saveCocPart, deleteCocPart, suggestNextCertNo,
+  uploadCocAttachment, deleteCocAttachment, setCocCertificateAttachment, setCocCertificateOthers,
+  uploadCocPartStandardAttachment, setCocPartStandardAttachment, getReusableAttachment,
+  COC_ATTACHMENT_CATEGORIES,
+} from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
 import { generateCocPdf } from './cocPdf';
 import { parseSalesOrderExcel } from './parser';
@@ -3893,6 +3899,11 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
           </>)}
         </div>
 
+        {/* 📎 Dokümanlar bölümü — Firebase Storage'a yükle, master tekrar kullanım, sil/indir */}
+        {!editMode && (
+          <CocAttachmentsSection cert={cert} canEdit={canEdit} />
+        )}
+
         {error && (
           <div style={{ margin: '0 20px 12px', padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
             ⚠ {error}
@@ -4331,6 +4342,243 @@ function CocPartModal({ part, canEdit, onClose }) {
             cursor: (busy || !canEdit) ? 'not-allowed' : 'pointer', opacity: (busy || !canEdit) ? 0.6 : 1,
           }}>{saving ? 'Kaydediliyor...' : (isNew ? 'Ekle' : 'Kaydet')}</button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// ====================================================================
+// COC ATTACHMENT (Doküman) Bölümü — CocDetailModal içinde kullanılır.
+// Firebase Storage + Firestore meta. Sabit 6 kategori + serbest "Diğer".
+// Master tekrar kullanım: hammadde sertifikası (stok bazlı), balonlu resim
+// (stok+revizyon bazlı) — kullanıcı önceki seçimleri yeniden kullanabilir.
+// ====================================================================
+function CocAttachmentsSection({ cert, canEdit }) {
+  const { cocParts } = useCocParts();
+  const attachments = cert.attachments || {};
+  const others = Array.isArray(attachments.others) ? attachments.others : [];
+  const [busy, setBusy] = useState(null); // category that's currently uploading
+  const [error, setError] = useState('');
+  const fileInputs = useRef({});
+
+  const handleUpload = async (cat, file, opts = {}) => {
+    if (!file || !canEdit) return;
+    setBusy(cat.key);
+    setError('');
+    try {
+      const year = cert.certNo.substring(0, 4);
+      const meta = await uploadCocAttachment(cert.certNo, year, cat.key, file);
+      if (cat.key === 'others') {
+        const newOthers = [...others, { ...meta, customName: opts.customName || file.name }];
+        await setCocCertificateOthers(cert.certNo, cert.siraNo || '1', newOthers, { canEdit });
+      } else {
+        await setCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, meta, { canEdit });
+      }
+      // Master'a da kopyala (tekrar kullanım için)
+      if (cat.reuseScope === 'stok') {
+        const partMeta = await uploadCocPartStandardAttachment(cert.stokKodu, cat.key, file);
+        await setCocPartStandardAttachment(cert.stokKodu, cat.key, partMeta, { canEdit });
+      } else if (cat.reuseScope === 'stok+revizyon' && cert.revisionCode) {
+        const partMeta = await uploadCocPartStandardAttachment(cert.stokKodu, cat.key, file, { revision: cert.revisionCode });
+        await setCocPartStandardAttachment(cert.stokKodu, cat.key, partMeta, { canEdit, revision: cert.revisionCode });
+      }
+    } catch (e) {
+      setError(e.message || 'Yükleme hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleReuse = async (cat) => {
+    const reusable = getReusableAttachment(cocParts, cert.stokKodu, cat.key, cert.revisionCode);
+    if (!reusable || !canEdit) return;
+    setBusy(cat.key);
+    setError('');
+    try {
+      await setCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, {
+        ...reusable,
+        sourceType: 'reuse',
+        reusedAt: new Date().toISOString(),
+      }, { canEdit });
+    } catch (e) {
+      setError(e.message || 'Tekrar kullanım hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const handleDelete = async (cat, attachmentMeta, otherIdx) => {
+    if (!canEdit) return;
+    if (!confirm(`"${attachmentMeta.filename}" silinsin mi?`)) return;
+    setBusy(cat.key);
+    setError('');
+    try {
+      // Master'dan reuse ise storage path silmiyoruz (master'da kullanılıyor)
+      // Sadece bu COC'tan kaldırılır
+      if (attachmentMeta.sourceType !== 'reuse') {
+        await deleteCocAttachment(attachmentMeta.storagePath, { canEdit });
+      }
+      if (cat.key === 'others') {
+        const newOthers = others.filter((_, i) => i !== otherIdx);
+        await setCocCertificateOthers(cert.certNo, cert.siraNo || '1', newOthers, { canEdit });
+      } else {
+        await setCocCertificateAttachment(cert.certNo, cert.siraNo || '1', cat.key, null, { canEdit });
+      }
+    } catch (e) {
+      setError(e.message || 'Silme hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  const triggerFileInput = (key) => {
+    if (fileInputs.current[key]) fileInputs.current[key].click();
+  };
+
+  const fmtSize = (bytes) => {
+    if (!bytes) return '';
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  };
+
+  // Sayım
+  const totalCount = COC_ATTACHMENT_CATEGORIES.length + 1; // 6 sabit + 1 others slot
+  const filledCount = COC_ATTACHMENT_CATEGORIES.filter(c => attachments[c.key]).length + (others.length > 0 ? 1 : 0);
+
+  return (
+    <div style={{ padding: '14px 20px', borderTop: '1px solid #e7e5e4', background: '#fafaf9' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
+        <span style={{ fontSize: 14, fontWeight: 600, color: '#1c1917' }}>📎 Dokümanlar</span>
+        <span style={{ fontSize: 11, color: '#78716c' }}>
+          {filledCount}/{totalCount} kategori dolu · {others.length > 0 && `${others.length} ek dosya`}
+        </span>
+      </div>
+      {error && (
+        <div style={{ marginBottom: 10, padding: 8, borderRadius: 4, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
+          ⚠ {error}
+        </div>
+      )}
+
+      {/* Sabit kategoriler */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {COC_ATTACHMENT_CATEGORIES.map(cat => {
+          const att = attachments[cat.key];
+          const reusable = !att ? getReusableAttachment(cocParts, cert.stokKodu, cat.key, cert.revisionCode) : null;
+          const isBusy = busy === cat.key;
+          return (
+            <div key={cat.key} style={{
+              display: 'flex', alignItems: 'center', gap: 10, padding: '6px 10px',
+              background: '#fff', border: '1px solid #e7e5e4', borderRadius: 6, fontSize: 12,
+            }}>
+              <span style={{ minWidth: 200, fontWeight: 500 }}>
+                {cat.icon} {cat.label}
+                {cat.reuseScope && (
+                  <span title={`Tekrar kullanılabilir: ${cat.reuseScope}`} style={{ marginLeft: 5, padding: '1px 4px', fontSize: 8, fontWeight: 600, background: '#dbeafe', color: '#1e40af', borderRadius: 3 }}>
+                    {cat.reuseScope === 'stok+revizyon' ? 'STOK+REV' : 'STOK'}
+                  </span>
+                )}
+              </span>
+              {att ? (
+                <>
+                  <a href={att.downloadUrl} target="_blank" rel="noopener noreferrer" style={{
+                    flex: 1, color: '#1e40af', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>
+                    📄 {att.filename}
+                  </a>
+                  <span style={{ fontSize: 10, color: '#78716c' }}>{fmtSize(att.size)}</span>
+                  {att.sourceType === 'reuse' && (
+                    <span title="Master'dan tekrar kullanıldı" style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, background: '#dcfce7', color: '#166534', borderRadius: 3 }}>↻ Tekrar</span>
+                  )}
+                  {canEdit && (
+                    <button onClick={() => handleDelete(cat, att)} disabled={isBusy} title="Sil" style={{
+                      padding: '3px 8px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
+                      border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
+                    }}>🗑</button>
+                  )}
+                </>
+              ) : (
+                <>
+                  <span style={{ flex: 1, color: '#a8a29e', fontStyle: 'italic' }}>— yüklenmemiş</span>
+                  {reusable && canEdit && (
+                    <button onClick={() => handleReuse(cat)} disabled={isBusy} title={`Master'dan: ${reusable.filename}`} style={{
+                      padding: '3px 10px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
+                      border: '1px solid #16a34a', background: '#dcfce7', color: '#166534',
+                    }}>↻ Master'dan Kullan</button>
+                  )}
+                  {canEdit && (
+                    <>
+                      <input
+                        ref={(el) => { fileInputs.current[cat.key] = el; }}
+                        type="file"
+                        style={{ display: 'none' }}
+                        onChange={(e) => { const f = e.target.files?.[0]; if (f) handleUpload(cat, f); e.target.value = ''; }}
+                      />
+                      <button onClick={() => triggerFileInput(cat.key)} disabled={isBusy} style={{
+                        padding: '3px 10px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
+                        border: '1px solid #1e40af', background: isBusy ? '#fff' : '#eff6ff', color: '#1e40af',
+                      }}>{isBusy ? 'Yükleniyor...' : '⬆ Yükle'}</button>
+                    </>
+                  )}
+                </>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Diğer (serbest kategori) */}
+      <div style={{ marginTop: 10, padding: 10, border: '1px solid #e7e5e4', borderRadius: 6, background: '#fff' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+          <span style={{ fontSize: 12, fontWeight: 500 }}>📂 Diğer Dokümanlar ({others.length})</span>
+          {canEdit && (
+            <>
+              <input
+                ref={(el) => { fileInputs.current['others'] = el; }}
+                type="file"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) {
+                    const customName = prompt('Doküman adı (örn. "Boyahane Onay Formu"):', f.name) || f.name;
+                    handleUpload({ key: 'others' }, f, { customName });
+                  }
+                  e.target.value = '';
+                }}
+              />
+              <button onClick={() => triggerFileInput('others')} disabled={busy === 'others'} style={{
+                marginLeft: 'auto', padding: '3px 10px', borderRadius: 3, fontSize: 11, cursor: busy === 'others' ? 'not-allowed' : 'pointer',
+                border: '1px solid #1e40af', background: '#eff6ff', color: '#1e40af',
+              }}>{busy === 'others' ? 'Yükleniyor...' : '+ Ekle'}</button>
+            </>
+          )}
+        </div>
+        {others.length === 0 ? (
+          <div style={{ fontSize: 11, color: '#a8a29e', fontStyle: 'italic', padding: 6 }}>
+            Henüz ek doküman yok. + Ekle ile FAİ, ısıl işlem, kaplama, boyama sertifikası vb. yükleyebilirsiniz.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {others.map((o, idx) => (
+              <div key={idx} style={{
+                display: 'flex', alignItems: 'center', gap: 8, padding: '4px 8px',
+                fontSize: 11, background: '#fafaf9', borderRadius: 4,
+              }}>
+                <span style={{ minWidth: 180, fontWeight: 500 }}>{o.customName || o.filename}</span>
+                <a href={o.downloadUrl} target="_blank" rel="noopener noreferrer" style={{
+                  flex: 1, color: '#1e40af', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                }}>📄 {o.filename}</a>
+                <span style={{ fontSize: 10, color: '#78716c' }}>{fmtSize(o.size)}</span>
+                {canEdit && (
+                  <button onClick={() => handleDelete({ key: 'others' }, o, idx)} title="Sil" style={{
+                    padding: '2px 6px', borderRadius: 3, fontSize: 10, cursor: 'pointer',
+                    border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
+                  }}>🗑</button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
