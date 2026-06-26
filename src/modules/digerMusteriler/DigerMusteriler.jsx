@@ -76,6 +76,25 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     setCocSelected(new Set()); // modal kapanınca seçim sıfırla
   };
 
+  // Sipariş satırı rozetinden açılan COC detay modal'ı (arşive gitmeye gerek kalmadan)
+  const [cocDetailFromBadge, setCocDetailFromBadge] = useState(null);
+  // certNo verilince allCerts içinden aynı certNo'lu tüm satırları grupla (multi-line için)
+  const openCocDetailFromBadge = (certNo) => {
+    if (!certNo || !cocCertificates?.certificates) return;
+    const lines = Object.values(cocCertificates.certificates)
+      .filter(c => c.certNo === certNo)
+      .sort((a, b) => (Number(a.siraNo) || 1) - (Number(b.siraNo) || 1));
+    if (lines.length === 0) return;
+    const first = lines[0];
+    const totalQty = lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0);
+    setCocDetailFromBadge({
+      ...first,
+      lines,
+      lineCount: lines.length,
+      totalQty,
+    });
+  };
+
   // Son salesOrders başarılı çalıştırması — rozet için.
   // automationLog.entries içinde sondan başa tarayıp salesOrders ok olan en yeni entry'yi bulur.
   // Manuel yükleme automationLog'a yazılmaz; bu rozet sadece mail otomasyon zamanını yansıtır.
@@ -1988,7 +2007,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {deferredExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
+                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
                 </div>
               )}
             </div>
@@ -2014,7 +2033,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {lateExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
+                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
                 </div>
               )}
             </div>
@@ -2040,7 +2059,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {noWeekExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
+                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
                 </div>
               )}
             </div>
@@ -2108,7 +2127,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                       {isOpen ? 'gizle ▲' : 'aç ▼'}
                     </span>
                   </div>
-                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection })}
+                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
                 </div>
                 );
               })
@@ -2251,6 +2270,15 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           cocCertificates={cocCertificates}
           canEdit={canEdit}
           onClose={closeCocModal}
+        />
+      )}
+
+      {/* Sipariş rozetinden açılan COC detay modal — kullanıcı arşive gitmeden geçmiş COC'a bakabilir */}
+      {cocDetailFromBadge && (
+        <CocDetailModal
+          cert={cocDetailFromBadge}
+          canEdit={canEdit}
+          onClose={() => setCocDetailFromBadge(null)}
         />
       )}
 
@@ -2891,7 +2919,7 @@ function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
 }
 
 function renderOrderRow(o, currentWeek, isLateContext, ctx) {
-  const { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection } = ctx;
+  const { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
@@ -3022,17 +3050,19 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
             : `COC: ${latestCert.certNo} (${latestCert.controlDateIso || ''}) · ${stats.filled}/${stats.totalCats} doküman${stats.othersCount > 0 ? ` + ${stats.othersCount} ek` : ''}\nKısmi sevk varsa yeni COC için ➕ butonu`;
           return (
             <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
-              <span
-                title={tooltip}
+              <button
+                onClick={(e) => { e.stopPropagation(); if (openCocDetailFromBadge) openCocDetailFromBadge(latestCert.certNo); }}
+                title={tooltip + '\n(Tıkla → COC detayını aç)'}
                 style={{
                   padding: '2px 6px', borderRadius: 4, fontSize: 9, fontWeight: 600,
-                  background: bg, color: fg, cursor: 'default',
+                  background: bg, color: fg, cursor: 'pointer',
+                  border: 'none',
                   display: 'inline-flex', alignItems: 'center', gap: 4,
                 }}
               >
                 <span>✓ {latestCert.certNo}{multiCocLabel}</span>
                 <span style={{ fontSize: 8, padding: '0 3px', borderRadius: 2, background: 'rgba(0,0,0,0.08)' }}>{stats.filled}/{stats.totalCats}</span>
-              </span>
+              </button>
               {canEdit && (
                 <button
                   onClick={(e) => { e.stopPropagation(); openCocModal(o); }}
