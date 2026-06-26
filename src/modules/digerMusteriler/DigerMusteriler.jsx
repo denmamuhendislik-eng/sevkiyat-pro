@@ -4510,6 +4510,7 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const others = Array.isArray(attachments.others) ? attachments.others : [];
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState('');
+  const [masterOpen, setMasterOpen] = useState({}); // {[cat.key]: bool}
   const fileInputs = useRef({});
 
   const fmtSize = (bytes) => {
@@ -4591,6 +4592,26 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
       }
     } catch (e) {
       setError(e.message || 'Yükleme hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Master dosyasını sil — Storage + master listesi (COC kayıtları dokunmaz, broken reference olabilir)
+  const handleDeleteMaster = async (cat, masterFile) => {
+    if (!canEdit) return;
+    if (!confirm(`Master'dan "${masterFile.filename}" silinsin mi?\n\nUYARI: Bu dosyayı tekrar kullanan COC'lar varsa, onlardaki bağlantı bozulur. Yanlış kategoriye yüklenmiş bir dosyayı temizliyorsan güvenli.`)) return;
+    setBusy(cat.key);
+    setError('');
+    try {
+      await deleteCocAttachment(masterFile.storagePath, { canEdit });
+      const existingMaster = getReusableAttachmentList(cocParts, cert.stokKodu, cat.key, cert.revisionCode, cat.reuseScope);
+      const newMasterList = existingMaster.filter(m => m.storagePath !== masterFile.storagePath);
+      await setCocPartStandardAttachmentList(cert.stokKodu, cat.key, newMasterList, {
+        canEdit, scope: cat.reuseScope, revision: cert.revisionCode,
+      });
+    } catch (e) {
+      setError(e.message || 'Master silme hatası');
     } finally {
       setBusy(null);
     }
@@ -4786,6 +4807,15 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                       ))}
                     </select>
                   )}
+                  {cat.reuseScope && reusable.length > 0 && canEdit && (
+                    <button
+                      onClick={() => setMasterOpen(prev => ({ ...prev, [cat.key]: !prev[cat.key] }))}
+                      title="Master dosyalarını görüntüle / sil"
+                      style={{
+                        padding: '3px 8px', borderRadius: 3, fontSize: 11, cursor: 'pointer',
+                        border: '1px solid #a8a29e', background: masterOpen[cat.key] ? '#f5f5f4' : '#fff', color: '#44403c',
+                      }}>⚙ Master ({reusable.length})</button>
+                  )}
                   {canEdit && (
                     <>
                       <input
@@ -4828,6 +4858,42 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                       )}
                     </div>
                   ))}
+                </div>
+              )}
+              {masterOpen[cat.key] && reusable.length > 0 && (
+                <div style={{ marginTop: 8, padding: 8, background: '#fafaf9', border: '1px dashed #d6d3d1', borderRadius: 4 }}>
+                  <div style={{ fontSize: 10, fontWeight: 600, color: '#57534e', marginBottom: 4 }}>
+                    🗂 Master Dosyaları — bu stok{cat.reuseScope === 'stok+revizyon' && cert.revisionCode ? `+${cert.revisionCode}` : ''} için saklananlar
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3 }}>
+                    {reusable.map((m, i) => {
+                      const inUse = list.some(l => l.storagePath === m.storagePath);
+                      return (
+                        <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '3px 6px', fontSize: 11, background: '#fff', borderRadius: 3, border: '1px solid #e7e5e4' }}>
+                          <a href={m.downloadUrl} target="_blank" rel="noopener noreferrer" style={{
+                            flex: 1, color: '#1e40af', textDecoration: 'none', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                          }}>📄 {m.filename}</a>
+                          <span style={{ fontSize: 10, color: '#78716c' }}>{fmtSize(m.size)}</span>
+                          {inUse ? (
+                            <span title="Bu COC'a eklenmiş" style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, background: '#dcfce7', color: '#166534', borderRadius: 3 }}>✓ Kullanımda</span>
+                          ) : (
+                            canEdit && (
+                              <button onClick={() => handleReuse(cat, m)} title="Bu COC'a ekle" disabled={isBusy} style={{
+                                padding: '2px 8px', borderRadius: 3, fontSize: 10, cursor: isBusy ? 'not-allowed' : 'pointer',
+                                border: '1px solid #16a34a', background: '#dcfce7', color: '#166534',
+                              }}>↻ Kullan</button>
+                            )
+                          )}
+                          {canEdit && (
+                            <button onClick={() => handleDeleteMaster(cat, m)} title="Master'dan kalıcı sil" disabled={isBusy} style={{
+                              padding: '2px 6px', borderRadius: 3, fontSize: 10, cursor: isBusy ? 'not-allowed' : 'pointer',
+                              border: '1px solid #fecaca', background: '#fef2f2', color: '#dc2626',
+                            }}>🗑 Master</button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               )}
             </div>
