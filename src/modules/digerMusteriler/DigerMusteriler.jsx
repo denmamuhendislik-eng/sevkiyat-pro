@@ -2991,10 +2991,22 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
       </button>
       {/* COC (Uygunluk Belgesi) butonu — sadece A+R + canEdit + non-deferred */}
       {openCocModal && !o.isDeferred && (o.customerCode === '120-0107' || o.customerCode === '120-116' || String(o.customerCode || '').startsWith('120-0107-') || String(o.customerCode || '').startsWith('120-116-')) && (() => {
-        // Bu sipariş için zaten COC var mı? (orderNo = belgeNo eşleşmesi + stokKodu)
-        const existingCert = Object.values(cocCertificates?.certificates || {}).find(c =>
-          c.orderNo === o.belgeNo && c.stokKodu === o.stokKodu
-        );
+        // Bu sipariş için zaten COC var mı? Eşleşme stratejisi (çoklu yöntem):
+        //   - c.orderNo === o.refNo: yeni COC ile yeni sipariş (Ref.No formatı "1000018777")
+        //   - c.orderNo === o.belgeNo: eski COC ile eski sipariş (5-6 digit belgeNo)
+        //   - c.refNo === o.refNo: direkt refNo eşleşmesi (audit alanı)
+        //   - c.vioBelgeNo === o.belgeNo: yeni COC vioBelgeNo audit ile eşleşme
+        const oRefNo = (o.refNo || '').trim();
+        const oBelgeNo = (o.belgeNo || '').trim();
+        const existingCert = Object.values(cocCertificates?.certificates || {}).find(c => {
+          if (c.stokKodu !== o.stokKodu) return false;
+          const cOrderNo = (c.orderNo || '').trim();
+          const cRefNo = (c.refNo || '').trim();
+          const cVioBelgeNo = (c.vioBelgeNo || '').trim();
+          if (oRefNo && (cOrderNo === oRefNo || cRefNo === oRefNo)) return true;
+          if (oBelgeNo && (cOrderNo === oBelgeNo || cVioBelgeNo === oBelgeNo)) return true;
+          return false;
+        });
         if (existingCert) {
           const stats = getCocAttachmentStats(existingCert);
           const isFull = stats.totalFiles > 0 && stats.filled === stats.totalCats;
