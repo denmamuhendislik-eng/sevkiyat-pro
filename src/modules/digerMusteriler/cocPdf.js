@@ -181,10 +181,9 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
-// Ana fonksiyon — sertifika objesini PDF olarak indirir.
-export async function generateCocPdf(cert) {
+// Ortak PDF render — jsPDF instance döndürür
+async function renderCocPdf(cert) {
   const html = buildCocHtml(cert);
-  // Off-screen container — viewport dışında render, sonra silinir
   const container = document.createElement("div");
   container.style.position = "absolute";
   container.style.left = "-9999px";
@@ -194,7 +193,6 @@ export async function generateCocPdf(cert) {
 
   try {
     const root = container.querySelector("#coc-pdf-root");
-    // Logo yükleninceye kadar bekle
     const imgs = root.querySelectorAll("img");
     await Promise.all([...imgs].map(img => {
       if (img.complete && img.naturalHeight > 0) return Promise.resolve();
@@ -206,11 +204,23 @@ export async function generateCocPdf(cert) {
 
     const canvas = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
     const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-    const imgW = 210; // A4 width
+    const imgW = 210;
     const imgH = (canvas.height * imgW) / canvas.width;
     pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, imgW, Math.min(imgH, 297));
-    pdf.save(`COC_${cert.certNo}_${cert.stokKodu}.pdf`);
+    return pdf;
   } finally {
     document.body.removeChild(container);
   }
+}
+
+// Ana fonksiyon — sertifika objesini PDF olarak indirir.
+export async function generateCocPdf(cert) {
+  const pdf = await renderCocPdf(cert);
+  pdf.save(`COC_${cert.certNo}_${cert.stokKodu}.pdf`);
+}
+
+// ZIP içine koymak için PDF Blob döndürür.
+export async function buildCocPdfBlob(cert) {
+  const pdf = await renderCocPdf(cert);
+  return pdf.output("blob");
 }

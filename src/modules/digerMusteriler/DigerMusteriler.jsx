@@ -11,7 +11,8 @@ import {
   COC_ATTACHMENT_CATEGORIES,
 } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
-import { generateCocPdf } from './cocPdf';
+import { generateCocPdf, buildCocPdfBlob } from './cocPdf';
+import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
@@ -4606,6 +4607,78 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const filledCategories = COC_ATTACHMENT_CATEGORIES.filter(c => getCocAttachmentList(cert, c.key).length > 0).length;
   const totalFiles = COC_ATTACHMENT_CATEGORIES.reduce((s, c) => s + getCocAttachmentList(cert, c.key).length, 0) + others.length;
 
+  // Toplu ZIP indirme — kategoriye göre klasörlenmiş + uygunluk belgesi PDF kökte
+  const sanitize = (s) => String(s || '').replace(/[\\/:*?"<>|]/g, '_').trim();
+  const dedupeName = (used, name) => {
+    if (!used.has(name)) { used.add(name); return name; }
+    const dot = name.lastIndexOf('.');
+    const base = dot > 0 ? name.substring(0, dot) : name;
+    const ext = dot > 0 ? name.substring(dot) : '';
+    let i = 2;
+    while (used.has(`${base} (${i})${ext}`)) i++;
+    const out = `${base} (${i})${ext}`;
+    used.add(out);
+    return out;
+  };
+
+  const handleDownloadZip = async () => {
+    setBusy('zip');
+    setError('');
+    try {
+      const zip = new JSZip();
+
+      // 1) Uygunluk Belgesi PDF kökte
+      const pdfBlob = await buildCocPdfBlob(cert);
+      zip.file(`Uygunluk Belgesi ${sanitize(cert.certNo)}.pdf`, pdfBlob);
+
+      // 2) Kategori bazlı klasörler — sadece dolu olanlar
+      const fetchAll = [];
+      for (const cat of COC_ATTACHMENT_CATEGORIES) {
+        const list = getCocAttachmentList(cert, cat.key);
+        if (list.length === 0) continue;
+        const folder = zip.folder(sanitize(cat.label));
+        const used = new Set();
+        for (const att of list) {
+          if (!att?.downloadUrl) continue;
+          const name = dedupeName(used, sanitize(att.filename));
+          fetchAll.push(
+            fetch(att.downloadUrl).then(r => r.blob()).then(b => folder.file(name, b))
+          );
+        }
+      }
+      // 3) "Diğer Dokümanlar" klasörü
+      if (others.length > 0) {
+        const folder = zip.folder('Diğer Dokümanlar');
+        const used = new Set();
+        for (const o of others) {
+          if (!o?.downloadUrl) continue;
+          const display = o.customName ? `${sanitize(o.customName)}__${sanitize(o.filename)}` : sanitize(o.filename);
+          const name = dedupeName(used, display);
+          fetchAll.push(
+            fetch(o.downloadUrl).then(r => r.blob()).then(b => folder.file(name, b))
+          );
+        }
+      }
+
+      await Promise.all(fetchAll);
+
+      const blob = await zip.generateAsync({ type: 'blob' });
+      const zipName = `${sanitize(cert.stokKodu)}_${sanitize(cert.refNo || cert.orderNo || '')}_${sanitize(cert.certNo)}.zip`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = zipName;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      setError(e.message || 'ZIP oluşturma hatası');
+    } finally {
+      setBusy(null);
+    }
+  };
+
   return (
     <div style={{ padding: '14px 20px', borderTop: '1px solid #e7e5e4', background: '#fafaf9' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
@@ -4613,6 +4686,24 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
         <span style={{ fontSize: 11, color: '#78716c' }}>
           {filledCategories}/{COC_ATTACHMENT_CATEGORIES.length} kategori dolu · toplam {totalFiles} dosya
         </span>
+        <button
+          onClick={handleDownloadZip}
+          disabled={busy === 'zip'}
+          title="Uygunluk belgesi PDF + tüm yüklü dosyalar kategori klasörleri halinde tek ZIP'te"
+          style={{
+            marginLeft: 'auto',
+            padding: '4px 12px',
+            borderRadius: 4,
+            fontSize: 11,
+            fontWeight: 600,
+            cursor: busy === 'zip' ? 'not-allowed' : 'pointer',
+            border: '1px solid #7c3aed',
+            background: busy === 'zip' ? '#f5f3ff' : '#ede9fe',
+            color: '#5b21b6',
+          }}
+        >
+          {busy === 'zip' ? 'ZIP hazırlanıyor...' : '📦 Toplu ZIP İndir'}
+        </button>
       </div>
       {error && (
         <div style={{ marginBottom: 10, padding: 8, borderRadius: 4, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
