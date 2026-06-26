@@ -5008,14 +5008,22 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
 }
 
 // COC için doluluk hesabı (liste gösterimleri için): tüm kategorilerin file count toplamı + others
+// Uygulanmaz işaretli kategoriler hem paydadan hem dolu sayımından düşülür.
 function getCocAttachmentStats(cert) {
-  const cats = COC_ATTACHMENT_CATEGORIES;
+  const naCategories = Array.isArray(cert?.naCategories) ? cert.naCategories : [];
+  const applicableCats = COC_ATTACHMENT_CATEGORIES.filter(c => !naCategories.includes(c.key));
   let filled = 0, totalFiles = 0;
-  for (const cat of cats) {
+  for (const cat of applicableCats) {
     const list = getCocAttachmentList(cert, cat.key);
     if (list.length > 0) filled++;
     totalFiles += list.length;
   }
   const others = Array.isArray(cert?.attachments?.others) ? cert.attachments.others.length : 0;
-  return { filled, totalCats: cats.length, totalFiles: totalFiles + others, othersCount: others };
+  return {
+    filled,
+    totalCats: applicableCats.length,
+    totalFiles: totalFiles + others,
+    othersCount: others,
+    naCount: naCategories.length,
+  };
 }
