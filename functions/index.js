@@ -865,6 +865,24 @@ exports.uploadCocFileHttp = onRequest(
 // Auth: Firebase ID token (Authorization: Bearer ...) zorunlu
 // ====================================================================
 const { searchDriveCategory, downloadDriveFile } = require("./drive");
+const crypto = require("crypto");
+
+// Firebase Storage download URL üretici (signed URL yerine — iam.signBlob izni gerektirmez).
+// Token bazlı access — frontend'in getDownloadURL() ile aldığı URL ile aynı format.
+async function uploadWithDownloadToken(bucket, path, buffer, contentType) {
+  const token = crypto.randomUUID();
+  const file = bucket.file(path);
+  await file.save(buffer, {
+    contentType: contentType || "application/octet-stream",
+    resumable: false,
+    metadata: {
+      metadata: { firebaseStorageDownloadTokens: token },
+    },
+  });
+  const encodedPath = encodeURIComponent(path);
+  const url = `https://firebasestorage.googleapis.com/v0/b/${bucket.name}/o/${encodedPath}?alt=media&token=${token}`;
+  return url;
+}
 
 async function readDriveConfig() {
   const ref = db.collection("appData").doc("driveConfig");
@@ -931,26 +949,10 @@ exports.importCocDriveFile = onCall(
       const safeName = safe(file.filename);
       const cocPath = `appData/cocCertificates/${certYear}/${safe(certNo)}/${category}_${timestamp}_${safeName}`;
       const bucket = admin.storage().bucket();
-      const cocFile = bucket.file(cocPath);
-      await cocFile.save(file.buffer, {
-        contentType: file.contentType || "application/octet-stream",
-        resumable: false,
-      });
-      const [downloadUrl] = await cocFile.getSignedUrl({
-        action: "read",
-        expires: "2099-12-31",
-      });
+      const downloadUrl = await uploadWithDownloadToken(bucket, cocPath, file.buffer, file.contentType);
       // 3) Master path
       const masterPath = `appData/cocParts/${safe(stokKodu)}/${category}/${timestamp}_${safeName}`;
-      const masterFile = bucket.file(masterPath);
-      await masterFile.save(file.buffer, {
-        contentType: file.contentType || "application/octet-stream",
-        resumable: false,
-      });
-      const [masterDownloadUrl] = await masterFile.getSignedUrl({
-        action: "read",
-        expires: "2099-12-31",
-      });
+      const masterDownloadUrl = await uploadWithDownloadToken(bucket, masterPath, file.buffer, file.contentType);
 
       const now = new Date().toISOString();
       return {
