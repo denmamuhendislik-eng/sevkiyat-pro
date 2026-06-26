@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates, useCocCertificatesMulti } from './hooks';
+import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutomationLog, useWeekGroupedOrders, groupByBelgeNo, useCocParts, useCocCertificates, useCocCertificatesMulti, useDriveConfig } from './hooks';
 import {
   saveCocCertificate, updateCocCertificate, deleteCocCertificate,
   saveCocPart, deleteCocPart, suggestNextCertNo,
@@ -9,10 +9,12 @@ import {
   setCocCertificateNaCategories,
   uploadCocPartStandardAttachment, setCocPartStandardAttachmentList,
   getReusableAttachmentList, getCocAttachmentList,
+  saveDriveConfig, getCocPartDriveAltName, setCocPartDriveAltName,
   COC_ATTACHMENT_CATEGORIES,
 } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
 import { generateCocPdf, buildCocPdfBlob } from './cocPdf';
+import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
@@ -1440,6 +1442,18 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                   borderLeft: '1px solid #d6d3d1',
                 }}
               >📄 Uygunluk Belgeleri</button>
+              {isAdmin && (
+                <button
+                  onClick={() => setViewMode('driveConfig')}
+                  style={{
+                    padding: '5px 10px', fontSize: 12, border: 'none',
+                    background: viewMode === 'driveConfig' ? '#534AB7' : '#fff',
+                    color: viewMode === 'driveConfig' ? '#fff' : '#44403c',
+                    cursor: 'pointer', fontWeight: viewMode === 'driveConfig' ? 500 : 400,
+                    borderLeft: '1px solid #d6d3d1',
+                  }}
+                >🔌 Drive Ayarları</button>
+              )}
             </div>
             <div style={{ marginLeft: 'auto', fontSize: 11, color: '#78716c' }}>
               {viewMode === 'orders'
@@ -2195,6 +2209,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
           {viewMode === 'coc' && (
             <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} cocParts={cocParts} />
+          )}
+
+          {viewMode === 'driveConfig' && (
+            <DriveConfigView canEdit={canEdit && isAdmin} />
           )}
         </>
       )}
@@ -4522,6 +4540,7 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const [busy, setBusy] = useState(null);
   const [error, setError] = useState('');
   const [masterOpen, setMasterOpen] = useState({}); // {[cat.key]: bool}
+  const [driveModal, setDriveModal] = useState(null); // { category, results, loading, error, selected: Set<fileId>, strategy }
   const fileInputs = useRef({});
 
   const fmtSize = (bytes) => {
@@ -4763,6 +4782,94 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
     }
   };
 
+  // Drive'dan arama — modal açar, sonuçları gösterir
+  const openDriveSearch = async (cat) => {
+    if (!canEdit) return;
+    setDriveModal({ category: cat, results: [], loading: true, error: '', selected: new Set(), strategy: null });
+    try {
+      const altName = getCocPartDriveAltName(cocParts, cert.stokKodu, cat.key);
+      const out = await searchCocDrive({ category: cat.key, stokKodu: cert.stokKodu, altName });
+      setDriveModal((prev) => prev ? {
+        ...prev,
+        results: out.results || [],
+        loading: false,
+        error: out.message || '',
+        strategy: out.strategy || null,
+      } : null);
+    } catch (e) {
+      setDriveModal((prev) => prev ? {
+        ...prev,
+        results: [],
+        loading: false,
+        error: e.message || 'Arama hatası',
+      } : null);
+    }
+  };
+
+  const toggleDriveSelect = (fileId) => {
+    setDriveModal((prev) => {
+      if (!prev) return null;
+      const next = new Set(prev.selected);
+      if (next.has(fileId)) next.delete(fileId);
+      else next.add(fileId);
+      return { ...prev, selected: next };
+    });
+  };
+
+  // Seçilen Drive dosyalarını import et — backend Storage'a yükler, frontend Firestore'a metadata yazar
+  const importSelectedDriveFiles = async () => {
+    if (!driveModal || driveModal.selected.size === 0) return;
+    const cat = driveModal.category;
+    setBusy(cat.key);
+    setError('');
+    try {
+      const year = cert.certNo.substring(0, 4);
+      const files = driveModal.results.filter(r => driveModal.selected.has(r.id));
+      // Tek tek import et (paralel olabilir ama Firestore yazımı race-condition'a açık)
+      const cocMetas = [];
+      const masterMetas = [];
+      for (const f of files) {
+        const out = await importCocDriveFile({
+          fileId: f.id,
+          certNo: cert.certNo,
+          certYear: year,
+          category: cat.key,
+          stokKodu: cert.stokKodu,
+        });
+        cocMetas.push(out.coc);
+        masterMetas.push(out.master);
+      }
+      // Firestore'a yaz — COC listesi tek seferde
+      const currentList = getCocAttachmentList(cert, cat.key);
+      const newList = [...currentList, ...cocMetas];
+      await setCocCertificateAttachmentList(cert.certNo, cert.siraNo || '1', cat.key, newList, { canEdit });
+      // Master listesi
+      if (cat.reuseScope) {
+        const existingMaster = getReusableAttachmentList(cocParts, cert.stokKodu, cat.key, cert.revisionCode, cat.reuseScope);
+        const newMasterList = [...existingMaster, ...masterMetas];
+        await setCocPartStandardAttachmentList(cert.stokKodu, cat.key, newMasterList, {
+          canEdit, scope: cat.reuseScope, revision: cert.revisionCode,
+        });
+      }
+      setDriveModal(null);
+    } catch (e) {
+      setError(e.message || 'Drive import hatası');
+      setDriveModal((prev) => prev ? { ...prev, error: e.message || 'Import hatası' } : null);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // altName master'a kaydet (bulamadığında satışçı gerçek hammadde adını öğretir)
+  const saveDriveAltName = async (cat, altName) => {
+    if (!canEdit) return;
+    try {
+      await setCocPartDriveAltName(cert.stokKodu, cat.key, altName, { canEdit });
+    } catch (e) {
+      setError(e.message || 'altName kaydedilemedi');
+    }
+  };
+
   return (
     <div style={{ padding: '14px 20px', borderTop: '1px solid #e7e5e4', background: '#fafaf9' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 10 }}>
@@ -4861,6 +4968,16 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                         padding: '3px 8px', borderRadius: 3, fontSize: 11, cursor: 'pointer',
                         border: '1px solid #a8a29e', background: masterOpen[cat.key] ? '#f5f5f4' : '#fff', color: '#44403c',
                       }}>⚙ Master ({reusable.length})</button>
+                  )}
+                  {!isNa && canEdit && ['rawMaterialCert', 'measurement', 'fai', 'surfaceTreatment'].includes(cat.key) && (
+                    <button
+                      onClick={() => openDriveSearch(cat)}
+                      disabled={isBusy}
+                      title="Drive'da bu stok kodu için belge ara ve öner"
+                      style={{
+                        padding: '3px 8px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
+                        border: '1px solid #ea580c', background: '#fff7ed', color: '#9a3412',
+                      }}>🔍 Drive'dan Öner</button>
                   )}
                   {!isNa && canEdit && (
                     <>
@@ -5012,6 +5129,152 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
           </div>
         )}
       </div>
+
+      {driveModal && (
+        <DriveSearchModal
+          driveModal={driveModal}
+          cert={cert}
+          cocParts={cocParts}
+          canEdit={canEdit}
+          onClose={() => setDriveModal(null)}
+          onToggleSelect={toggleDriveSelect}
+          onImport={importSelectedDriveFiles}
+          onSaveAltName={saveDriveAltName}
+          onRetry={() => openDriveSearch(driveModal.category)}
+          isBusy={busy === driveModal.category.key}
+          fmtSize={fmtSize}
+        />
+      )}
+    </div>
+  );
+}
+
+function DriveSearchModal({ driveModal, cert, cocParts, canEdit, onClose, onToggleSelect, onImport, onSaveAltName, onRetry, isBusy, fmtSize }) {
+  const cat = driveModal.category;
+  const altNameSaved = getCocPartDriveAltName(cocParts, cert.stokKodu, cat.key);
+  const [altNameDraft, setAltNameDraft] = useState(altNameSaved);
+
+  const handleAltNameSave = async () => {
+    if (altNameDraft === altNameSaved) return;
+    await onSaveAltName(cat, altNameDraft.trim());
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000,
+    }}>
+      <div style={{
+        background: '#fff', borderRadius: 8, width: 'min(720px, 92vw)', maxHeight: '85vh',
+        display: 'flex', flexDirection: 'column', overflow: 'hidden',
+      }}>
+        <div style={{ padding: '14px 18px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
+          <span style={{ fontSize: 15, fontWeight: 600 }}>🔍 Drive'dan Öner — {cat.icon} {cat.label}</span>
+          <span style={{ fontSize: 11, color: '#78716c' }}>Stok: <b>{cert.stokKodu}</b></span>
+          <button onClick={onClose} style={{
+            marginLeft: 'auto', padding: '3px 10px', borderRadius: 4, fontSize: 12, cursor: 'pointer',
+            border: '1px solid #d6d3d1', background: '#fff',
+          }}>✕ Kapat</button>
+        </div>
+
+        <div style={{ padding: '14px 18px', overflow: 'auto', flex: 1 }}>
+          {driveModal.loading ? (
+            <div style={{ textAlign: 'center', padding: 30, color: '#78716c' }}>⏳ Drive'da aranıyor...</div>
+          ) : driveModal.error ? (
+            <div style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, fontSize: 12, color: '#92400e' }}>
+              ⚠ {driveModal.error}
+            </div>
+          ) : driveModal.results.length === 0 ? (
+            <div style={{ padding: 16, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, fontSize: 12, color: '#92400e' }}>
+              <div style={{ fontWeight: 600, marginBottom: 6 }}>Bu stok için Drive'da eşleşme bulunamadı.</div>
+              <div>
+                Hammadde gibi ortak isimle saklanıyorsa (örn. <code style={{background:'#fff', padding:'1px 4px', borderRadius:3}}>Q32 316</code>),
+                gerçek dosya adını aşağı yaz, master'a kaydedelim — bir sonraki COC'ta otomatik aratırız.
+              </div>
+              <div style={{ marginTop: 10, display: 'flex', gap: 6 }}>
+                <input
+                  type="text"
+                  placeholder="Örn. Q32 316"
+                  value={altNameDraft}
+                  onChange={(e) => setAltNameDraft(e.target.value)}
+                  disabled={!canEdit}
+                  style={{ flex: 1, padding: '5px 8px', fontSize: 12, border: '1px solid #d6d3d1', borderRadius: 4 }}
+                />
+                <button
+                  onClick={async () => { await handleAltNameSave(); onRetry(); }}
+                  disabled={!canEdit || !altNameDraft.trim()}
+                  style={{ padding: '5px 12px', fontSize: 12, cursor: canEdit && altNameDraft.trim() ? 'pointer' : 'not-allowed',
+                    background: '#1e40af', color: '#fff', border: 'none', borderRadius: 4 }}
+                >Kaydet + Tekrar Ara</button>
+              </div>
+            </div>
+          ) : (
+            <>
+              {driveModal.strategy && (
+                <div style={{ fontSize: 10, color: '#78716c', marginBottom: 8 }}>
+                  Strateji: <b>{driveModal.strategy === 'fulltext' ? 'PDF içerik araması' : 'Klasör tabanlı'}</b>
+                  · {driveModal.results.length} sonuç bulundu
+                </div>
+              )}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {driveModal.results.map((r) => {
+                  const isSelected = driveModal.selected.has(r.id);
+                  return (
+                    <label key={r.id} style={{
+                      display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px',
+                      background: isSelected ? '#eff6ff' : '#fafaf9', border: '1px solid ' + (isSelected ? '#1e40af' : '#e7e5e4'),
+                      borderRadius: 4, cursor: 'pointer',
+                    }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => onToggleSelect(r.id)}
+                        disabled={!canEdit}
+                      />
+                      <div style={{ flex: 1, overflow: 'hidden' }}>
+                        <div style={{ fontSize: 12, fontWeight: 500, color: '#1c1917', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          📄 {r.name}
+                        </div>
+                        <div style={{ fontSize: 10, color: '#78716c', marginTop: 2 }}>
+                          {r.modifiedTime ? new Date(r.modifiedTime).toLocaleDateString('tr-TR') : '—'} · {fmtSize(r.size)}
+                          {r.parentFolderName && <> · klasör: {r.parentFolderName}</>}
+                        </div>
+                      </div>
+                      <a href={r.webViewLink} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
+                        style={{ fontSize: 10, color: '#1e40af', textDecoration: 'none' }}>
+                        Drive'da aç ↗
+                      </a>
+                    </label>
+                  );
+                })}
+              </div>
+            </>
+          )}
+        </div>
+
+        {driveModal.results.length > 0 && (
+          <div style={{ padding: '12px 18px', borderTop: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
+            <span style={{ fontSize: 11, color: '#78716c' }}>
+              {driveModal.selected.size} dosya seçildi
+            </span>
+            <button onClick={onClose} style={{
+              marginLeft: 'auto', padding: '6px 14px', fontSize: 12, cursor: 'pointer',
+              border: '1px solid #d6d3d1', background: '#fff', borderRadius: 4,
+            }}>İptal</button>
+            <button
+              onClick={onImport}
+              disabled={driveModal.selected.size === 0 || isBusy || !canEdit}
+              style={{
+                padding: '6px 14px', fontSize: 12, fontWeight: 600,
+                cursor: driveModal.selected.size === 0 || isBusy ? 'not-allowed' : 'pointer',
+                background: driveModal.selected.size === 0 ? '#d6d3d1' : '#1e40af', color: '#fff',
+                border: 'none', borderRadius: 4,
+              }}>
+              {isBusy ? 'İndiriliyor...' : `📥 Seçilenleri Yükle (${driveModal.selected.size})`}
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -5038,4 +5301,166 @@ function getCocAttachmentStats(cert) {
     othersCount: others,
     naCount: naCategories.size,
   };
+}
+
+// Drive entegrasyon ayarları sayfası — sadece admin görür.
+// Per-kategori kök klasör ID listesi + strateji seçimi.
+function DriveConfigView({ canEdit }) {
+  const { driveConfig, loaded } = useDriveConfig();
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+  const [savedAt, setSavedAt] = useState(null);
+
+  // Drive entegrasyonu olan kategoriler
+  const driveCategories = [
+    { key: 'measurement', label: '📏 Ölçüm Raporu', defaultStrategy: 'folder' },
+    { key: 'fai', label: '📋 FAİ Raporu', defaultStrategy: 'folder' },
+    { key: 'rawMaterialCert', label: '🧪 Hammadde Kalite Sertifikası', defaultStrategy: 'fulltext' },
+    { key: 'surfaceTreatment', label: '🔥 Isıl İşlem / Kaplama / Boya', defaultStrategy: 'fulltext' },
+  ];
+
+  useEffect(() => {
+    if (!loaded) return;
+    const initial = driveConfig || {
+      foldersByCategory: {},
+      strategyByCategory: {},
+    };
+    setDraft({
+      foldersByCategory: { ...(initial.foldersByCategory || {}) },
+      strategyByCategory: { ...(initial.strategyByCategory || {}) },
+    });
+  }, [loaded, driveConfig]);
+
+  if (!loaded || !draft) {
+    return <div style={{ padding: 20, color: '#78716c' }}>Yükleniyor…</div>;
+  }
+
+  const updateFolders = (catKey, idsText) => {
+    const ids = idsText.split(/[\s,\n]+/).map(s => s.trim()).filter(Boolean);
+    setDraft(d => ({
+      ...d,
+      foldersByCategory: { ...d.foldersByCategory, [catKey]: ids },
+    }));
+  };
+
+  const updateStrategy = (catKey, strategy) => {
+    setDraft(d => ({
+      ...d,
+      strategyByCategory: { ...d.strategyByCategory, [catKey]: strategy },
+    }));
+  };
+
+  const handleSave = async () => {
+    if (!canEdit) return;
+    setSaving(true);
+    setError('');
+    try {
+      await saveDriveConfig(draft, { canEdit });
+      setSavedAt(new Date());
+    } catch (e) {
+      setError(e.message || 'Kaydedilemedi');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 16, maxWidth: 920 }}>
+      <div style={{ marginBottom: 16 }}>
+        <h2 style={{ fontSize: 18, fontWeight: 600, color: '#1c1917', margin: 0 }}>🔌 Drive Entegrasyonu Ayarları</h2>
+        <div style={{ fontSize: 12, color: '#78716c', marginTop: 4 }}>
+          Per-kategori Drive kök klasör ID'lerini yapılandır. Service account: <code style={{ background: '#f5f5f4', padding: '1px 4px', borderRadius: 3 }}>coc-drive-reader@sevkiyat-pro.iam.gserviceaccount.com</code>
+        </div>
+        <div style={{ fontSize: 11, color: '#92400e', marginTop: 6, padding: 8, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4 }}>
+          ⚠ Klasörlerin yukarıdaki SA email'i ile <b>"Görüntüleyen"</b> yetkisinde paylaşılmış olması gerekir.
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ padding: 10, marginBottom: 12, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4, fontSize: 12, color: '#991b1b' }}>
+          ⚠ {error}
+        </div>
+      )}
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+        {driveCategories.map(cat => {
+          const ids = draft.foldersByCategory[cat.key] || [];
+          const strategy = draft.strategyByCategory[cat.key] || cat.defaultStrategy;
+          return (
+            <div key={cat.key} style={{ background: '#fff', border: '1px solid #e7e5e4', borderRadius: 6, padding: 14 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                <span style={{ fontSize: 14, fontWeight: 600 }}>{cat.label}</span>
+                <span style={{ fontSize: 10, color: '#78716c' }}>
+                  ({ids.length} klasör · strateji: {strategy === 'fulltext' ? 'PDF içerik' : 'Klasör'})
+                </span>
+              </div>
+
+              <div style={{ marginBottom: 8 }}>
+                <label style={{ display: 'block', fontSize: 11, color: '#57534e', marginBottom: 4 }}>
+                  Drive Kök Klasör ID'leri (her satıra bir tane veya virgülle ayır)
+                </label>
+                <textarea
+                  value={ids.join('\n')}
+                  onChange={(e) => updateFolders(cat.key, e.target.value)}
+                  disabled={!canEdit}
+                  placeholder="1aBcDeFgHiJk..."
+                  style={{
+                    width: '100%', minHeight: 60, padding: 8, fontSize: 11,
+                    fontFamily: 'monospace', border: '1px solid #d6d3d1', borderRadius: 4,
+                  }}
+                />
+              </div>
+
+              <div>
+                <label style={{ display: 'block', fontSize: 11, color: '#57534e', marginBottom: 4 }}>
+                  Arama Stratejisi
+                </label>
+                <div style={{ display: 'flex', gap: 12 }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: canEdit ? 'pointer' : 'default' }}>
+                    <input
+                      type="radio"
+                      checked={strategy === 'folder'}
+                      onChange={() => updateStrategy(cat.key, 'folder')}
+                      disabled={!canEdit}
+                    />
+                    📁 Klasör (stok kodu adında alt klasör → içindeki dosyalar)
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 12, cursor: canEdit ? 'pointer' : 'default' }}>
+                    <input
+                      type="radio"
+                      checked={strategy === 'fulltext'}
+                      onChange={() => updateStrategy(cat.key, 'fulltext')}
+                      disabled={!canEdit}
+                    />
+                    🔍 PDF İçerik (dosya adı/içeriğinde stok kodu)
+                  </label>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', gap: 10 }}>
+        <button
+          onClick={handleSave}
+          disabled={!canEdit || saving}
+          style={{
+            padding: '8px 18px', fontSize: 13, fontWeight: 600,
+            cursor: canEdit && !saving ? 'pointer' : 'not-allowed',
+            background: canEdit ? '#1e40af' : '#d6d3d1', color: '#fff', border: 'none', borderRadius: 4,
+          }}
+        >{saving ? 'Kaydediliyor...' : '💾 Kaydet'}</button>
+        {savedAt && (
+          <span style={{ fontSize: 11, color: '#16a34a' }}>
+            ✓ Kaydedildi {savedAt.toLocaleTimeString('tr-TR')}
+          </span>
+        )}
+        {!canEdit && (
+          <span style={{ fontSize: 11, color: '#a8a29e' }}>(salt okunur — admin değilsin)</span>
+        )}
+      </div>
+    </div>
+  );
 }

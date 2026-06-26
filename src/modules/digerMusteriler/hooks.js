@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
-import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments, subscribeAutomationLog, subscribeCocParts, subscribeCocCertificates } from "./firestore";
+import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments, subscribeAutomationLog, subscribeCocParts, subscribeCocCertificates, subscribeDriveConfig } from "./firestore";
 import { getISOWeek } from "../../shared/weekUtils";
 
 export function useSalesOrders() {
@@ -266,4 +266,17 @@ export function groupByBelgeNo(orders) {
     }
   }
   return groups;
+}
+
+export function useDriveConfig() {
+  const [driveConfig, setDriveConfig] = useState(null);
+  const [loaded, setLoaded] = useState(false);
+  useEffect(() => {
+    const unsub = subscribeDriveConfig((data) => {
+      setDriveConfig(data);
+      setLoaded(true);
+    });
+    return unsub;
+  }, []);
+  return { driveConfig, loaded };
 }

@@ -29,7 +29,7 @@
  * Sonuç response/log'da rapor bazında durum bildirilir.
  */
 
-const { onRequest } = require("firebase-functions/v2/https");
+const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const { logger } = require("firebase-functions/v2");
@@ -56,6 +56,8 @@ const db = admin.firestore();
 const GMAIL_CLIENT_ID = defineSecret("GMAIL_CLIENT_ID");
 const GMAIL_CLIENT_SECRET = defineSecret("GMAIL_CLIENT_SECRET");
 const GMAIL_REFRESH_TOKEN = defineSecret("GMAIL_REFRESH_TOKEN");
+// COC Drive entegrasyonu — Secret Manager'da JSON SA key
+const COC_DRIVE_SA_KEY = defineSecret("coc-drive-sa-key");
 
 // Region — düşük gecikme için Avrupa
 const REGION = "europe-west1";
@@ -851,6 +853,132 @@ exports.uploadCocFileHttp = onRequest(
     } catch (err) {
       logger.error("[COC Manuel] Hata", { error: err.message, stack: err.stack });
       res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// ====================================================================
+// COC Drive Entegrasyonu
+// 1) searchCocDriveHttp — kategori bazlı stok kodu araması, top N sonuç
+// 2) importCocDriveFileHttp — seçilen Drive dosyasını indirip Firebase
+//    Storage'a yükler, COC'a metadata döner
+// Auth: Firebase ID token (Authorization: Bearer ...) zorunlu
+// ====================================================================
+const { searchDriveCategory, downloadDriveFile } = require("./drive");
+
+async function readDriveConfig() {
+  const ref = db.collection("appData").doc("driveConfig");
+  const snap = await ref.get();
+  return snap.exists ? snap.data() : null;
+}
+
+function requireAuth(request) {
+  if (!request.auth?.uid) {
+    throw new HttpsError("unauthenticated", "Giriş yapmalısınız");
+  }
+}
+
+exports.searchCocDrive = onCall(
+  {
+    region: REGION,
+    timeoutSeconds: 60,
+    memory: "512MiB",
+    cors: true,
+    secrets: [COC_DRIVE_SA_KEY],
+  },
+  async (request) => {
+    requireAuth(request);
+    const { category, stokKodu, altName } = request.data || {};
+    if (!category || !stokKodu) {
+      throw new HttpsError("invalid-argument", "category ve stokKodu zorunlu");
+    }
+    const driveConfig = await readDriveConfig();
+    if (!driveConfig) {
+      throw new HttpsError("failed-precondition", "Drive yapılandırması yok (appData/driveConfig)");
+    }
+    try {
+      const saKey = COC_DRIVE_SA_KEY.value();
+      const out = await searchDriveCategory(saKey, { category, stokKodu, altName, driveConfig });
+      return { success: true, ...out };
+    } catch (err) {
+      logger.error("[COC Drive Search] Hata", { error: err.message });
+      throw new HttpsError("internal", err.message);
+    }
+  },
+);
+
+exports.importCocDriveFile = onCall(
+  {
+    region: REGION,
+    timeoutSeconds: 120,
+    memory: "1GiB",
+    cors: true,
+    secrets: [COC_DRIVE_SA_KEY],
+  },
+  async (request) => {
+    requireAuth(request);
+    const { fileId, certNo, certYear, category, stokKodu } = request.data || {};
+    if (!fileId || !certNo || !certYear || !category || !stokKodu) {
+      throw new HttpsError("invalid-argument", "fileId, certNo, certYear, category, stokKodu zorunlu");
+    }
+    try {
+      const saKey = COC_DRIVE_SA_KEY.value();
+      // 1) Drive'dan indir
+      const file = await downloadDriveFile(saKey, fileId);
+      // 2) Firebase Storage'a yükle (COC path)
+      const timestamp = Date.now();
+      const safe = (s) => String(s || "").replace(/[^\w.\-]/g, "_").substring(0, 120);
+      const safeName = safe(file.filename);
+      const cocPath = `appData/cocCertificates/${certYear}/${safe(certNo)}/${category}_${timestamp}_${safeName}`;
+      const bucket = admin.storage().bucket();
+      const cocFile = bucket.file(cocPath);
+      await cocFile.save(file.buffer, {
+        contentType: file.contentType || "application/octet-stream",
+        resumable: false,
+      });
+      const [downloadUrl] = await cocFile.getSignedUrl({
+        action: "read",
+        expires: "2099-12-31",
+      });
+      // 3) Master path
+      const masterPath = `appData/cocParts/${safe(stokKodu)}/${category}/${timestamp}_${safeName}`;
+      const masterFile = bucket.file(masterPath);
+      await masterFile.save(file.buffer, {
+        contentType: file.contentType || "application/octet-stream",
+        resumable: false,
+      });
+      const [masterDownloadUrl] = await masterFile.getSignedUrl({
+        action: "read",
+        expires: "2099-12-31",
+      });
+
+      const now = new Date().toISOString();
+      return {
+        success: true,
+        coc: {
+          storagePath: cocPath,
+          downloadUrl,
+          filename: file.filename,
+          size: file.size,
+          contentType: file.contentType,
+          uploadedAt: now,
+          source: "drive",
+          sourceFileId: fileId,
+        },
+        master: {
+          storagePath: masterPath,
+          downloadUrl: masterDownloadUrl,
+          filename: file.filename,
+          size: file.size,
+          contentType: file.contentType,
+          uploadedAt: now,
+          source: "drive",
+          sourceFileId: fileId,
+        },
+      };
+    } catch (err) {
+      logger.error("[COC Drive Import] Hata", { error: err.message, stack: err.stack });
+      throw new HttpsError("internal", err.message);
     }
   },
 );

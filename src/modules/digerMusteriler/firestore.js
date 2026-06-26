@@ -3,6 +3,7 @@ import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject, getBlob }
 import { db, storage } from "../../firebase";
 
 const APP_COL = "appData";
+const DRIVE_CONFIG_DOC = "driveConfig";
 const SALES_ORDERS_DOC = "salesOrders";
 const PLAN_OVERRIDES_DOC = "planOverrides";
 const BOM_MODELS_DOC = "bomModels";
@@ -547,4 +548,55 @@ export function getCocAttachmentList(cert, category) {
   if (Array.isArray(raw)) return raw;
   if (typeof raw === "object") return [raw];
   return [];
+}
+
+// ====================================================================
+// Drive Entegrasyonu — appData/driveConfig + cocParts altName tracking
+// ====================================================================
+
+export function subscribeDriveConfig(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, DRIVE_CONFIG_DOC);
+  return onSnapshot(ref, (snap) => {
+    callback(snap.exists() ? snap.data() : null);
+  });
+}
+
+export async function saveDriveConfig(config, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const ref = doc(db, APP_COL, DRIVE_CONFIG_DOC);
+  await setDoc(ref, config, { merge: false });
+}
+
+// cocParts master altında per-stok, per-kategori altName tutar.
+// Örnek: cocParts.parts[stokKodu].driveAltNames.rawMaterialCert = "Q32 316"
+export function getCocPartDriveAltName(cocParts, stokKodu, category) {
+  return cocParts?.parts?.[stokKodu]?.driveAltNames?.[category] || "";
+}
+
+export async function setCocPartDriveAltName(stokKodu, category, altName, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!stokKodu || !category) throw new Error("stokKodu ve category zorunlu");
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  await setDoc(ref, {
+    parts: {
+      [stokKodu]: {
+        driveAltNames: { [category]: altName || "" },
+      },
+    },
+  }, { merge: true });
+}
+
+// Drive'dan import edilen dosyayı COC + master listelerine ekle.
+// Backend importCocDriveFileHttp endpoint'inden gelen { coc, master } metadata kullanılır.
+export async function appendImportedDriveAttachment(certNo, siraNo, category, cocMeta, currentCocList, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  // COC listesine ekle (mevcut helper kullanılır)
+  return await appendCocCertificateAttachment(certNo, siraNo, category, cocMeta, currentCocList, { canEdit });
+}
+
+export async function appendImportedDriveToMaster(stokKodu, category, masterMeta, existingMasterList, opts) {
+  if (!opts.canEdit) throw new Error("Yetki yok");
+  const newList = [...(existingMasterList || []), masterMeta];
+  await setCocPartStandardAttachmentList(stokKodu, category, newList, opts);
 }
