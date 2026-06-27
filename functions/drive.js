@@ -51,15 +51,54 @@ function getDrive(saKeyJson) {
   return google.drive({ version: "v3", auth });
 }
 
-// Stok kodu adında alt klasörü bul (folder strategy)
-async function findStokSubfolder(drive, parentFolderId, stokKodu) {
+// Stok kodu adında alt klasörü bul (folder strategy).
+// Önce direkt çocukta name='X' tam eşleşme; bulamazsa name contains 'X' ile ağaçta tüm SA-erişimli
+// klasörlerde ara, sadece kök altındakileri al (yıl/tedarikçi gibi ara klasör varsa kapsar).
+async function findStokSubfolders(drive, parentFolderId, stokKodu) {
   const escaped = stokKodu.replace(/'/g, "\\'");
-  const res = await drive.files.list({
-    q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and name='${escaped}' and trashed=false`,
-    fields: "files(id, name)",
-    pageSize: 5,
-  });
-  return res.data.files?.[0] || null;
+
+  // 1) Direkt çocukta tam eşleşme
+  try {
+    const res = await drive.files.list({
+      q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and name='${escaped}' and trashed=false`,
+      fields: "files(id, name, parents)",
+      pageSize: 5,
+    });
+    if (res.data.files?.length > 0) return res.data.files;
+  } catch (e) {
+    logger.debug("direct exact match hatası", { err: e.message });
+  }
+
+  // 2) Direkt çocukta substring eşleşme (boşluk/ek karakter toleranslı)
+  try {
+    const res = await drive.files.list({
+      q: `'${parentFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and name contains '${escaped}' and trashed=false`,
+      fields: "files(id, name, parents)",
+      pageSize: 10,
+    });
+    if (res.data.files?.length > 0) return res.data.files;
+  } catch (e) {
+    logger.debug("direct contains match hatası", { err: e.message });
+  }
+
+  // 3) Recursive: tüm ağaçta name içeren klasörleri bul, kök altında olanlarla sınırla
+  try {
+    const res = await drive.files.list({
+      q: `mimeType='application/vnd.google-apps.folder' and name contains '${escaped}' and trashed=false`,
+      fields: "files(id, name, parents)",
+      pageSize: 30,
+    });
+    const candidates = res.data.files || [];
+    const filtered = [];
+    for (const f of candidates) {
+      const isDescendant = await isDescendantOf(drive, f.id, [parentFolderId]);
+      if (isDescendant) filtered.push(f);
+    }
+    return filtered;
+  } catch (e) {
+    logger.debug("recursive contains hatası", { err: e.message });
+    return [];
+  }
 }
 
 // Klasördeki dosyaları listele (PDF + diğerleri), modifiedTime DESC
@@ -74,25 +113,29 @@ async function listFolderFiles(drive, folderId) {
 }
 
 // Strateji 1 — Klasör tabanlı arama (Ölçüm, FAİ)
-// parentFolderIds dizisindeki her kökte stokKodu adında alt klasörü arar, dosyalarını döner
+// parentFolderIds dizisindeki her kökte stokKodu içeren tüm alt klasörleri bulur, dosyalarını döner
 async function searchByFolder(drive, parentFolderIds, stokKodu) {
   const all = [];
+  const seenFolderIds = new Set();
   for (const parentId of parentFolderIds) {
     try {
-      const sub = await findStokSubfolder(drive, parentId, stokKodu);
-      if (!sub) continue;
-      const files = await listFolderFiles(drive, sub.id);
-      for (const f of files) {
-        all.push({
-          id: f.id,
-          name: f.name,
-          mimeType: f.mimeType,
-          size: Number(f.size || 0),
-          modifiedTime: f.modifiedTime,
-          webViewLink: f.webViewLink,
-          parentFolderName: sub.name,
-          parentFolderId: sub.id,
-        });
+      const subs = await findStokSubfolders(drive, parentId, stokKodu);
+      for (const sub of subs) {
+        if (seenFolderIds.has(sub.id)) continue;
+        seenFolderIds.add(sub.id);
+        const files = await listFolderFiles(drive, sub.id);
+        for (const f of files) {
+          all.push({
+            id: f.id,
+            name: f.name,
+            mimeType: f.mimeType,
+            size: Number(f.size || 0),
+            modifiedTime: f.modifiedTime,
+            webViewLink: f.webViewLink,
+            parentFolderName: sub.name,
+            parentFolderId: sub.id,
+          });
+        }
       }
     } catch (e) {
       logger.warn("searchByFolder hatası", { parentId, stokKodu, err: e.message });
