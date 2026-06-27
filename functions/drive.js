@@ -81,24 +81,52 @@ async function findStokSubfolders(drive, parentFolderId, stokKodu) {
     logger.debug("direct contains match hatası", { err: e.message });
   }
 
-  // 3) Recursive: tüm ağaçta name içeren klasörleri bul, kök altında olanlarla sınırla
+  // 3) Drive 'contains' tokenizer sınırı — ağaçta BFS ile gez, JS includes ile lokal filtre
+  // (özel karakterli klasör adlarını yakalar: 'MM-7456-0055(DİKKAT...)' gibi)
   try {
-    const res = await drive.files.list({
-      q: `mimeType='application/vnd.google-apps.folder' and name contains '${escaped}' and trashed=false`,
-      fields: "files(id, name, parents)",
-      pageSize: 30,
-    });
-    const candidates = res.data.files || [];
-    const filtered = [];
-    for (const f of candidates) {
-      const isDescendant = await isDescendantOf(drive, f.id, [parentFolderId]);
-      if (isDescendant) filtered.push(f);
-    }
-    return filtered;
+    const matches = await walkAndMatchFolders(drive, parentFolderId, stokKodu);
+    return matches;
   } catch (e) {
-    logger.debug("recursive contains hatası", { err: e.message });
+    logger.debug("tree walk hatası", { err: e.message });
     return [];
   }
+}
+
+// Verilen kökten başlayarak klasör ağacını BFS ile gezer, adında stok kodu (case-insensitive
+// includes) geçen tüm klasörleri döner. Eşleşen klasörün altına inmez (gereksiz).
+// Güvenlik: max 200 klasör tara, max 8 seviye derine in.
+async function walkAndMatchFolders(drive, rootFolderId, stokKodu) {
+  const needle = String(stokKodu || "").toLowerCase();
+  if (!needle) return [];
+  const matches = [];
+  const queue = [{ id: rootFolderId, depth: 0 }];
+  const visited = new Set();
+  let scanned = 0;
+  while (queue.length > 0 && scanned < 200) {
+    const { id, depth } = queue.shift();
+    if (visited.has(id) || depth > 8) continue;
+    visited.add(id);
+    scanned++;
+    let pageToken;
+    do {
+      const res = await drive.files.list({
+        q: `'${id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+        fields: "nextPageToken, files(id, name, parents)",
+        pageSize: 100,
+        pageToken,
+      });
+      const children = res.data.files || [];
+      for (const c of children) {
+        if (String(c.name || "").toLowerCase().includes(needle)) {
+          matches.push(c); // eşleşen — içine inmiyoruz
+        } else {
+          queue.push({ id: c.id, depth: depth + 1 });
+        }
+      }
+      pageToken = res.data.nextPageToken;
+    } while (pageToken);
+  }
+  return matches;
 }
 
 // Klasördeki dosyaları listele (PDF + diğerleri), modifiedTime DESC
