@@ -271,6 +271,24 @@ async function isDescendantOf(drive, fileId, rootFolderIds, hintedParents) {
   return false;
 }
 
+// Terimi Drive'ın istediği şekilde 'name contains' sorgusuna çevir.
+// Hyphen'lı stok kodları (MM-9111-2765) için: 'name contains "MM-9111-2765"' yanı sıra
+// 'name contains "MM" and name contains "9111" and name contains "2765"' (token bazlı AND).
+// Drive tokenizer hyphen'da split ettiği için ikinci sorgu daha güvenilir match yakalar.
+function buildNameContainsQueries(term) {
+  const escaped = term.replace(/'/g, "\\'");
+  const queries = [`name contains '${escaped}'`];
+  // Token bazlı: hyphen/space ile böl, 2+ karakterlik tokenları AND ile birleştir
+  const tokens = term.split(/[\s\-_]+/).filter((t) => t.length >= 2);
+  if (tokens.length >= 2) {
+    const tokenQuery = tokens
+      .map((t) => `name contains '${t.replace(/'/g, "\\'")}'`)
+      .join(" and ");
+    queries.push(tokenQuery);
+  }
+  return queries;
+}
+
 // Strateji 2 — Full-text arama (Hammadde, Fason)
 // stokKodu (ve varsa altName) için Drive'da PDF içerik aramasını PARALEL yapar,
 // sonuçları kök klasörlerin altında olanlarla sınırlar (hint'li ata + paralel filtre)
@@ -279,11 +297,27 @@ async function searchByFullText(drive, rootFolderIds, stokKodu, altName) {
   const terms = [stokKodu];
   if (altName && altName.trim()) terms.push(altName.trim());
 
-  // Her terim için paralel arama
+  // Her terim için 1-2 sorgu üret (name substring + token-AND), hepsini paralel çalıştır
+  const allQueries = [];
+  for (const term of terms) {
+    const escaped = term.replace(/'/g, "\\'");
+    // FullText contains (PDF içerik) — substring olarak çalışır
+    allQueries.push({
+      term,
+      q: `fullText contains '${escaped}' and mimeType!='application/vnd.google-apps.folder' and trashed=false`,
+      kind: "fullText",
+    });
+    // Name contains (dosya adı) — Drive tokenizer, hem substring hem token-AND varyasyonları
+    for (const nq of buildNameContainsQueries(term)) {
+      allQueries.push({
+        term,
+        q: `${nq} and mimeType!='application/vnd.google-apps.folder' and trashed=false`,
+        kind: "name",
+      });
+    }
+  }
   const perTermResults = await Promise.all(
-    terms.map(async (term) => {
-      const escaped = term.replace(/'/g, "\\'");
-      const q = `(fullText contains '${escaped}' or name contains '${escaped}') and mimeType!='application/vnd.google-apps.folder' and trashed=false`;
+    allQueries.map(async ({ term, q, kind }) => {
       try {
         const res = await drive.files.list({
           q,
@@ -291,9 +325,11 @@ async function searchByFullText(drive, rootFolderIds, stokKodu, altName) {
           orderBy: "modifiedTime desc",
           pageSize: 50,
         });
-        return res.data.files || [];
+        const files = res.data.files || [];
+        console.log(`[drive] ${kind} '${term}' → ${files.length} aday`);
+        return files;
       } catch (e) {
-        console.warn("[drive] searchByFullText terim hatası", term, e.message);
+        console.warn("[drive] searchByFullText sorgu hatası", term, kind, e.message);
         return [];
       }
     }),
