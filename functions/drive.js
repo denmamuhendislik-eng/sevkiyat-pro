@@ -33,8 +33,8 @@ const { google } = require("googleapis");
 const { logger } = require("firebase-functions/v2");
 
 const DRIVE_SCOPES = ["https://www.googleapis.com/auth/drive.readonly"];
-const MAX_RESULTS_PER_FOLDER = 10;
-const MAX_RESULTS_TOTAL = 15;
+const MAX_RESULTS_PER_FOLDER = 100; // klasör başına dosya tavanı (paginate ile)
+const MAX_RESULTS_TOTAL = 50;       // tüm sonuç tavanı
 
 // Service Account JWT auth client — secret'tan JSON key okur
 function buildAuth(saKeyJson) {
@@ -91,18 +91,21 @@ async function findStokSubfolders(drive, parentFolderId, stokKodu) {
       pageSize: 100,
     });
     const candidates = res.data.files || [];
-    logger.info(`[drive] global contains '${stokKodu}' → ${candidates.length} aday (${Date.now() - t0}ms)`);
+    console.log(`[drive] global contains '${stokKodu}' → ${candidates.length} aday (${Date.now() - t0}ms)`);
     if (candidates.length > 0) {
-      // Ata kontrolleri paralel (cache ile birlikte 100 adayı 1-2 saniyede çözer)
+      // Ata kontrolleri paralel — hintedParents ile direkt çocuk ise tek API çağrısı bile yok
       const checks = await Promise.all(
-        candidates.map(async (f) => ({ f, ok: await isDescendantOf(drive, f.id, [parentFolderId]) })),
+        candidates.map(async (f) => ({
+          f,
+          ok: await isDescendantOf(drive, f.id, [parentFolderId], f.parents),
+        })),
       );
       const filtered = checks.filter((x) => x.ok).map((x) => x.f);
-      logger.info(`[drive] ata filtresi sonrası ${filtered.length} klasör (${Date.now() - t0}ms toplam)`);
+      console.log(`[drive] ata filtresi sonrası ${filtered.length} klasör (${Date.now() - t0}ms toplam)`);
       if (filtered.length > 0) return filtered;
     }
   } catch (e) {
-    logger.warn("global contains hatası", { err: e.message });
+    console.warn("[drive] global contains hatası", e.message);
   }
 
   // 4) Son çare: BFS ile ağaç gezici (sadece global hiç bulamadıysa, 200 klasör limiti)
@@ -152,15 +155,22 @@ async function walkAndMatchFolders(drive, rootFolderId, stokKodu) {
   return matches;
 }
 
-// Klasördeki dosyaları listele (PDF + diğerleri), modifiedTime DESC
+// Klasördeki TÜM dosyaları listele (paginate edilir), modifiedTime DESC.
 async function listFolderFiles(drive, folderId) {
-  const res = await drive.files.list({
-    q: `'${folderId}' in parents and mimeType!='application/vnd.google-apps.folder' and trashed=false`,
-    fields: "files(id, name, mimeType, size, modifiedTime, webViewLink)",
-    orderBy: "modifiedTime desc",
-    pageSize: MAX_RESULTS_PER_FOLDER,
-  });
-  return res.data.files || [];
+  const out = [];
+  let pageToken;
+  do {
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType!='application/vnd.google-apps.folder' and trashed=false`,
+      fields: "nextPageToken, files(id, name, mimeType, size, modifiedTime, webViewLink)",
+      orderBy: "modifiedTime desc",
+      pageSize: MAX_RESULTS_PER_FOLDER,
+      pageToken,
+    });
+    out.push(...(res.data.files || []));
+    pageToken = res.data.nextPageToken;
+  } while (pageToken && out.length < 500); // güvenlik tavanı 500
+  return out;
 }
 
 // Strateji 1 — Klasör tabanlı arama (Ölçüm, FAİ)
@@ -214,11 +224,23 @@ async function _getParents(drive, fileId) {
   }
 }
 
-// Bir dosyanın ata zincirinde belirli bir root klasör var mı kontrol et
-async function isDescendantOf(drive, fileId, rootFolderIds) {
+// Bir dosyanın ata zincirinde belirli bir root klasör var mı kontrol et.
+// hintedParents: ilk seviye direkt parent ID'leri (Drive search response'tan gelir, ekstra API çağrısı kazandırır)
+async function isDescendantOf(drive, fileId, rootFolderIds, hintedParents) {
   const rootSet = new Set(rootFolderIds);
-  const visited = new Set();
-  const queue = [fileId];
+  // Fast path 1: kendisi kök mü?
+  if (rootSet.has(fileId)) return true;
+  // Fast path 2: hint olarak direkt parent verilmişse, hemen kontrol et
+  if (Array.isArray(hintedParents) && hintedParents.length > 0) {
+    for (const p of hintedParents) {
+      if (rootSet.has(p)) return true;
+    }
+  }
+  // Walk up
+  const visited = new Set([fileId]);
+  const queue = Array.isArray(hintedParents) && hintedParents.length > 0
+    ? [...hintedParents]
+    : [fileId];
   while (queue.length > 0) {
     const id = queue.shift();
     if (visited.has(id)) continue;
@@ -294,7 +316,7 @@ async function searchDriveCategory(saKeyJson, { category, stokKodu, altName, dri
   const drive = getDrive(saKeyJson);
   const folderIds = driveConfig.foldersByCategory[category];
   const strategy = driveConfig.strategyByCategory?.[category] || "folder";
-  logger.info(`[drive] arama başladı: ${category}/${stokKodu} (strateji: ${strategy}, ${folderIds.length} kök)`);
+  console.log(`[drive] arama başladı: ${category}/${stokKodu} (strateji: ${strategy}, ${folderIds.length} kök)`);
 
   let results;
   if (strategy === "fulltext") {
