@@ -81,13 +81,33 @@ async function findStokSubfolders(drive, parentFolderId, stokKodu) {
     logger.debug("direct contains match hatası", { err: e.message });
   }
 
-  // 3) Drive 'contains' tokenizer sınırı — ağaçta BFS ile gez, JS includes ile lokal filtre
-  // (özel karakterli klasör adlarını yakalar: 'MM-7456-0055(DİKKAT...)' gibi)
+  // 3) GLOBAL Drive contains — derin hiyerarşilerde direkt çocuk araması işe yaramaz
+  // (Müşteri/Yıl/Ay/Tarih/Stok gibi 5 seviye). Drive global arar, ata kontrolü kök altıyla sınırlar.
+  try {
+    const res = await drive.files.list({
+      q: `mimeType='application/vnd.google-apps.folder' and name contains '${escaped}' and trashed=false`,
+      fields: "files(id, name, parents)",
+      pageSize: 100,
+    });
+    const candidates = res.data.files || [];
+    if (candidates.length > 0) {
+      const filtered = [];
+      for (const f of candidates) {
+        const isDescendant = await isDescendantOf(drive, f.id, [parentFolderId]);
+        if (isDescendant) filtered.push(f);
+      }
+      if (filtered.length > 0) return filtered;
+    }
+  } catch (e) {
+    logger.warn("global contains hatası", { err: e.message });
+  }
+
+  // 4) Son çare: BFS ile ağaç gezici (sadece global hiç bulamadıysa, 200 klasör limiti)
   try {
     const matches = await walkAndMatchFolders(drive, parentFolderId, stokKodu);
     return matches;
   } catch (e) {
-    logger.debug("tree walk hatası", { err: e.message });
+    logger.warn("tree walk hatası", { err: e.message });
     return [];
   }
 }

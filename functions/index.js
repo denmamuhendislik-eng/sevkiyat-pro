@@ -899,7 +899,7 @@ function requireAuth(request) {
 exports.searchCocDrive = onCall(
   {
     region: REGION,
-    timeoutSeconds: 60,
+    timeoutSeconds: 120,
     memory: "512MiB",
     cors: true,
     secrets: [COC_DRIVE_SA_KEY],
