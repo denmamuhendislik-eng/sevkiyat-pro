@@ -5320,8 +5320,10 @@ function DriveConfigView({ canEdit }) {
     { key: 'surfaceTreatment', label: '🔥 Isıl İşlem / Kaplama / Boya', defaultStrategy: 'fulltext' },
   ];
 
+  // Sadece ilk yüklemede initialize et — sonradan driveConfig değişse de kullanıcının
+  // henüz kaydetmediği değişikliklerin üzerine yazma (race condition önlenir).
   useEffect(() => {
-    if (!loaded) return;
+    if (!loaded || draft !== null) return;
     const initial = driveConfig || {
       foldersByCategory: {},
       strategyByCategory: {},
@@ -5330,7 +5332,7 @@ function DriveConfigView({ canEdit }) {
       foldersByCategory: { ...(initial.foldersByCategory || {}) },
       strategyByCategory: { ...(initial.strategyByCategory || {}) },
     });
-  }, [loaded, driveConfig]);
+  }, [loaded, driveConfig, draft]);
 
   if (!loaded || !draft) {
     return <div style={{ padding: 20, color: '#78716c' }}>Yükleniyor…</div>;
