@@ -278,9 +278,10 @@ async function isDescendantOf(drive, fileId, rootFolderIds, hintedParents) {
 function buildNameContainsQueries(term) {
   const escaped = term.replace(/'/g, "\\'");
   const queries = [`name contains '${escaped}'`];
-  // Token bazlı: hyphen/space ile böl, 2+ karakterlik tokenları AND ile birleştir
-  const tokens = term.split(/[\s\-_]+/).filter((t) => t.length >= 2);
-  if (tokens.length >= 2) {
+  // Token bazlı: hyphen/space ile böl, 3+ karakterlik tokenları AND ile birleştir.
+  // (Drive 2 karakterli token'ları indekslemiyor — 'MM' query'yi sıfırlardı)
+  const tokens = term.split(/[\s\-_]+/).filter((t) => t.length >= 3);
+  if (tokens.length >= 1) {
     const tokenQuery = tokens
       .map((t) => `name contains '${t.replace(/'/g, "\\'")}'`)
       .join(" and ");
