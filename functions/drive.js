@@ -108,14 +108,10 @@ async function findStokSubfolders(drive, parentFolderId, stokKodu) {
     console.warn("[drive] global contains hatası", e.message);
   }
 
-  // 4) Son çare: BFS ile ağaç gezici (sadece global hiç bulamadıysa, 200 klasör limiti)
-  try {
-    const matches = await walkAndMatchFolders(drive, parentFolderId, stokKodu);
-    return matches;
-  } catch (e) {
-    logger.warn("tree walk hatası", { err: e.message });
-    return [];
-  }
+  // BFS fallback kapatıldı (timing analizi: tek bir negatif kökte 40s+ harcıyordu).
+  // Global contains derin hiyerarşileri kapsıyor; bulunamayan klasör için boş döner.
+  console.log(`[drive] '${stokKodu}' için '${parentFolderId}' kökünde bulunamadı`);
+  return [];
 }
 
 // Verilen kökten başlayarak klasör ağacını BFS ile gezer, adında stok kodu (case-insensitive
@@ -174,35 +170,55 @@ async function listFolderFiles(drive, folderId) {
 }
 
 // Strateji 1 — Klasör tabanlı arama (Ölçüm, FAİ)
-// parentFolderIds dizisindeki her kökte stokKodu içeren tüm alt klasörleri bulur, dosyalarını döner
+// parentFolderIds dizisindeki her kökte stokKodu içeren tüm alt klasörleri PARALEL arar,
+// dosyalarını PARALEL listeler, birleştirir.
 async function searchByFolder(drive, parentFolderIds, stokKodu) {
-  const all = [];
-  const seenFolderIds = new Set();
-  for (const parentId of parentFolderIds) {
-    try {
-      const subs = await findStokSubfolders(drive, parentId, stokKodu);
-      for (const sub of subs) {
-        if (seenFolderIds.has(sub.id)) continue;
-        seenFolderIds.add(sub.id);
-        const files = await listFolderFiles(drive, sub.id);
-        for (const f of files) {
-          all.push({
-            id: f.id,
-            name: f.name,
-            mimeType: f.mimeType,
-            size: Number(f.size || 0),
-            modifiedTime: f.modifiedTime,
-            webViewLink: f.webViewLink,
-            parentFolderName: sub.name,
-            parentFolderId: sub.id,
-          });
-        }
+  const tStart = Date.now();
+  const perRootSubs = await Promise.all(
+    parentFolderIds.map(async (parentId) => {
+      try {
+        return await findStokSubfolders(drive, parentId, stokKodu);
+      } catch (e) {
+        console.warn("[drive] searchByFolder kök hatası", parentId, e.message);
+        return [];
       }
-    } catch (e) {
-      logger.warn("searchByFolder hatası", { parentId, stokKodu, err: e.message });
+    }),
+  );
+  const allSubs = [];
+  const seenFolderIds = new Set();
+  for (const subs of perRootSubs) {
+    for (const sub of subs) {
+      if (seenFolderIds.has(sub.id)) continue;
+      seenFolderIds.add(sub.id);
+      allSubs.push(sub);
     }
   }
+  console.log(`[drive] toplam ${allSubs.length} benzersiz alt klasör bulundu (${Date.now() - tStart}ms)`);
+
+  // Dosya listeleme paralel
+  const fileLists = await Promise.all(
+    allSubs.map(async (sub) => {
+      try {
+        const files = await listFolderFiles(drive, sub.id);
+        return files.map((f) => ({
+          id: f.id,
+          name: f.name,
+          mimeType: f.mimeType,
+          size: Number(f.size || 0),
+          modifiedTime: f.modifiedTime,
+          webViewLink: f.webViewLink,
+          parentFolderName: sub.name,
+          parentFolderId: sub.id,
+        }));
+      } catch (e) {
+        console.warn("[drive] listFolderFiles hatası", sub.id, e.message);
+        return [];
+      }
+    }),
+  );
+  const all = fileLists.flat();
   all.sort((a, b) => (b.modifiedTime || "").localeCompare(a.modifiedTime || ""));
+  console.log(`[drive] toplam ${all.length} dosya (${Date.now() - tStart}ms toplam)`);
   return all.slice(0, MAX_RESULTS_TOTAL);
 }
 
