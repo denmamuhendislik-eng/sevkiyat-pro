@@ -408,7 +408,16 @@ async function searchByFullText(drive, rootFolderIds, stokKodu, altName) {
       relativePath: await buildRelativePath(drive, f.id, f.parents, rootFolderIds),
     })),
   );
-  filtered.sort((a, b) => (b.modifiedTime || "").localeCompare(a.modifiedTime || ""));
+  // Relevance: dosya adında stok kodu geçenler öne (kullanıcının asıl aradığı),
+  // sonra altName-only match'ler. İçinde tarih DESC.
+  const needle = String(stokKodu || "").toLowerCase();
+  const nameHas = (n) => needle && String(n || "").toLowerCase().includes(needle);
+  filtered.sort((a, b) => {
+    const aHit = nameHas(a.name) ? 1 : 0;
+    const bHit = nameHas(b.name) ? 1 : 0;
+    if (aHit !== bHit) return bHit - aHit;
+    return (b.modifiedTime || "").localeCompare(a.modifiedTime || "");
+  });
   console.log(`[drive] fullText ata filtresi sonrası ${filtered.length} (${Date.now() - tStart}ms toplam)`);
   return filtered.slice(0, MAX_RESULTS_TOTAL);
 }
