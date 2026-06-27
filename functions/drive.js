@@ -84,18 +84,21 @@ async function findStokSubfolders(drive, parentFolderId, stokKodu) {
   // 3) GLOBAL Drive contains — derin hiyerarşilerde direkt çocuk araması işe yaramaz
   // (Müşteri/Yıl/Ay/Tarih/Stok gibi 5 seviye). Drive global arar, ata kontrolü kök altıyla sınırlar.
   try {
+    const t0 = Date.now();
     const res = await drive.files.list({
       q: `mimeType='application/vnd.google-apps.folder' and name contains '${escaped}' and trashed=false`,
       fields: "files(id, name, parents)",
       pageSize: 100,
     });
     const candidates = res.data.files || [];
+    logger.info(`[drive] global contains '${stokKodu}' → ${candidates.length} aday (${Date.now() - t0}ms)`);
     if (candidates.length > 0) {
-      const filtered = [];
-      for (const f of candidates) {
-        const isDescendant = await isDescendantOf(drive, f.id, [parentFolderId]);
-        if (isDescendant) filtered.push(f);
-      }
+      // Ata kontrolleri paralel (cache ile birlikte 100 adayı 1-2 saniyede çözer)
+      const checks = await Promise.all(
+        candidates.map(async (f) => ({ f, ok: await isDescendantOf(drive, f.id, [parentFolderId]) })),
+      );
+      const filtered = checks.filter((x) => x.ok).map((x) => x.f);
+      logger.info(`[drive] ata filtresi sonrası ${filtered.length} klasör (${Date.now() - t0}ms toplam)`);
       if (filtered.length > 0) return filtered;
     }
   } catch (e) {
@@ -193,6 +196,24 @@ async function searchByFolder(drive, parentFolderIds, stokKodu) {
   return all.slice(0, MAX_RESULTS_TOTAL);
 }
 
+// Çağrı başına parents cache — aynı kök/yıl/ay/tarih klasörleri birden çok yol paylaşır,
+// 100 adayın hepsi aynı 5-6 ara klasörü tekrar tekrar sorgulamasın diye memoize ediyoruz.
+const _parentsCache = new Map();
+function _resetParentsCache() { _parentsCache.clear(); }
+
+async function _getParents(drive, fileId) {
+  if (_parentsCache.has(fileId)) return _parentsCache.get(fileId);
+  try {
+    const res = await drive.files.get({ fileId, fields: "parents" });
+    const parents = res.data.parents || [];
+    _parentsCache.set(fileId, parents);
+    return parents;
+  } catch (e) {
+    _parentsCache.set(fileId, []);
+    return [];
+  }
+}
+
 // Bir dosyanın ata zincirinde belirli bir root klasör var mı kontrol et
 async function isDescendantOf(drive, fileId, rootFolderIds) {
   const rootSet = new Set(rootFolderIds);
@@ -203,16 +224,10 @@ async function isDescendantOf(drive, fileId, rootFolderIds) {
     if (visited.has(id)) continue;
     visited.add(id);
     if (rootSet.has(id)) return true;
-    try {
-      const res = await drive.files.get({ fileId: id, fields: "parents" });
-      const parents = res.data.parents || [];
-      for (const p of parents) {
-        if (rootSet.has(p)) return true;
-        queue.push(p);
-      }
-    } catch (e) {
-      // SA'nın yetkisi yok ya da silinmiş — devam
-      logger.debug("isDescendantOf parents alınamadı", { id, err: e.message });
+    const parents = await _getParents(drive, id);
+    for (const p of parents) {
+      if (rootSet.has(p)) return true;
+      queue.push(p);
     }
   }
   return false;
@@ -275,9 +290,11 @@ async function searchDriveCategory(saKeyJson, { category, stokKodu, altName, dri
     return { results: [], message: `'${category}' için Drive klasörü yapılandırılmamış` };
   }
 
+  _resetParentsCache(); // çağrı başına temiz başla
   const drive = getDrive(saKeyJson);
   const folderIds = driveConfig.foldersByCategory[category];
   const strategy = driveConfig.strategyByCategory?.[category] || "folder";
+  logger.info(`[drive] arama başladı: ${category}/${stokKodu} (strateji: ${strategy}, ${folderIds.length} kök)`);
 
   let results;
   if (strategy === "fulltext") {
