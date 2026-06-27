@@ -272,52 +272,60 @@ async function isDescendantOf(drive, fileId, rootFolderIds, hintedParents) {
 }
 
 // Strateji 2 — Full-text arama (Hammadde, Fason)
-// stokKodu (ve varsa altName) için Drive'da PDF içerik aramasını kullanır,
-// sonuçları kök klasörlerin altında olanlarla sınırlar
+// stokKodu (ve varsa altName) için Drive'da PDF içerik aramasını PARALEL yapar,
+// sonuçları kök klasörlerin altında olanlarla sınırlar (hint'li ata + paralel filtre)
 async function searchByFullText(drive, rootFolderIds, stokKodu, altName) {
+  const tStart = Date.now();
   const terms = [stokKodu];
   if (altName && altName.trim()) terms.push(altName.trim());
 
-  const allFound = [];
-  const seen = new Set();
-  for (const term of terms) {
-    const escaped = term.replace(/'/g, "\\'");
-    // fullText OR name içerebilir — birini bulmak yeter
-    const q = `(fullText contains '${escaped}' or name contains '${escaped}') and mimeType!='application/vnd.google-apps.folder' and trashed=false`;
-    try {
-      const res = await drive.files.list({
-        q,
-        fields: "files(id, name, mimeType, size, modifiedTime, webViewLink, parents)",
-        orderBy: "modifiedTime desc",
-        pageSize: 50, // daha fazla çek, ata kontrolü ile filtreleyeceğiz
-      });
-      const files = res.data.files || [];
-      for (const f of files) {
-        if (seen.has(f.id)) continue;
-        seen.add(f.id);
-        allFound.push(f);
+  // Her terim için paralel arama
+  const perTermResults = await Promise.all(
+    terms.map(async (term) => {
+      const escaped = term.replace(/'/g, "\\'");
+      const q = `(fullText contains '${escaped}' or name contains '${escaped}') and mimeType!='application/vnd.google-apps.folder' and trashed=false`;
+      try {
+        const res = await drive.files.list({
+          q,
+          fields: "files(id, name, mimeType, size, modifiedTime, webViewLink, parents)",
+          orderBy: "modifiedTime desc",
+          pageSize: 50,
+        });
+        return res.data.files || [];
+      } catch (e) {
+        console.warn("[drive] searchByFullText terim hatası", term, e.message);
+        return [];
       }
-    } catch (e) {
-      logger.warn("searchByFullText hatası", { term, err: e.message });
+    }),
+  );
+  const seen = new Set();
+  const allFound = [];
+  for (const list of perTermResults) {
+    for (const f of list) {
+      if (seen.has(f.id)) continue;
+      seen.add(f.id);
+      allFound.push(f);
     }
   }
+  console.log(`[drive] fullText '${stokKodu}' → ${allFound.length} aday (${Date.now() - tStart}ms)`);
 
-  // Sadece kök klasörlerin altındakileri filtrele
-  const filtered = [];
-  for (const f of allFound) {
-    const isDescendant = await isDescendantOf(drive, f.id, rootFolderIds);
-    if (isDescendant) {
-      filtered.push({
-        id: f.id,
-        name: f.name,
-        mimeType: f.mimeType,
-        size: Number(f.size || 0),
-        modifiedTime: f.modifiedTime,
-        webViewLink: f.webViewLink,
-      });
-    }
-  }
+  // Ata kontrolleri paralel + hint'li (direkt parent verisi kullanılır)
+  const checks = await Promise.all(
+    allFound.map(async (f) => ({
+      f,
+      ok: await isDescendantOf(drive, f.id, rootFolderIds, f.parents),
+    })),
+  );
+  const filtered = checks.filter((x) => x.ok).map((x) => ({
+    id: x.f.id,
+    name: x.f.name,
+    mimeType: x.f.mimeType,
+    size: Number(x.f.size || 0),
+    modifiedTime: x.f.modifiedTime,
+    webViewLink: x.f.webViewLink,
+  }));
   filtered.sort((a, b) => (b.modifiedTime || "").localeCompare(a.modifiedTime || ""));
+  console.log(`[drive] fullText ata filtresi sonrası ${filtered.length} (${Date.now() - tStart}ms toplam)`);
   return filtered.slice(0, MAX_RESULTS_TOTAL);
 }
 
