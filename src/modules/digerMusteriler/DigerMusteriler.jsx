@@ -5235,9 +5235,11 @@ function DriveSearchModal({ driveModal, cert, cocParts, canEdit, onClose, onTogg
                         <div style={{ fontSize: 12, fontWeight: 500, color: '#1c1917', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           📄 {r.name}
                         </div>
-                        <div style={{ fontSize: 10, color: '#78716c', marginTop: 2 }}>
+                        <div style={{ fontSize: 10, color: '#78716c', marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                           {r.modifiedTime ? new Date(r.modifiedTime).toLocaleDateString('tr-TR') : '—'} · {fmtSize(r.size)}
-                          {r.parentFolderName && <> · klasör: {r.parentFolderName}</>}
+                          {r.relativePath && (
+                            <> · <span title={r.relativePath} style={{ color: '#a8a29e' }}>📁 {r.relativePath}</span></>
+                          )}
                         </div>
                       </div>
                       <a href={r.webViewLink} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}

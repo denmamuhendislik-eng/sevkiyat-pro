@@ -195,11 +195,14 @@ async function searchByFolder(drive, parentFolderIds, stokKodu) {
   }
   console.log(`[drive] toplam ${allSubs.length} benzersiz alt klasör bulundu (${Date.now() - tStart}ms)`);
 
-  // Dosya listeleme paralel
+  // Dosya listeleme paralel + relative path
   const fileLists = await Promise.all(
     allSubs.map(async (sub) => {
       try {
         const files = await listFolderFiles(drive, sub.id);
+        // Sub klasörünün kendi path'i (kökten sub'a kadar)
+        const subPath = await buildRelativePath(drive, sub.id, sub.parents, parentFolderIds);
+        const fullSubPath = subPath ? `${subPath} / ${sub.name}` : sub.name;
         return files.map((f) => ({
           id: f.id,
           name: f.name,
@@ -209,6 +212,7 @@ async function searchByFolder(drive, parentFolderIds, stokKodu) {
           webViewLink: f.webViewLink,
           parentFolderName: sub.name,
           parentFolderId: sub.id,
+          relativePath: fullSubPath,
         }));
       } catch (e) {
         console.warn("[drive] listFolderFiles hatası", sub.id, e.message);
@@ -222,10 +226,11 @@ async function searchByFolder(drive, parentFolderIds, stokKodu) {
   return all.slice(0, MAX_RESULTS_TOTAL);
 }
 
-// Çağrı başına parents cache — aynı kök/yıl/ay/tarih klasörleri birden çok yol paylaşır,
+// Çağrı başına parents/name cache — aynı kök/yıl/ay/tarih klasörleri birden çok yol paylaşır,
 // 100 adayın hepsi aynı 5-6 ara klasörü tekrar tekrar sorgulamasın diye memoize ediyoruz.
 const _parentsCache = new Map();
-function _resetParentsCache() { _parentsCache.clear(); }
+const _folderNameCache = new Map(); // klasör adı için ayrı cache
+function _resetParentsCache() { _parentsCache.clear(); _folderNameCache.clear(); }
 
 async function _getParents(drive, fileId) {
   if (_parentsCache.has(fileId)) return _parentsCache.get(fileId);
@@ -238,6 +243,43 @@ async function _getParents(drive, fileId) {
     _parentsCache.set(fileId, []);
     return [];
   }
+}
+
+async function _getFolderName(drive, folderId) {
+  if (_folderNameCache.has(folderId)) return _folderNameCache.get(folderId);
+  try {
+    const res = await drive.files.get({ fileId: folderId, fields: "name, parents" });
+    const name = res.data.name || "";
+    _folderNameCache.set(folderId, name);
+    // parents'i de cache'le (bedava)
+    if (res.data.parents) _parentsCache.set(folderId, res.data.parents);
+    return name;
+  } catch (e) {
+    _folderNameCache.set(folderId, "");
+    return "";
+  }
+}
+
+// Bir dosyanın kök altındaki path'ini döner ("Müşteri / Yıl / Ay / Tarih" gibi)
+// rootFolderIds zincirinin son üyesinden başlayıp dosyanın direkt parent'ına kadar.
+async function buildRelativePath(drive, fileId, hintedParents, rootFolderIds, maxDepth = 8) {
+  const rootSet = new Set(rootFolderIds);
+  const chain = [];
+  const visited = new Set();
+  let current = Array.isArray(hintedParents) && hintedParents.length > 0 ? hintedParents[0] : null;
+  if (!current) {
+    const parents = await _getParents(drive, fileId);
+    current = parents[0] || null;
+  }
+  while (current && !visited.has(current) && chain.length < maxDepth) {
+    visited.add(current);
+    if (rootSet.has(current)) break;
+    const name = await _getFolderName(drive, current);
+    if (name) chain.unshift(name);
+    const parents = await _getParents(drive, current);
+    current = parents[0] || null;
+  }
+  return chain.join(" / ");
 }
 
 // Bir dosyanın ata zincirinde belirli bir root klasör var mı kontrol et.
@@ -353,14 +395,19 @@ async function searchByFullText(drive, rootFolderIds, stokKodu, altName) {
       ok: await isDescendantOf(drive, f.id, rootFolderIds, f.parents),
     })),
   );
-  const filtered = checks.filter((x) => x.ok).map((x) => ({
-    id: x.f.id,
-    name: x.f.name,
-    mimeType: x.f.mimeType,
-    size: Number(x.f.size || 0),
-    modifiedTime: x.f.modifiedTime,
-    webViewLink: x.f.webViewLink,
-  }));
+  const filteredRaw = checks.filter((x) => x.ok).map((x) => x.f);
+  // Her sonuç için relative path (kökten dosyaya kadar klasör zinciri)
+  const filtered = await Promise.all(
+    filteredRaw.map(async (f) => ({
+      id: f.id,
+      name: f.name,
+      mimeType: f.mimeType,
+      size: Number(f.size || 0),
+      modifiedTime: f.modifiedTime,
+      webViewLink: f.webViewLink,
+      relativePath: await buildRelativePath(drive, f.id, f.parents, rootFolderIds),
+    })),
+  );
   filtered.sort((a, b) => (b.modifiedTime || "").localeCompare(a.modifiedTime || ""));
   console.log(`[drive] fullText ata filtresi sonrası ${filtered.length} (${Date.now() - tStart}ms toplam)`);
   return filtered.slice(0, MAX_RESULTS_TOTAL);
