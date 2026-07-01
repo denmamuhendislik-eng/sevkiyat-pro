@@ -136,22 +136,33 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     }
   }
 
+  // Birim dönüşüm uygular: satınalma fiyatı (TL/satınalma birimi) → TL/BOM birimi
+  // Örn. streç film 500 TL/AD, 1 AD = 170 MT → 500/170 = 2.94 TL/MT. BOM'da 4.25 MT
+  // olduğu gibi kalır, çarpım: 4.25 × 2.94 = 12.5 TL (doğru).
+  // Dönüşüm tanımlı değilse fiyat olduğu gibi döner (mevcut davranış).
+  function applyUnitConversion(cost, stockCode) {
+    const conv = unitConversions?.conversions?.[stockCode];
+    if (conv?.factor > 0) return cost / conv.factor;
+    return cost;
+  }
+
   // BOM part için maliyet lookup (3 katmanlı: kod → isim → ilk token)
   function lookupPartCost(part) {
     // 1. Doğrudan stockCode match
     if (stockUnitCost[part.stockCode] != null) {
-      return { cost: stockUnitCost[part.stockCode], matchedBy: "code" };
+      return { cost: applyUnitConversion(stockUnitCost[part.stockCode], part.stockCode), matchedBy: "code" };
     }
     // 2. Tam isim match (lowercase, trimmed)
     const nName = normName(part.stockName);
     if (nName && nameToCode[nName] != null) {
-      return { cost: stockUnitCost[nameToCode[nName]], matchedBy: "name" };
+      const matchedCode = nameToCode[nName];
+      return { cost: applyUnitConversion(stockUnitCost[matchedCode], part.stockCode), matchedBy: "name" };
     }
     // 3. İlk token match (örn. "52030 VOLANT C54" → "52030")
     const tk = firstToken(part.stockName);
     if (tk && tokensToCode[tk] && tokensToCode[tk].length === 1) {
-      // Tek eşleşme varsa kullan, ambiguity yoksa
-      return { cost: stockUnitCost[tokensToCode[tk][0]], matchedBy: "token" };
+      const matchedCode = tokensToCode[tk][0];
+      return { cost: applyUnitConversion(stockUnitCost[matchedCode], part.stockCode), matchedBy: "token" };
     }
     return { cost: 0, matchedBy: "miss" };
   }
@@ -204,15 +215,10 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
 
       // BOM'da child miktarı — App.jsx explosion ile aynı pattern: p.qty
       // (BOM modeline göre 'qty' field'ı kullanılır, varsa 'qtyPerParent' fallback)
-      // Birim dönüşümü: BOM birimi ≠ satınalma birimi olan stoklar için (örn. streç film
-      // BOM'da MT, satınalma AD). unitConversions.conversions[stok].factor tanımlıysa
-      // bomQty / factor ile satınalma birimine çevrilir; yoksa mevcut davranış korunur.
-      const childQty = (c) => {
-        const raw = safeNum(c.p.qty) || safeNum(c.p.qtyPerParent) || 1;
-        const conv = unitConversions?.conversions?.[c.p.stockCode];
-        if (conv?.factor > 0) return raw / conv.factor;
-        return raw;
-      };
+      // NOT: Birim dönüşümü BOM miktarına DEĞİL fiyata uygulanır (aşağıda lookupPartCost'ta).
+      // BOM'daki VIO miktarları olduğu gibi kalır, sadece unitCost per-satınalma-birimi'den
+      // per-BOM-birimi'ne çevrilir → 4.25 MT × 2.94 TL/MT = 12.5 TL.
+      const childQty = (c) => safeNum(c.p.qty) || safeNum(c.p.qtyPerParent) || 1;
 
       // Material hesabı — supplyType'a göre dallan
       // BUY/RAW: bitmiş satın alma → sadece directLookup.cost. Children ve operations
@@ -404,20 +410,15 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     // Her parça için root'a etkili kullanım miktarı (effectiveQty) — root'tan o parçaya
     // inerken zincir qty çarpımı (1 adet root mamul için bu parçadan kaç adet/kg kullanılıyor).
     // Bu × unitCost = root maliyetine katkı (contribution).
-    // Birim dönüşümü: childQty ile aynı mantık — konfigüre stok için raw / factor uygula,
-    // display ve ana material hesabı birbirine tutarlı kalsın.
+    // BOM'daki VIO miktarları olduğu gibi kalır — birim dönüşümü fiyata uygulanır.
     function getEffectiveQty(idx) {
       let qty = 1;
       let cur = parts[idx];
-      // Yukarı zincir: root'a kadar parent.qty çarpımı
       while (cur && cur.parentIdx !== null && cur.parentIdx !== undefined) {
-        let stepQty = safeNum(cur.qty) || safeNum(cur.qtyPerParent) || 1;
-        const conv = unitConversions?.conversions?.[cur.stockCode];
-        if (conv?.factor > 0) stepQty = stepQty / conv.factor;
-        qty *= stepQty;
+        qty *= safeNum(cur.qty) || safeNum(cur.qtyPerParent) || 1;
         cur = parts[cur.parentIdx];
       }
-      return Math.round(qty * 1000000) / 1000000;  // ondalık hassasiyet
+      return Math.round(qty * 1000000) / 1000000;
     }
 
     byModel[modelKey] = {
