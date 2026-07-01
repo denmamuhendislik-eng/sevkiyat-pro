@@ -4730,8 +4730,20 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
     try {
       const zip = new JSZip();
 
-      // 1) Uygunluk Belgesi PDF kökte
-      const pdfBlob = await buildCocPdfBlob(cert);
+      // 1) Uygunluk Belgesi PDF kökte — multi-line ise lineItems'a çevir
+      // (handleDownload ile aynı transformation, tek satır PDF fallback bug'ı fix)
+      const certForPdf = (cert.lines && cert.lines.length > 1) ? {
+        ...cert,
+        siraNo: '1',
+        lineItems: cert.lines.map(l => ({
+          siraNo: l.siraNo,
+          orderNo: l.orderNo,
+          quantity: l.quantity,
+          serialNo: l.serialNo,
+        })),
+        quantity: String(cert.totalQty || cert.lines.reduce((s, l) => s + (Number(l.quantity) || 0), 0)),
+      } : cert;
+      const pdfBlob = await buildCocPdfBlob(certForPdf);
       zip.file(`Uygunluk Belgesi ${sanitize(cert.certNo)}.pdf`, pdfBlob);
 
       // 2) Kategori bazlı klasörler — sadece dolu olanlar (storagePath üzerinden, fetch yerine SDK getBlob — CORS uyumlu)
