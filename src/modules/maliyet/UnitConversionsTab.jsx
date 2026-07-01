@@ -16,6 +16,7 @@ export default function UnitConversionsTab({ canEdit, isAdmin }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [filterMode, setFilterMode] = useState("mismatch"); // mismatch | all | configured
+  const [search, setSearch] = useState("");
 
   useEffect(() => { const u = subscribeBomModels(d => { setBomModels(d || {}); setLoaded(p => ({ ...p, bom: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeUnitConversions(d => { setUnitConversions(d || { conversions: {} }); setLoaded(p => ({ ...p, uconv: true })); }); return u; }, []);
@@ -43,19 +44,19 @@ export default function UnitConversionsTab({ canEdit, isAdmin }) {
     return map;
   }, [bomModels]);
 
-  // Tespit listesi: BOM'da adet dışı birimle geçen tüm stoklar
+  // Tespit listesi: BOM'daki TÜM stoklar + orphan dönüşümler
   const items = useMemo(() => {
     const list = [];
     for (const [code, meta] of Object.entries(bomStokIndex)) {
       const isNonAdet = NON_ADET_UNITS.has(meta.bomUnit);
       const conv = conversions[code];
-      if (!isNonAdet && !conv) continue; // adet ise ve dönüşüm de yoksa atla
       list.push({
         code,
         name: meta.name,
         bomUnit: meta.bomUnit,
         usageCount: meta.usageCount,
         conv,
+        isNonAdet,
         needsAttention: isNonAdet && !conv,
       });
     }
@@ -63,7 +64,8 @@ export default function UnitConversionsTab({ canEdit, isAdmin }) {
     for (const [code, conv] of Object.entries(conversions)) {
       if (!bomStokIndex[code]) {
         list.push({
-          code, name: "(BOM'da yok)", bomUnit: conv.bomUnit, usageCount: 0, conv, needsAttention: false, orphan: true,
+          code, name: "(BOM'da yok)", bomUnit: conv.bomUnit, usageCount: 0, conv,
+          isNonAdet: false, needsAttention: false, orphan: true,
         });
       }
     }
@@ -76,16 +78,29 @@ export default function UnitConversionsTab({ canEdit, isAdmin }) {
   }, [bomStokIndex, conversions]);
 
   const filtered = useMemo(() => {
-    if (filterMode === "mismatch") return items.filter(x => x.needsAttention);
-    if (filterMode === "configured") return items.filter(x => !!x.conv);
-    return items;
-  }, [items, filterMode]);
+    let list = items;
+    // Filter mode
+    if (filterMode === "mismatch") list = list.filter(x => x.needsAttention);
+    else if (filterMode === "configured") list = list.filter(x => !!x.conv);
+    else if (filterMode === "nonAdet") list = list.filter(x => x.isNonAdet);
+    // 'all' = tüm BOM stokları (dönüşüm gerektirmese bile aranabilir)
+    // Search
+    const q = search.trim().toLocaleLowerCase("tr-TR");
+    if (q) {
+      list = list.filter(x =>
+        x.code.toLocaleLowerCase("tr-TR").includes(q) ||
+        (x.name || "").toLocaleLowerCase("tr-TR").includes(q)
+      );
+    }
+    return list;
+  }, [items, filterMode, search]);
 
   const stats = useMemo(() => {
     const mismatch = items.filter(x => x.needsAttention).length;
     const configured = items.filter(x => !!x.conv).length;
+    const nonAdet = items.filter(x => x.isNonAdet).length;
     const orphan = items.filter(x => x.orphan).length;
-    return { total: items.length, mismatch, configured, orphan };
+    return { total: items.length, mismatch, configured, nonAdet, orphan };
   }, [items]);
 
   const openAdd = (item) => {
@@ -163,12 +178,33 @@ export default function UnitConversionsTab({ canEdit, isAdmin }) {
       </div>
 
       {/* Stat rozetleri */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
         <StatBadge label="Uyumsuz (Faktör eksik)" value={stats.mismatch} color="#dc2626" bg="#fef2f2" onClick={() => setFilterMode("mismatch")} active={filterMode === "mismatch"} />
+        <StatBadge label="Adet Dışı Birimli" value={stats.nonAdet} color="#92400e" bg="#fef3c7" onClick={() => setFilterMode("nonAdet")} active={filterMode === "nonAdet"} />
         <StatBadge label="Kayıtlı" value={stats.configured} color="#16a34a" bg="#dcfce7" onClick={() => setFilterMode("configured")} active={filterMode === "configured"} />
-        <StatBadge label="Tümü" value={stats.total} color="#57534e" bg="#f5f5f4" onClick={() => setFilterMode("all")} active={filterMode === "all"} />
+        <StatBadge label="Tüm BOM Stokları" value={stats.total} color="#57534e" bg="#f5f5f4" onClick={() => setFilterMode("all")} active={filterMode === "all"} />
       </div>
 
+      {/* Arama kutusu — belirli stoku aramak için (ör. 157-0066 streç film) */}
+      <div style={{ marginBottom: 14 }}>
+        <input
+          type="text"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔎 Stok kodu veya adı ara (örn. 157-0066, streç, kesme)"
+          style={{ width: "100%", maxWidth: 480, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}
+        />
+        <span style={{ marginLeft: 10, fontSize: 11, color: "#78716c" }}>
+          {filtered.length} kayıt gösteriliyor
+        </span>
+      </div>
+
+      {filterMode === "mismatch" && search === "" && (
+        <div style={{ marginBottom: 12, padding: 10, background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e" }}>
+          💡 <b>Aradığın stok listede yok mu?</b> Otomatik tespit sadece BOM Excel'de birimi MT/LT/KG/M2/M3 gibi tanınmış birimlerle yazılan stokları getirir.
+          Streç film gibi BOM'da birimi boş veya "AD" olarak gelmiş olabilir → yukarıdan <b>"Tüm BOM Stokları"</b> filtresine geç ve <b>arama kutusuna stok kodunu yaz</b>.
+        </div>
+      )}
       {filtered.length === 0 ? (
         <div style={{ padding: 30, textAlign: "center", color: "#a8a29e", fontSize: 13, border: "1px dashed #d6d3d1", borderRadius: 6 }}>
           {filterMode === "mismatch" ? "Bu filtrede stok yok — tüm uyumsuz kalemler dönüşüm tanımlı ✅" : "Kayıt yok."}
