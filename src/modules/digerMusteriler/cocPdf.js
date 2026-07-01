@@ -9,6 +9,10 @@ import html2canvas from "html2canvas";
 // DENMA logo — App.jsx:1913'deki base64 değerinin kopyası
 // (ileride shared/assets.js'e taşınacak)
 import { LOGO_DENMA } from "./cocLogo";
+import { SIGNATURE_SERDAL, SIGNATURE_OMER } from "./cocSignatures";
+
+// ISO form numarası — revizyon/tarih güncellemesinde bu string değişir
+const FORM_NO = "FR-70 Rev.Tar./No: 29.06.2026 / 02";
 
 // Sabit kalite beyanı metinleri — eski FR-70 UYGUNLUK BELGESİ Rev01.xlsm'den birebir
 const QUALITY_DECLARATION_EN = "The products with the description, part number, revision, quantity, and serial number given below are hereby certified to meet the contract requirements and are verified by inspection and/or testing in accordance with the Quality Management System of DENMA MÜHENDİSLİK MAK. OTOM. İNŞ. SAN. TİC. LTD. ŞTİ.";
@@ -149,26 +153,34 @@ function buildCocHtml(cert) {
 
   ${feragatBlock}
 
-  <!-- Signature block -->
-  <div style="margin-top:40px; display:grid; grid-template-columns:1fr 1fr; gap:30px;">
-    <div style="text-align:center; padding-top:40px; border-top:1px solid #1c1917;">
-      <div style="font-size:9px; color:#78716c; font-weight:600;">CHECKED BY / KONTROL EDEN</div>
-      <div style="font-size:11px; font-weight:600; color:#1c1917; margin-top:8px;">${SIGNATURES.engineer}</div>
-      <div style="font-size:9px; color:#78716c;">ENGINEER / MÜHENDİS</div>
-      <div style="font-size:8px; color:#16a34a; font-style:italic; margin-top:6px;">Elektronik olarak onaylanmıştır / Electronically approved</div>
+  <!-- Signature block — gerçek imza görselleri -->
+  <div style="margin-top:30px; display:grid; grid-template-columns:1fr 1fr; gap:30px;">
+    <div style="text-align:center;">
+      <div style="height:60px; display:flex; align-items:flex-end; justify-content:center;">
+        <img src="${SIGNATURE_SERDAL}" style="max-height:55px; max-width:180px; object-fit:contain;" alt="Serdal Büyükduymaz" />
+      </div>
+      <div style="border-top:1px solid #1c1917; padding-top:6px;">
+        <div style="font-size:9px; color:#78716c; font-weight:600;">CHECKED BY / KONTROL EDEN</div>
+        <div style="font-size:11px; font-weight:600; color:#1c1917; margin-top:4px;">${SIGNATURES.engineer}</div>
+        <div style="font-size:9px; color:#78716c;">ENGINEER / MÜHENDİS</div>
+      </div>
     </div>
-    <div style="text-align:center; padding-top:40px; border-top:1px solid #1c1917;">
-      <div style="font-size:9px; color:#78716c; font-weight:600;">APPROVED BY / ONAYLAYAN</div>
-      <div style="font-size:11px; font-weight:600; color:#1c1917; margin-top:8px;">${SIGNATURES.manager}</div>
-      <div style="font-size:9px; color:#78716c;">MANAGER / MÜDÜR</div>
-      <div style="font-size:8px; color:#16a34a; font-style:italic; margin-top:6px;">Elektronik olarak onaylanmıştır / Electronically approved</div>
+    <div style="text-align:center;">
+      <div style="height:60px; display:flex; align-items:flex-end; justify-content:center;">
+        <img src="${SIGNATURE_OMER}" style="max-height:55px; max-width:180px; object-fit:contain;" alt="Ömer Yasin Akbuğa" />
+      </div>
+      <div style="border-top:1px solid #1c1917; padding-top:6px;">
+        <div style="font-size:9px; color:#78716c; font-weight:600;">APPROVED BY / ONAYLAYAN</div>
+        <div style="font-size:11px; font-weight:600; color:#1c1917; margin-top:4px;">${SIGNATURES.manager}</div>
+        <div style="font-size:9px; color:#78716c;">MANAGER / MÜDÜR</div>
+      </div>
     </div>
   </div>
 
   <!-- Footer -->
-  <div style="position:absolute; bottom:20px; left:50px; right:50px; padding-top:8px; border-top:1px solid #e7e5e4; font-size:8px; color:#a8a29e; display:flex; justify-content:space-between;">
-    <span>DENMA Mühendislik · ${escapeHtml(cert.certNo || "")}</span>
-    <span>Generated: ${new Date().toLocaleDateString("tr-TR")}</span>
+  <div style="position:absolute; bottom:20px; left:50px; right:50px; padding-top:8px; border-top:1px solid #e7e5e4; font-size:8px; color:#a8a29e; display:flex; justify-content:space-between; align-items:flex-end;">
+    <span>DENMA Mühendislik · ${escapeHtml(cert.certNo || "")} · Generated: ${new Date().toLocaleDateString("tr-TR")}</span>
+    <span style="font-family:'JetBrains Mono','Courier New',monospace; font-weight:600; color:#57534e;">${FORM_NO}</span>
   </div>
 </div>
   `;
