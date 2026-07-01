@@ -3,6 +3,7 @@ import * as XLSX from "xlsx";
 import {
   subscribeBomModels, subscribeWorkCenters, subscribeUnitCosts,
   subscribeLaborCosts, subscribeOverheadPolicy, subscribeFasonRates,
+  subscribeUnitConversions,
   saveProductCostsLatest,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
@@ -117,7 +118,8 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
   const [laborData, setLaborData] = useState({});
   const [policy, setPolicy] = useState(null);
   const [fasonRates, setFasonRates] = useState({});
-  const [loaded, setLoaded] = useState({ bom: false, wc: false, unit: false, labor: false, pol: false, fason: false });
+  const [unitConversions, setUnitConversions] = useState({ conversions: {} });
+  const [loaded, setLoaded] = useState({ bom: false, wc: false, unit: false, labor: false, pol: false, fason: false, uconv: false });
   const [selectedMonth, setSelectedMonth] = useState(todayMonth());
   const [selectedModel, setSelectedModel] = useState(null);
   const [searchModel, setSearchModel] = useState("");
@@ -151,6 +153,10 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
     const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, fason: true })); });
     return u;
   }, []);
+  useEffect(() => {
+    const u = subscribeUnitConversions(d => { setUnitConversions(d || { conversions: {} }); setLoaded(p => ({ ...p, uconv: true })); });
+    return u;
+  }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
   const monthsAvailable = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
@@ -171,8 +177,8 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
   const monthlySupplies = laborData?.monthlySupplies || {};
   const calc = useMemo(() => {
     if (!allLoaded) return null;
-    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: selectedMonth });
-  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, selectedMonth]);
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: selectedMonth, unitConversions });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, selectedMonth, unitConversions]);
 
   const modelsList = useMemo(() => {
     if (!calc?.byModel) return [];

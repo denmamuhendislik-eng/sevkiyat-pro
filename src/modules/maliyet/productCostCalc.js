@@ -45,7 +45,7 @@ function calcFasonOpCost(opCode, partCode, fasonRates) {
 }
 
 // Tüm BOM modelleri için maliyet hesabı.
-export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies = null, refMonth = null }) {
+export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies = null, refMonth = null, unitConversions = null }) {
   if (!bomModels || Object.keys(bomModels).length === 0) {
     return { byModel: {}, wcRateAvg: {}, stockUnitCost: {}, summary: { error: "BOM modeli yok" } };
   }
@@ -204,7 +204,15 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
 
       // BOM'da child miktarı — App.jsx explosion ile aynı pattern: p.qty
       // (BOM modeline göre 'qty' field'ı kullanılır, varsa 'qtyPerParent' fallback)
-      const childQty = (c) => safeNum(c.p.qty) || safeNum(c.p.qtyPerParent) || 1;
+      // Birim dönüşümü: BOM birimi ≠ satınalma birimi olan stoklar için (örn. streç film
+      // BOM'da MT, satınalma AD). unitConversions.conversions[stok].factor tanımlıysa
+      // bomQty / factor ile satınalma birimine çevrilir; yoksa mevcut davranış korunur.
+      const childQty = (c) => {
+        const raw = safeNum(c.p.qty) || safeNum(c.p.qtyPerParent) || 1;
+        const conv = unitConversions?.conversions?.[c.p.stockCode];
+        if (conv?.factor > 0) return raw / conv.factor;
+        return raw;
+      };
 
       // Material hesabı — supplyType'a göre dallan
       // BUY/RAW: bitmiş satın alma → sadece directLookup.cost. Children ve operations

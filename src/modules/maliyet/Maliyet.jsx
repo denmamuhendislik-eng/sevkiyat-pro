@@ -8,6 +8,7 @@ import InventoryTab from "./InventoryTab";
 import SuppliesTab from "./SuppliesTab";
 import MaliyetDashboard from "./MaliyetDashboard";
 import ProfitabilityTab from "./ProfitabilityTab";
+import UnitConversionsTab from "./UnitConversionsTab";
 import { subscribeCurrencyRates } from "./firestore";
 import { CURRENCIES, CURRENCY_SYMBOLS, CURRENCY_LABELS, getLatestRates, resolveActiveRates } from "./currency";
 
@@ -17,6 +18,7 @@ const TABS = [
   { id: "supplies", icon: "🛢", label: "Stok Sarf Hareketleri", phase: 2, active: true, note: "Kesici takım, kesme yağı, PPE vs. — talaşlı imalat WC'lerine dağıtılır" },
   { id: "machineRates", icon: "⚙️", label: "Tezgah Dakika Ücretleri", phase: 2, active: true },
   { id: "unitCosts", icon: "🏷", label: "Birim Maliyetler", phase: 1, active: true },
+  { id: "unitConversions", icon: "🔀", label: "Birim Dönüşümleri", phase: 1, active: true, note: "BOM birimi ≠ satınalma birimi olan stoklar (streç film MT ↔ AD gibi) için dönüşüm faktörü" },
   { id: "fasonRates", icon: "🔧", label: "Fason Ücretleri", phase: 3, active: true, note: "Geçici tablo — fason takip modülü gelene kadar" },
   { id: "productCosts", icon: "📦", label: "Mamul Maliyetleri", phase: 3, active: true },
   { id: "shipmentCosts", icon: "🚛", label: "Sevkiyat Maliyetleri", phase: 4, active: false, note: "Faz 4 — FIFO bazlı" },
@@ -172,6 +174,7 @@ export default function Maliyet({ isAdmin, isUretim }) {
       {activeTab === "supplies" && <SuppliesTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "machineRates" && <MachineRatesTab canEdit={canEdit} {...currencyProps} />}
       {activeTab === "unitCosts" && <UnitCostsTab canEdit={canEdit} isAdmin={isAdmin} />}
+      {activeTab === "unitConversions" && <UnitConversionsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "fasonRates" && <FasonRatesTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} />}
       {activeTab === "inventory" && <InventoryTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} currencyRates={currencyRates} />}

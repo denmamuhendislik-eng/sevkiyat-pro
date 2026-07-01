@@ -5,6 +5,7 @@ import {
   subscribeBomModels, subscribeWorkCenters, subscribeLaborCosts,
   subscribeOverheadPolicy, subscribeFasonRates,
   subscribeProducts, subscribeSalesOrders, subscribeBomMapping,
+  subscribeUnitConversions,
   saveCatOverride,
 } from "./firestore";
 import { calculateInventoryValue, quarterKey, quarterEndDate, monthKey, monthLabel } from "./inventoryCalc";
@@ -90,7 +91,8 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
   const [products, setProducts] = useState([]);
   const [salesOrders, setSalesOrders] = useState({});
   const [bomMapping, setBomMapping] = useState({});
-  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, bom: false, wc: false, labor: false, pol: false, fason: false, prod: false, so: false, map: false });
+  const [unitConversions, setUnitConversions] = useState({ conversions: {} });
+  const [loaded, setLoaded] = useState({ stock: false, unit: false, snap: false, bom: false, wc: false, labor: false, pol: false, fason: false, prod: false, so: false, map: false, uconv: false });
   const [search, setSearch] = useState("");
   const [showMissing, setShowMissing] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -115,6 +117,7 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
   useEffect(() => { const u = subscribeProducts(d => { setProducts(Array.isArray(d) ? d : []); setLoaded(p => ({ ...p, prod: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(p => ({ ...p, so: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeBomMapping(d => { setBomMapping(d || {}); setLoaded(p => ({ ...p, map: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeUnitConversions(d => { setUnitConversions(d || { conversions: {} }); setLoaded(p => ({ ...p, uconv: true })); }); return u; }, []);
 
   const allLoaded = Object.values(loaded).every(Boolean);
 
@@ -133,8 +136,8 @@ export default function InventoryTab({ canEdit, isAdmin, currency = "TRY", rates
     if (!allLoaded || !productCostMonth) return null;
     const monthData = monthlyOverheads[productCostMonth];
     if (!monthData) return null;
-    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: productCostMonth });
-  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates, monthlySupplies]);
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: productCostMonth, unitConversions });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates, monthlySupplies, unitConversions]);
 
   // Anlık envanter hesap (her render'da fresh)
   const catOverrides = bomMapping?._catOverrides || {};

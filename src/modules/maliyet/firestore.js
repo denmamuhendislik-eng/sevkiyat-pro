@@ -414,3 +414,62 @@ export async function clearUnitCosts({ canEdit, isAdmin }) {
   const ref = doc(db, APP_COL, UNIT_COSTS_DOC);
   await setDoc(ref, { byStock: {}, lastImport: null, importCount: 0 });
 }
+
+// ====================================================================
+// Birim Dönüşümleri — BOM birimi ≠ satınalma birimi olan stoklar için.
+// Yapı: { conversions: { [stokKodu]: { purchaseUnit, bomUnit, factor, updatedAt, updatedBy } } }
+// factor = 1 satınalma birimi kaç BOM birimine denk (örn. 1 AD = 300 MT → factor: 300).
+// Kod: cost = (bomQty / factor) * unitPriceTl_perPurchaseUnit
+// ====================================================================
+const UNIT_CONVERSIONS_DOC = "unitConversions";
+
+export function subscribeUnitConversions(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, UNIT_CONVERSIONS_DOC);
+  return onSnapshot(ref, (snap) => {
+    callback(snap.exists() ? (snap.data() || {}) : { conversions: {} });
+  });
+}
+
+export async function saveUnitConversion(stokKodu, data, { canEdit, userEmail }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!stokKodu) throw new Error("stokKodu zorunlu");
+  if (!data.purchaseUnit || !data.bomUnit) throw new Error("purchaseUnit ve bomUnit zorunlu");
+  const factor = Number(data.factor);
+  if (!Number.isFinite(factor) || factor <= 0) throw new Error("factor > 0 olmalı");
+  const ref = doc(db, APP_COL, UNIT_CONVERSIONS_DOC);
+  await setDoc(ref, {
+    conversions: {
+      [stokKodu]: {
+        purchaseUnit: String(data.purchaseUnit).trim().toUpperCase(),
+        bomUnit: String(data.bomUnit).trim().toUpperCase(),
+        factor,
+        updatedAt: new Date().toISOString(),
+        updatedBy: userEmail || "",
+      },
+    },
+  }, { merge: true });
+}
+
+export async function deleteUnitConversion(stokKodu, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!stokKodu) throw new Error("stokKodu zorunlu");
+  const ref = doc(db, APP_COL, UNIT_CONVERSIONS_DOC);
+  await updateDoc(ref, {
+    [`conversions.${stokKodu}`]: deleteField(),
+  });
+}
+
+// Helper: kayıtlı dönüşümü döndürür, yoksa null
+export function getUnitConversion(unitConversionsData, stokKodu) {
+  if (!unitConversionsData?.conversions) return null;
+  return unitConversionsData.conversions[stokKodu] || null;
+}
+
+// Helper: BOM'daki miktarı satınalma birimine çevirir (dönüşüm varsa)
+// Yoksa orijinal miktarı döner (mevcut davranışı korur — güvence).
+export function convertBomQtyToPurchaseUnit(bomQty, unitConversionsData, stokKodu) {
+  const conv = getUnitConversion(unitConversionsData, stokKodu);
+  if (!conv || !conv.factor) return bomQty;
+  return bomQty / conv.factor;
+}

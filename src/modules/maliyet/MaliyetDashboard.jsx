@@ -4,7 +4,7 @@ import {
   subscribeInventorySnapshots, subscribeMrpStock, subscribeUnitCosts,
   subscribeLaborCosts, subscribeBomModels, subscribeWorkCenters,
   subscribeOverheadPolicy, subscribeFasonRates, subscribeProducts,
-  subscribeSalesOrders, subscribeBomMapping,
+  subscribeSalesOrders, subscribeBomMapping, subscribeUnitConversions,
 } from "./firestore";
 import { calculateInventoryValue, monthLabel } from "./inventoryCalc";
 import { calculateAllProductCosts } from "./productCostCalc";
@@ -28,9 +28,10 @@ export default function MaliyetDashboard({ currency = "TRY", rates = null, curre
   const [products, setProducts] = useState([]);
   const [salesOrders, setSalesOrders] = useState({});
   const [bomMapping, setBomMapping] = useState({});
+  const [unitConversions, setUnitConversions] = useState({ conversions: {} });
   const [loaded, setLoaded] = useState({
     stock: false, unit: false, snap: false, labor: false,
-    bom: false, wc: false, pol: false, fason: false, prod: false, so: false, map: false,
+    bom: false, wc: false, pol: false, fason: false, prod: false, so: false, map: false, uconv: false,
   });
 
   useEffect(() => { const u = subscribeMrpStock(d => { setMrpStock(d || {}); setLoaded(p => ({ ...p, stock: true })); }); return u; }, []);
@@ -50,6 +51,7 @@ export default function MaliyetDashboard({ currency = "TRY", rates = null, curre
   useEffect(() => { const u = subscribeProducts(d => { setProducts(Array.isArray(d) ? d : []); setLoaded(p => ({ ...p, prod: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(p => ({ ...p, so: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeBomMapping(d => { setBomMapping(d || {}); setLoaded(p => ({ ...p, map: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeUnitConversions(d => { setUnitConversions(d || { conversions: {} }); setLoaded(p => ({ ...p, uconv: true })); }); return u; }, []);
 
   const allLoaded = Object.values(loaded).every(Boolean);
 
@@ -68,8 +70,8 @@ export default function MaliyetDashboard({ currency = "TRY", rates = null, curre
     if (!allLoaded || !productCostMonth) return null;
     const monthData = monthlyOverheads[productCostMonth];
     if (!monthData) return null;
-    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: productCostMonth });
-  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates, monthlySupplies]);
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: productCostMonth, unitConversions });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates, monthlySupplies, unitConversions]);
 
   // Anlık envanter — InventoryTab ile birebir aynı (productCosts + mamul fallback dahil)
   const catOverrides = bomMapping?._catOverrides || {};

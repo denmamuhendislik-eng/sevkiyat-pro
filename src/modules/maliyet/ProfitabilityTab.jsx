@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo } from "react";
 import {
   subscribeBomModels, subscribeWorkCenters, subscribeUnitCosts,
   subscribeLaborCosts, subscribeOverheadPolicy, subscribeFasonRates,
-  subscribeProducts, subscribeSalesOrders,
+  subscribeProducts, subscribeSalesOrders, subscribeUnitConversions,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS } from "./distributionCalc";
@@ -47,7 +47,8 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
   const [fasonRates, setFasonRates] = useState({});
   const [products, setProducts] = useState([]);
   const [salesOrders, setSalesOrders] = useState({});
-  const [loaded, setLoaded] = useState({ bom: false, wc: false, unit: false, labor: false, pol: false, fason: false, prod: false, so: false });
+  const [unitConversions, setUnitConversions] = useState({ conversions: {} });
+  const [loaded, setLoaded] = useState({ bom: false, wc: false, unit: false, labor: false, pol: false, fason: false, prod: false, so: false, uconv: false });
   const [selectedMonth, setSelectedMonth] = useState(todayMonth());
   const [channelFilter, setChannelFilter] = useState("all"); // all | sevkiyat | digerMusteriler | noPrice
   const [search, setSearch] = useState("");
@@ -68,6 +69,7 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
   useEffect(() => { const u = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(p => ({ ...p, fason: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeProducts(d => { setProducts(Array.isArray(d) ? d : []); setLoaded(p => ({ ...p, prod: true })); }); return u; }, []);
   useEffect(() => { const u = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(p => ({ ...p, so: true })); }); return u; }, []);
+  useEffect(() => { const u = subscribeUnitConversions(d => { setUnitConversions(d || { conversions: {} }); setLoaded(p => ({ ...p, uconv: true })); }); return u; }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
   const monthsAvailable = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
@@ -88,8 +90,8 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
 
   const calc = useMemo(() => {
     if (!allLoaded || !monthData) return null;
-    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: selectedMonth });
-  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, selectedMonth]);
+    return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: selectedMonth, unitConversions });
+  }, [allLoaded, bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, selectedMonth, unitConversions]);
 
   // Sevkiyat Planı: vioCode → product map (salesPriceEur için)
   // products[].vioCode boş olan eski ürünler için LEGACY_VIO_CODES fallback —
