@@ -404,12 +404,17 @@ export function calculateAllProductCosts({ bomModels, unitCosts, workCenters, mo
     // Her parça için root'a etkili kullanım miktarı (effectiveQty) — root'tan o parçaya
     // inerken zincir qty çarpımı (1 adet root mamul için bu parçadan kaç adet/kg kullanılıyor).
     // Bu × unitCost = root maliyetine katkı (contribution).
+    // Birim dönüşümü: childQty ile aynı mantık — konfigüre stok için raw / factor uygula,
+    // display ve ana material hesabı birbirine tutarlı kalsın.
     function getEffectiveQty(idx) {
       let qty = 1;
       let cur = parts[idx];
       // Yukarı zincir: root'a kadar parent.qty çarpımı
       while (cur && cur.parentIdx !== null && cur.parentIdx !== undefined) {
-        qty *= safeNum(cur.qty) || safeNum(cur.qtyPerParent) || 1;
+        let stepQty = safeNum(cur.qty) || safeNum(cur.qtyPerParent) || 1;
+        const conv = unitConversions?.conversions?.[cur.stockCode];
+        if (conv?.factor > 0) stepQty = stepQty / conv.factor;
+        qty *= stepQty;
         cur = parts[cur.parentIdx];
       }
       return Math.round(qty * 1000000) / 1000000;  // ondalık hassasiyet
