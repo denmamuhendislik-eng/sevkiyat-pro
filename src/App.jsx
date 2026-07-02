@@ -5635,6 +5635,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   // İş Merkezleri tab'ında inline tatil editor için
   const [newHolidayDateMrp, setNewHolidayDateMrp] = useState("");
   const [showHolidayList, setShowHolidayList] = useState(false);
+  // Yeni tezgah / manuel tezgah düzenleme modal — { wcCode, mode: "add" | "edit", idx?, id, name }
+  const [machineModal, setMachineModal] = useState(null);
   // Resmi tatiller — sevkiyat tarafıyla ortak (montajData/state doc'undaki capacity.holidays).
   // Schedule motoru ve mSt iş günü hesabında bu liste kullanılır.
   const [holidayList, setHolidayList] = useState([]);
@@ -9856,20 +9858,54 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   };
 
   // ==================== WORK CENTER UI ====================
+  // Legacy hızlı ekleme — kullanılmıyor artık, modal akışına yönlendirir
   const addMachine = (wcCode) => {
     if (!workCenters || !canEdit) return;
     const wc = workCenters.centers[wcCode];
     if (!wc) return;
     const machines = wc.machines || [];
-    const nextId = wcCode + (machines.length + 1).toString().padStart(2, "0");
+    const suggestedId = wcCode + (machines.length + 1).toString().padStart(2, "0");
+    setMachineModal({ wcCode, mode: "add", idx: null, id: suggestedId, name: "" });
+  };
+
+  // Manuel eklenen tezgahın kod+isim düzenleme modal'ını aç
+  const openMachineEdit = (wcCode, idx, machine) => {
+    if (!canEdit) return;
+    setMachineModal({
+      wcCode, mode: "edit", idx,
+      id: machine.id || "",
+      name: machine.name || "",
+    });
+  };
+
+  // Modal kaydet — ekleme yeni satır (source: "manual"), düzenleme mevcut satırı günceller
+  const saveMachineModal = () => {
+    if (!machineModal || !workCenters || !canEdit) return;
+    const { wcCode, mode, idx } = machineModal;
+    const id = machineModal.id.trim();
+    const name = machineModal.name.trim();
+    if (!id) { alert("Kod boş olamaz"); return; }
+    if (!name) { alert("İsim boş olamaz"); return; }
+    const wc = workCenters.centers[wcCode];
+    if (!wc) return;
+    const machines = [...(wc.machines || [])];
+    const dupIdx = machines.findIndex((m, i) => m.id === id && i !== idx);
+    if (dupIdx >= 0) { alert(`"${id}" kodu zaten başka bir tezgahta kullanılıyor.`); return; }
+    if (mode === "add") {
+      machines.push({
+        id, name, hoursPerDay: workCenters.shiftHours || 9,
+        source: "manual",
+      });
+    } else {
+      const cur = machines[idx] || {};
+      machines[idx] = { ...cur, id, name };
+    }
     const newWC = {
       ...workCenters,
-      centers: {
-        ...workCenters.centers,
-        [wcCode]: { ...wc, machines: [...machines, { id: nextId, name: "Tezgah " + nextId, hoursPerDay: workCenters.shiftHours || 9 }] }
-      }
+      centers: { ...workCenters.centers, [wcCode]: { ...wc, machines } }
     };
     saveWC(newWC);
+    setMachineModal(null);
   };
 
   const removeMachine = (wcCode, machineIdx) => {
@@ -11063,15 +11099,25 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                   </div>
 
                   {/* Machines list */}
-                  {machines.map((m, mi) => (
-                    <div key={mi} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0", fontSize: 11, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-                      <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{m.id}</span>
-                      <span style={{ flex: 1 }}>{m.name}</span>
-                      {m.mesOpCodes && <span style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#ECFDF5", color: "#10B981" }}>MES</span>}
-                      <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{m.hoursPerDay}s/gün</span>
-                      {canEdit && <span onClick={() => removeMachine(code, mi)} style={{ fontSize: 10, cursor: "pointer", color: "var(--color-text-tertiary)" }}>✕</span>}
-                    </div>
-                  ))}
+                  {machines.map((m, mi) => {
+                    const isManual = m.source === "manual";
+                    return (
+                      <div key={mi} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 0", fontSize: 11, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                        <span style={{ fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-secondary)" }}>{m.id}</span>
+                        <span style={{ flex: 1 }}>{m.name}</span>
+                        {isManual ? (
+                          <span title="Manuel eklendi — kod ve isim düzenlenebilir" style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#DBEAFE", color: "#1E40AF" }}>MANUEL</span>
+                        ) : (m.mesOpCodes && m.mesOpCodes.length > 0) ? (
+                          <span title="MES aktarımından geldi — kod/isim kilitli" style={{ fontSize: 7, padding: "1px 3px", borderRadius: 2, background: "#ECFDF5", color: "#10B981" }}>MES</span>
+                        ) : null}
+                        <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{m.hoursPerDay}s/gün</span>
+                        {canEdit && isManual && (
+                          <span onClick={() => openMachineEdit(code, mi, m)} title="Kod/ismi düzenle" style={{ fontSize: 10, cursor: "pointer", color: "var(--color-text-secondary)" }}>✏️</span>
+                        )}
+                        {canEdit && <span onClick={() => removeMachine(code, mi)} style={{ fontSize: 10, cursor: "pointer", color: "var(--color-text-tertiary)" }}>✕</span>}
+                      </div>
+                    );
+                  })}
 
                   {machines.length === 0 && <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", padding: "4px 0" }}>Tezgah tanımlı değil</div>}
 
@@ -11128,6 +11174,57 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
             <div style={{ textAlign: "center", padding: 40, color: "var(--color-text-tertiary)" }}>
               <div style={{ fontSize: 14, marginBottom: 4 }}>İş merkezi tanımlı değil</div>
               <div style={{ fontSize: 12 }}>BOM import edildiğinde iş merkezleri otomatik algılanır</div>
+            </div>
+          )}
+
+          {/* Yeni tezgah / manuel düzenle modal */}
+          {machineModal && (
+            <div
+              onClick={(e) => { if (e.target === e.currentTarget) setMachineModal(null); }}
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+            >
+              <div style={{ background: "#fff", borderRadius: 8, width: "min(460px, 92vw)", padding: 20 }}>
+                <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>
+                  {machineModal.mode === "add" ? "➕ Yeni Tezgah / Ekipman" : "✏️ Manuel Tezgah Düzenle"}
+                </h3>
+                <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+                  İş merkezi: <b>{workCenters?.centers?.[machineModal.wcCode]?.name || machineModal.wcCode}</b>
+                </div>
+                <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4, fontWeight: 500 }}>
+                      Tezgah Kodu {machineModal.mode === "add" && <span style={{ color: "var(--color-text-tertiary)", fontWeight: 400 }}>· MES aktarımından gelecek kod ile aynı yaz</span>}
+                    </label>
+                    <input
+                      type="text"
+                      value={machineModal.id}
+                      onChange={(e) => setMachineModal({ ...machineModal, id: e.target.value })}
+                      placeholder="örn. TZ_15"
+                      autoFocus
+                      style={{ width: "100%", padding: "6px 10px", border: "1px solid var(--color-border-tertiary)", borderRadius: 4, fontSize: 12, fontFamily: "var(--font-mono)", boxSizing: "border-box" }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ display: "block", fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4, fontWeight: 500 }}>İsim</label>
+                    <input
+                      type="text"
+                      value={machineModal.name}
+                      onChange={(e) => setMachineModal({ ...machineModal, name: e.target.value })}
+                      placeholder="örn. CNC Torna 15"
+                      style={{ width: "100%", padding: "6px 10px", border: "1px solid var(--color-border-tertiary)", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }}
+                    />
+                  </div>
+                  <div style={{ padding: 8, background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 4, fontSize: 10, color: "#1E40AF", lineHeight: 1.5 }}>
+                    💡 MES aktarımından geldiğinde kod eşleşirse tezgah otomatik güncellenir. Manuel eklenen tezgahlarda kod/isim düzenlemesi açık kalır.
+                  </div>
+                </div>
+                <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button onClick={() => setMachineModal(null)} style={{ padding: "7px 14px", fontSize: 12, border: "1px solid var(--color-border-secondary)", background: "transparent", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+                  <button onClick={saveMachineModal} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, background: "#1D9E75", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}>
+                    {machineModal.mode === "add" ? "➕ Ekle" : "💾 Kaydet"}
+                  </button>
+                </div>
+              </div>
             </div>
           )}
         </div>
