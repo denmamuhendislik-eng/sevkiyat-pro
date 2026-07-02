@@ -38,6 +38,8 @@ export default function MachineRatesTab({ canEdit, currency = "TRY", rates = nul
   const [bomModels, setBomModels] = useState({});
   // WC bazlı manuel cycle input drafts (kaydedilmemiş değişiklikler)
   const [cycleDrafts, setCycleDrafts] = useState({});
+  // Yeni tezgah / düzenleme modal state — { wcCode, mode: "add" | "edit", idx?, id, name }
+  const [machineModal, setMachineModal] = useState(null);
 
   useEffect(() => {
     const unsub = subscribeLaborCosts((d) => setLaborData(d || {}));
@@ -182,21 +184,54 @@ export default function MachineRatesTab({ canEdit, currency = "TRY", rates = nul
     });
   };
 
-  // Sanal tezgah / yardımcı ekipman ekleme — mesOpCodes yok → MRP iş atamaz, sadece maliyet havuzu
-  const handleAddVirtual = async (code) => {
+  // Yeni tezgah ekleme modal'ını aç — kullanıcı MES'ten geleceği bilinen kod+isim girer.
+  // source: "manual" işaretlenir → sonradan bu tezgahın kod/isim düzenlemesi açılır.
+  // MES'ten gelen tezgahlarda source alanı boş (veya "mes") → düzenleme yasak, risk yok.
+  const handleOpenAddModal = (wcCode) => {
     if (!canEdit) return;
-    const name = prompt("Yardımcı ekipman/personel grubu adı:\n(örn. \"Kalite Kontrol Personel\", \"Yardımcı Ekipman\")");
-    if (!name || !name.trim()) return;
-    const wc = workCenters?.centers?.[code];
-    const machines = drafts[code]?.machines || wc?.machines || [];
-    const nextId = code + String(machines.length + 1).padStart(2, "0");
-    const newList = [...machines, { id: nextId, name: name.trim() }];
+    const wc = workCenters?.centers?.[wcCode];
+    const machines = drafts[wcCode]?.machines || wc?.machines || [];
+    const suggestedId = wcCode + String(machines.length + 1).padStart(2, "0");
+    setMachineModal({ wcCode, mode: "add", idx: null, id: suggestedId, name: "" });
+  };
+
+  const handleOpenEditModal = (wcCode, idx, machine) => {
+    if (!canEdit) return;
+    setMachineModal({
+      wcCode, mode: "edit", idx,
+      id: machine.id || "",
+      name: machine.name || "",
+    });
+  };
+
+  const handleSaveMachineModal = async () => {
+    if (!machineModal || !canEdit) return;
+    const { wcCode, mode, idx } = machineModal;
+    const id = machineModal.id.trim();
+    const name = machineModal.name.trim();
+    if (!id) { alert("Kod boş olamaz"); return; }
+    if (!name) { alert("İsim boş olamaz"); return; }
+    const wc = workCenters?.centers?.[wcCode];
+    const machines = [...(drafts[wcCode]?.machines || wc?.machines || [])];
+    // Aynı kod başka satırda varsa uyar (edit ise kendi satırı hariç)
+    const dupIdx = machines.findIndex((m, i) => m.id === id && i !== idx);
+    if (dupIdx >= 0) {
+      alert(`"${id}" kodu zaten başka bir tezgahta kullanılıyor.`);
+      return;
+    }
+    if (mode === "add") {
+      machines.push({ id, name, source: "manual" });
+    } else {
+      // Edit — sadece manuel eklenen tezgahlarda çalışır (UI zaten butonu göstermiyor)
+      const cur = machines[idx] || {};
+      machines[idx] = { ...cur, id, name };
+    }
     try {
-      await saveMachinesForWc(code, newList, { canEdit });
-      // Draft varsa temizle (artık subscribe ile yeni veri gelir)
-      if (drafts[code]) handleResetWc(code);
+      await saveMachinesForWc(wcCode, machines, { canEdit });
+      if (drafts[wcCode]) handleResetWc(wcCode);
+      setMachineModal(null);
     } catch (e) {
-      alert("Ekleme hatası: " + e.message);
+      alert("Kayıt hatası: " + e.message);
     }
   };
 
@@ -278,11 +313,11 @@ export default function MachineRatesTab({ canEdit, currency = "TRY", rates = nul
                 })()}
                 {isEmpty && canEdit && (
                   <button
-                    onClick={() => handleAddVirtual(code)}
-                    title="Bu merkez için yardımcı ekipman/personel kaydı ekle — MRP'ye iş atanmaz, sadece maliyet havuzu"
+                    onClick={() => handleOpenAddModal(code)}
+                    title="Bu merkez için tezgah / yardımcı ekipman ekle. MES aktarımından önce kod+isim vererek ön hazırlık yapabilirsin."
                     style={{ marginLeft: "auto", padding: "4px 12px", borderRadius: 4, border: "1px dashed var(--color-border-info)", background: "transparent", color: "var(--color-text-info)", fontSize: 11, fontWeight: 500, cursor: "pointer" }}
                   >
-                    + Yardımcı ekipman/personel ekle
+                    + Tezgah / ekipman ekle
                   </button>
                 )}
                 {isDirty && canEdit && (
@@ -325,13 +360,27 @@ export default function MachineRatesTab({ canEdit, currency = "TRY", rates = nul
                       <tbody>
                         {machines.map((m, idx) => {
                           const isVirtual = !m.mesOpCodes || m.mesOpCodes.length === 0;
+                          const isManual = m.source === "manual";
+                          const canEditThis = canEdit && isManual;
                           return (
                             <tr key={m.id || idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
                               <td style={{ padding: "5px 10px" }}>
                                 <div style={{ fontSize: 11, fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 5 }}>
                                   {m.name || m.id}
+                                  {isManual ? (
+                                    <span title="Manuel eklendi — kod ve isim düzenlenebilir. MES aktarımında eşleşen kod bulunursa güncellenir." style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#DBEAFE", color: "#1E40AF" }}>MANUEL</span>
+                                  ) : (
+                                    <span title="MES aktarımından geldi — kod ve isim değişimi devre dışı (eşleşme bozulmasın diye)" style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#DCFCE7", color: "#166534" }}>MES</span>
+                                  )}
                                   {isVirtual && (
                                     <span title="Yardımcı ekipman/personel — MRP iş atamaz, sadece maliyet havuzu" style={{ fontSize: 8, padding: "1px 4px", borderRadius: 3, background: "#FEF3C7", color: "#92400E" }}>YRD</span>
+                                  )}
+                                  {canEditThis && (
+                                    <button
+                                      onClick={() => handleOpenEditModal(code, idx, m)}
+                                      title="Kod ve ismi düzenle"
+                                      style={{ padding: "0 4px", border: "none", background: "transparent", cursor: "pointer", fontSize: 10, color: "var(--color-text-secondary)" }}
+                                    >✏️</button>
                                   )}
                                 </div>
                                 {m.id && m.id !== m.name && <div style={{ fontFamily: "var(--font-mono)", fontSize: 9, color: "var(--color-text-tertiary)" }}>{m.id}</div>}
@@ -383,11 +432,11 @@ export default function MachineRatesTab({ canEdit, currency = "TRY", rates = nul
                   {canEdit && (
                     <div style={{ padding: "6px 14px", borderTop: "0.5px solid var(--color-border-tertiary)", textAlign: "right" }}>
                       <button
-                        onClick={() => handleAddVirtual(code)}
-                        title="Bu merkez için yardımcı ekipman/personel kaydı ekle"
+                        onClick={() => handleOpenAddModal(code)}
+                        title="Bu merkez için yeni tezgah veya yardımcı ekipman ekle"
                         style={{ padding: "3px 10px", borderRadius: 4, border: "1px dashed var(--color-border-secondary)", background: "transparent", color: "var(--color-text-secondary)", fontSize: 10, cursor: "pointer" }}
                       >
-                        + Yardımcı ekipman/personel
+                        + Tezgah / ekipman ekle
                       </button>
                     </div>
                   )}
@@ -397,6 +446,61 @@ export default function MachineRatesTab({ canEdit, currency = "TRY", rates = nul
           );
         })}
       </div>
+
+      {/* Yeni tezgah / düzenleme modal */}
+      {machineModal && (
+        <div
+          onClick={(e) => { if (e.target === e.currentTarget) setMachineModal(null); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+        >
+          <div style={{ background: "#fff", borderRadius: 8, width: "min(460px, 92vw)", padding: 20 }}>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>
+              {machineModal.mode === "add" ? "➕ Yeni Tezgah / Ekipman" : "✏️ Manuel Tezgah Düzenle"}
+            </h3>
+            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+              İş merkezi: <b>{workCenters?.centers?.[machineModal.wcCode]?.name || machineModal.wcCode}</b>
+            </div>
+
+            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4, fontWeight: 500 }}>
+                  Tezgah Kodu {machineModal.mode === "add" && <span style={{ color: "var(--color-text-tertiary)", fontWeight: 400 }}>· MES aktarımından gelecek kod ile aynı yaz</span>}
+                </label>
+                <input
+                  type="text"
+                  value={machineModal.id}
+                  onChange={(e) => setMachineModal({ ...machineModal, id: e.target.value })}
+                  placeholder="örn. TZ_15"
+                  autoFocus
+                  style={{ width: "100%", padding: "6px 10px", border: "1px solid var(--color-border-tertiary)", borderRadius: 4, fontSize: 12, fontFamily: "var(--font-mono)", boxSizing: "border-box" }}
+                />
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 4, fontWeight: 500 }}>
+                  İsim
+                </label>
+                <input
+                  type="text"
+                  value={machineModal.name}
+                  onChange={(e) => setMachineModal({ ...machineModal, name: e.target.value })}
+                  placeholder="örn. CNC Torna 15"
+                  style={{ width: "100%", padding: "6px 10px", border: "1px solid var(--color-border-tertiary)", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }}
+                />
+              </div>
+              <div style={{ padding: 8, background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 4, fontSize: 10, color: "#1E40AF", lineHeight: 1.5 }}>
+                💡 MES aktarımından geldiğinde kod eşleşirse tezgah otomatik güncellenir. Manuel eklenen tezgahlarda kod/isim düzenlemesi açık kalır.
+              </div>
+            </div>
+
+            <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setMachineModal(null)} style={{ padding: "7px 14px", fontSize: 12, border: "1px solid var(--color-border-secondary)", background: "transparent", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+              <button onClick={handleSaveMachineModal} style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, background: "#1D9E75", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}>
+                {machineModal.mode === "add" ? "➕ Ekle" : "💾 Kaydet"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Dağıtım politikası + hesap önizleme */}
       <DistributionPanel
