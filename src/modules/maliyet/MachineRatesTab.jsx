@@ -359,8 +359,9 @@ export default function MachineRatesTab({ canEdit, currency = "TRY", rates = nul
                       </thead>
                       <tbody>
                         {machines.map((m, idx) => {
-                          const isVirtual = !m.mesOpCodes || m.mesOpCodes.length === 0;
                           const isManual = m.source === "manual";
+                          // YRD = MES ile eşleşmemiş VE manuel de değil (eski yardımcı ekipman kayıtları)
+                          const isVirtual = (!m.mesOpCodes || m.mesOpCodes.length === 0) && !isManual;
                           const canEditThis = canEdit && isManual;
                           return (
                             <tr key={m.id || idx} style={{ borderTop: "0.5px solid var(--color-border-tertiary)" }}>
