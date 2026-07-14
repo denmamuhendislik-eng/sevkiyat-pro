@@ -8,7 +8,7 @@ import {
 } from "./firestore";
 import { calculateInventoryValue, monthLabel } from "./inventoryCalc";
 import { calculateAllProductCosts } from "./productCostCalc";
-import { DEFAULT_WEIGHTS } from "./distributionCalc";
+import { DEFAULT_WEIGHTS, getOverheadMonthlyAvg } from "./distributionCalc";
 import { fmtMoneyNum, getRatesForDate, CURRENCY_SYMBOLS } from "./currency";
 
 const fmt2 = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -68,7 +68,16 @@ export default function MaliyetDashboard({ currency = "TRY", rates = null, curre
 
   const productCosts = useMemo(() => {
     if (!allLoaded || !productCostMonth) return null;
-    const monthData = monthlyOverheads[productCostMonth];
+    // Aylık genel giderler — policy.overheadAvgMode "avg" ise hareketli ortalama, aksi halde tek ay
+    const overheadAvgMode = policy?.overheadAvgMode || "avg";
+    const overheadAvgWindow = Number(policy?.overheadAvgWindowMonths) || 6;
+    let monthData;
+    if (overheadAvgMode === "avg") {
+      const avg = getOverheadMonthlyAvg(monthlyOverheads, overheadAvgWindow, productCostMonth);
+      monthData = avg?._avgInfo?.monthsUsed > 0 ? avg : monthlyOverheads[productCostMonth];
+    } else {
+      monthData = monthlyOverheads[productCostMonth];
+    }
     if (!monthData) return null;
     return calculateAllProductCosts({ bomModels, unitCosts, workCenters, monthData, policy, fasonRates, monthlySupplies, refMonth: productCostMonth, unitConversions });
   }, [allLoaded, bomModels, unitCosts, workCenters, monthlyOverheads, productCostMonth, policy, fasonRates, monthlySupplies, unitConversions]);

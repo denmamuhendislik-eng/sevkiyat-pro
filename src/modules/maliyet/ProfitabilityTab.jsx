@@ -5,7 +5,7 @@ import {
   subscribeProducts, subscribeSalesOrders, subscribeUnitConversions,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
-import { DEFAULT_WEIGHTS } from "./distributionCalc";
+import { DEFAULT_WEIGHTS, getOverheadMonthlyAvg } from "./distributionCalc";
 import { fmtMoneyNum, CURRENCY_SYMBOLS } from "./currency";
 import { LEGACY_VIO_CODES } from "../../data/legacyVioCodes";
 
@@ -84,7 +84,15 @@ export default function ProfitabilityTab({ currency = "TRY", rates = null }) {
     else setSelectedMonth(monthsAvailable[0]);
   }, [monthsAvailable, selectedMonth, monthlyOverheads]);
 
-  const monthData = monthlyOverheads[selectedMonth];
+  const overheadAvgMode = policy?.overheadAvgMode || "avg";
+  const overheadAvgWindow = Number(policy?.overheadAvgWindowMonths) || 6;
+  const monthData = useMemo(() => {
+    if (overheadAvgMode === "avg") {
+      const avg = getOverheadMonthlyAvg(monthlyOverheads, overheadAvgWindow, selectedMonth);
+      if (avg?._avgInfo?.monthsUsed > 0) return avg;
+    }
+    return monthlyOverheads[selectedMonth];
+  }, [monthlyOverheads, overheadAvgMode, overheadAvgWindow, selectedMonth]);
   const allLoaded = Object.values(loaded).every(Boolean);
   const monthlySupplies = laborData?.monthlySupplies || {};
 

@@ -248,6 +248,65 @@ export function suggestWcSalaryMapping(items, wcCenters) {
   return suggestions;
 }
 
+// ==================== AYLIK GENEL GİDER — HAREKETLİ ORTALAMA ====================
+// Bazı aylarda yığılma (yıllık vergi, tek sefer bakım, personel primi) olabildiği için
+// tezgah dakika ücreti hesabında da son N ayın ortalaması alınabilir. Kalem (item) bazlı
+// ortalama yapar — aynı kod her ayda geçtiyse ortalaması, bir ayda yoksa 0 sayılır.
+//
+// monthlyOverheads: { "2026-01": { items: [{id, code, name, category, amount}], totalTl }, ... }
+// windowMonths:     son kaç ay (3/6/12; default 6)
+// refMonth (ops):   "2026-04" — bu ay DAHİL geriye kaydırılır; verilmezse current hariç
+//
+// Dönüş: monthData formatında ({ items, totalTl }) — calculateMachineRates girdisi olarak
+//        eskisi gibi kullanılır + { _avgInfo: { monthsUsed, monthsList } }
+export function getOverheadMonthlyAvg(monthlyOverheads, windowMonths = 6, refMonth = null) {
+  const map = monthlyOverheads || {};
+  const sorted = Object.keys(map).sort();
+  const today = new Date().toISOString().slice(0, 7);
+  const candidates = sorted.filter(m => {
+    if (m >= today) return false;
+    if (refMonth) return m <= refMonth;
+    return true;
+  });
+  const selected = candidates.slice(-Math.max(1, Number(windowMonths) || 6));
+  if (selected.length === 0) {
+    return { items: [], totalTl: 0, _avgInfo: { monthsUsed: 0, monthsList: [] } };
+  }
+  // Kalem toplayıcı — kod bazlı sum (isim/kategori en son görülen aydan alınır)
+  const itemAgg = {};
+  let totalSum = 0;
+  for (const ym of selected) {
+    const md = map[ym];
+    if (!md) continue;
+    for (const it of (md.items || [])) {
+      const codeKey = String(it.id || it.code || "");
+      if (!codeKey) continue;
+      if (!itemAgg[codeKey]) {
+        itemAgg[codeKey] = {
+          id: it.id, code: it.code || codeKey,
+          name: it.name || "", category: it.category || "",
+          amountSum: 0,
+        };
+      }
+      // İsim/kategori boş değilse güncelle (yeni ay daha güncel bilgi olabilir)
+      if (it.name) itemAgg[codeKey].name = it.name;
+      if (it.category) itemAgg[codeKey].category = it.category;
+      itemAgg[codeKey].amountSum += Number(it.amount) || 0;
+    }
+    totalSum += Number(md.totalTl) || 0;
+  }
+  const n = selected.length;
+  const avgItems = Object.values(itemAgg).map(it => ({
+    id: it.id, code: it.code, name: it.name, category: it.category,
+    amount: it.amountSum / n,
+  }));
+  return {
+    items: avgItems,
+    totalTl: totalSum / n,
+    _avgInfo: { monthsUsed: n, monthsList: selected },
+  };
+}
+
 // ==================== STOK SARF — HAREKETLİ ORTALAMA ====================
 // Yığılan alımları (varil soğutma sıvısı vb.) yumuşatmak için, mamul maliyet
 // hesabında o ayın tek başına TL'i yerine son N ayın aritmetik ortalaması kullanılır.

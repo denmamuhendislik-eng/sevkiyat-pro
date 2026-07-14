@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from "react";
 import { subscribeWorkCenters, saveMachinesForWc, saveWcManualCycle, subscribeLaborCosts, subscribeOverheadPolicy, saveOverheadPolicy, subscribeBomModels } from "./firestore";
-import { calculateMachineRates, DEFAULT_WEIGHTS, suggestWcSalaryMapping } from "./distributionCalc";
+import { calculateMachineRates, DEFAULT_WEIGHTS, suggestWcSalaryMapping, getOverheadMonthlyAvg } from "./distributionCalc";
 import { fmtMoneyNum, CURRENCY_SYMBOLS } from "./currency";
 
 const todayMonth = () => new Date().toISOString().slice(0, 7);
@@ -550,7 +550,22 @@ function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDi
   const csym = CURRENCY_SYMBOLS[currency] || "₺";
   const monthlyOverheads = laborData?.monthlyOverheads || {};
   const monthsAvailable = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
-  const monthData = monthlyOverheads[selectedMonth];
+  const singleMonthData = monthlyOverheads[selectedMonth];
+
+  // Aylık genel giderler hareketli ortalama — sarf mantığıyla aynı.
+  // policy.overheadAvgMode: "avg" (varsayılan) | "single". overheadAvgWindowMonths: 3/6/12.
+  const overheadAvgMode = policy?.overheadAvgMode || "avg";
+  const overheadAvgWindow = Number(policy?.overheadAvgWindowMonths) || 6;
+  const overheadAvg = useMemo(() => {
+    if (overheadAvgMode !== "avg") return null;
+    return getOverheadMonthlyAvg(monthlyOverheads, overheadAvgWindow, selectedMonth);
+  }, [monthlyOverheads, overheadAvgMode, overheadAvgWindow, selectedMonth]);
+  const monthData = overheadAvgMode === "avg" && overheadAvg?._avgInfo?.monthsUsed > 0
+    ? overheadAvg
+    : singleMonthData;
+  const overheadModeInfo = overheadAvgMode === "avg" && overheadAvg?._avgInfo?.monthsUsed > 0
+    ? { mode: "avg", monthsUsed: overheadAvg._avgInfo.monthsUsed, monthsList: overheadAvg._avgInfo.monthsList }
+    : { mode: "single", monthsUsed: singleMonthData ? 1 : 0, monthsList: singleMonthData ? [selectedMonth] : [] };
 
   // Default ay: en son TAMAMLANMIŞ ay (bugünün ayı hariç)
   useEffect(() => {
@@ -810,7 +825,7 @@ function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDi
       {/* Ay seçici + Hesap */}
       <div style={{ padding: "10px 14px" }}>
         <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap", marginBottom: 10 }}>
-          <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Hesap ayı:</label>
+          <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Referans ay:</label>
           {monthsAvailable.length === 0 ? (
             <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>Henüz aylık gider verisi yok</span>
           ) : (
@@ -822,7 +837,56 @@ function DistributionPanel({ workCenters, laborData, policy, setPolicy, policyDi
               {monthsAvailable.map(m => <option key={m} value={m}>{monthLabel(m)} ({m}) · {fmt2(monthlyOverheads[m]?.totalTl)} ₺</option>)}
             </select>
           )}
+
+          {/* Gider kaynağı seçici — ortalama vs seçili ay */}
+          <label style={{ fontSize: 12, color: "var(--color-text-secondary)", marginLeft: 8 }}>Gider kaynağı:</label>
+          <select
+            value={overheadAvgMode}
+            onChange={e => { setPolicy(prev => ({ ...prev, overheadAvgMode: e.target.value })); setPolicyDirty(true); }}
+            disabled={!canEdit}
+            style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+            title="Ortalama = yığılmayı yumuşat. Seçili ay = tek bir ayın verisi."
+          >
+            <option value="avg">📊 Hareketli ortalama</option>
+            <option value="single">🎯 Sadece seçili ay</option>
+          </select>
+
+          {overheadAvgMode === "avg" && (
+            <>
+              <label style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>Pencere:</label>
+              <select
+                value={overheadAvgWindow}
+                onChange={e => { setPolicy(prev => ({ ...prev, overheadAvgWindowMonths: Number(e.target.value) })); setPolicyDirty(true); }}
+                disabled={!canEdit}
+                style={{ padding: "5px 10px", borderRadius: 6, border: "1px solid var(--color-border-secondary)", fontSize: 12 }}
+              >
+                <option value="3">Son 3 ay</option>
+                <option value="6">Son 6 ay</option>
+                <option value="12">Son 12 ay</option>
+              </select>
+            </>
+          )}
         </div>
+
+        {/* Kullanılan veri bilgisi */}
+        {monthData && (
+          <div style={{ marginBottom: 10, padding: "8px 12px", borderRadius: 6, background: overheadModeInfo.mode === "avg" ? "#EFF6FF" : "#FEF3C7", border: "1px solid " + (overheadModeInfo.mode === "avg" ? "#BFDBFE" : "#FDE68A"), fontSize: 11, color: overheadModeInfo.mode === "avg" ? "#1E40AF" : "#92400E", lineHeight: 1.5 }}>
+            {overheadModeInfo.mode === "avg" ? (
+              <>
+                <b>📊 Hareketli ortalama kullanıldı:</b> son <b>{overheadModeInfo.monthsUsed}</b> ay ortalaması ·
+                aylık ortalama toplam: <b>{fmt2(monthData.totalTl)} ₺</b>
+                <div style={{ fontSize: 10, color: "#3B82F6", marginTop: 3 }}>
+                  Kaynak aylar: {overheadModeInfo.monthsList.map(m => monthLabel(m)).join(" · ")}
+                </div>
+              </>
+            ) : (
+              <>
+                <b>🎯 Sadece seçili ay:</b> {monthLabel(selectedMonth)} ({selectedMonth}) ·
+                toplam: <b>{fmt2(monthData.totalTl)} ₺</b>
+              </>
+            )}
+          </div>
+        )}
 
         {calc && monthData ? (
           <DistributionResult calc={calc} fmt2={fmt2} fmt4={fmt4} cf2={cf2} cf4={cf4} csym={csym} />
