@@ -38,8 +38,8 @@ const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
 const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel, parseSuppliesExcel, parseCariEkstreExcel, parseCocPartsKonf, parseCocCertificatesListesi, TRACKED_CUSTOMERS } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCocPartsReport, saveCocCertificatesReport, saveQuoteMasterData, saveQuoteArchive, promoteQuoteStaging, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
-const { parseQuoteMasterData, parseQuoteArchive } = require("./quoteParser");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCocPartsReport, saveCocCertificatesReport, saveQuoteMasterData, saveQuoteArchive, saveQuoteParts, promoteQuoteStaging, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
+const { parseQuoteMasterData, parseQuoteArchive, extractQuotePartsFromArchive } = require("./quoteParser");
 const { fetchTcmbRates } = require("./tcmb");
 const { calculateSimpleInventoryValue } = require("./inventoryCalcSimple");
 
@@ -1028,6 +1028,10 @@ exports.importQuoteExcelHttp = onRequest(
         const archiveParsed = parseQuoteArchive(workbook);
         const archiveOut = await saveQuoteArchive(db, archiveParsed, { staging });
         results.archive = { ...archiveOut, summary: archiveParsed.summary };
+        // Arşivden parça kütüphanesi çıkar — quoteParts iskeleti
+        const partsExtract = extractQuotePartsFromArchive(archiveParsed);
+        const partsOut = await saveQuoteParts(db, partsExtract, { staging });
+        results.parts = { ...partsOut, summary: partsExtract.summary };
       }
 
       logger.info("[QuoteImport] ✓ Yüklendi", { staging, mode, results });

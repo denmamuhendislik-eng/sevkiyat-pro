@@ -34,6 +34,7 @@ const QUOTE_FASON_WORKS_DOC = "quoteFasonWorks";
 const QUOTE_OPTIONS_DOC = "quoteOptions";
 const QUOTE_POLICY_DOC = "quotePolicy";
 const QUOTE_CUSTOMERS_DOC = "quoteCustomers";
+const QUOTE_PARTS_DOC = "quoteParts"; // Parça kütüphanesi (stok kodu bazlı hafıza)
 const QUOTES_YEAR_DOC_PREFIX = "quotes_"; // quotes_2024, quotes_2025 vb.
 
 /**
@@ -1164,6 +1165,22 @@ async function saveQuoteArchive(db, parserResult, { staging = false } = {}) {
 }
 
 /**
+ * Parça kütüphanesini (quoteParts) tek doc'a yazar.
+ * Var olan doc üzerine yazılır — arşiv import'unda tam refresh.
+ */
+async function saveQuoteParts(db, extractResult, { staging = false } = {}) {
+  const suffix = staging ? "_staging" : "";
+  const ref = db.collection(APP_COL).doc(QUOTE_PARTS_DOC + suffix);
+  await ref.set({
+    parts: extractResult.parts,
+    summary: extractResult.summary,
+    importedAt: new Date().toISOString(),
+    source: "excel-archive-import",
+  });
+  return { staging, docName: QUOTE_PARTS_DOC + suffix, summary: extractResult.summary };
+}
+
+/**
  * Staging doc'ları prod doc'larına promote et (rename değil, oku-yaz-sil).
  * Sadece admin manuel çağırır.
  */
@@ -1174,6 +1191,7 @@ async function promoteQuoteStaging(db) {
     QUOTE_FASON_WORKS_DOC,
     QUOTE_OPTIONS_DOC,
     QUOTE_POLICY_DOC,
+    QUOTE_PARTS_DOC,
   ];
   const promoted = [];
   for (const docName of docsToPromote) {
@@ -1217,6 +1235,7 @@ module.exports = {
   QUOTE_OPTIONS_DOC,
   QUOTE_POLICY_DOC,
   QUOTE_CUSTOMERS_DOC,
+  QUOTE_PARTS_DOC,
   QUOTES_YEAR_DOC_PREFIX,
   saveReport,
   saveSalesOrdersWithDiff,
@@ -1228,6 +1247,7 @@ module.exports = {
   saveCocCertificatesReport,
   saveQuoteMasterData,
   saveQuoteArchive,
+  saveQuoteParts,
   promoteQuoteStaging,
   appendAutomationLog,
   getLatestAutomationLog,

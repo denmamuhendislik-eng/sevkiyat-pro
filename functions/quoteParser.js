@@ -412,7 +412,127 @@ function parseQuoteArchive(workbook) {
   return { quotesByYear, summary };
 }
 
+// ==================== PARÇA KÜTÜPHANESİ (arşivden çıkarma) ====================
+
+/**
+ * Arşivdeki tüm teklif kalemlerini gezip her benzersiz stok kodu için kütüphane
+ * kartı çıkarır. Aynı stok koduyla verilen tüm teklifleri toplayıp:
+ *   - son kullanılan hammadde/makineler/fason bilgisi (son tarihli teklift)
+ *   - toplam kullanım sayısı
+ *   - son fiyat + son teklif tarihi
+ *   - fason iş × son fiyat geçmişi (autocomplete için)
+ *
+ * Dönüş: { parts: { [stokKodu]: {...} }, summary }
+ * Stok kodu boş olan kalemler atlanır (henüz kod verilmemiş yeni teklifler).
+ */
+function extractQuotePartsFromArchive(archiveResult) {
+  const parts = {};
+  const now = new Date().toISOString();
+
+  for (const [year, doc] of Object.entries(archiveResult.quotesByYear || {})) {
+    for (const quote of Object.values(doc.quotes || {})) {
+      const quoteDate = quote.quoteDate || "";
+      for (const line of quote.lines || []) {
+        const stokKodu = s(line.stockCode);
+        if (!stokKodu || stokKodu === "0") continue;
+
+        if (!parts[stokKodu]) {
+          parts[stokKodu] = {
+            stokKodu,
+            stokAdi: s(line.stockName),
+            musteriKodu: "", // arşivde yok — kullanıcı elle girer
+            hammadde: {
+              tur: s(line.materialType),
+              ebat: s(line.dimensions),
+              agirlikKg: n(line.weightKg),
+            },
+            operasyonlar: {
+              makineler: s(line.machines),      // örn. "SPİNNER,GOODWAY"
+              toplamSureDk: n(line.machineTimeMin),
+            },
+            fason: {
+              isler: s(line.fasonWorks),       // örn. "Kromat,Fosfat"
+              tahminiToplam: n(line.fasonCost),
+            },
+            fasonGecmis: [], // aşağıda doldurulur
+            aparat: {
+              varMi: false,
+              aciklama: "",
+              maliyet: 0,
+            },
+            yapılabilirlik: {
+              durum: "onaylı_gecmis", // arşivden geldiği için önceden yapılabilir
+              not: "",
+            },
+            musteriler: new Set(),       // hangi müşterilere verildi (Set olarak topla)
+            kullanimSayisi: 0,
+            sonTeklifNo: "",
+            sonTeklifTarihi: "",
+            sonMusteri: "",
+            sonFiyatTl: 0,
+            sonMiktar: 0,
+            createdAt: now,
+            createdBy: "excel-archive-import",
+          };
+        }
+
+        const p = parts[stokKodu];
+        p.kullanimSayisi++;
+        if (quote.customerName) p.musteriler.add(quote.customerName);
+
+        // Fason iş × fiyat geçmişi — arşivden çıkar
+        if (line.fasonWorks && line.fasonCost > 0) {
+          const isler = String(line.fasonWorks).split(/[,;/]/).map(x => x.trim()).filter(Boolean);
+          const fiyatPerIs = line.fasonCost / (isler.length || 1);
+          for (const isim of isler) {
+            p.fasonGecmis.push({
+              isTuru: isim,
+              fiyatTl: fiyatPerIs,
+              teklifNo: quote.quoteNo,
+              tarih: quoteDate,
+              musteri: quote.customerName,
+              miktar: line.quantity,
+            });
+          }
+        }
+
+        // Son teklif güncellemesi (en yeni tarih)
+        if (!p.sonTeklifTarihi || (quoteDate && quoteDate > p.sonTeklifTarihi)) {
+          p.sonTeklifNo = quote.quoteNo;
+          p.sonTeklifTarihi = quoteDate;
+          p.sonMusteri = quote.customerName;
+          p.sonFiyatTl = line.linePrice || 0;
+          p.sonMiktar = line.quantity || 0;
+          // En yeni teklift bilgi ile hammadde/operasyon güncelle (revizyon olmuş olabilir)
+          if (line.materialType) p.hammadde.tur = line.materialType;
+          if (line.dimensions) p.hammadde.ebat = line.dimensions;
+          if (line.weightKg) p.hammadde.agirlikKg = line.weightKg;
+          if (line.machines) p.operasyonlar.makineler = line.machines;
+          if (line.machineTimeMin) p.operasyonlar.toplamSureDk = line.machineTimeMin;
+        }
+      }
+    }
+  }
+
+  // Set → Array + son 5 fason geçmişini tut (arşivin şişmemesi için)
+  for (const p of Object.values(parts)) {
+    p.musteriler = [...p.musteriler];
+    // Fason geçmişi tarih desc, ilk 20 (aynı iş türünde 3-5 son fiyat için yeter)
+    p.fasonGecmis.sort((a, b) => (b.tarih || "").localeCompare(a.tarih || ""));
+    p.fasonGecmis = p.fasonGecmis.slice(0, 20);
+  }
+
+  return {
+    parts,
+    summary: {
+      partCount: Object.keys(parts).length,
+      totalUsages: Object.values(parts).reduce((s, p) => s + p.kullanimSayisi, 0),
+    },
+  };
+}
+
 module.exports = {
   parseQuoteMasterData,
   parseQuoteArchive,
+  extractQuotePartsFromArchive,
 };

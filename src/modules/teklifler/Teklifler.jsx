@@ -1,7 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import {
   subscribeQuoteMaterials, subscribeQuoteFasonWorks, subscribeQuoteOptions,
-  subscribeQuotePolicy, subscribeQuotesForYear,
+  subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts,
+  saveQuotePolicyUpdate,
 } from "./firestore";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
@@ -21,7 +22,9 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
       <div style={{ display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid #e7e5e4" }}>
         {[
           { id: "list", label: "📋 Teklif Listesi" },
+          { id: "parts", label: "🔩 Parça Kütüphanesi" },
           { id: "master", label: "🎯 Master Data" },
+          { id: "margins", label: "💰 Marj Editörü", adminOnly: true },
           { id: "import", label: "📥 Excel İçe Aktar", adminOnly: true },
         ].filter(t => !t.adminOnly || isAdmin).map(t => (
           <button
@@ -40,7 +43,9 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
       </div>
 
       {activeTab === "list" && <QuoteListView />}
+      {activeTab === "parts" && <PartsLibraryView />}
       {activeTab === "master" && <MasterDataView />}
+      {activeTab === "margins" && isAdmin && <MarginEditorView canEdit={canEdit && isAdmin} />}
       {activeTab === "import" && isAdmin && <ImportView />}
     </div>
   );
@@ -365,3 +370,265 @@ const miniTdR = { padding: "3px 6px", fontSize: 11, textAlign: "right", fontVari
 const selectStyle = { padding: "5px 8px", borderRadius: 4, border: "1px solid #d6d3d1", fontSize: 12 };
 const btnPrimary = { padding: "8px 16px", background: "#534AB7", color: "#fff", border: "none", borderRadius: 4, fontSize: 12, fontWeight: 500, cursor: "pointer" };
 const btnPromote = { padding: "8px 16px", background: "#16a34a", color: "#fff", border: "none", borderRadius: 4, fontSize: 12, fontWeight: 500, cursor: "pointer" };
+
+// ==================== Parça Kütüphanesi (arşivden çıkarılan hafıza) ====================
+
+function PartsLibraryView() {
+  const [staging, setStaging] = useState(false);
+  const [data, setData] = useState({ parts: {} });
+  const [search, setSearch] = useState("");
+
+  useEffect(() => {
+    const unsub = subscribeQuoteParts(setData, { staging });
+    return unsub;
+  }, [staging]);
+
+  const parts = useMemo(() => {
+    const arr = Object.values(data?.parts || {});
+    const s = search.trim().toLocaleLowerCase("tr-TR");
+    const filtered = s ? arr.filter(p =>
+      (p.stokKodu || "").toLocaleLowerCase("tr-TR").includes(s) ||
+      (p.stokAdi || "").toLocaleLowerCase("tr-TR").includes(s) ||
+      (p.musteriKodu || "").toLocaleLowerCase("tr-TR").includes(s)
+    ) : arr;
+    // Kullanım sayısı desc — en çok teklif verilen üstte
+    return filtered.sort((a, b) => (b.kullanimSayisi || 0) - (a.kullanimSayisi || 0));
+  }, [data, search]);
+
+  const totalUsage = parts.reduce((s, p) => s + (p.kullanimSayisi || 0), 0);
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12, padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11, color: "#1e40af" }}>
+        💡 <b>Parça Kütüphanesi</b> — arşivdeki her benzersiz stok kodu için otomatik oluşturulan "hafıza". Yeni teklif verirken sistem burayı sorgulayıp önceden yapılabilirlik onaylanmış parçalar için hızlı yol sunar. Müşteri parça kodu yeni tekliftte manuel eklenir → sonraki aramalar için hazır olur.
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <input
+          type="text" placeholder="🔎 Stok kodu / müşteri kodu / parça adı"
+          value={search} onChange={e => setSearch(e.target.value)}
+          style={{ flex: 1, minWidth: 260, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}
+        />
+        <label style={{ fontSize: 11 }}>
+          <input type="checkbox" checked={staging} onChange={e => setStaging(e.target.checked)} /> Staging
+        </label>
+        <span style={{ fontSize: 11, color: "#78716c" }}>
+          {parts.length} parça · {totalUsage} kullanım
+        </span>
+      </div>
+
+      {parts.length === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
+          Kütüphane boş. Excel arşivi yüklendikten sonra otomatik doldurulur.
+        </div>
+      ) : (
+        <div style={{ border: "1px solid #e7e5e4", borderRadius: 6, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
+                <th style={th}>Stok Kodu</th>
+                <th style={th}>Müş. Kodu</th>
+                <th style={th}>Parça Adı</th>
+                <th style={th}>Hammadde</th>
+                <th style={th}>Makineler</th>
+                <th style={th}>Fason</th>
+                <th style={{ ...th, textAlign: "right" }}>Kullanım</th>
+                <th style={th}>Son Teklif</th>
+              </tr>
+            </thead>
+            <tbody>
+              {parts.slice(0, 200).map(p => (
+                <tr key={p.stokKodu} style={{ borderTop: "1px solid #f5f5f4" }}>
+                  <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{p.stokKodu}</td>
+                  <td style={{ ...td, fontFamily: "ui-monospace, monospace", color: "#a8a29e" }}>{p.musteriKodu || "—"}</td>
+                  <td style={td} title={p.stokAdi}>{(p.stokAdi || "").substring(0, 45)}{(p.stokAdi || "").length > 45 ? "…" : ""}</td>
+                  <td style={{ ...td, fontSize: 10, color: "#57534e" }}>
+                    {p.hammadde?.tur || "—"}
+                    {p.hammadde?.ebat && <div style={{ color: "#a8a29e" }}>{p.hammadde.ebat}</div>}
+                  </td>
+                  <td style={{ ...td, fontSize: 10 }}>
+                    {p.operasyonlar?.makineler || "—"}
+                    {p.operasyonlar?.toplamSureDk > 0 && <div style={{ color: "#a8a29e" }}>{p.operasyonlar.toplamSureDk} dk</div>}
+                  </td>
+                  <td style={{ ...td, fontSize: 10 }}>
+                    {p.fason?.isler || "—"}
+                  </td>
+                  <td style={{ ...td, textAlign: "right", fontWeight: 500 }}>{p.kullanimSayisi || 0}</td>
+                  <td style={{ ...td, fontSize: 10 }}>
+                    {p.sonTeklifTarihi || "—"}
+                    {p.sonMusteri && <div style={{ color: "#a8a29e" }}>{p.sonMusteri.substring(0, 24)}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          {parts.length > 200 && (
+            <div style={{ padding: 10, textAlign: "center", fontSize: 11, color: "#78716c", background: "#f5f5f4" }}>
+              İlk 200 parça gösteriliyor. Arama ile daralt.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== Marj Editörü (admin) ====================
+
+function MarginEditorView({ canEdit }) {
+  const [staging, setStaging] = useState(false);
+  const [policy, setPolicy] = useState(null);
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState(null);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    const unsub = subscribeQuotePolicy((d) => {
+      setPolicy(d);
+      if (!draft) setDraft(d ? JSON.parse(JSON.stringify(d)) : null);
+    }, { staging });
+    return unsub;
+  }, [staging]);
+
+  if (!draft) return <div style={{ padding: 20, color: "#78716c" }}>Yükleniyor…</div>;
+
+  const qm = draft.quantityMargins || [];
+  const cgm = draft.customerGroupMargins || {};   // vade bazlı ilave marj (30/60/90 → GRUP1/2/3)
+  const mlm = draft.materialLaborMargins || {};   // malzeme × vade
+
+  const updateQuantity = (idx, field, value) => {
+    setDraft(d => {
+      const next = { ...d, quantityMargins: [...d.quantityMargins] };
+      next.quantityMargins[idx] = { ...next.quantityMargins[idx], [field]: Number(value) };
+      return next;
+    });
+  };
+  const updateGroupMargin = (grp, value) => {
+    setDraft(d => ({ ...d, customerGroupMargins: { ...d.customerGroupMargins, [grp]: Number(value) / 100 } }));
+  };
+
+  const handleSave = async () => {
+    if (!canEdit) return;
+    setSaving(true); setError("");
+    try {
+      await saveQuotePolicyUpdate(draft, { canEdit, staging });
+      setSavedAt(new Date());
+    } catch (e) {
+      setError(e.message || "Kayıt hatası");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 12, padding: 10, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e" }}>
+        ⚠ <b>Uyarı:</b> Değişiklikler tüm yeni tekliflerdeki hesabı etkiler. Excel'deki mevcut değerler korunur, üstüne yazma değil ilave güncelleme. Yanlış giriş sonucu maliyet hataları doğurabilir — dikkat.
+      </div>
+
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 11 }}>
+          <input type="checkbox" checked={staging} onChange={e => setStaging(e.target.checked)} /> Staging'e yaz
+        </label>
+        <button onClick={handleSave} disabled={!canEdit || saving} style={btnPrimary}>
+          {saving ? "Kaydediliyor..." : "💾 Kaydet"}
+        </button>
+        {savedAt && <span style={{ fontSize: 11, color: "#16a34a" }}>✓ {savedAt.toLocaleTimeString("tr-TR")}</span>}
+        {error && <span style={{ fontSize: 11, color: "#dc2626" }}>⚠ {error}</span>}
+      </div>
+
+      <Card title="📊 Miktar Bazlı Marj Tablosu">
+        <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>
+          Formül: <b>Satış = Maliyet × (1 + marj)</b>. Örn. 1 adet için işçilik marjı <b>6.0</b> → maliyetin <b>7 katı</b> (%600 ilave).
+          Az adet → yüksek marj (aparat/setup tek parçaya yayılır).
+        </div>
+        <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#f5f5f4" }}>
+              <th style={miniTh}>Aralık</th>
+              <th style={miniThR}>İşçilik</th>
+              <th style={miniThR}>Malz/Fason</th>
+              <th style={miniTh}>Örnek: 100 TL maliyet ise</th>
+            </tr>
+          </thead>
+          <tbody>
+            {qm.map((b, i) => (
+              <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
+                <td style={miniTd}>{b.min === b.max ? b.min : `${b.min}-${b.max}`}</td>
+                <td style={miniTdR}>
+                  <input type="number" step="0.01" value={b.laborPct}
+                    onChange={e => updateQuantity(i, "laborPct", e.target.value)}
+                    disabled={!canEdit}
+                    style={{ width: 60, padding: "3px 6px", fontSize: 11, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 3 }} />
+                </td>
+                <td style={miniTdR}>
+                  <input type="number" step="0.01" value={b.materialFasonPct}
+                    onChange={e => updateQuantity(i, "materialFasonPct", e.target.value)}
+                    disabled={!canEdit}
+                    style={{ width: 60, padding: "3px 6px", fontSize: 11, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 3 }} />
+                </td>
+                <td style={{ ...miniTd, fontSize: 10, color: "#78716c" }}>
+                  İşç: {(100 * (1 + b.laborPct)).toFixed(0)} TL · Malz: {(100 * (1 + b.materialFasonPct)).toFixed(0)} TL
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Card>
+
+      <Card title="📅 Vade Bazlı Hammadde İlave Marj">
+        <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>
+          Vade uzadıkça hammadde maliyetine ilave marj (kur riski + tahsilat gecikmesi). Bu değerler yukarıdaki marjlara EKLENİR.
+        </div>
+        <div style={{ display: "flex", gap: 20, flexWrap: "wrap" }}>
+          {["GRUP1", "GRUP2", "GRUP3"].map((g, i) => {
+            const label = ["30 gün", "60 gün", "90 gün"][i];
+            const val = Math.round((cgm[g] || 0) * 1000) / 10;
+            return (
+              <div key={g} style={{ display: "flex", alignItems: "center", gap: 6, padding: 8, background: "#f5f5f4", borderRadius: 4 }}>
+                <span style={{ fontSize: 11, fontWeight: 500 }}>{label}:</span>
+                <input type="number" step="0.5" min="0" max="100" value={val}
+                  onChange={e => updateGroupMargin(g, e.target.value)}
+                  disabled={!canEdit}
+                  style={{ width: 60, padding: "4px 6px", fontSize: 12, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 3 }} />
+                <span style={{ fontSize: 11 }}>%</span>
+              </div>
+            );
+          })}
+        </div>
+      </Card>
+
+      <Card title="🧪 Malzeme Türü × Vade Marj Matrisi (özel)">
+        <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>
+          Bazı özel malzemelerde (KROM sac, ZIRH sacı vs) ekstra işçilik marjı uygulanır. Genelde 0 — sadece istisnalar dolu.
+        </div>
+        <div style={{ maxHeight: 300, overflowY: "auto" }}>
+          <table style={{ borderCollapse: "collapse", fontSize: 11, width: "100%" }}>
+            <thead>
+              <tr style={{ background: "#f5f5f4" }}>
+                <th style={miniTh}>Malzeme</th>
+                <th style={miniThR}>30 gün</th>
+                <th style={miniThR}>60 gün</th>
+                <th style={miniThR}>90 gün</th>
+              </tr>
+            </thead>
+            <tbody>
+              {Object.entries(mlm).filter(([_, v]) => v && (v.grup1 > 0 || v.grup2 > 0 || v.grup3 > 0)).map(([mat, v]) => (
+                <tr key={mat} style={{ borderTop: "1px solid #f5f5f4" }}>
+                  <td style={miniTd}>{mat}</td>
+                  <td style={miniTdR}>{(v.grup1 * 100).toFixed(1)}%</td>
+                  <td style={miniTdR}>{(v.grup2 * 100).toFixed(1)}%</td>
+                  <td style={miniTdR}>{(v.grup3 * 100).toFixed(1)}%</td>
+                </tr>
+              ))}
+              {Object.entries(mlm).filter(([_, v]) => v && (v.grup1 > 0 || v.grup2 > 0 || v.grup3 > 0)).length === 0 && (
+                <tr><td colSpan="4" style={{ padding: 20, textAlign: "center", color: "#a8a29e" }}>Özel marj tanımlı malzeme yok — tümü 0.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Card>
+    </div>
+  );
+}
