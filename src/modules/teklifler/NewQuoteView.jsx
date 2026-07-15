@@ -1051,7 +1051,7 @@ function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, upda
         </div>
       )}
 
-      {/* APARAT — sadece "spread" (adete yay) modunda kalemde görünür */}
+      {/* APARAT — spread (adete yay) modu: adet başına kırılım */}
       {toolPerUnit > 0 && (
         <div style={detailSection}>
           <div style={detailSectionTitle}>🛠 Aparat/Kalıp (adete yayılıyor)</div>
@@ -1075,11 +1075,29 @@ function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, upda
           </table>
         </div>
       )}
-      {/* Ayrı satır modda bilgilendirme */}
+      {/* APARAT — separate (ayrı satır) modu: toplam üzerinden + marj düzenleme */}
       {(line.specialToolCost || 0) > 0 && (line.specialToolMode || "spread") === "separate" && (
         <div style={{ ...detailSection, background: "#fef3c7", borderColor: "#fde68a" }}>
-          <div style={{ fontSize: 11, color: "#92400e" }}>
-            🛠 <b>Aparat/Kalıp ayrı satır modunda</b> — parça birim fiyatına eklenmiyor. Teklifin altında ayrı satır olarak {fmt(line.specialToolCost)} TL + marj ile görünür.
+          <div style={detailSectionTitle}>🛠 Aparat/Kalıp (ayrı satır — teklif altında)</div>
+          <table style={detailTable}>
+            <tbody>
+              <tr><td style={detailLabel}>Toplam maliyet</td><td style={detailValueBold}>{fmt(calcResult?.separateTool?.cost || 0)} TL</td></tr>
+              <tr>
+                <MarginRow
+                  label="Marj"
+                  defaultPct={(defaults.specialTool || 0) * 100}
+                  effectivePct={specialToolMarginPct}
+                  active={activeOv.specialTool}
+                  currentValue={currentOv.specialToolMarginPct}
+                  onChange={v => setOverride("specialToolMarginPct", v)}
+                />
+              </tr>
+              <tr><td style={detailLabel}><b>Toplam satış</b></td><td style={detailValueBold}>{fmt(calcResult?.separateTool?.sale || 0)} TL</td></tr>
+              <tr><td style={detailLabel}>Toplam kâr</td><td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(calcResult?.separateTool?.profit || 0)} TL</td></tr>
+            </tbody>
+          </table>
+          <div style={{ fontSize: 10, color: "#78716c", marginTop: 6 }}>
+            Bu tutar müşteriye tekliftte ayrı bir satır olarak gösterilecek — birim fiyata yayılmıyor.
           </div>
         </div>
       )}
