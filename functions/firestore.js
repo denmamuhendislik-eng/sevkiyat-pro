@@ -1165,19 +1165,38 @@ async function saveQuoteArchive(db, parserResult, { staging = false } = {}) {
 }
 
 /**
- * Parça kütüphanesini (quoteParts) tek doc'a yazar.
- * Var olan doc üzerine yazılır — arşiv import'unda tam refresh.
+ * Parça kütüphanesini 10 bucket doc'a yazar (partition — Firestore 1MB limitini aşmamak için).
+ * appData/quoteParts_0, quoteParts_1, ..., quoteParts_9
+ * Ayrıca appData/quoteParts (özet index) yazılır.
  */
 async function saveQuoteParts(db, extractResult, { staging = false } = {}) {
   const suffix = staging ? "_staging" : "";
-  const ref = db.collection(APP_COL).doc(QUOTE_PARTS_DOC + suffix);
-  await ref.set({
-    parts: extractResult.parts,
+  const buckets = extractResult.buckets || {};
+  const batch = db.batch();
+  const written = [];
+  for (const [bid, bucketData] of Object.entries(buckets)) {
+    const docName = `${QUOTE_PARTS_DOC}_${bid}${suffix}`;
+    const ref = db.collection(APP_COL).doc(docName);
+    batch.set(ref, {
+      bucketId: bid,
+      parts: bucketData.parts,
+      partCount: Object.keys(bucketData.parts).length,
+      importedAt: new Date().toISOString(),
+      source: "excel-archive-import",
+    });
+    written.push(docName);
+  }
+  // Index doc — subscribe eden client hangi bucketları çekeceğini bilsin
+  const indexRef = db.collection(APP_COL).doc(QUOTE_PARTS_DOC + suffix);
+  batch.set(indexRef, {
+    isIndex: true,
+    bucketCount: Object.keys(buckets).length,
     summary: extractResult.summary,
     importedAt: new Date().toISOString(),
-    source: "excel-archive-import",
   });
-  return { staging, docName: QUOTE_PARTS_DOC + suffix, summary: extractResult.summary };
+  written.push(QUOTE_PARTS_DOC + suffix);
+  await batch.commit();
+  return { staging, docsWritten: written, summary: extractResult.summary };
 }
 
 /**
@@ -1191,7 +1210,8 @@ async function promoteQuoteStaging(db) {
     QUOTE_FASON_WORKS_DOC,
     QUOTE_OPTIONS_DOC,
     QUOTE_POLICY_DOC,
-    QUOTE_PARTS_DOC,
+    QUOTE_PARTS_DOC, // index doc
+    // quoteParts_0 ... quoteParts_9 bucket doc'ları aşağıda listDocuments ile bulunur
   ];
   const promoted = [];
   for (const docName of docsToPromote) {
@@ -1204,10 +1224,10 @@ async function promoteQuoteStaging(db) {
     await stagingRef.delete();
     promoted.push(docName);
   }
-  // Yıl doc'ları da promote et — quotes_YYYY_staging → quotes_YYYY
+  // Yıl doc'ları + parça bucket doc'ları — quotes_YYYY_staging + quoteParts_N_staging
   const allDocs = await db.collection(APP_COL).listDocuments();
   for (const d of allDocs) {
-    if (d.id.match(/^quotes_\d{4}_staging$/)) {
+    if (d.id.match(/^(quotes_\d{4}|quoteParts_\d)_staging$/)) {
       const stagingSnap = await d.get();
       const data = stagingSnap.data();
       const prodName = d.id.replace("_staging", "");

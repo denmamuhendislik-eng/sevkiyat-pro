@@ -414,6 +414,17 @@ function parseQuoteArchive(workbook) {
 
 // ==================== PARÇA KÜTÜPHANESİ (arşivden çıkarma) ====================
 
+// Stok kodundan 10'lu bucket id üret (0-9) — Firestore 1MB doc limitini aşmamak için partition.
+// Deterministic: aynı stok kodu her zaman aynı bucket'a gider.
+function partBucketId(stokKodu) {
+  let hash = 0;
+  const s = String(stokKodu || "");
+  for (let i = 0; i < s.length; i++) {
+    hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
+  }
+  return String(Math.abs(hash) % 10).padStart(1, "0");
+}
+
 /**
  * Arşivdeki tüm teklif kalemlerini gezip her benzersiz stok kodu için kütüphane
  * kartı çıkarır. Aynı stok koduyla verilen tüm teklifleri toplayıp:
@@ -422,7 +433,9 @@ function parseQuoteArchive(workbook) {
  *   - son fiyat + son teklif tarihi
  *   - fason iş × son fiyat geçmişi (autocomplete için)
  *
- * Dönüş: { parts: { [stokKodu]: {...} }, summary }
+ * Dönüş: { buckets: { [bucketId]: {parts: {...}} }, summary }
+ * 10 bucket (0-9), her stok kodu hash mod 10 ile deterministik bir bucket'a gider.
+ * Firestore doc limit: 1MB — bucket başına ~200 parça, ~100-150 KB.
  * Stok kodu boş olan kalemler atlanır (henüz kod verilmemiş yeni teklifler).
  */
 function extractQuotePartsFromArchive(archiveResult) {
@@ -514,19 +527,31 @@ function extractQuotePartsFromArchive(archiveResult) {
     }
   }
 
-  // Set → Array + son 5 fason geçmişini tut (arşivin şişmemesi için)
+  // Set → Array + fason geçmişini kısalt (arşivin şişmemesi için)
   for (const p of Object.values(parts)) {
-    p.musteriler = [...p.musteriler];
-    // Fason geçmişi tarih desc, ilk 20 (aynı iş türünde 3-5 son fiyat için yeter)
+    p.musteriler = [...p.musteriler].slice(0, 10); // max 10 müşteri (nadiren aşar)
     p.fasonGecmis.sort((a, b) => (b.tarih || "").localeCompare(a.tarih || ""));
-    p.fasonGecmis = p.fasonGecmis.slice(0, 20);
+    p.fasonGecmis = p.fasonGecmis.slice(0, 10); // son 10 fason kaydı yeter
+  }
+
+  // 10 bucket'a dağıt — Firestore 1MB doc limitini aşmamak için partition
+  const buckets = {};
+  for (let i = 0; i < 10; i++) buckets[String(i)] = { parts: {} };
+  let totalUsages = 0;
+  for (const [stokKodu, p] of Object.entries(parts)) {
+    const bid = partBucketId(stokKodu);
+    buckets[bid].parts[stokKodu] = p;
+    totalUsages += p.kullanimSayisi;
   }
 
   return {
-    parts,
+    buckets,
     summary: {
       partCount: Object.keys(parts).length,
-      totalUsages: Object.values(parts).reduce((s, p) => s + p.kullanimSayisi, 0),
+      totalUsages,
+      bucketDistribution: Object.fromEntries(
+        Object.entries(buckets).map(([b, d]) => [b, Object.keys(d.parts).length])
+      ),
     },
   };
 }
@@ -535,4 +560,5 @@ module.exports = {
   parseQuoteMasterData,
   parseQuoteArchive,
   extractQuotePartsFromArchive,
+  partBucketId,
 };
