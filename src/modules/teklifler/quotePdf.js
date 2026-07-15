@@ -139,7 +139,7 @@ function buildQuoteHtml(quote, calc) {
        Satır 2: firma bilgileri (sol) + teklif no & tarih inline mini pill (sağ) -->
   <div style="padding-bottom:12px; border-bottom:2px solid #1e40af;">
     <div style="display:flex; align-items:center; justify-content:space-between;">
-      <img src="${LOGO_DENMA}" style="width:180px;height:auto;" alt="DENMA" />
+      <img src="${LOGO_DENMA}" style="width:220px;height:auto;" alt="DENMA" />
       <div style="text-align:right;">
         <div style="font-size:28px; font-weight:800; color:#1e40af; letter-spacing:1.5px; line-height:1;">TEKLİF</div>
         <div style="font-size:10px; color:#78716c; letter-spacing:2px; margin-top:2px;">QUOTATION</div>
@@ -148,8 +148,8 @@ function buildQuoteHtml(quote, calc) {
     <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-top:10px;">
       <div style="font-size:9px; color:#78716c; line-height:1.5;">
         Denma Mühendislik Mak. Otom. İnş. San. Tic. Ltd. Şti.<br/>
-        Fevzi Çakmak Mah. 10570. Sk. No:31/B · Karatay / KONYA<br/>
-        Tel: 0332 608 26 88 · info@denmamuhendislik.com
+        Fevzi Çakmak Mah. 10670. Sk. No:31/B · Karatay / KONYA<br/>
+        Tel: +90 332 606 29 83 · satis@denma.com.tr
       </div>
       <div style="display:flex; gap:8px; flex-shrink:0;">
         <div style="padding:6px 12px; background:#eff6ff; border-radius:6px; border:1px solid #bfdbfe;">
@@ -250,15 +250,6 @@ function buildQuoteHtml(quote, calc) {
       <li>Termin süresi sipariş onayı ile başlar. / Lead time starts upon order confirmation.</li>
       ${quote.currency !== "TL" ? `<li>Döviz kuru sipariş anındaki TCMB satış kuru üzerinden hesaplanır. / Exchange rate at TCMB selling rate on order date.</li>` : ""}
     </ul>
-  </div>
-
-  <!-- İMZA -->
-  <div style="margin-top:28px;display:grid;grid-template-columns:1fr 1fr;gap:30px;">
-    <div></div>
-    <div style="text-align:center;padding-top:36px;border-top:1px solid #1c1917;">
-      <div style="font-size:10px;color:#78716c;font-weight:600;">Denma Mühendislik</div>
-      <div style="font-size:11px;font-weight:600;color:#1c1917;margin-top:4px;">Satış Departmanı / Sales Department</div>
-    </div>
   </div>
 
   <!-- FOOTER -->
