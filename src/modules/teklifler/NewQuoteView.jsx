@@ -728,6 +728,19 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
           <button onClick={addFason} style={{ marginLeft: 8, padding: "1px 6px", fontSize: 10, background: "#fff7ed", color: "#9a3412", border: "1px solid #fed7aa", borderRadius: 3, cursor: "pointer" }}>+ Fason</button>
           {line.stockCode && <span style={{ marginLeft: 8, fontSize: 9, color: "#a8a29e" }}>Fason iş yazınca geçmiş fiyat önerilir</span>}
         </div>
+        {(line.fasonWorks || []).length > 0 && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 30px", gap: 6, fontSize: 9, color: "#78716c", padding: "0 2px", marginBottom: 2, fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 }}>
+              <div>Fason İş</div>
+              <div>Birim TL</div>
+              <div>Miktar</div>
+              <div></div>
+            </div>
+            <div style={{ fontSize: 9, color: "#a8a29e", padding: "0 2px", marginBottom: 4 }}>
+              💡 <b>Birim TL × Miktar = fason toplam.</b> Miktar boşsa kalem adedi (<b>{line.quantity || 1}</b>) kullanılır. Toplu iş için: birim TL = paket tutarı, miktar = 1.
+            </div>
+          </>
+        )}
         {(line.fasonWorks || []).map((f, fi) => {
           const history = fasonHistoryForWork(f.name);
           return (
@@ -737,8 +750,8 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
                 <datalist id={`fasonList_${idx}_${fi}`}>
                   {fasonList.map(w => <option key={w.id} value={w.name} />)}
                 </datalist>
-                <input type="number" step="0.01" value={f.unitPriceTl || 0} onChange={e => updateFason(fi, "unitPriceTl", e.target.value)} placeholder="Birim TL" style={miniInput} />
-                <input type="number" value={f.quantity || 0} onChange={e => updateFason(fi, "quantity", e.target.value)} placeholder={`Miktar (${line.quantity})`} style={miniInput} />
+                <input type="number" step="0.01" value={f.unitPriceTl || 0} onChange={e => updateFason(fi, "unitPriceTl", e.target.value)} placeholder="Birim TL" title="Fason işin birim fiyatı (adet başına veya toplu paket tutarı)" style={miniInput} />
+                <input type="number" value={f.quantity || 0} onChange={e => updateFason(fi, "quantity", e.target.value)} placeholder={`boş = ${line.quantity || 1}`} title={`Fason kaç adete uygulanacak. Boş bırakırsan kalem adedi (${line.quantity || 1}) kullanılır. Toplu paket iş için 1 gir.`} style={miniInput} />
                 <button onClick={() => removeFason(fi)} style={{ background: "transparent", color: "#dc2626", border: "none", cursor: "pointer" }}>✕</button>
               </div>
               {history.length > 0 && (
