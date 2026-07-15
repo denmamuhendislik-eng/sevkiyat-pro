@@ -30,6 +30,16 @@ function fmtDate(iso) {
   return d.toLocaleDateString("tr-TR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
+// Termin normalizasyonu — sadece sayı girildiyse "gün" ekle, "GÜN" varsa dokunma
+function fmtTerm(t) {
+  if (t === undefined || t === null || t === "") return "";
+  const s = String(t).trim();
+  if (!s) return "";
+  // Sadece sayı ise "N gün" yap
+  if (/^\d+([.,]\d+)?$/.test(s)) return `${s} gün`;
+  return s;
+}
+
 function esc(s) {
   return String(s || "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
@@ -62,7 +72,7 @@ function buildQuoteHtml(quote, calc) {
         </td>
         <td style="padding:8px 10px;font-size:10px;color:#1c1917;">
           ${esc(line.stockName || "—")}
-          ${line.term ? `<div style="font-size:8px;color:#78716c;margin-top:2px;">Termin: ${esc(line.term)}</div>` : ""}
+          ${line.term ? `<div style="font-size:8px;color:#78716c;margin-top:2px;">Termin / Delivery: ${esc(fmtTerm(line.term))}</div>` : ""}
         </td>
         <td style="padding:8px 10px;text-align:right;font-family:'JetBrains Mono','Courier New',monospace;font-size:10px;font-weight:600;">
           ${qty}
@@ -176,19 +186,19 @@ function buildQuoteHtml(quote, calc) {
     </div>
     <div style="padding:12px 14px;background:#f9fafb;border-radius:6px;border:1px solid #e7e5e4;font-size:10px;">
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-        <span style="color:#78716c;">Ödeme:</span>
+        <span style="color:#78716c;">Ödeme / Payment:</span>
         <span style="color:#1c1917;font-weight:600;">${esc(quote.paymentTerm || "—")}</span>
       </div>
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-        <span style="color:#78716c;">Nakliye:</span>
+        <span style="color:#78716c;">Nakliye / Shipping:</span>
         <span style="color:#1c1917;font-weight:600;">${esc(quote.shipping || "—")}</span>
       </div>
       <div style="display:flex;justify-content:space-between;margin-bottom:4px;">
-        <span style="color:#78716c;">Termin:</span>
-        <span style="color:#1c1917;font-weight:600;">${esc(quote.term || "—")}</span>
+        <span style="color:#78716c;">Termin / Delivery:</span>
+        <span style="color:#1c1917;font-weight:600;">${esc(fmtTerm(quote.term) || "—")}</span>
       </div>
       <div style="display:flex;justify-content:space-between;">
-        <span style="color:#78716c;">Döviz:</span>
+        <span style="color:#78716c;">Döviz / Currency:</span>
         <span style="color:#1c1917;font-weight:600;">${esc(quote.currency || "TL")}</span>
       </div>
     </div>
