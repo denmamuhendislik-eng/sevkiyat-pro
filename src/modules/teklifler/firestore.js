@@ -221,7 +221,10 @@ export async function deleteRevision(quote, allQuotesForYear, { canEdit, staging
   const customerKey = String(quote.customerName).replace(/\s+/g, "_").substring(0, 40);
   const groupKey = `${quote.quoteNo}__${customerKey}`;
   const ref = doc(db, APP_COL, docName);
-  await updateDoc(ref, { [`quotes.${groupKey}`]: deleteField() });
+  // Nested obje + merge kullan — updateDoc dot-notation "/" ve "." (Türkçe A.Ş.) izin vermiyor
+  await setDoc(ref, {
+    quotes: { [groupKey]: deleteField() },
+  }, { merge: true });
   return { docName, groupKey };
 }
 
