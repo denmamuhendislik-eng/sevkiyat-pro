@@ -405,28 +405,34 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
           <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>
             Bu kalemler müşteriye tekliftte ayrı satır olarak gösterilecek (parça birim fiyatına yayılmayacak).
           </div>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-            <thead>
-              <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
-                <th style={th}>Açıklama</th>
-                <th style={{ ...th, textAlign: "right" }}>Maliyet</th>
-                <th style={{ ...th, textAlign: "right" }}>Satış</th>
-                <th style={{ ...th, textAlign: "right" }}>Kâr</th>
-                <th style={th}>Kaynak</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(calc.separateToolItems || []).map((t, i) => (
-                <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
-                  <td style={td}>{t?.description || "—"}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(t?.cost || 0)}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(t?.sale || 0)}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#16a34a" }}>+{fmt(t?.profit || 0)} (%{((Number(t?.margin) || 0) * 100).toFixed(1)})</td>
-                  <td style={{ ...td, fontSize: 10, color: "#78716c" }}>Kalem #{(Number(t?.sourceLineIdx) || 0) + 1}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {(() => {
+            const thS = { padding: "6px 8px", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 };
+            const tdS = { padding: "6px 8px" };
+            return (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
+                    <th style={thS}>Açıklama</th>
+                    <th style={{ ...thS, textAlign: "right" }}>Maliyet</th>
+                    <th style={{ ...thS, textAlign: "right" }}>Satış</th>
+                    <th style={{ ...thS, textAlign: "right" }}>Kâr</th>
+                    <th style={thS}>Kaynak</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(calc.separateToolItems || []).map((t, i) => (
+                    <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
+                      <td style={tdS}>{t?.description || "—"}</td>
+                      <td style={{ ...tdS, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(t?.cost || 0)}</td>
+                      <td style={{ ...tdS, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(t?.sale || 0)}</td>
+                      <td style={{ ...tdS, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#16a34a" }}>+{fmt(t?.profit || 0)} (%{((Number(t?.margin) || 0) * 100).toFixed(1)})</td>
+                      <td style={{ ...tdS, fontSize: 10, color: "#78716c" }}>Kalem #{(Number(t?.sourceLineIdx) || 0) + 1}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            );
+          })()}
         </div>
       )}
 
