@@ -416,13 +416,13 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
               </tr>
             </thead>
             <tbody>
-              {calc.separateToolItems.map((t, i) => (
+              {(calc.separateToolItems || []).map((t, i) => (
                 <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
-                  <td style={td}>{t.description}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(t.cost)}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(t.sale)}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#16a34a" }}>+{fmt(t.profit)} (%{(t.margin * 100).toFixed(1)})</td>
-                  <td style={{ ...td, fontSize: 10, color: "#78716c" }}>Kalem #{t.sourceLineIdx + 1}</td>
+                  <td style={td}>{t?.description || "—"}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(t?.cost || 0)}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(t?.sale || 0)}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#16a34a" }}>+{fmt(t?.profit || 0)} (%{((Number(t?.margin) || 0) * 100).toFixed(1)})</td>
+                  <td style={{ ...td, fontSize: 10, color: "#78716c" }}>Kalem #{(Number(t?.sourceLineIdx) || 0) + 1}</td>
                 </tr>
               ))}
             </tbody>
@@ -440,9 +440,9 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
           <div><span style={{ color: "#78716c" }}>Kâr Marjı:</span> <b>%{calc.overallMarginPct.toFixed(1)}</b></div>
           {(calc.separateToolItems || []).length > 0 && (
             <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "#78716c", paddingTop: 6, borderTop: "1px dashed #86efac" }}>
-              Toplam içinde: <b>{calc.separateToolItems.length}</b> ayrı aparat/kalıp satırı ·
-              maliyet {fmt(calc.separateToolItems.reduce((s, t) => s + t.cost, 0))} TL,
-              satış {fmt(calc.separateToolItems.reduce((s, t) => s + t.sale, 0))} TL
+              Toplam içinde: <b>{(calc.separateToolItems || []).length}</b> ayrı aparat/kalıp satırı ·
+              maliyet {fmt((calc.separateToolItems || []).reduce((s, t) => s + (Number(t?.cost) || 0), 0))} TL,
+              satış {fmt((calc.separateToolItems || []).reduce((s, t) => s + (Number(t?.sale) || 0), 0))} TL
             </div>
           )}
           {currency !== "TL" && (

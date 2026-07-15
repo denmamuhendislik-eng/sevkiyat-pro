@@ -185,13 +185,13 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
     },
     // Aparat/kalıp — ayrı satır modu (kaleme dahil değil, teklift altında görünür)
     separateTool: {
-      mode: specialToolMode,
-      inLine: specialToolInLine,
-      cost: specialToolSeparate,
-      sale: specialToolSeparateSale,
-      profit: specialToolSeparateSale - specialToolSeparate,
-      margin: specialToolMargin,
-      description: line.specialToolDescription || (line.stockName ? `${line.stockName} — Aparat/Kalıp` : "Aparat / Kalıp"),
+      mode: String(specialToolMode || "spread"),
+      inLine: Boolean(specialToolInLine),
+      cost: Number(specialToolSeparate) || 0,
+      sale: Number(specialToolSeparateSale) || 0,
+      profit: Number(specialToolSeparateSale - specialToolSeparate) || 0,
+      margin: Number(specialToolMargin) || 0,
+      description: String(line.specialToolDescription || (line.stockName ? `${line.stockName} — Aparat/Kalıp` : "Aparat / Kalıp")),
     },
     // Marj bilgisi (UI'da göstermek için)
     margins: {
