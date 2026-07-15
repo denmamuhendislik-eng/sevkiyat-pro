@@ -9,7 +9,10 @@ import { useMachineRatesForQuote } from "./machineRates";
 import { generateQuotePdf } from "./quotePdf";
 
 // Modül ana giriş: yeni teklif oluşturma formu (tek uzun sayfa).
-export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
+// Props:
+//   initialQuote: dolu quote obj — düzenleme/revizyon modunda dışarıdan gelir
+//   readOnly: true ise input'lar kilitli (eski revizyon görüntüleme)
+export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote = null, readOnly = false }) {
   const [materials, setMaterials] = useState({ materials: {} });
   const [fasonWorks, setFasonWorks] = useState({ works: [] });
   const [options, setOptions] = useState({});
@@ -40,6 +43,14 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [saveResult, setSaveResult] = useState(null);
   const [saveError, setSaveError] = useState("");
+  // Revizyon field'ları
+  const [revNo, setRevNo] = useState(0);
+  const [baseQuoteNo, setBaseQuoteNo] = useState("");
+  const [parentQuoteNo, setParentQuoteNo] = useState(null);
+  const [revisionReason, setRevisionReason] = useState("");
+  const isRevision = revNo > 0;
+  const isLocked = readOnly;
+  const canEditForm = canEdit && !isLocked;
 
   useEffect(() => {
     const u1 = subscribeQuoteMaterials(d => setMaterials(d || { materials: {} }), { staging });
@@ -51,12 +62,37 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
     return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
   }, [staging]);
 
-  // İlk yüklemede quote no otomatik önerisi
+  // İlk yüklemede quote no otomatik önerisi (sadece yeni teklif için)
   useEffect(() => {
-    if (!quoteNo) {
+    if (!quoteNo && !initialQuote) {
       suggestNextQuoteNo().then(setQuoteNo).catch(() => {});
     }
-  }, [quoteNo]);
+  }, [quoteNo, initialQuote]);
+
+  // initialQuote geldi mi? state'i onunla doldur (düzenleme veya revizyon modu)
+  useEffect(() => {
+    if (!initialQuote) return;
+    setQuoteNo(initialQuote.quoteNo || "");
+    setQuoteDate(initialQuote.quoteDate || new Date().toISOString().slice(0, 10));
+    setCustomerName(initialQuote.customerName || "");
+    setCustomerPhone(initialQuote.customerPhone || "");
+    setCustomerEmail(initialQuote.customerEmail || "");
+    setPaymentTerm(initialQuote.paymentTerm || "");
+    setShipping(initialQuote.shipping || "");
+    setShippingCost(initialQuote.shippingCost || 0);
+    setShippingIncluded(initialQuote.shippingIncluded !== false);
+    setCurrency(initialQuote.currency || "TL");
+    setExchangeRate(initialQuote.exchangeRate || 1);
+    setQuoteType(initialQuote.quoteType || "Yurtiçi Satış");
+    setTerm(initialQuote.term || "");
+    setNotes(initialQuote.notes || "");
+    setLines(initialQuote.lines || []);
+    setStatus(initialQuote.status || "draft");
+    setRevNo(Number(initialQuote.revNo) || 0);
+    setBaseQuoteNo(initialQuote.baseQuoteNo || initialQuote.quoteNo || "");
+    setParentQuoteNo(initialQuote.parentQuoteNo || null);
+    setRevisionReason(initialQuote.revisionReason || "");
+  }, [initialQuote]);
 
   // Malzeme adları currency için USD kuru
   useEffect(() => {
@@ -158,9 +194,11 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
 
   const handleSave = async () => {
     if (!canEdit) return;
+    if (isLocked) { setSaveError("Bu revizyon kilitli — yeni revizyon oluştur"); return; }
     if (!customerName) { setSaveError("Müşteri seç"); return; }
     if (!quoteNo) { setSaveError("Teklif no boş"); return; }
     if (lines.length === 0) { setSaveError("En az 1 kalem ekle"); return; }
+    if (isRevision && !revisionReason.trim()) { setSaveError("Revizyon nedeni zorunlu"); return; }
     setSaving(true); setSaveError("");
     try {
       const quotePayload = {
@@ -179,6 +217,11 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
         term,
         notes,
         status,
+        // Revizyon field'ları — R0 için default 0
+        revNo,
+        baseQuoteNo: baseQuoteNo || quoteNo,
+        parentQuoteNo: parentQuoteNo || null,
+        revisionReason: isRevision ? revisionReason.trim() : null,
         lines: lines.map((l, i) => {
           const r = calc.lineResults[i];
           return {
@@ -195,6 +238,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
             specialToolCost: l.specialToolCost,
             specialToolMode: l.specialToolMode || "spread",
             specialToolDescription: l.specialToolDescription || "",
+            overrides: l.overrides || {},  // satır bazlı marj override
             term: l.term || "",
             technicalNote: l.technicalNote,
             costPerUnit: r.perUnit.totalCost,
@@ -260,8 +304,35 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
 
   return (
     <div>
+      {/* REVİZYON BANNER — R{n} veya R{n} kilitli görüntüleme */}
+      {isRevision && (
+        <div style={{ marginBottom: 12, padding: 12, background: isLocked ? "#fef2f2" : "#fef3c7", border: `1px solid ${isLocked ? "#fecaca" : "#fde68a"}`, borderRadius: 4 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: isLocked ? "#991b1b" : "#92400e", marginBottom: 6 }}>
+            {isLocked ? "🔒" : "🔄"} <b>Revizyon {revNo}</b>
+            {" — "}Ana teklif: <span style={{ fontFamily: "ui-monospace, monospace" }}>{baseQuoteNo}</span>
+            {parentQuoteNo && <> · Önceki: <span style={{ fontFamily: "ui-monospace, monospace" }}>{parentQuoteNo}</span></>}
+            {isLocked && <span style={{ marginLeft: 10, padding: "2px 8px", background: "#dc2626", color: "#fff", borderRadius: 3, fontSize: 10 }}>KİLİTLİ</span>}
+          </div>
+          {isLocked ? (
+            <div style={{ fontSize: 11, color: "#991b1b" }}>
+              Bu revizyon önceki bir sürümdür — düzenleme yasak. Yeni revizyon oluşturmak için <b>Teklif Listesi</b>'ne git ve aktif revizyon üzerinden "🔄 Revizyon Oluştur" tıkla.
+            </div>
+          ) : (
+            <>
+              <label style={{ fontSize: 11, fontWeight: 500, color: "#92400e", display: "block", marginBottom: 4 }}>
+                Revizyon Nedeni <span style={{ color: "#dc2626" }}>*</span>
+              </label>
+              <textarea value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
+                placeholder="Örn: Aselsan %8 iskonto talep etti — labor marjı düşürüldü / Malzeme fiyatı arttı — hammadde marjı güncellendi"
+                style={{ width: "100%", minHeight: 40, padding: 6, fontSize: 11, border: "1px solid #fde68a", borderRadius: 4, background: "#fff", boxSizing: "border-box" }} />
+              {!revisionReason.trim() && <div style={{ fontSize: 10, color: "#dc2626", marginTop: 2 }}>⚠ Kaydetmek için neden yazılmalı</div>}
+            </>
+          )}
+        </div>
+      )}
+
       <div style={{ marginBottom: 12, padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11, color: "#1e40af" }}>
-        💡 <b>Yeni Teklif</b> — üstte müşteri + meta, aşağıda parça arama / ekleme. Kaydettiğinde her yeni stok kodu otomatik kütüphaneye yazılır.
+        💡 <b>{isRevision ? `Revizyon ${revNo}` : "Yeni Teklif"}</b> — üstte müşteri + meta, aşağıda parça arama / ekleme. {!isRevision && "Kaydettiğinde her yeni stok kodu otomatik kütüphaneye yazılır."}
       </div>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>

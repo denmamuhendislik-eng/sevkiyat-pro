@@ -141,6 +141,11 @@ export async function suggestNextQuoteNo(date = new Date()) {
 
 // Yeni teklif kaydet. quoteNo'dan yılı çıkarır, quotes_YYYY doc'una yazar.
 // groupKey formatı: teklifNo + "__" + normalize(müşteri) — aynı no farklı müşteride ayrı kayıt
+// Revizyon field'ları:
+//   revNo: 0 = orijinal, 1+ = revizyon
+//   baseQuoteNo: orijinal teklif no (revNo=0 için kendisi)
+//   parentQuoteNo: bir önceki revizyonun quoteNo'su (R0 için null)
+//   revisionReason: revizyon nedeni (R1+ için zorunlu)
 export async function saveNewQuote(quote, { canEdit, staging = false } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!quote.quoteNo) throw new Error("quoteNo zorunlu");
@@ -149,19 +154,64 @@ export async function saveNewQuote(quote, { canEdit, staging = false } = {}) {
   const suffix = staging ? "_staging" : "";
   const docName = `quotes_${year}${suffix}`;
   const customerKey = String(quote.customerName).replace(/\s+/g, "_").substring(0, 40);
+  // groupKey'de "/" karakteri Firestore field key olarak güvenli — direkt kullan
   const groupKey = `${quote.quoteNo}__${customerKey}`;
   const ref = doc(db, APP_COL, docName);
+  // Revizyon defaultları
+  const revNo = Number(quote.revNo) || 0;
+  const baseQuoteNo = quote.baseQuoteNo || quote.quoteNo;
   await setDoc(ref, {
     year,
     quotes: {
       [groupKey]: {
         ...quote,
+        revNo,
+        baseQuoteNo,
+        parentQuoteNo: quote.parentQuoteNo || null,
+        revisionReason: quote.revisionReason || null,
         createdAt: quote.createdAt || new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       },
     },
   }, { merge: true });
   return { docName, groupKey };
+}
+
+// Bir teklifin revizyonunu oluştur — mevcut kalemleri kopyalar, R{n+1} verir.
+// baseQuote: klonlayacağımız kaynak teklif obj (aktif revizyon)
+// revisionReason: neden alanı zorunlu — "Aselsan %8 iskonto istedi", "Malzeme fiyatı arttı" vb.
+export async function createRevision(baseQuote, revisionReason, { canEdit, staging = false } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!baseQuote?.quoteNo) throw new Error("Kaynak teklif quoteNo yok");
+  if (!revisionReason || !revisionReason.trim()) throw new Error("Revizyon nedeni zorunlu");
+  const baseNo = baseQuote.baseQuoteNo || baseQuote.quoteNo;
+  const nextRev = (Number(baseQuote.revNo) || 0) + 1;
+  const newQuoteNo = `${baseNo}/R${nextRev}`;
+  const clone = {
+    ...baseQuote,
+    quoteNo: newQuoteNo,
+    revNo: nextRev,
+    baseQuoteNo: baseNo,
+    parentQuoteNo: baseQuote.quoteNo,
+    revisionReason: revisionReason.trim(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  // customer'ı, lines'ı, tüm field'ları taşı
+  return await saveNewQuote(clone, { canEdit, staging });
+}
+
+// Bir base teklifin tüm revizyonlarını çek (R0 dahil), revNo'ya göre sıralı
+export function findRevisionChain(allQuotesForYear, baseQuoteNo, customerName) {
+  if (!allQuotesForYear || !baseQuoteNo) return [];
+  const norm = (s) => String(s || "").replace(/\s+/g, "_").substring(0, 40);
+  const custKey = norm(customerName);
+  return Object.values(allQuotesForYear)
+    .filter(q => {
+      const qBase = q.baseQuoteNo || q.quoteNo;
+      return qBase === baseQuoteNo && norm(q.customerName) === custKey;
+    })
+    .sort((a, b) => (Number(a.revNo) || 0) - (Number(b.revNo) || 0));
 }
 
 // Parça kütüphanesine yeni parça ekle veya güncelle

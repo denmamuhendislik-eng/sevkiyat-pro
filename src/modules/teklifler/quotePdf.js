@@ -167,6 +167,11 @@ function buildQuoteHtml(quote, calc) {
           <div style="font-size:14px; font-weight:800; color:#1e40af; font-family:'JetBrains Mono','Courier New',monospace; letter-spacing:1px;">
             ${esc(quote.quoteNo || "—")}
           </div>
+          ${Number(quote.revNo) > 0 ? `
+            <div style="margin-top:3px; padding:2px 6px; background:#fef3c7; border:1px solid #fde68a; border-radius:3px; font-size:8px; font-weight:700; color:#92400e; letter-spacing:0.5px;">
+              REV. ${Number(quote.revNo)} · ${fmtDate(quote.updatedAt ? quote.updatedAt.slice(0, 10) : quote.quoteDate)}
+            </div>
+          ` : ""}
         </div>
         <div style="padding:6px 12px; background:#f9fafb; border-radius:6px; border:1px solid #e7e5e4;">
           <div style="font-size:8px; color:#57534e; text-transform:uppercase; letter-spacing:0.5px;">Tarih / Date</div>

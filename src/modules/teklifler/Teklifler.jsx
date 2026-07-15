@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import {
   subscribeQuoteMaterials, subscribeQuoteFasonWorks, subscribeQuoteOptions,
   subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts, subscribeQuoteCustomers,
-  saveQuotePolicyUpdate, saveQuoteCustomer,
+  saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain,
 } from "./firestore";
 import NewQuoteView from "./NewQuoteView";
 import { generateQuotePdf } from "./quotePdf";
@@ -14,6 +14,12 @@ const PROMOTE_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/promot
 export default function Teklifler({ isAdmin, isUretim, isSales }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
   const [activeTab, setActiveTab] = useState("new");
+  // Revizyon/görüntüleme akışı — QuoteListView tetikler, NewQuoteView tüketir
+  const [pendingOpen, setPendingOpen] = useState(null); // { quote, readOnly }
+  const openQuote = (quote, { readOnly = false } = {}) => {
+    setPendingOpen({ quote, readOnly });
+    setActiveTab("new");
+  };
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -47,8 +53,15 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
         ))}
       </div>
 
-      {activeTab === "new" && <NewQuoteView canEdit={canEdit} isAdmin={isAdmin} onSaved={() => setActiveTab("list")} />}
-      {activeTab === "list" && <QuoteListView />}
+      {activeTab === "new" && (
+        <NewQuoteView
+          canEdit={canEdit} isAdmin={isAdmin}
+          initialQuote={pendingOpen?.quote || null}
+          readOnly={!!pendingOpen?.readOnly}
+          onSaved={() => { setPendingOpen(null); setActiveTab("list"); }}
+        />
+      )}
+      {activeTab === "list" && <QuoteListView canEdit={canEdit} onOpen={openQuote} />}
       {activeTab === "parts" && <PartsLibraryView />}
       {activeTab === "customers" && <CustomersView canEdit={canEdit} />}
       {activeTab === "master" && <MasterDataView />}
@@ -223,30 +236,71 @@ function CustomersView({ canEdit }) {
 
 // ==================== Teklif Listesi (arşiv görünümü) ====================
 
-function QuoteListView() {
+function QuoteListView({ canEdit, onOpen }) {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
   const [staging, setStaging] = useState(false);
   const [data, setData] = useState({ quotes: {} });
   const [search, setSearch] = useState("");
+  const [expandedBase, setExpandedBase] = useState({}); // { baseKey: bool }
+  const [creatingRev, setCreatingRev] = useState(false);
 
   useEffect(() => {
     const unsub = subscribeQuotesForYear(year, setData, { staging });
     return unsub;
   }, [year, staging]);
 
-  const quotes = useMemo(() => {
-    const q = Object.values(data?.quotes || {});
+  // Revizyon zincirine göre gruplandırılmış: her grup = aktif (en yüksek revNo) + geçmişler
+  const groups = useMemo(() => {
+    const all = Object.values(data?.quotes || {});
     const s = search.trim().toLocaleLowerCase("tr-TR");
-    const filtered = s ? q.filter(x =>
+    const filtered = s ? all.filter(x =>
       (x.customerName || "").toLocaleLowerCase("tr-TR").includes(s) ||
       (x.quoteNo || "").toLocaleLowerCase("tr-TR").includes(s) ||
+      (x.baseQuoteNo || "").toLocaleLowerCase("tr-TR").includes(s) ||
       (x.lines || []).some(l => (l.stockCode || "").toLocaleLowerCase("tr-TR").includes(s) || (l.stockName || "").toLocaleLowerCase("tr-TR").includes(s))
-    ) : q;
-    return filtered.sort((a, b) => (b.quoteDate || "").localeCompare(a.quoteDate || ""));
+    ) : all;
+    // baseQuoteNo + customerName ile gruplandır
+    const norm = (v) => String(v || "").replace(/\s+/g, "_").substring(0, 40);
+    const map = new Map();
+    for (const q of filtered) {
+      const baseNo = q.baseQuoteNo || q.quoteNo;
+      const key = `${baseNo}__${norm(q.customerName)}`;
+      if (!map.has(key)) map.set(key, []);
+      map.get(key).push(q);
+    }
+    // Her grup içinde revNo'ya göre sırala (en yüksek = aktif)
+    const arr = Array.from(map.entries()).map(([key, revs]) => {
+      const sorted = revs.slice().sort((a, b) => (Number(b.revNo) || 0) - (Number(a.revNo) || 0));
+      return { key, active: sorted[0], history: sorted.slice(1), all: sorted };
+    });
+    return arr.sort((a, b) => (b.active.quoteDate || "").localeCompare(a.active.quoteDate || ""));
   }, [data, search]);
 
-  const totalLines = quotes.reduce((s, q) => s + (q.lines?.length || 0), 0);
+  const totalLines = groups.reduce((s, g) => s + (g.active.lines?.length || 0), 0);
+
+  const handleCreateRevision = async (activeQuote) => {
+    const reason = window.prompt("Revizyon nedeni (zorunlu):\n\nÖrn: Aselsan %8 iskonto istedi, malzeme fiyatı arttı, teknik değişiklik...", "");
+    if (!reason || !reason.trim()) return;
+    setCreatingRev(true);
+    try {
+      const { groupKey } = await createRevision(activeQuote, reason, { canEdit, staging });
+      // Yeni revizyonun quote objesini bul (bu tick'te yeni verilerle henüz güncellenmemiş olabilir)
+      const newQuote = {
+        ...activeQuote,
+        quoteNo: `${activeQuote.baseQuoteNo || activeQuote.quoteNo}/R${(Number(activeQuote.revNo) || 0) + 1}`,
+        revNo: (Number(activeQuote.revNo) || 0) + 1,
+        baseQuoteNo: activeQuote.baseQuoteNo || activeQuote.quoteNo,
+        parentQuoteNo: activeQuote.quoteNo,
+        revisionReason: reason.trim(),
+      };
+      onOpen && onOpen(newQuote, { readOnly: false });
+    } catch (e) {
+      alert("Revizyon oluşturulamadı: " + e.message);
+    } finally {
+      setCreatingRev(false);
+    }
+  };
 
   return (
     <div>
@@ -265,11 +319,11 @@ function QuoteListView() {
           style={{ flex: 1, minWidth: 240, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}
         />
         <span style={{ fontSize: 11, color: "#78716c" }}>
-          {quotes.length} teklif · {totalLines} kalem
+          {groups.length} teklif · {totalLines} kalem · {groups.filter(g => g.history.length > 0).length} revizyonlu
         </span>
       </div>
 
-      {quotes.length === 0 ? (
+      {groups.length === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
           Bu yılda teklif yok. {staging ? "Staging'den prod'a geçirmek için Master Data sekmesindeki 'Promote' butonunu kullan." : "Excel Import sekmesinden içe aktar."}
         </div>
@@ -285,68 +339,133 @@ function QuoteListView() {
                 <th style={{ ...th, textAlign: "right" }}>Toplam</th>
                 <th style={th}>Döviz</th>
                 <th style={th}>Durum</th>
-                <th style={th}></th>
+                <th style={th}>İşlemler</th>
               </tr>
             </thead>
             <tbody>
-              {quotes.map(q => (
-                <tr key={q.quoteNo + "__" + q.customerName} style={{ borderTop: "1px solid #f5f5f4" }}>
-                  <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{q.quoteNo}</td>
-                  <td style={td}>{q.quoteDate || "—"}</td>
-                  <td style={td}>{q.customerName}</td>
-                  <td style={{ ...td, textAlign: "right" }}>{q.lines?.length || 0}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                    {Number(q.totalPriceTl || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                  </td>
-                  <td style={td}>{q.currency || "TL"}</td>
-                  <td style={td}>
-                    <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600,
-                      background: q.status === "accepted" ? "#dcfce7" : "#fef3c7",
-                      color: q.status === "accepted" ? "#166534" : "#92400e" }}>
-                      {q.status === "accepted" ? "✓ KABUL" : "⏳ TEKLİF"}
-                    </span>
-                  </td>
-                  <td style={td}>
-                    <button
-                      onClick={async () => {
-                        try {
-                          // Arşivden gelen kayıtta lineResults yok — sadece linePrice var, calc'ı basit oluştur
-                          const fakeLineResults = (q.lines || []).map(l => ({
-                            weightKg: Number(l.weightKg) || 0,
-                            quantity: Number(l.quantity) || 1,
-                            perUnit: { totalCost: 0, salePrice: Number(l.salePricePerUnit || (l.linePrice / (l.quantity || 1))) || 0, material: 0, labor: 0, fason: 0, specialTool: 0 },
-                            total: { totalCost: 0, salePrice: Number(l.linePrice) || 0, profit: 0, material: 0, labor: 0, fason: 0, specialTool: 0 },
-                            margins: {},
-                            separateTool: { inLine: true, cost: 0, sale: 0, profit: 0, margin: 0, description: "" },
-                          }));
-                          const calcForPdf = {
-                            lineResults: fakeLineResults,
-                            separateToolItems: [],
-                            totalCostTl: 0,
-                            totalSaleTl: Number(q.totalPriceTl) || 0,
-                            totalProfitTl: 0,
-                            overallMarginPct: 0,
-                            currency: q.currency || "TL",
-                            displayFactor: 1,
-                            totalSaleDisplay: Number(q.totalPriceTl) || 0,
-                            totalCostDisplay: 0,
-                          };
-                          await generateQuotePdf(q, calcForPdf);
-                        } catch (e) {
-                          alert("PDF hatası: " + e.message);
-                        }
-                      }}
-                      title="Teklifi PDF olarak indir"
-                      style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}
-                    >📄 PDF</button>
-                  </td>
-                </tr>
-              ))}
+              {groups.map(g => {
+                const q = g.active;
+                const hasHistory = g.history.length > 0;
+                const isExpanded = !!expandedBase[g.key];
+                return (
+                  <QuoteGroupRows
+                    key={g.key} group={g} active={q} hasHistory={hasHistory} isExpanded={isExpanded}
+                    onToggleExpand={() => setExpandedBase(p => ({ ...p, [g.key]: !p[g.key] }))}
+                    onOpen={onOpen}
+                    onCreateRevision={handleCreateRevision}
+                    creatingRev={creatingRev}
+                    canEdit={canEdit}
+                  />
+                );
+              })}
             </tbody>
           </table>
         </div>
       )}
     </div>
+  );
+}
+
+// Bir revizyon grubunun render'ı — aktif satır + (expanded ise) geçmiş satırlar
+function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand, onOpen, onCreateRevision, creatingRev, canEdit }) {
+  const q = active;
+  const revBadgeColor = q.revNo > 0 ? { bg: "#fef3c7", fg: "#92400e" } : { bg: "#dbeafe", fg: "#1e40af" };
+  const downloadPdf = async (targetQuote) => {
+    try {
+      const fakeLineResults = (targetQuote.lines || []).map(l => ({
+        weightKg: Number(l.weightKg) || 0,
+        quantity: Number(l.quantity) || 1,
+        perUnit: { totalCost: 0, salePrice: Number(l.salePricePerUnit || (l.linePrice / (l.quantity || 1))) || 0, material: 0, labor: 0, fason: 0, specialTool: 0 },
+        total: { totalCost: 0, salePrice: Number(l.linePrice) || 0, profit: 0, material: 0, labor: 0, fason: 0, specialTool: 0 },
+        margins: {},
+        separateTool: { inLine: true, cost: 0, sale: 0, profit: 0, margin: 0, description: "" },
+      }));
+      const calcForPdf = {
+        lineResults: fakeLineResults, separateToolItems: [], totalCostTl: 0,
+        totalSaleTl: Number(targetQuote.totalPriceTl) || 0, totalProfitTl: 0, overallMarginPct: 0,
+        currency: targetQuote.currency || "TL", displayFactor: 1,
+        totalSaleDisplay: Number(targetQuote.totalPriceTl) || 0, totalCostDisplay: 0,
+      };
+      await generateQuotePdf(targetQuote, calcForPdf);
+    } catch (e) {
+      alert("PDF hatası: " + e.message);
+    }
+  };
+  return (
+    <>
+      <tr style={{ borderTop: "1px solid #f5f5f4", background: hasHistory ? "#fefce8" : undefined }}>
+        <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>
+          {hasHistory && (
+            <button onClick={onToggleExpand} style={{ marginRight: 4, background: "transparent", border: "none", cursor: "pointer", fontSize: 10 }} title={isExpanded ? "Geçmişi gizle" : "Geçmiş revizyonları göster"}>
+              {isExpanded ? "▼" : "▶"}
+            </button>
+          )}
+          {q.quoteNo}
+          {q.revNo > 0 && <span style={{ marginLeft: 6, padding: "1px 5px", background: revBadgeColor.bg, color: revBadgeColor.fg, borderRadius: 3, fontSize: 9, fontWeight: 600 }}>R{q.revNo} AKTİF</span>}
+          {hasHistory && <span style={{ marginLeft: 4, fontSize: 9, color: "#78716c" }}>· {group.all.length} sürüm</span>}
+        </td>
+        <td style={td}>{q.quoteDate || "—"}</td>
+        <td style={td}>{q.customerName}</td>
+        <td style={{ ...td, textAlign: "right" }}>{q.lines?.length || 0}</td>
+        <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+          {Number(q.totalPriceTl || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+        </td>
+        <td style={td}>{q.currency || "TL"}</td>
+        <td style={td}>
+          <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600,
+            background: q.status === "accepted" ? "#dcfce7" : "#fef3c7",
+            color: q.status === "accepted" ? "#166534" : "#92400e" }}>
+            {q.status === "accepted" ? "✓ KABUL" : "⏳ TEKLİF"}
+          </span>
+        </td>
+        <td style={td}>
+          <div style={{ display: "flex", gap: 4 }}>
+            <button onClick={() => onOpen && onOpen(q, { readOnly: false })}
+              title="Düzenle" style={{ padding: "3px 8px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer" }}>✏ Aç</button>
+            <button onClick={() => onCreateRevision(q)} disabled={!canEdit || creatingRev}
+              title="Bu teklifi klonlayıp yeni R{n+1} oluştur" style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", opacity: canEdit ? 1 : 0.5 }}>🔄 Revizyon</button>
+            <button onClick={() => downloadPdf(q)}
+              title="Aktif revizyonu PDF olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
+          </div>
+        </td>
+      </tr>
+      {isExpanded && group.history.map((hq, hi) => {
+        // Bir önceki revizyona göre toplam fark
+        const prev = group.all[group.all.indexOf(hq) + 1] || null; // sıralı azalan → sonraki index bir alt revNo
+        const diffTotal = prev ? (Number(hq.totalPriceTl || 0) - Number(prev.totalPriceTl || 0)) : 0;
+        return (
+          <tr key={hq.quoteNo} style={{ borderTop: "1px solid #f5f5f4", background: "#fafaf9", fontSize: 11 }}>
+            <td style={{ ...td, paddingLeft: 28, fontFamily: "ui-monospace, monospace", color: "#78716c" }}>
+              🔒 {hq.quoteNo}
+              <span style={{ marginLeft: 6, padding: "1px 5px", background: "#e7e5e4", color: "#57534e", borderRadius: 3, fontSize: 9, fontWeight: 600 }}>R{hq.revNo || 0}</span>
+            </td>
+            <td style={{ ...td, color: "#78716c" }}>{hq.quoteDate || "—"}</td>
+            <td style={{ ...td, color: "#78716c", fontStyle: "italic" }} colSpan="1">
+              {hq.revisionReason ? <span title={hq.revisionReason}>💬 {hq.revisionReason.length > 40 ? hq.revisionReason.substring(0, 40) + "…" : hq.revisionReason}</span> : "—"}
+            </td>
+            <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{hq.lines?.length || 0}</td>
+            <td style={{ ...td, textAlign: "right", color: "#78716c", fontVariantNumeric: "tabular-nums" }}>
+              {Number(hq.totalPriceTl || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {prev && diffTotal !== 0 && (
+                <div style={{ fontSize: 9, color: diffTotal > 0 ? "#16a34a" : "#dc2626" }}>
+                  {diffTotal > 0 ? "▲" : "▼"} {Math.abs(diffTotal).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                </div>
+              )}
+            </td>
+            <td style={{ ...td, color: "#78716c" }}>{hq.currency || "TL"}</td>
+            <td style={td}></td>
+            <td style={td}>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button onClick={() => onOpen && onOpen(hq, { readOnly: true })}
+                  title="Sadece görüntüle (kilitli)" style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>👁 Görüntüle</button>
+                <button onClick={() => downloadPdf(hq)}
+                  title="Bu revizyonu PDF olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
+              </div>
+            </td>
+          </tr>
+        );
+      })}
+    </>
   );
 }
 
