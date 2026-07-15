@@ -86,7 +86,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     setQuoteType(initialQuote.quoteType || "Yurtiçi Satış");
     setTerm(initialQuote.term || "");
     setNotes(initialQuote.notes || "");
-    setLines(initialQuote.lines || []);
+    setLines(normalizeIncomingLines(initialQuote.lines));
     setStatus(initialQuote.status || "draft");
     setRevNo(Number(initialQuote.revNo) || 0);
     setBaseQuoteNo(initialQuote.baseQuoteNo || initialQuote.quoteNo || "");
@@ -1270,6 +1270,58 @@ function parseFasonString(str) {
   if (!str) return [];
   const names = String(str).split(/[,;/]/).map(s => s.trim()).filter(Boolean);
   return names.map(name => ({ name, unitPriceTl: 0, quantity: 0 }));
+}
+
+// "EN:20 × BOY:30 × UZ:100" gibi string dimension'ı obje'ye çevir
+function parseDimensionsString(str) {
+  if (!str || typeof str !== "string") return { en: 0, boy: 0, uzunluk: 0 };
+  const matchNum = (label) => {
+    const re = new RegExp(`${label}\\s*[:=]?\\s*(-?\\d+(?:[.,]\\d+)?)`, "i");
+    const m = str.match(re);
+    return m ? Number(String(m[1]).replace(",", ".")) || 0 : 0;
+  };
+  return {
+    en: matchNum("EN"),
+    boy: matchNum("BOY"),
+    uzunluk: matchNum("UZ|UZUNLUK|BOY(?:U)?"),
+  };
+}
+
+// initialQuote'tan gelen lines'ı runtime'a uygun formata normalize et.
+// Excel arşivi machines/fasonWorks'ü STRING olarak, dimensions'ı STRING olarak tutuyor.
+// UI array/obje bekliyor — dönüştürelim, aksi halde LineEditor render'ında crash olur.
+function normalizeIncomingLines(rawLines) {
+  if (!Array.isArray(rawLines)) return [];
+  return rawLines.map(l => {
+    if (!l) return null;
+    const machines = Array.isArray(l.machines)
+      ? l.machines
+      : parseMachinesString(l.machines, l.machineTimeMin);
+    const fasonWorks = Array.isArray(l.fasonWorks)
+      ? l.fasonWorks
+      : parseFasonString(l.fasonWorks);
+    const dimensions = (l.dimensions && typeof l.dimensions === "object")
+      ? { en: Number(l.dimensions.en) || 0, boy: Number(l.dimensions.boy) || 0, uzunluk: Number(l.dimensions.uzunluk) || 0 }
+      : parseDimensionsString(l.dimensions);
+    return {
+      stockCode: l.stockCode || "",
+      musteriKodu: l.musteriKodu || "",
+      stockName: l.stockName || "",
+      quantity: Number(l.quantity) || 1,
+      unit: l.unit || "ADET",
+      materialType: l.materialType || "",
+      dimensions,
+      weightKg: Number(l.weightKg) || 0,
+      machines,
+      fasonWorks,
+      specialToolCost: Number(l.specialToolCost) || 0,
+      specialToolMode: l.specialToolMode || "spread",
+      specialToolDescription: l.specialToolDescription || "",
+      overrides: (l.overrides && typeof l.overrides === "object") ? l.overrides : {},
+      term: l.term || "",
+      technicalNote: l.technicalNote || "",
+    };
+  }).filter(Boolean);
 }
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
