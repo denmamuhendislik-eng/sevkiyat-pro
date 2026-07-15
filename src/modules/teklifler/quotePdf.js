@@ -134,26 +134,34 @@ function buildQuoteHtml(quote, calc) {
   background:#fff; color:#1c1917; font-family:'Inter','Segoe UI',Tahoma,sans-serif;
   box-sizing:border-box; font-size:11px; line-height:1.5;
 ">
-  <!-- HEADER -->
-  <div style="display:flex; align-items:flex-start; justify-content:space-between; padding-bottom:14px; border-bottom:2px solid #1e40af;">
-    <div>
-      <img src="${LOGO_DENMA}" style="width:150px;height:auto;" alt="DENMA" />
-      <div style="font-size:9px;color:#78716c;margin-top:4px;line-height:1.4;">
+  <!-- HEADER — kompakt, 3 satırlı denge:
+       Satır 1: logo (büyük) + TEKLİF başlığı (sağ)
+       Satır 2: firma bilgileri (sol) + teklif no & tarih inline mini pill (sağ) -->
+  <div style="padding-bottom:12px; border-bottom:2px solid #1e40af;">
+    <div style="display:flex; align-items:center; justify-content:space-between;">
+      <img src="${LOGO_DENMA}" style="width:180px;height:auto;" alt="DENMA" />
+      <div style="text-align:right;">
+        <div style="font-size:28px; font-weight:800; color:#1e40af; letter-spacing:1.5px; line-height:1;">TEKLİF</div>
+        <div style="font-size:10px; color:#78716c; letter-spacing:2px; margin-top:2px;">QUOTATION</div>
+      </div>
+    </div>
+    <div style="display:flex; align-items:flex-end; justify-content:space-between; margin-top:10px;">
+      <div style="font-size:9px; color:#78716c; line-height:1.5;">
         Denma Mühendislik Mak. Otom. İnş. San. Tic. Ltd. Şti.<br/>
         Fevzi Çakmak Mah. 10570. Sk. No:31/B · Karatay / KONYA<br/>
         Tel: 0332 608 26 88 · info@denmamuhendislik.com
       </div>
-    </div>
-    <div style="text-align:right;">
-      <div style="font-size:22px;font-weight:800;color:#1e40af;letter-spacing:0.5px;">TEKLİF</div>
-      <div style="font-size:10px;color:#78716c;">QUOTATION</div>
-      <div style="margin-top:10px;padding:8px 12px;background:#eff6ff;border-radius:6px;">
-        <div style="font-size:9px;color:#57534e;">Teklif No / Quote No</div>
-        <div style="font-size:16px;font-weight:800;color:#1e40af;font-family:'JetBrains Mono','Courier New',monospace;letter-spacing:1px;">
-          ${esc(quote.quoteNo || "—")}
+      <div style="display:flex; gap:8px; flex-shrink:0;">
+        <div style="padding:6px 12px; background:#eff6ff; border-radius:6px; border:1px solid #bfdbfe;">
+          <div style="font-size:8px; color:#57534e; text-transform:uppercase; letter-spacing:0.5px;">Teklif No</div>
+          <div style="font-size:14px; font-weight:800; color:#1e40af; font-family:'JetBrains Mono','Courier New',monospace; letter-spacing:1px;">
+            ${esc(quote.quoteNo || "—")}
+          </div>
         </div>
-        <div style="font-size:9px;color:#57534e;margin-top:6px;">Tarih / Date</div>
-        <div style="font-size:11px;font-weight:600;color:#1c1917;">${fmtDate(quote.quoteDate)}</div>
+        <div style="padding:6px 12px; background:#f9fafb; border-radius:6px; border:1px solid #e7e5e4;">
+          <div style="font-size:8px; color:#57534e; text-transform:uppercase; letter-spacing:0.5px;">Tarih</div>
+          <div style="font-size:14px; font-weight:700; color:#1c1917;">${fmtDate(quote.quoteDate)}</div>
+        </div>
       </div>
     </div>
   </div>
