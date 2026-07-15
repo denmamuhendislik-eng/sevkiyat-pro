@@ -6,6 +6,7 @@ import {
 } from "./firestore";
 import { calculateQuoteTotal, paymentTermToGroup } from "./quoteCalc";
 import { useMachineRatesForQuote } from "./machineRates";
+import { generateQuotePdf } from "./quotePdf";
 
 // Modül ana giriş: yeni teklif oluşturma formu (tek uzun sayfa).
 export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
@@ -451,9 +452,32 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
       </div>
 
       {/* KAYDET */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 12, flexWrap: "wrap" }}>
         <button onClick={handleSave} disabled={!canEdit || saving} style={btnSave}>
           {saving ? "Kaydediliyor..." : "💾 Teklifi Kaydet"}
+        </button>
+        <button
+          onClick={async () => {
+            try {
+              const preview = {
+                quoteNo, quoteDate, customerName, customerPhone, customerEmail,
+                paymentTerm, shipping, shippingCost, shippingIncluded,
+                currency, exchangeRate, quoteType, term, notes, status,
+                lines: lines.map(l => ({
+                  stockCode: l.stockCode, musteriKodu: l.musteriKodu, stockName: l.stockName,
+                  quantity: l.quantity, unit: l.unit, term: l.term,
+                })),
+                totalPriceTl: calc.totalSaleTl,
+              };
+              await generateQuotePdf(preview, calc);
+            } catch (e) {
+              alert("PDF hatası: " + e.message);
+            }
+          }}
+          disabled={lines.length === 0}
+          style={{ padding: "10px 20px", fontSize: 13, fontWeight: 600, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: lines.length === 0 ? "not-allowed" : "pointer" }}
+        >
+          📄 PDF Önizle (kaydetmeden)
         </button>
         {saveError && <span style={{ fontSize: 11, color: "#dc2626" }}>⚠ {saveError}</span>}
         {saveResult?.ok && <span style={{ fontSize: 11, color: "#16a34a" }}>✓ {saveResult.message}</span>}

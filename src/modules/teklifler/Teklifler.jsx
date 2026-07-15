@@ -5,6 +5,8 @@ import {
   saveQuotePolicyUpdate, saveQuoteCustomer,
 } from "./firestore";
 import NewQuoteView from "./NewQuoteView";
+import { generateQuotePdf } from "./quotePdf";
+import { calculateQuoteTotal } from "./quoteCalc";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
 const PROMOTE_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/promoteQuoteStagingHttp";
@@ -283,11 +285,12 @@ function QuoteListView() {
                 <th style={{ ...th, textAlign: "right" }}>Toplam</th>
                 <th style={th}>Döviz</th>
                 <th style={th}>Durum</th>
+                <th style={th}></th>
               </tr>
             </thead>
             <tbody>
               {quotes.map(q => (
-                <tr key={q.quoteNo} style={{ borderTop: "1px solid #f5f5f4" }}>
+                <tr key={q.quoteNo + "__" + q.customerName} style={{ borderTop: "1px solid #f5f5f4" }}>
                   <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{q.quoteNo}</td>
                   <td style={td}>{q.quoteDate || "—"}</td>
                   <td style={td}>{q.customerName}</td>
@@ -302,6 +305,40 @@ function QuoteListView() {
                       color: q.status === "accepted" ? "#166534" : "#92400e" }}>
                       {q.status === "accepted" ? "✓ KABUL" : "⏳ TEKLİF"}
                     </span>
+                  </td>
+                  <td style={td}>
+                    <button
+                      onClick={async () => {
+                        try {
+                          // Arşivden gelen kayıtta lineResults yok — sadece linePrice var, calc'ı basit oluştur
+                          const fakeLineResults = (q.lines || []).map(l => ({
+                            weightKg: Number(l.weightKg) || 0,
+                            quantity: Number(l.quantity) || 1,
+                            perUnit: { totalCost: 0, salePrice: Number(l.salePricePerUnit || (l.linePrice / (l.quantity || 1))) || 0, material: 0, labor: 0, fason: 0, specialTool: 0 },
+                            total: { totalCost: 0, salePrice: Number(l.linePrice) || 0, profit: 0, material: 0, labor: 0, fason: 0, specialTool: 0 },
+                            margins: {},
+                            separateTool: { inLine: true, cost: 0, sale: 0, profit: 0, margin: 0, description: "" },
+                          }));
+                          const calcForPdf = {
+                            lineResults: fakeLineResults,
+                            separateToolItems: [],
+                            totalCostTl: 0,
+                            totalSaleTl: Number(q.totalPriceTl) || 0,
+                            totalProfitTl: 0,
+                            overallMarginPct: 0,
+                            currency: q.currency || "TL",
+                            displayFactor: 1,
+                            totalSaleDisplay: Number(q.totalPriceTl) || 0,
+                            totalCostDisplay: 0,
+                          };
+                          await generateQuotePdf(q, calcForPdf);
+                        } catch (e) {
+                          alert("PDF hatası: " + e.message);
+                        }
+                      }}
+                      title="Teklifi PDF olarak indir"
+                      style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}
+                    >📄 PDF</button>
                   </td>
                 </tr>
               ))}
