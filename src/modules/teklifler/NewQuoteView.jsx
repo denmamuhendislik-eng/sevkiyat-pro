@@ -5,6 +5,7 @@ import {
   suggestNextQuoteNo, saveNewQuote, saveQuotePart,
 } from "./firestore";
 import { calculateQuoteTotal, paymentTermToGroup } from "./quoteCalc";
+import { useMachineRatesForQuote } from "./machineRates";
 
 // Modül ana giriş: yeni teklif oluşturma formu (tek uzun sayfa).
 export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
@@ -15,6 +16,8 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
   const [partsLib, setPartsLib] = useState({ parts: {} });
   const [customersData, setCustomersData] = useState({ customers: {} });
   const [staging, setStaging] = useState(false);
+  // Sevkiyat Pro'dan güncel makine dakika ücretleri
+  const machineRatesData = useMachineRatesForQuote();
 
   // Form state
   const [quoteNo, setQuoteNo] = useState("");
@@ -81,8 +84,14 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
     setLines(prev => [...prev, makeBlankLine()]);
   };
 
-  // Kütüphaneden parça ekle — tüm alanları önceden doldur
+  // Kütüphaneden parça ekle — tüm alanları önceden doldur + makine oranları otomatik
   const addFromLibrary = (part) => {
+    const rawMachines = parseMachinesString(part.operasyonlar?.makineler, part.operasyonlar?.toplamSureDk);
+    // Sevkiyat Pro'dan güncel ratePerMin ata (kütüphanede 0 olarak gelmişti)
+    const machinesWithRate = rawMachines.map(m => ({
+      ...m,
+      ratePerMin: machineRatesData?.ratesByName?.[m.name] || 0,
+    }));
     setLines(prev => [...prev, {
       stockCode: part.stokKodu || "",
       musteriKodu: part.musteriKodu || "",
@@ -92,7 +101,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
       materialType: part.hammadde?.tur || "",
       dimensions: parseDimensions(part.hammadde?.ebat),
       weightKg: part.hammadde?.agirlikKg || 0,
-      machines: parseMachinesString(part.operasyonlar?.makineler, part.operasyonlar?.toplamSureDk),
+      machines: machinesWithRate,
       fasonWorks: parseFasonString(part.fason?.isler),
       specialToolCost: 0,
       technicalNote: `Kütüphaneden (kullanım: ${part.kullanimSayisi})`,
@@ -358,6 +367,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
               <LineEditor
                 key={idx} idx={idx} line={line} calcResult={calc.lineResults[idx]}
                 materialList={materialList} fasonList={fasonList} optionsData={options}
+                machineRatesData={machineRatesData} partsLib={partsLib} paymentTerm={paymentTerm}
                 update={updateLine} updateDim={updateLineDim} onRemove={() => removeLine(idx)}
               />
             ))}
@@ -460,11 +470,19 @@ function PartsSearchBox({ partsLib, onSelect }) {
 
 // ==================== Alt component: Kalem Editörü ====================
 
-function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsData, update, updateDim, onRemove }) {
+function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsData, machineRatesData, partsLib, paymentTerm, update, updateDim, onRemove }) {
+  const [showDetail, setShowDetail] = useState(false);
+
   const addMachine = () => update(idx, "machines", [...(line.machines || []), { name: "", timeMin: 0, ratePerMin: 0 }]);
   const updateMachine = (mi, field, value) => {
     const m = [...(line.machines || [])];
-    m[mi] = { ...m[mi], [field]: field === "name" ? value : (Number(value) || 0) };
+    if (field === "name") {
+      // Ad seçilince rateperMin'i otomatik Sevkiyat Pro'dan doldur
+      const autoRate = machineRatesData?.ratesByName?.[value];
+      m[mi] = { ...m[mi], name: value, ratePerMin: autoRate != null ? autoRate : m[mi].ratePerMin };
+    } else {
+      m[mi] = { ...m[mi], [field]: (Number(value) || 0) };
+    }
     update(idx, "machines", m);
   };
   const removeMachine = (mi) => update(idx, "machines", (line.machines || []).filter((_, i) => i !== mi));
@@ -477,12 +495,26 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
   };
   const removeFason = (fi) => update(idx, "fasonWorks", (line.fasonWorks || []).filter((_, i) => i !== fi));
 
+  // Seçili malzeme fiyat bilgisi
+  const selectedMat = materialList.find(m => m.name === line.materialType);
+
+  // Fason iş için geçmiş fiyat öneri: partsLib'de aynı stok koduna sahip parçanın fason gecmişinden
+  const fasonHistoryForWork = (workName) => {
+    if (!line.stockCode || !workName || !partsLib?.parts) return [];
+    const p = partsLib.parts[line.stockCode];
+    if (!p?.fasonGecmis) return [];
+    return p.fasonGecmis.filter(f => f.isTuru?.toLowerCase() === workName.toLowerCase()).slice(0, 3);
+  };
+
   return (
     <div style={{ padding: 12, border: "1px solid #d6d3d1", borderRadius: 6, background: line.fromLibrary ? "#f0fdf4" : "#fff" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: "#57534e" }}>Kalem #{idx + 1}</span>
         {line.fromLibrary && <span style={{ padding: "2px 6px", background: "#dcfce7", color: "#166534", borderRadius: 3, fontSize: 9, fontWeight: 600 }}>KÜTÜPHANEDEN</span>}
-        <button onClick={onRemove} style={{ marginLeft: "auto", padding: "3px 8px", background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>🗑 Sil</button>
+        <button onClick={() => setShowDetail(!showDetail)} style={{ marginLeft: "auto", padding: "3px 10px", background: showDetail ? "#dbeafe" : "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>
+          {showDetail ? "🔽 Detayı Gizle" : "🔍 Maliyet Detayı"}
+        </button>
+        <button onClick={onRemove} style={{ padding: "3px 8px", background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>🗑 Sil</button>
       </div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 10 }}>
@@ -520,12 +552,17 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
             <datalist id="materialList">
               {materialList.map(m => <option key={m.name} value={m.name}>{m.shape} · {m.priceTlPerKg}TL/kg</option>)}
             </datalist>
+            {selectedMat && (
+              <div style={{ fontSize: 9, color: "#1e40af", marginTop: 2 }}>
+                💡 {selectedMat.shape} · özgül {selectedMat.density} · <b>{selectedMat.priceTlPerKg?.toFixed(2)} TL/kg</b> (${selectedMat.priceUsdPerKg}/kg)
+              </div>
+            )}
           </div>
           <div><label style={miniLabel}>EN (mm)</label><input type="number" value={line.dimensions?.en || 0} onChange={e => updateDim(idx, "en", e.target.value)} style={miniInput} /></div>
           <div><label style={miniLabel}>BOY (mm)</label><input type="number" value={line.dimensions?.boy || 0} onChange={e => updateDim(idx, "boy", e.target.value)} style={miniInput} /></div>
           <div><label style={miniLabel}>UZUNLUK (mm)</label><input type="number" value={line.dimensions?.uzunluk || 0} onChange={e => updateDim(idx, "uzunluk", e.target.value)} style={miniInput} /></div>
           <div><label style={miniLabel}>Ağırlık kg</label>
-            <div style={{ padding: "6px 4px", fontSize: 11, background: "#f5f5f4", borderRadius: 3, textAlign: "right" }}>
+            <div style={{ padding: "6px 4px", fontSize: 11, background: "#f5f5f4", borderRadius: 3, textAlign: "right", fontWeight: 500 }}>
               {calcResult?.weightKg?.toFixed(3) || 0}
             </div>
           </div>
@@ -534,14 +571,27 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
 
       {/* Makineler */}
       <div style={sectionStyle}>
-        <div style={sectionTitle}>⚙️ Makineler (Teknik ekip)
+        <div style={sectionTitle}>⚙️ Makineler (Teknik ekip) — TL/dk otomatik Sevkiyat Pro'dan
           <button onClick={addMachine} style={{ marginLeft: 8, padding: "1px 6px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>+ Makine</button>
+          {machineRatesData?.refMonth && (
+            <span style={{ marginLeft: 8, fontSize: 9, color: "#a8a29e" }}>
+              Kaynak ay: {machineRatesData.refMonth} · {machineRatesData.machines.length} tezgah
+            </span>
+          )}
         </div>
         {(line.machines || []).map((m, mi) => (
-          <div key={mi} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 30px", gap: 6, marginBottom: 4 }}>
-            <input value={m.name || ""} onChange={e => updateMachine(mi, "name", e.target.value)} placeholder="Makine adı" style={miniInput} />
+          <div key={mi} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 30px", gap: 6, marginBottom: 4, alignItems: "center" }}>
+            <select value={m.name || ""} onChange={e => updateMachine(mi, "name", e.target.value)} style={miniInput}>
+              <option value="">— tezgah seç —</option>
+              {(machineRatesData?.machines || []).map(mc => (
+                <option key={mc.id} value={mc.name}>{mc.name} ({mc.wcName}) · {mc.ratePerMin.toFixed(2)} TL/dk</option>
+              ))}
+            </select>
             <input type="number" value={m.timeMin || 0} onChange={e => updateMachine(mi, "timeMin", e.target.value)} placeholder="Süre (dk)" style={miniInput} />
-            <input type="number" step="0.01" value={m.ratePerMin || 0} onChange={e => updateMachine(mi, "ratePerMin", e.target.value)} placeholder="TL/dk" style={miniInput} />
+            <div style={{ display: "flex", gap: 2, alignItems: "center" }}>
+              <input type="number" step="0.01" value={m.ratePerMin || 0} onChange={e => updateMachine(mi, "ratePerMin", e.target.value)} placeholder="TL/dk" style={{ ...miniInput, flex: 1 }} />
+              <span style={{ fontSize: 9, color: "#a8a29e" }}>TL/dk</span>
+            </div>
             <button onClick={() => removeMachine(mi)} style={{ background: "transparent", color: "#dc2626", border: "none", cursor: "pointer" }}>✕</button>
           </div>
         ))}
@@ -552,18 +602,34 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
       <div style={sectionStyle}>
         <div style={sectionTitle}>🔥 Fason İşler (Satış ekibi)
           <button onClick={addFason} style={{ marginLeft: 8, padding: "1px 6px", fontSize: 10, background: "#fff7ed", color: "#9a3412", border: "1px solid #fed7aa", borderRadius: 3, cursor: "pointer" }}>+ Fason</button>
+          {line.stockCode && <span style={{ marginLeft: 8, fontSize: 9, color: "#a8a29e" }}>Fason iş yazınca geçmiş fiyat önerilir</span>}
         </div>
-        {(line.fasonWorks || []).map((f, fi) => (
-          <div key={fi} style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 30px", gap: 6, marginBottom: 4 }}>
-            <input list={`fasonList_${idx}_${fi}`} value={f.name || ""} onChange={e => updateFason(fi, "name", e.target.value)} placeholder="Fason iş" style={miniInput} />
-            <datalist id={`fasonList_${idx}_${fi}`}>
-              {fasonList.map(w => <option key={w.id} value={w.name} />)}
-            </datalist>
-            <input type="number" value={f.unitPriceTl || 0} onChange={e => updateFason(fi, "unitPriceTl", e.target.value)} placeholder="Birim TL" style={miniInput} />
-            <input type="number" value={f.quantity || 0} onChange={e => updateFason(fi, "quantity", e.target.value)} placeholder={`Miktar (varsayılan: ${line.quantity})`} style={miniInput} />
-            <button onClick={() => removeFason(fi)} style={{ background: "transparent", color: "#dc2626", border: "none", cursor: "pointer" }}>✕</button>
-          </div>
-        ))}
+        {(line.fasonWorks || []).map((f, fi) => {
+          const history = fasonHistoryForWork(f.name);
+          return (
+            <div key={fi}>
+              <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 30px", gap: 6, marginBottom: 4 }}>
+                <input list={`fasonList_${idx}_${fi}`} value={f.name || ""} onChange={e => updateFason(fi, "name", e.target.value)} placeholder="Fason iş" style={miniInput} />
+                <datalist id={`fasonList_${idx}_${fi}`}>
+                  {fasonList.map(w => <option key={w.id} value={w.name} />)}
+                </datalist>
+                <input type="number" step="0.01" value={f.unitPriceTl || 0} onChange={e => updateFason(fi, "unitPriceTl", e.target.value)} placeholder="Birim TL" style={miniInput} />
+                <input type="number" value={f.quantity || 0} onChange={e => updateFason(fi, "quantity", e.target.value)} placeholder={`Miktar (${line.quantity})`} style={miniInput} />
+                <button onClick={() => removeFason(fi)} style={{ background: "transparent", color: "#dc2626", border: "none", cursor: "pointer" }}>✕</button>
+              </div>
+              {history.length > 0 && (
+                <div style={{ fontSize: 9, color: "#1e40af", padding: "2px 4px", marginBottom: 6 }}>
+                  💡 Geçmiş fiyat: {history.map((h, i) => (
+                    <span key={i} style={{ marginRight: 8 }}>
+                      <button onClick={() => updateFason(fi, "unitPriceTl", h.fiyatTl)} style={{ background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, fontSize: 9, padding: "1px 5px", cursor: "pointer" }}>{h.fiyatTl.toFixed(2)} TL</button>
+                      <span style={{ marginLeft: 3, color: "#a8a29e" }}>({h.tarih})</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
 
       {/* Aparat/kalıp */}
@@ -579,19 +645,232 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
         </div>
       </div>
 
-      {/* HESAP ÖZETİ (yan panel gibi) */}
+      {/* HESAP ÖZETİ (kompakt) */}
       {calcResult && calcResult.total.totalCost > 0 && (
         <div style={{ padding: 8, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, fontSize: 10, color: "#166534" }}>
-          <b>Bu Kalem:</b>
-          Adet Maliyet: {fmt(calcResult.perUnit.totalCost)} · Adet Satış: <b>{fmt(calcResult.perUnit.salePrice)}</b>
-          · Toplam: <b>{fmt(calcResult.total.salePrice)}</b>
-          · Marj: %{calcResult.margins.profitPct.toFixed(1)}
-          · Aralık: {calcResult.margins.quantityBracket} · Grup: {calcResult.margins.paymentGroup}
+          <b>Bu Kalem:</b> Adet Maliyet: {fmt(calcResult.perUnit.totalCost)} · Adet Satış: <b>{fmt(calcResult.perUnit.salePrice)}</b>
+          {" · "}Toplam: <b>{fmt(calcResult.total.salePrice)}</b>
+          {" · "}Marj: <b>%{calcResult.margins.profitPct.toFixed(1)}</b>
+          {" · "}Aralık: {calcResult.margins.quantityBracket} · Grup: {calcResult.margins.paymentGroup}
         </div>
+      )}
+
+      {/* DETAY PANEL — 1 adet için kırılım */}
+      {showDetail && calcResult && (
+        <LineDetailPanel line={line} calcResult={calcResult} selectedMat={selectedMat} paymentTerm={paymentTerm} />
       )}
     </div>
   );
 }
+
+// ==================== Detay Panel — 1 adet için kırılım ====================
+
+function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
+  const qty = Number(line.quantity) || 1;
+  const machines = line.machines || [];
+  const fasonWorks = line.fasonWorks || [];
+
+  // Adet başına marj çarpanları (calcResult.margins'ten)
+  const materialMarginPct = (calcResult.margins?.material || 0) * 100;
+  const laborMarginPct = (calcResult.margins?.labor || 0) * 100;
+  const fasonMarginPct = (calcResult.margins?.fason || 0) * 100;
+
+  // Adet başına kalemler
+  const matPerUnit = calcResult.perUnit.material || 0;
+  const matSalePerUnit = matPerUnit * (1 + (calcResult.margins?.material || 0));
+  const matProfitPerUnit = matSalePerUnit - matPerUnit;
+
+  const laborPerUnit = calcResult.perUnit.labor || 0;
+  const laborSalePerUnit = laborPerUnit * (1 + (calcResult.margins?.labor || 0));
+  const laborProfitPerUnit = laborSalePerUnit - laborPerUnit;
+
+  const fasonPerUnit = calcResult.perUnit.fason || 0;
+  const fasonSalePerUnit = fasonPerUnit * (1 + (calcResult.margins?.fason || 0));
+  const fasonProfitPerUnit = fasonSalePerUnit - fasonPerUnit;
+
+  const toolPerUnit = calcResult.perUnit.specialTool || 0;
+  const toolSalePerUnit = toolPerUnit * (1 + (calcResult.margins?.fason || 0));
+  const toolProfitPerUnit = toolSalePerUnit - toolPerUnit;
+
+  const totalCostPerUnit = calcResult.perUnit.totalCost;
+  const totalSalePerUnit = calcResult.perUnit.salePrice;
+  const totalProfitPerUnit = totalSalePerUnit - totalCostPerUnit;
+
+  return (
+    <div style={{ marginTop: 10, padding: 12, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "#1e293b" }}>
+        📊 1 Adet İçin Maliyet Kırılımı ({qty} adet × formül)
+      </div>
+
+      {/* HAMMADDE */}
+      {matPerUnit > 0 && (
+        <div style={detailSection}>
+          <div style={detailSectionTitle}>🧱 Hammadde</div>
+          <table style={detailTable}>
+            <tbody>
+              <tr><td style={detailLabel}>Ağırlık</td><td style={detailValue}>{calcResult.weightKg.toFixed(3)} kg</td></tr>
+              <tr><td style={detailLabel}>Birim fiyat</td><td style={detailValue}>{fmt(selectedMat?.priceTlPerKg || 0)} TL/kg</td></tr>
+              <tr><td style={detailLabel}>Malzeme maliyeti (adet)</td><td style={detailValueBold}>{fmt(matPerUnit)} TL</td></tr>
+              <tr><td style={detailLabel}>Marj (miktar aralığı + vade grubu)</td><td style={detailValue}>%{materialMarginPct.toFixed(2)}</td></tr>
+              <tr style={{ borderTop: "1px solid #cbd5e1" }}>
+                <td style={detailLabel}><b>Satış (adet)</b></td>
+                <td style={detailValueBold}>{fmt(matSalePerUnit)} TL</td>
+              </tr>
+              <tr>
+                <td style={detailLabel}>Kâr (adet)</td>
+                <td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(matProfitPerUnit)} TL (%{materialMarginPct.toFixed(1)})</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* İŞÇİLİK */}
+      {laborPerUnit > 0 && (
+        <div style={detailSection}>
+          <div style={detailSectionTitle}>⚙️ İşçilik (Makine × Süre × TL/dk)</div>
+          <table style={detailTable}>
+            <thead>
+              <tr>
+                <th style={detailTh}>Makine</th>
+                <th style={{ ...detailTh, textAlign: "right" }}>Süre</th>
+                <th style={{ ...detailTh, textAlign: "right" }}>TL/dk</th>
+                <th style={{ ...detailTh, textAlign: "right" }}>Adet Maliyet</th>
+              </tr>
+            </thead>
+            <tbody>
+              {machines.map((m, mi) => {
+                const cost = (Number(m.timeMin) || 0) * (Number(m.ratePerMin) || 0);
+                return (
+                  <tr key={mi}>
+                    <td style={detailLabel}>{m.name || "—"}</td>
+                    <td style={detailValue}>{m.timeMin || 0} dk</td>
+                    <td style={detailValue}>{fmt(m.ratePerMin || 0)}</td>
+                    <td style={detailValueBold}>{fmt(cost)} TL</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ borderTop: "1px solid #cbd5e1" }}>
+                <td colSpan="3" style={detailLabel}><b>İşçilik toplam (adet)</b></td>
+                <td style={detailValueBold}>{fmt(laborPerUnit)} TL</td>
+              </tr>
+              <tr>
+                <td colSpan="3" style={detailLabel}>Marj (miktar aralığı + malzeme özel)</td>
+                <td style={detailValue}>%{laborMarginPct.toFixed(2)}</td>
+              </tr>
+              <tr>
+                <td colSpan="3" style={detailLabel}><b>Satış (adet)</b></td>
+                <td style={detailValueBold}>{fmt(laborSalePerUnit)} TL</td>
+              </tr>
+              <tr>
+                <td colSpan="3" style={detailLabel}>Kâr (adet)</td>
+                <td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(laborProfitPerUnit)} TL (%{laborMarginPct.toFixed(1)})</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* FASON */}
+      {fasonPerUnit > 0 && (
+        <div style={detailSection}>
+          <div style={detailSectionTitle}>🔥 Fason İşler</div>
+          <table style={detailTable}>
+            <thead>
+              <tr>
+                <th style={detailTh}>İş</th>
+                <th style={{ ...detailTh, textAlign: "right" }}>Birim TL</th>
+                <th style={{ ...detailTh, textAlign: "right" }}>Adet Maliyet</th>
+              </tr>
+            </thead>
+            <tbody>
+              {fasonWorks.map((f, fi) => {
+                const fQty = Number(f.quantity) || qty;
+                const totalCost = (Number(f.unitPriceTl) || 0) * fQty;
+                const perUnit = totalCost / qty;
+                return (
+                  <tr key={fi}>
+                    <td style={detailLabel}>{f.name || "—"}</td>
+                    <td style={detailValue}>{fmt(f.unitPriceTl || 0)}</td>
+                    <td style={detailValueBold}>{fmt(perUnit)} TL</td>
+                  </tr>
+                );
+              })}
+              <tr style={{ borderTop: "1px solid #cbd5e1" }}>
+                <td colSpan="2" style={detailLabel}><b>Fason toplam (adet)</b></td>
+                <td style={detailValueBold}>{fmt(fasonPerUnit)} TL</td>
+              </tr>
+              <tr>
+                <td colSpan="2" style={detailLabel}>Marj</td>
+                <td style={detailValue}>%{fasonMarginPct.toFixed(2)}</td>
+              </tr>
+              <tr>
+                <td colSpan="2" style={detailLabel}><b>Satış (adet)</b></td>
+                <td style={detailValueBold}>{fmt(fasonSalePerUnit)} TL</td>
+              </tr>
+              <tr>
+                <td colSpan="2" style={detailLabel}>Kâr (adet)</td>
+                <td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(fasonProfitPerUnit)} TL (%{fasonMarginPct.toFixed(1)})</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* APARAT */}
+      {toolPerUnit > 0 && (
+        <div style={detailSection}>
+          <div style={detailSectionTitle}>🛠 Aparat/Kalıp</div>
+          <table style={detailTable}>
+            <tbody>
+              <tr><td style={detailLabel}>Toplam maliyet ({qty} adete yayılıyor)</td><td style={detailValue}>{fmt(line.specialToolCost || 0)} TL</td></tr>
+              <tr><td style={detailLabel}>Adet maliyet</td><td style={detailValueBold}>{fmt(toolPerUnit)} TL</td></tr>
+              <tr><td style={detailLabel}>Marj</td><td style={detailValue}>%{fasonMarginPct.toFixed(2)}</td></tr>
+              <tr><td style={detailLabel}><b>Satış (adet)</b></td><td style={detailValueBold}>{fmt(toolSalePerUnit)} TL</td></tr>
+              <tr><td style={detailLabel}>Kâr (adet)</td><td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(toolProfitPerUnit)} TL</td></tr>
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {/* GENEL ÖZET */}
+      <div style={{ padding: 10, background: "#dcfce7", border: "1px solid #86efac", borderRadius: 4, marginTop: 8 }}>
+        <table style={detailTable}>
+          <tbody>
+            <tr><td style={detailLabel}><b>1 Adet Toplam Maliyet</b></td><td style={detailValueBold}>{fmt(totalCostPerUnit)} TL</td></tr>
+            <tr><td style={detailLabel}><b>1 Adet Satış</b></td><td style={{ ...detailValueBold, fontSize: 13, color: "#166534" }}>{fmt(totalSalePerUnit)} TL</td></tr>
+            <tr><td style={detailLabel}><b>1 Adet Kâr</b></td><td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(totalProfitPerUnit)} TL (%{calcResult.margins.profitPct.toFixed(2)})</td></tr>
+            <tr style={{ borderTop: "1px solid #86efac" }}>
+              <td style={detailLabel}>{qty} adet için toplam satış</td>
+              <td style={detailValueBold}>{fmt(calcResult.total.salePrice)} TL</td>
+            </tr>
+            <tr>
+              <td style={detailLabel}>{qty} adet için toplam kâr</td>
+              <td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(calcResult.total.profit)} TL</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+
+      {/* İSKONTO SİMÜLASYONU */}
+      <div style={{ marginTop: 8, padding: 8, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: "#92400e", marginBottom: 4 }}>💰 İskonto Simülasyonu — kâr sıfırlanana kadar indirim payı</div>
+        <div style={{ fontSize: 10, color: "#92400e" }}>
+          Maksimum iskonto: <b>{((totalProfitPerUnit / totalSalePerUnit) * 100).toFixed(1)}%</b>
+          {" — "}bu iskonto verilirse kâr 0 olur (maliyete satış). Kâr marjı %{calcResult.margins.profitPct.toFixed(1)} olduğu için pratik olarak %{((totalProfitPerUnit / totalSalePerUnit) * 100 * 0.5).toFixed(1)} iskonto sağlıklı sınır.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const detailSection = { marginBottom: 8, padding: 8, background: "#fff", border: "1px solid #e2e8f0", borderRadius: 4 };
+const detailSectionTitle = { fontSize: 11, fontWeight: 600, marginBottom: 6, color: "#1e293b" };
+const detailTable = { width: "100%", borderCollapse: "collapse", fontSize: 11 };
+const detailTh = { padding: "3px 6px", fontWeight: 600, fontSize: 10, color: "#475569", textAlign: "left" };
+const detailLabel = { padding: "3px 6px", color: "#475569", fontSize: 11 };
+const detailValue = { padding: "3px 6px", fontVariantNumeric: "tabular-nums", textAlign: "right", fontSize: 11 };
+const detailValueBold = { padding: "3px 6px", fontVariantNumeric: "tabular-nums", textAlign: "right", fontWeight: 600, fontSize: 11 };
 
 // ==================== Yardımcı fonksiyonlar ====================
 
