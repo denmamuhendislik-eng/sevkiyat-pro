@@ -86,28 +86,39 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
 
   // Kütüphaneden parça ekle — tüm alanları önceden doldur + makine oranları otomatik
   const addFromLibrary = (part) => {
-    const rawMachines = parseMachinesString(part.operasyonlar?.makineler, part.operasyonlar?.toplamSureDk);
-    // Sevkiyat Pro'dan güncel ratePerMin ata (kütüphanede 0 olarak gelmişti)
-    const machinesWithRate = rawMachines.map(m => ({
-      ...m,
-      ratePerMin: machineRatesData?.ratesByName?.[m.name] || 0,
-    }));
-    setLines(prev => [...prev, {
-      stockCode: part.stokKodu || "",
-      musteriKodu: part.musteriKodu || "",
-      stockName: part.stokAdi || "",
-      quantity: 1,
-      unit: "ADET",
-      materialType: part.hammadde?.tur || "",
-      dimensions: parseDimensions(part.hammadde?.ebat),
-      weightKg: part.hammadde?.agirlikKg || 0,
-      machines: machinesWithRate,
-      fasonWorks: parseFasonString(part.fason?.isler),
-      specialToolCost: 0,
-      technicalNote: `Kütüphaneden (kullanım: ${part.kullanimSayisi})`,
-      fromLibrary: true,
-      libraryStokKodu: part.stokKodu,
-    }]);
+    try {
+      const p = part || {};
+      const hammadde = p.hammadde || {};
+      const operasyonlar = p.operasyonlar || {};
+      const fason = p.fason || {};
+      const aparat = p.aparat || {};
+      const rawMachines = parseMachinesString(operasyonlar.makineler, operasyonlar.toplamSureDk);
+      const machinesWithRate = rawMachines.map(m => ({
+        ...m,
+        ratePerMin: (machineRatesData?.ratesByName?.[m.name]) || 0,
+      }));
+      setLines(prev => [...prev, {
+        stockCode: p.stokKodu || "",
+        musteriKodu: p.musteriKodu || "",
+        stockName: p.stokAdi || "",
+        quantity: 1,
+        unit: "ADET",
+        materialType: hammadde.tur || "",
+        dimensions: parseDimensions(hammadde.ebat),
+        weightKg: Number(hammadde.agirlikKg) || 0,
+        machines: machinesWithRate,
+        fasonWorks: parseFasonString(fason.isler),
+        specialToolCost: Number(aparat.maliyet) || 0,
+        specialToolDescription: aparat.aciklama || "",
+        specialToolMode: "spread",
+        technicalNote: `Kütüphaneden (kullanım: ${p.kullanimSayisi || 0})`,
+        fromLibrary: true,
+        libraryStokKodu: p.stokKodu,
+      }]);
+    } catch (e) {
+      console.error("addFromLibrary hata:", e, "part:", part);
+      alert("Parça eklenirken hata: " + e.message);
+    }
   };
 
   const removeLine = (idx) => {
@@ -539,10 +550,16 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
 
   // Fason iş için geçmiş fiyat öneri: partsLib'de aynı stok koduna sahip parçanın fason gecmişinden
   const fasonHistoryForWork = (workName) => {
-    if (!line.stockCode || !workName || !partsLib?.parts) return [];
-    const p = partsLib.parts[line.stockCode];
-    if (!p?.fasonGecmis) return [];
-    return p.fasonGecmis.filter(f => f.isTuru?.toLowerCase() === workName.toLowerCase()).slice(0, 3);
+    try {
+      if (!line.stockCode || !workName || !partsLib?.parts) return [];
+      const p = partsLib.parts[line.stockCode];
+      if (!p?.fasonGecmis || !Array.isArray(p.fasonGecmis)) return [];
+      const wn = String(workName).toLowerCase();
+      return p.fasonGecmis.filter(f => String(f?.isTuru || "").toLowerCase() === wn).slice(0, 3);
+    } catch (e) {
+      console.error("fasonHistoryForWork:", e);
+      return [];
+    }
   };
 
   return (
@@ -614,7 +631,7 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
           <button onClick={addMachine} style={{ marginLeft: 8, padding: "1px 6px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>+ Makine</button>
           {machineRatesData?.refMonth && (
             <span style={{ marginLeft: 8, fontSize: 9, color: "#a8a29e" }}>
-              Kaynak ay: {machineRatesData.refMonth} · {machineRatesData.machines.length} tezgah
+              Kaynak ay: {machineRatesData.refMonth} · {(machineRatesData?.machines || []).length} tezgah
             </span>
           )}
         </div>
@@ -729,34 +746,39 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
 // ==================== Detay Panel — 1 adet için kırılım ====================
 
 function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
+  if (!calcResult || !calcResult.margins || !calcResult.perUnit) {
+    return <div style={{ padding: 10, color: "#a8a29e", fontSize: 11 }}>Hesap için hammadde/makine/fason bilgisi girin</div>;
+  }
   const qty = Number(line.quantity) || 1;
   const machines = line.machines || [];
   const fasonWorks = line.fasonWorks || [];
+  const margins = calcResult.margins || {};
+  const perUnit = calcResult.perUnit || {};
 
   // Adet başına marj çarpanları (calcResult.margins'ten)
-  const materialMarginPct = (calcResult.margins?.material || 0) * 100;
-  const laborMarginPct = (calcResult.margins?.labor || 0) * 100;
-  const fasonMarginPct = (calcResult.margins?.fason || 0) * 100;
+  const materialMarginPct = (margins.material || 0) * 100;
+  const laborMarginPct = (margins.labor || 0) * 100;
+  const fasonMarginPct = (margins.fason || 0) * 100;
 
   // Adet başına kalemler
-  const matPerUnit = calcResult.perUnit.material || 0;
-  const matSalePerUnit = matPerUnit * (1 + (calcResult.margins?.material || 0));
+  const matPerUnit = perUnit.material || 0;
+  const matSalePerUnit = matPerUnit * (1 + (margins.material || 0));
   const matProfitPerUnit = matSalePerUnit - matPerUnit;
 
-  const laborPerUnit = calcResult.perUnit.labor || 0;
-  const laborSalePerUnit = laborPerUnit * (1 + (calcResult.margins?.labor || 0));
+  const laborPerUnit = perUnit.labor || 0;
+  const laborSalePerUnit = laborPerUnit * (1 + (margins.labor || 0));
   const laborProfitPerUnit = laborSalePerUnit - laborPerUnit;
 
-  const fasonPerUnit = calcResult.perUnit.fason || 0;
-  const fasonSalePerUnit = fasonPerUnit * (1 + (calcResult.margins?.fason || 0));
+  const fasonPerUnit = perUnit.fason || 0;
+  const fasonSalePerUnit = fasonPerUnit * (1 + (margins.fason || 0));
   const fasonProfitPerUnit = fasonSalePerUnit - fasonPerUnit;
 
-  const toolPerUnit = calcResult.perUnit.specialTool || 0;
-  const toolSalePerUnit = toolPerUnit * (1 + (calcResult.margins?.fason || 0));
+  const toolPerUnit = perUnit.specialTool || 0;
+  const toolSalePerUnit = toolPerUnit * (1 + (margins.fason || 0));
   const toolProfitPerUnit = toolSalePerUnit - toolPerUnit;
 
-  const totalCostPerUnit = calcResult.perUnit.totalCost;
-  const totalSalePerUnit = calcResult.perUnit.salePrice;
+  const totalCostPerUnit = perUnit.totalCost || 0;
+  const totalSalePerUnit = perUnit.salePrice || 0;
   const totalProfitPerUnit = totalSalePerUnit - totalCostPerUnit;
 
   return (
