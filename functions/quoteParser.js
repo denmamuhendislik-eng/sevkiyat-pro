@@ -342,9 +342,14 @@ function parseQuoteArchive(workbook) {
     if (!quotesByYear[year]) quotesByYear[year] = { quotes: {} };
     const bucket = quotesByYear[year].quotes;
 
-    // Aynı teklifNo'lu kalemler bir quote objesi altında toplanır
-    if (!bucket[teklifNo]) {
-      bucket[teklifNo] = {
+    // Aynı teklifNo aynı gün farklı müşteriye verilmiş olabilir (Excel'de duplicate).
+    // Bunu ayırmak için grouping key: teklifNo + normalized firma adı.
+    const customerKey = firmaAdi.replace(/\s+/g, "_").substring(0, 40);
+    const groupKey = `${teklifNo}__${customerKey}`;
+
+    // Aynı groupKey'li kalemler bir quote objesi altında toplanır
+    if (!bucket[groupKey]) {
+      bucket[groupKey] = {
         quoteNo: teklifNo,
         customerName: firmaAdi,
         customerPhone: s(r[C.telefon]) === "0" ? "" : s(r[C.telefon]),
@@ -363,7 +368,7 @@ function parseQuoteArchive(workbook) {
       };
     }
 
-    const quote = bucket[teklifNo];
+    const quote = bucket[groupKey];
     const teklifFiyati = n(r[C.teklifFiyati]);
     const line = {
       stockCode: stokKodu,
