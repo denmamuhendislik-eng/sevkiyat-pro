@@ -38,7 +38,8 @@ const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
 const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel, parseSuppliesExcel, parseCariEkstreExcel, parseCocPartsKonf, parseCocCertificatesListesi, TRACKED_CUSTOMERS } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCocPartsReport, saveCocCertificatesReport, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCocPartsReport, saveCocCertificatesReport, saveQuoteMasterData, saveQuoteArchive, promoteQuoteStaging, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
+const { parseQuoteMasterData, parseQuoteArchive } = require("./quoteParser");
 const { fetchTcmbRates } = require("./tcmb");
 const { calculateSimpleInventoryValue } = require("./inventoryCalcSimple");
 
@@ -981,6 +982,84 @@ exports.importCocDriveFile = onCall(
     } catch (err) {
       logger.error("[COC Drive Import] Hata", { error: err.message, stack: err.stack });
       throw new HttpsError("internal", err.message);
+    }
+  },
+);
+
+// ====================================================================
+// TEKLİF MODÜLÜ — Master Data + Arşiv Import (HTTP endpoints)
+// Tek seferlik Excel yüklemesi (Teklif Verme Son Versiyon .xlsm).
+// Staging modu ile önce test doc'larına yazılır, doğrulandıktan sonra
+// promote endpoint'i ile prod doc'larına geçirilir.
+// ====================================================================
+
+exports.importQuoteExcelHttp = onRequest(
+  {
+    region: REGION,
+    timeoutSeconds: 540,
+    memory: "1GiB",
+    cors: true,
+    invoker: "public",
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "POST gerekli — body olarak Excel dosyası gönderin" });
+      return;
+    }
+    try {
+      const buffer = req.rawBody;
+      if (!buffer || buffer.length === 0) {
+        res.status(400).json({ error: "Body boş — Excel dosyası gönderilmedi" });
+        return;
+      }
+      // Query parametreleri: ?staging=true&mode=master|archive|both
+      const staging = req.query.staging !== "false"; // default true (güvenli)
+      const mode = String(req.query.mode || "both"); // master | archive | both
+
+      const workbook = XLSX.read(buffer, { type: "buffer" });
+      const results = {};
+
+      if (mode === "master" || mode === "both") {
+        const masterParsed = parseQuoteMasterData(workbook);
+        const masterOut = await saveQuoteMasterData(db, masterParsed, { staging });
+        results.master = { ...masterOut, summary: masterParsed.summary };
+      }
+      if (mode === "archive" || mode === "both") {
+        const archiveParsed = parseQuoteArchive(workbook);
+        const archiveOut = await saveQuoteArchive(db, archiveParsed, { staging });
+        results.archive = { ...archiveOut, summary: archiveParsed.summary };
+      }
+
+      logger.info("[QuoteImport] ✓ Yüklendi", { staging, mode, results });
+      res.json({ success: true, staging, mode, ...results });
+    } catch (err) {
+      logger.error("[QuoteImport] Hata", { error: err.message, stack: err.stack });
+      res.status(500).json({ error: err.message });
+    }
+  },
+);
+
+// Staging → prod promote (admin manuel çağırır, tarayıcıdan tetiklenir).
+exports.promoteQuoteStagingHttp = onRequest(
+  {
+    region: REGION,
+    timeoutSeconds: 120,
+    memory: "512MiB",
+    cors: true,
+    invoker: "public",
+  },
+  async (req, res) => {
+    if (req.method !== "POST") {
+      res.status(405).json({ error: "POST gerekli" });
+      return;
+    }
+    try {
+      const out = await promoteQuoteStaging(db);
+      logger.info("[QuotePromote] ✓ Staging → prod", out);
+      res.json({ success: true, ...out });
+    } catch (err) {
+      logger.error("[QuotePromote] Hata", { error: err.message });
+      res.status(500).json({ error: err.message });
     }
   },
 );

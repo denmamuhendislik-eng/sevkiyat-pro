@@ -27,6 +27,14 @@ const PLAN_OVERRIDES_DOC = "planOverrides";
 const AUTOMATION_LOG_DOC = "automationLog";
 const COC_PARTS_DOC = "cocParts";
 const COC_CERTIFICATES_DOC = "cocCertificates";
+// Teklif modülü doc adları
+const QUOTE_MATERIALS_DOC = "quoteMaterials";
+const QUOTE_MACHINES_REF_DOC = "quoteMachinesRef";
+const QUOTE_FASON_WORKS_DOC = "quoteFasonWorks";
+const QUOTE_OPTIONS_DOC = "quoteOptions";
+const QUOTE_POLICY_DOC = "quotePolicy";
+const QUOTE_CUSTOMERS_DOC = "quoteCustomers";
+const QUOTES_YEAR_DOC_PREFIX = "quotes_"; // quotes_2024, quotes_2025 vb.
 
 /**
  * Stock parser çıktısını Sevkiyat Pro'nun beklediği compact formata çevir.
@@ -1104,6 +1112,95 @@ async function readAppDoc(db, docName) {
   return snap.exists ? snap.data() : null;
 }
 
+// ============================================================
+// TEKLİF MODÜLÜ — Master Data + Arşiv save fonksiyonları
+// ============================================================
+
+/**
+ * parseQuoteMasterData çıktısını 5 ayrı doc'a yazar.
+ * staging=true ise '_staging' suffix ekler (test amacıyla).
+ */
+async function saveQuoteMasterData(db, parserResult, { staging = false } = {}) {
+  const suffix = staging ? "_staging" : "";
+  const writes = [
+    { name: QUOTE_MATERIALS_DOC + suffix, data: parserResult.quoteMaterials },
+    { name: QUOTE_MACHINES_REF_DOC + suffix, data: parserResult.quoteMachinesRef },
+    { name: QUOTE_FASON_WORKS_DOC + suffix, data: parserResult.quoteFasonWorks },
+    { name: QUOTE_OPTIONS_DOC + suffix, data: parserResult.quoteOptions },
+    { name: QUOTE_POLICY_DOC + suffix, data: parserResult.quotePolicy },
+  ];
+  const batch = db.batch();
+  const out = [];
+  for (const w of writes) {
+    const ref = db.collection(APP_COL).doc(w.name);
+    batch.set(ref, w.data);
+    out.push(w.name);
+  }
+  await batch.commit();
+  return { staging, docsWritten: out, summary: parserResult.summary };
+}
+
+/**
+ * Arşiv parse çıktısını yıl bölünmüş doc'lara yazar.
+ * staging=true ise '_staging' suffix (örn. quotes_2024_staging).
+ */
+async function saveQuoteArchive(db, parserResult, { staging = false } = {}) {
+  const suffix = staging ? "_staging" : "";
+  const out = [];
+  const batch = db.batch();
+  for (const [year, doc] of Object.entries(parserResult.quotesByYear)) {
+    const docName = QUOTES_YEAR_DOC_PREFIX + year + suffix;
+    const ref = db.collection(APP_COL).doc(docName);
+    batch.set(ref, {
+      year,
+      quotes: doc.quotes,
+      importedAt: new Date().toISOString(),
+      source: "excel-archive-import",
+    });
+    out.push({ docName, quoteCount: Object.keys(doc.quotes).length });
+  }
+  await batch.commit();
+  return { staging, docsWritten: out, summary: parserResult.summary };
+}
+
+/**
+ * Staging doc'ları prod doc'larına promote et (rename değil, oku-yaz-sil).
+ * Sadece admin manuel çağırır.
+ */
+async function promoteQuoteStaging(db) {
+  const docsToPromote = [
+    QUOTE_MATERIALS_DOC,
+    QUOTE_MACHINES_REF_DOC,
+    QUOTE_FASON_WORKS_DOC,
+    QUOTE_OPTIONS_DOC,
+    QUOTE_POLICY_DOC,
+  ];
+  const promoted = [];
+  for (const docName of docsToPromote) {
+    const stagingRef = db.collection(APP_COL).doc(docName + "_staging");
+    const stagingSnap = await stagingRef.get();
+    if (!stagingSnap.exists) continue;
+    const data = stagingSnap.data();
+    const prodRef = db.collection(APP_COL).doc(docName);
+    await prodRef.set(data);
+    await stagingRef.delete();
+    promoted.push(docName);
+  }
+  // Yıl doc'ları da promote et — quotes_YYYY_staging → quotes_YYYY
+  const allDocs = await db.collection(APP_COL).listDocuments();
+  for (const d of allDocs) {
+    if (d.id.match(/^quotes_\d{4}_staging$/)) {
+      const stagingSnap = await d.get();
+      const data = stagingSnap.data();
+      const prodName = d.id.replace("_staging", "");
+      await db.collection(APP_COL).doc(prodName).set(data);
+      await d.delete();
+      promoted.push(prodName);
+    }
+  }
+  return { promoted };
+}
+
 module.exports = {
   APP_COL,
   STOCK_DOC,
@@ -1114,6 +1211,13 @@ module.exports = {
   AUTOMATION_LOG_DOC,
   UNIT_COSTS_DOC,
   LABOR_COSTS_DOC,
+  QUOTE_MATERIALS_DOC,
+  QUOTE_MACHINES_REF_DOC,
+  QUOTE_FASON_WORKS_DOC,
+  QUOTE_OPTIONS_DOC,
+  QUOTE_POLICY_DOC,
+  QUOTE_CUSTOMERS_DOC,
+  QUOTES_YEAR_DOC_PREFIX,
   saveReport,
   saveSalesOrdersWithDiff,
   saveUnitCostPartitions,
@@ -1122,6 +1226,9 @@ module.exports = {
   saveCariEkstreReport,
   saveCocPartsReport,
   saveCocCertificatesReport,
+  saveQuoteMasterData,
+  saveQuoteArchive,
+  promoteQuoteStaging,
   appendAutomationLog,
   getLatestAutomationLog,
   saveCurrencyRates,
