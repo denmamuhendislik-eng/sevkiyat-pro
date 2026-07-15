@@ -112,9 +112,14 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
   }
   const fasonCostPerUnit = fasonCostTotal / qty;
 
-  // 5. Özel takım/aparat (toplam maliyet, adet başına yayılır)
+  // 5. Özel takım/aparat/kalıp
+  //    Mod A (yay): toplam maliyet / miktar → her adete küçük ilave
+  //    Mod B (ayrı satır): kaleme dahil değil, teklifin altında ayrı satır olur (aşağıda ele alınır)
   const specialToolTotal = Number(line.specialToolCost) || 0;
-  const specialToolPerUnit = specialToolTotal / qty;
+  const specialToolMode = String(line.specialToolMode || "spread"); // "spread" | "separate"
+  const specialToolInLine = specialToolMode === "spread"; // adete yay → kaleme dahil
+  const specialToolPerUnit = specialToolInLine ? (specialToolTotal / qty) : 0;
+  const specialToolSeparate = !specialToolInLine ? specialToolTotal : 0; // ayrı satır: teklif altına
 
   // 6. Toplam maliyet (adet başına)
   const totalCostPerUnit = materialCostPerUnit + laborCostPerUnit + fasonCostPerUnit + specialToolPerUnit;
@@ -147,9 +152,11 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
   const materialSaleTotal = materialCostTotal * (1 + materialMargin);
   const laborSaleTotal = laborCostTotal * (1 + laborMargin);
   const fasonSaleTotal = fasonCostTotal * (1 + fasonMargin);
-  const specialToolSaleTotal = specialToolTotal * (1 + specialToolMargin);
+  // Aparat: spread modda kaleme dahil, separate modda ayrı satıra
+  const specialToolInLineSale = specialToolInLine ? (specialToolTotal * (1 + specialToolMargin)) : 0;
+  const specialToolSeparateSale = specialToolSeparate * (1 + specialToolMargin);
 
-  const linePrice = materialSaleTotal + laborSaleTotal + fasonSaleTotal + specialToolSaleTotal;
+  const linePrice = materialSaleTotal + laborSaleTotal + fasonSaleTotal + specialToolInLineSale;
   const unitPrice = linePrice / qty;
   const totalProfit = linePrice - totalCostTotal;
   const profitMarginPct = totalCostTotal > 0 ? (totalProfit / totalCostTotal) * 100 : 0;
@@ -171,10 +178,20 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
       material: materialCostTotal,
       labor: laborCostTotal,
       fason: fasonCostTotal,
-      specialTool: specialToolTotal,
+      specialTool: specialToolInLine ? specialToolTotal : 0,
       totalCost: totalCostTotal,
       salePrice: linePrice,
       profit: totalProfit,
+    },
+    // Aparat/kalıp — ayrı satır modu (kaleme dahil değil, teklift altında görünür)
+    separateTool: {
+      mode: specialToolMode,
+      inLine: specialToolInLine,
+      cost: specialToolSeparate,
+      sale: specialToolSeparateSale,
+      profit: specialToolSeparateSale - specialToolSeparate,
+      margin: specialToolMargin,
+      description: line.specialToolDescription || (line.stockName ? `${line.stockName} — Aparat/Kalıp` : "Aparat / Kalıp"),
     },
     // Marj bilgisi (UI'da göstermek için)
     margins: {
@@ -195,11 +212,34 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
   };
 }
 
-// Bir teklifin tüm kalemlerini hesapla + genel toplam
+// Bir teklifin tüm kalemlerini hesapla + genel toplam.
+// Aparat/kalıp "ayrı satır" modunda olan kalemler ayrı bir satır olarak toplama katılır.
 export function calculateQuoteTotal({ lines, materials, policy, paymentTerm, currency = "TL", exchangeRate = 1 }) {
   const lineResults = (lines || []).map(line => calculateLineCost({ line, materials, policy, paymentTerm }));
-  const totalCost = lineResults.reduce((s, r) => s + r.total.totalCost, 0);
-  const totalSale = lineResults.reduce((s, r) => s + r.total.salePrice, 0);
+
+  // Kalemlerden gelen "separate" aparat satırlarını ayır — teklifin altında ayrı görünür
+  const separateToolItems = [];
+  for (let i = 0; i < lineResults.length; i++) {
+    const st = lineResults[i]?.separateTool;
+    if (st && !st.inLine && st.cost > 0) {
+      separateToolItems.push({
+        sourceLineIdx: i,
+        description: st.description,
+        cost: st.cost,
+        sale: st.sale,
+        profit: st.profit,
+        margin: st.margin,
+      });
+    }
+  }
+
+  const linesCost = lineResults.reduce((s, r) => s + r.total.totalCost, 0);
+  const linesSale = lineResults.reduce((s, r) => s + r.total.salePrice, 0);
+  const separateToolCost = separateToolItems.reduce((s, x) => s + x.cost, 0);
+  const separateToolSale = separateToolItems.reduce((s, x) => s + x.sale, 0);
+
+  const totalCost = linesCost + separateToolCost;
+  const totalSale = linesSale + separateToolSale;
   const totalProfit = totalSale - totalCost;
   const overallMarginPct = totalCost > 0 ? (totalProfit / totalCost) * 100 : 0;
 
@@ -211,6 +251,7 @@ export function calculateQuoteTotal({ lines, materials, policy, paymentTerm, cur
 
   return {
     lineResults,
+    separateToolItems,
     totalCostTl: totalCost,
     totalSaleTl: totalSale,
     totalProfitTl: totalProfit,

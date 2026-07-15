@@ -383,14 +383,53 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
           style={{ width: "100%", minHeight: 60, padding: 8, fontSize: 12, border: "1px solid #d6d3d1", borderRadius: 4, boxSizing: "border-box" }} />
       </div>
 
+      {/* AYRI SATIR APARATLAR — kalemlerin altında, teklif toplamı öncesi */}
+      {(calc.separateToolItems || []).length > 0 && (
+        <div style={cardStyle}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>🛠 Aparat/Kalıp — Ayrı Satırlar</div>
+          <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>
+            Bu kalemler müşteriye tekliftte ayrı satır olarak gösterilecek (parça birim fiyatına yayılmayacak).
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
+                <th style={th}>Açıklama</th>
+                <th style={{ ...th, textAlign: "right" }}>Maliyet</th>
+                <th style={{ ...th, textAlign: "right" }}>Satış</th>
+                <th style={{ ...th, textAlign: "right" }}>Kâr</th>
+                <th style={th}>Kaynak</th>
+              </tr>
+            </thead>
+            <tbody>
+              {calc.separateToolItems.map((t, i) => (
+                <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
+                  <td style={td}>{t.description}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(t.cost)}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(t.sale)}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#16a34a" }}>+{fmt(t.profit)} (%{(t.margin * 100).toFixed(1)})</td>
+                  <td style={{ ...td, fontSize: 10, color: "#78716c" }}>Kalem #{t.sourceLineIdx + 1}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {/* TOPLAM ÖZET */}
       <div style={{ ...cardStyle, background: "#f0fdf4", border: "1px solid #86efac" }}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>5️⃣ Toplam Özet</div>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>6️⃣ Toplam Özet</div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, fontSize: 12 }}>
           <div><span style={{ color: "#78716c" }}>Toplam Maliyet:</span> <b>{fmt(calc.totalCostTl)} TL</b></div>
           <div><span style={{ color: "#78716c" }}>Toplam Satış (TL):</span> <b>{fmt(calc.totalSaleTl)} TL</b></div>
           <div><span style={{ color: "#78716c" }}>Toplam Kâr:</span> <b style={{ color: "#16a34a" }}>{fmt(calc.totalProfitTl)} TL</b></div>
           <div><span style={{ color: "#78716c" }}>Kâr Marjı:</span> <b>%{calc.overallMarginPct.toFixed(1)}</b></div>
+          {(calc.separateToolItems || []).length > 0 && (
+            <div style={{ gridColumn: "1 / -1", fontSize: 11, color: "#78716c", paddingTop: 6, borderTop: "1px dashed #86efac" }}>
+              Toplam içinde: <b>{calc.separateToolItems.length}</b> ayrı aparat/kalıp satırı ·
+              maliyet {fmt(calc.separateToolItems.reduce((s, t) => s + t.cost, 0))} TL,
+              satış {fmt(calc.separateToolItems.reduce((s, t) => s + t.sale, 0))} TL
+            </div>
+          )}
           {currency !== "TL" && (
             <>
               <div><span style={{ color: "#78716c" }}>Satış ({currency}):</span> <b>{fmt(calc.totalSaleDisplay)}</b></div>
@@ -633,16 +672,40 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
       </div>
 
       {/* Aparat/kalıp */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: 6, marginBottom: 10 }}>
-        <div>
-          <label style={miniLabel}>Aparat/Kalıp Maliyeti (TL)</label>
-          <input type="number" value={line.specialToolCost || 0} onChange={e => update(idx, "specialToolCost", Number(e.target.value) || 0)} style={miniInput} />
-          <div style={{ fontSize: 9, color: "#a8a29e", marginTop: 2 }}>Adet başına: {((line.specialToolCost || 0) / (line.quantity || 1)).toFixed(2)} TL</div>
+      <div style={sectionStyle}>
+        <div style={sectionTitle}>🛠 Aparat / Kalıp / Model</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr 1fr", gap: 6 }}>
+          <div>
+            <label style={miniLabel}>Toplam Maliyet (TL)</label>
+            <input type="number" value={line.specialToolCost || 0} onChange={e => update(idx, "specialToolCost", Number(e.target.value) || 0)} style={miniInput} />
+          </div>
+          <div>
+            <label style={miniLabel}>Açıklama</label>
+            <input value={line.specialToolDescription || ""} onChange={e => update(idx, "specialToolDescription", e.target.value)}
+              placeholder={line.stockName ? `${line.stockName} — Aparat/Kalıp` : "Aparat / Kalıp adı"} style={miniInput} />
+          </div>
+          <div>
+            <label style={miniLabel}>Faturalama</label>
+            <select value={line.specialToolMode || "spread"} onChange={e => update(idx, "specialToolMode", e.target.value)} style={miniInput}>
+              <option value="spread">📊 Adete Yay</option>
+              <option value="separate">📋 Ayrı Satır</option>
+            </select>
+          </div>
         </div>
-        <div>
-          <label style={miniLabel}>Teknik Not</label>
-          <input value={line.technicalNote || ""} onChange={e => update(idx, "technicalNote", e.target.value)} placeholder="Özel işlem, tolerans, notlar..." style={miniInput} />
-        </div>
+        {(line.specialToolCost || 0) > 0 && (
+          <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
+            {(line.specialToolMode || "spread") === "spread"
+              ? <>Adete yayılıyor: <b>{fmt((line.specialToolCost || 0) / (line.quantity || 1))} TL/adet</b> parça birim fiyatına ekleniyor</>
+              : <>Ayrı satır: müşteriye "<b>{line.specialToolDescription || (line.stockName + " — Aparat/Kalıp")}</b>" ismiyle {fmt(line.specialToolCost)} TL + marj olarak gösterilecek</>
+            }
+          </div>
+        )}
+      </div>
+
+      {/* Teknik Not */}
+      <div style={{ marginBottom: 10 }}>
+        <label style={miniLabel}>Teknik Not</label>
+        <input value={line.technicalNote || ""} onChange={e => update(idx, "technicalNote", e.target.value)} placeholder="Özel işlem, tolerans, notlar..." style={miniInput} />
       </div>
 
       {/* HESAP ÖZETİ (kompakt) */}
@@ -817,10 +880,10 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
         </div>
       )}
 
-      {/* APARAT */}
+      {/* APARAT — sadece "spread" (adete yay) modunda kalemde görünür */}
       {toolPerUnit > 0 && (
         <div style={detailSection}>
-          <div style={detailSectionTitle}>🛠 Aparat/Kalıp</div>
+          <div style={detailSectionTitle}>🛠 Aparat/Kalıp (adete yayılıyor)</div>
           <table style={detailTable}>
             <tbody>
               <tr><td style={detailLabel}>Toplam maliyet ({qty} adete yayılıyor)</td><td style={detailValue}>{fmt(line.specialToolCost || 0)} TL</td></tr>
@@ -830,6 +893,14 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
               <tr><td style={detailLabel}>Kâr (adet)</td><td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(toolProfitPerUnit)} TL</td></tr>
             </tbody>
           </table>
+        </div>
+      )}
+      {/* Ayrı satır modda bilgilendirme */}
+      {(line.specialToolCost || 0) > 0 && (line.specialToolMode || "spread") === "separate" && (
+        <div style={{ ...detailSection, background: "#fef3c7", borderColor: "#fde68a" }}>
+          <div style={{ fontSize: 11, color: "#92400e" }}>
+            🛠 <b>Aparat/Kalıp ayrı satır modunda</b> — parça birim fiyatına eklenmiyor. Teklifin altında ayrı satır olarak {fmt(line.specialToolCost)} TL + marj ile görünür.
+          </div>
         </div>
       )}
 
