@@ -637,8 +637,8 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
         <button onClick={onRemove} style={{ marginLeft: "auto", padding: "3px 8px", background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>🗑 Sil</button>
       </div>
 
-      {/* 2 KOLON: SOL = giriş alanları, SAĞ = detay panel */}
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(340px, 400px)", gap: 14, alignItems: "start" }}>
+      {/* 2 KOLON: SOL %60 giriş alanları, SAĞ %40 detay panel */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 3fr) minmax(360px, 2fr)", gap: 14, alignItems: "start" }}>
         <div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 10 }}>
