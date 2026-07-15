@@ -208,7 +208,8 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
     materialSaleTotal,
     laborSaleTotal,
     fasonSaleTotal,
-    specialToolSaleTotal,
+    specialToolInLineSale,   // spread modda kaleme dahil edilen satış
+    specialToolSeparateSale, // separate modda ayrı satır olarak toplanacak satış
   };
 }
 
