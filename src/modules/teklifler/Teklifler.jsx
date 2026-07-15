@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import {
   subscribeQuoteMaterials, subscribeQuoteFasonWorks, subscribeQuoteOptions,
   subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts, subscribeQuoteCustomers,
-  saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain,
+  saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision,
 } from "./firestore";
 import NewQuoteView from "./NewQuoteView";
 import { generateQuotePdf } from "./quotePdf";
@@ -61,7 +61,7 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
           onSaved={() => { setPendingOpen(null); setActiveTab("list"); }}
         />
       )}
-      {activeTab === "list" && <QuoteListView canEdit={canEdit} onOpen={openQuote} />}
+      {activeTab === "list" && <QuoteListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openQuote} />}
       {activeTab === "parts" && <PartsLibraryView />}
       {activeTab === "customers" && <CustomersView canEdit={canEdit} />}
       {activeTab === "master" && <MasterDataView />}
@@ -236,7 +236,7 @@ function CustomersView({ canEdit }) {
 
 // ==================== Teklif Listesi (arşiv görünümü) ====================
 
-function QuoteListView({ canEdit, onOpen }) {
+function QuoteListView({ canEdit, isAdmin, onOpen }) {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
   const [staging, setStaging] = useState(false);
@@ -244,6 +244,9 @@ function QuoteListView({ canEdit, onOpen }) {
   const [search, setSearch] = useState("");
   const [expandedBase, setExpandedBase] = useState({}); // { baseKey: bool }
   const [creatingRev, setCreatingRev] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null); // { quote, chainLen }
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
 
   useEffect(() => {
     const unsub = subscribeQuotesForYear(year, setData, { staging });
@@ -278,6 +281,19 @@ function QuoteListView({ canEdit, onOpen }) {
   }, [data, search]);
 
   const totalLines = groups.reduce((s, g) => s + (g.active.lines?.length || 0), 0);
+
+  const handleDelete = async () => {
+    if (!deleteTarget?.quote) return;
+    setDeleting(true); setDeleteError("");
+    try {
+      await deleteRevision(deleteTarget.quote, data?.quotes || {}, { canEdit, staging });
+      setDeleteTarget(null);
+    } catch (e) {
+      setDeleteError(e.message || "Silme hatası");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   const handleCreateRevision = async (activeQuote) => {
     const reason = window.prompt("Revizyon nedeni (zorunlu):\n\nÖrn: Aselsan %8 iskonto istedi, malzeme fiyatı arttı, teknik değişiklik...", "");
@@ -353,8 +369,10 @@ function QuoteListView({ canEdit, onOpen }) {
                     onToggleExpand={() => setExpandedBase(p => ({ ...p, [g.key]: !p[g.key] }))}
                     onOpen={onOpen}
                     onCreateRevision={handleCreateRevision}
+                    onRequestDelete={(qq) => { setDeleteError(""); setDeleteTarget({ quote: qq, chainLen: g.all.length }); }}
                     creatingRev={creatingRev}
                     canEdit={canEdit}
+                    isAdmin={isAdmin}
                   />
                 );
               })}
@@ -362,12 +380,48 @@ function QuoteListView({ canEdit, onOpen }) {
           </table>
         </div>
       )}
+
+      {/* SİLME ONAY MODALI (window.confirm yerine — Chrome bastırma sorununa karşı) */}
+      {deleteTarget && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+          onClick={(e) => { if (e.target === e.currentTarget && !deleting) setDeleteTarget(null); }}>
+          <div style={{ background: "#fff", borderRadius: 8, padding: 20, maxWidth: 480, width: "90%", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+            <div style={{ fontSize: 15, fontWeight: 600, color: "#991b1b", marginBottom: 8 }}>
+              🗑 Revizyon Sil?
+            </div>
+            <div style={{ fontSize: 13, color: "#1c1917", marginBottom: 12 }}>
+              <b style={{ fontFamily: "ui-monospace, monospace" }}>{deleteTarget.quote.quoteNo}</b> revizyonu silinecek.
+            </div>
+            <div style={{ fontSize: 11, color: "#57534e", padding: 10, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 4, marginBottom: 12 }}>
+              ⚠ Bu işlem <b>geri alınamaz</b>. Silince <b>R{Number(deleteTarget.quote.revNo) - 1}</b> tekrar aktif revizyon olur.
+              {deleteTarget.quote.revisionReason && (
+                <div style={{ marginTop: 6, fontStyle: "italic" }}>
+                  💬 Revizyon nedeni: "{deleteTarget.quote.revisionReason}"
+                </div>
+              )}
+            </div>
+            {deleteError && (
+              <div style={{ fontSize: 11, color: "#dc2626", marginBottom: 8, padding: 6, background: "#fef2f2", borderRadius: 3 }}>
+                ⚠ {deleteError}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setDeleteTarget(null)} disabled={deleting}
+                style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+              <button onClick={handleDelete} disabled={deleting}
+                style={{ padding: "6px 14px", fontSize: 12, background: "#dc2626", color: "#fff", border: "none", borderRadius: 4, cursor: deleting ? "wait" : "pointer", fontWeight: 500 }}>
+                {deleting ? "Siliniyor..." : "🗑 Evet, Sil"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
 // Bir revizyon grubunun render'ı — aktif satır + (expanded ise) geçmiş satırlar
-function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand, onOpen, onCreateRevision, creatingRev, canEdit }) {
+function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand, onOpen, onCreateRevision, onRequestDelete, creatingRev, canEdit, isAdmin }) {
   const q = active;
   const revBadgeColor = q.revNo > 0 ? { bg: "#fef3c7", fg: "#92400e" } : { bg: "#dbeafe", fg: "#1e40af" };
   const downloadPdf = async (targetQuote) => {
@@ -426,6 +480,11 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
               title="Bu teklifi klonlayıp yeni R{n+1} oluştur" style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", opacity: canEdit ? 1 : 0.5 }}>🔄 Revizyon</button>
             <button onClick={() => downloadPdf(q)}
               title="Aktif revizyonu PDF olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
+            {isAdmin && Number(q.revNo) > 0 && (
+              <button onClick={() => onRequestDelete(q)}
+                title={`Bu revizyonu sil (R${q.revNo} → R${Number(q.revNo) - 1} tekrar aktif olur)`}
+                style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑 Sil</button>
+            )}
           </div>
         </td>
       </tr>

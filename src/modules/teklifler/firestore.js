@@ -1,4 +1,4 @@
-import { doc, onSnapshot, setDoc, getDoc, updateDoc } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, getDoc, updateDoc, deleteField } from "firebase/firestore";
 import { db } from "../../firebase";
 
 const APP_COL = "appData";
@@ -199,6 +199,30 @@ export async function createRevision(baseQuote, revisionReason, { canEdit, stagi
   };
   // customer'ı, lines'ı, tüm field'ları taşı
   return await saveNewQuote(clone, { canEdit, staging });
+}
+
+// Bir revizyon kaydını sil — sadece revNo > 0 ve zincirin en üstü (son revizyon) silinebilir.
+// allQuotesForYear: yıl doc'undaki tüm quotes obje (silinecek olanın zincirdeki yerini doğrulamak için)
+// R0 silme buradan yapılmaz — bu "teklifi tümden sil" ayrı iş.
+export async function deleteRevision(quote, allQuotesForYear, { canEdit, staging = false } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!quote?.quoteNo) throw new Error("quoteNo zorunlu");
+  const revNo = Number(quote.revNo) || 0;
+  if (revNo === 0) throw new Error("Orijinal teklif (R0) buradan silinemez");
+  // Zincirdeki en üst revizyon mu kontrol et
+  const chain = findRevisionChain(allQuotesForYear || {}, quote.baseQuoteNo || quote.quoteNo, quote.customerName);
+  const maxRev = chain.reduce((m, q) => Math.max(m, Number(q.revNo) || 0), 0);
+  if (revNo !== maxRev) {
+    throw new Error(`Sadece en üst revizyon (R${maxRev}) silinebilir. Önce R${maxRev} silinmeli.`);
+  }
+  const year = "20" + String(quote.quoteNo).slice(0, 2);
+  const suffix = staging ? "_staging" : "";
+  const docName = `quotes_${year}${suffix}`;
+  const customerKey = String(quote.customerName).replace(/\s+/g, "_").substring(0, 40);
+  const groupKey = `${quote.quoteNo}__${customerKey}`;
+  const ref = doc(db, APP_COL, docName);
+  await updateDoc(ref, { [`quotes.${groupKey}`]: deleteField() });
+  return { docName, groupKey };
 }
 
 // Bir base teklifin tüm revizyonlarını çek (R0 dahil), revNo'ya göre sıralı
