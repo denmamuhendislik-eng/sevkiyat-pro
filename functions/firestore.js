@@ -1165,6 +1165,22 @@ async function saveQuoteArchive(db, parserResult, { staging = false } = {}) {
 }
 
 /**
+ * Müşteri master'ı tek doc'a yazar (27+ müşteri küçük, partition gerekmez).
+ * appData/quoteCustomers
+ */
+async function saveQuoteCustomers(db, extractResult, { staging = false } = {}) {
+  const suffix = staging ? "_staging" : "";
+  const ref = db.collection(APP_COL).doc(QUOTE_CUSTOMERS_DOC + suffix);
+  await ref.set({
+    customers: extractResult.customers,
+    summary: extractResult.summary,
+    importedAt: new Date().toISOString(),
+    source: "excel-archive-import",
+  });
+  return { staging, docName: QUOTE_CUSTOMERS_DOC + suffix, summary: extractResult.summary };
+}
+
+/**
  * Parça kütüphanesini 10 bucket doc'a yazar (partition — Firestore 1MB limitini aşmamak için).
  * appData/quoteParts_0, quoteParts_1, ..., quoteParts_9
  * Ayrıca appData/quoteParts (özet index) yazılır.
@@ -1210,6 +1226,7 @@ async function promoteQuoteStaging(db) {
     QUOTE_FASON_WORKS_DOC,
     QUOTE_OPTIONS_DOC,
     QUOTE_POLICY_DOC,
+    QUOTE_CUSTOMERS_DOC,
     QUOTE_PARTS_DOC, // index doc
     // quoteParts_0 ... quoteParts_9 bucket doc'ları aşağıda listDocuments ile bulunur
   ];
@@ -1268,6 +1285,7 @@ module.exports = {
   saveQuoteMasterData,
   saveQuoteArchive,
   saveQuoteParts,
+  saveQuoteCustomers,
   promoteQuoteStaging,
   appendAutomationLog,
   getLatestAutomationLog,

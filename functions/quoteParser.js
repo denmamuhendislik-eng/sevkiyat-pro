@@ -556,9 +556,91 @@ function extractQuotePartsFromArchive(archiveResult) {
   };
 }
 
+/**
+ * Arşivdeki müşterileri toplayıp müşteri master oluşturur.
+ * Her müşteri için:
+ *   - En sık kullanılan ödeme şekli → default (30/60/90 gün vade tespit)
+ *   - En sık kullanılan nakliye + döviz
+ *   - Kullanım sayısı, ilk/son teklif tarihi
+ *   - Toplam teklif TL değeri, kabul olan teklif sayısı (dönüşüm oranı)
+ */
+function extractQuoteCustomersFromArchive(archiveResult) {
+  const customers = {}; // { normalizeAd: {...} }
+
+  for (const doc of Object.values(archiveResult.quotesByYear || {})) {
+    for (const q of Object.values(doc.quotes || {})) {
+      const name = s(q.customerName);
+      if (!name) continue;
+      const key = name;
+      if (!customers[key]) {
+        customers[key] = {
+          name,
+          phone: s(q.customerPhone),
+          email: s(q.customerEmail),
+          address: "",
+          defaultPaymentTerm: "",
+          defaultShipping: "",
+          defaultCurrency: "",
+          paymentTermCounts: {},
+          shippingCounts: {},
+          currencyCounts: {},
+          totalQuotes: 0,
+          totalLines: 0,
+          totalPriceTl: 0,
+          acceptedQuotes: 0,
+          firstQuoteDate: q.quoteDate,
+          lastQuoteDate: q.quoteDate,
+          createdAt: new Date().toISOString(),
+        };
+      }
+      const c = customers[key];
+      // Meta bilgileri güncelle (email/phone boş değilse yakala)
+      if (q.customerPhone && !c.phone) c.phone = s(q.customerPhone);
+      if (q.customerEmail && !c.email) c.email = s(q.customerEmail);
+      // Sık kullanım sayaçları
+      if (q.paymentTerm) c.paymentTermCounts[q.paymentTerm] = (c.paymentTermCounts[q.paymentTerm] || 0) + 1;
+      if (q.shipping) c.shippingCounts[q.shipping] = (c.shippingCounts[q.shipping] || 0) + 1;
+      if (q.currency) c.currencyCounts[q.currency] = (c.currencyCounts[q.currency] || 0) + 1;
+      c.totalQuotes++;
+      c.totalLines += (q.lines || []).length;
+      c.totalPriceTl += Number(q.totalPriceTl || 0);
+      if (q.status === "accepted") c.acceptedQuotes++;
+      if (q.quoteDate) {
+        if (!c.firstQuoteDate || q.quoteDate < c.firstQuoteDate) c.firstQuoteDate = q.quoteDate;
+        if (!c.lastQuoteDate || q.quoteDate > c.lastQuoteDate) c.lastQuoteDate = q.quoteDate;
+      }
+    }
+  }
+
+  // En sık kullanılanı default olarak set
+  for (const c of Object.values(customers)) {
+    const pickMax = (obj) => {
+      const entries = Object.entries(obj || {});
+      if (entries.length === 0) return "";
+      entries.sort((a, b) => b[1] - a[1]);
+      return entries[0][0];
+    };
+    c.defaultPaymentTerm = pickMax(c.paymentTermCounts);
+    c.defaultShipping = pickMax(c.shippingCounts);
+    c.defaultCurrency = pickMax(c.currencyCounts) || "TL";
+    // Sayaçları temizle (frontend'de gerek yok, sadece hesap için kullanıldı)
+    delete c.paymentTermCounts;
+    delete c.shippingCounts;
+    delete c.currencyCounts;
+  }
+
+  return {
+    customers,
+    summary: {
+      customerCount: Object.keys(customers).length,
+    },
+  };
+}
+
 module.exports = {
   parseQuoteMasterData,
   parseQuoteArchive,
   extractQuotePartsFromArchive,
+  extractQuoteCustomersFromArchive,
   partBucketId,
 };

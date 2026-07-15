@@ -1,16 +1,17 @@
 import { useState, useEffect, useMemo, useRef } from "react";
 import {
   subscribeQuoteMaterials, subscribeQuoteFasonWorks, subscribeQuoteOptions,
-  subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts,
-  saveQuotePolicyUpdate,
+  subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts, subscribeQuoteCustomers,
+  saveQuotePolicyUpdate, saveQuoteCustomer,
 } from "./firestore";
+import NewQuoteView from "./NewQuoteView";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
 const PROMOTE_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/promoteQuoteStagingHttp";
 
 export default function Teklifler({ isAdmin, isUretim, isSales }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
-  const [activeTab, setActiveTab] = useState("list");
+  const [activeTab, setActiveTab] = useState("new");
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
@@ -21,8 +22,10 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
 
       <div style={{ display: "flex", gap: 4, marginBottom: 20, borderBottom: "1px solid #e7e5e4" }}>
         {[
+          { id: "new", label: "➕ Yeni Teklif" },
           { id: "list", label: "📋 Teklif Listesi" },
           { id: "parts", label: "🔩 Parça Kütüphanesi" },
+          { id: "customers", label: "👥 Müşteriler" },
           { id: "master", label: "🎯 Master Data" },
           { id: "margins", label: "💰 Marj Editörü", adminOnly: true },
           { id: "import", label: "📥 Excel İçe Aktar", adminOnly: true },
@@ -42,11 +45,176 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
         ))}
       </div>
 
+      {activeTab === "new" && <NewQuoteView canEdit={canEdit} isAdmin={isAdmin} onSaved={() => setActiveTab("list")} />}
       {activeTab === "list" && <QuoteListView />}
       {activeTab === "parts" && <PartsLibraryView />}
+      {activeTab === "customers" && <CustomersView canEdit={canEdit} />}
       {activeTab === "master" && <MasterDataView />}
       {activeTab === "margins" && isAdmin && <MarginEditorView canEdit={canEdit && isAdmin} />}
       {activeTab === "import" && isAdmin && <ImportView />}
+    </div>
+  );
+}
+
+// ==================== Müşteri Master Sekmesi ====================
+
+function CustomersView({ canEdit }) {
+  const [staging, setStaging] = useState(false);
+  const [data, setData] = useState({ customers: {} });
+  const [search, setSearch] = useState("");
+  const [editing, setEditing] = useState(null); // { name, isNew, phone, email, ... }
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    const unsub = subscribeQuoteCustomers(setData, { staging });
+    return unsub;
+  }, [staging]);
+
+  const customers = useMemo(() => {
+    const arr = Object.values(data?.customers || {});
+    const s = search.trim().toLocaleLowerCase("tr-TR");
+    const filtered = s ? arr.filter(c => (c.name || "").toLocaleLowerCase("tr-TR").includes(s)) : arr;
+    return filtered.sort((a, b) => (b.totalQuotes || 0) - (a.totalQuotes || 0));
+  }, [data, search]);
+
+  const openNew = () => setEditing({ name: "", isNew: true, phone: "", email: "", defaultPaymentTerm: "60 Gün Vade", defaultShipping: "", defaultCurrency: "TL" });
+  const openEdit = (c) => setEditing({ ...c, isNew: false });
+
+  const handleSave = async () => {
+    if (!editing) return;
+    const key = editing.name?.trim();
+    if (!key) { alert("Müşteri adı zorunlu"); return; }
+    setSaving(true);
+    try {
+      await saveQuoteCustomer(key, {
+        name: key,
+        phone: editing.phone || "",
+        email: editing.email || "",
+        defaultPaymentTerm: editing.defaultPaymentTerm || "",
+        defaultShipping: editing.defaultShipping || "",
+        defaultCurrency: editing.defaultCurrency || "TL",
+      }, { canEdit, staging });
+      setEditing(null);
+    } catch (e) {
+      alert("Kayıt hatası: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="🔎 Müşteri ara"
+          style={{ flex: 1, minWidth: 240, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }} />
+        <label style={{ fontSize: 11 }}>
+          <input type="checkbox" checked={staging} onChange={e => setStaging(e.target.checked)} /> Staging
+        </label>
+        {canEdit && <button onClick={openNew} style={btnPrimary}>+ Yeni Müşteri</button>}
+        <span style={{ fontSize: 11, color: "#78716c" }}>{customers.length} müşteri</span>
+      </div>
+
+      {customers.length === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
+          Müşteri yok. Yeni ekle veya arşivi import et.
+        </div>
+      ) : (
+        <div style={{ border: "1px solid #e7e5e4", borderRadius: 6, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+            <thead>
+              <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
+                <th style={th}>Müşteri</th>
+                <th style={th}>Tel / E-mail</th>
+                <th style={th}>Default Ödeme</th>
+                <th style={th}>Default Nakliye</th>
+                <th style={{ ...th, textAlign: "right" }}>Teklif</th>
+                <th style={{ ...th, textAlign: "right" }}>Toplam TL</th>
+                <th style={th}>Son Teklif</th>
+                <th style={th}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {customers.map(c => (
+                <tr key={c.name} style={{ borderTop: "1px solid #f5f5f4" }}>
+                  <td style={{ ...td, fontWeight: 500 }}>{c.name}</td>
+                  <td style={{ ...td, fontSize: 10 }}>
+                    {c.phone || "—"}
+                    {c.email && <div style={{ color: "#a8a29e" }}>{c.email}</div>}
+                  </td>
+                  <td style={{ ...td, fontSize: 10 }}>{c.defaultPaymentTerm || "—"}</td>
+                  <td style={{ ...td, fontSize: 10 }}>{c.defaultShipping || "—"}</td>
+                  <td style={{ ...td, textAlign: "right" }}>{c.totalQuotes || 0}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                    {Number(c.totalPriceTl || 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 })}
+                  </td>
+                  <td style={{ ...td, fontSize: 10 }}>{c.lastQuoteDate || "—"}</td>
+                  <td style={td}>
+                    {canEdit && (
+                      <button onClick={() => openEdit(c)} style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>✏️</button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {editing && (
+        <div onClick={(e) => { if (e.target === e.currentTarget && !saving) setEditing(null); }}
+          style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+          <div style={{ background: "#fff", borderRadius: 8, width: "min(500px, 92vw)", padding: 20 }}>
+            <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>
+              {editing.isNew ? "➕ Yeni Müşteri" : "✏️ Müşteri Düzenle"}
+            </h3>
+            <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 500, color: "#57534e", display: "block", marginBottom: 4 }}>Müşteri Adı *</label>
+                <input value={editing.name || ""} onChange={e => setEditing({ ...editing, name: e.target.value })} disabled={!editing.isNew}
+                  style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div><label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Telefon</label>
+                  <input value={editing.phone || ""} onChange={e => setEditing({ ...editing, phone: e.target.value })} style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+                </div>
+                <div><label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>E-mail</label>
+                  <input value={editing.email || ""} onChange={e => setEditing({ ...editing, email: e.target.value })} style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+                </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Default Ödeme Şekli (marj hesabında kullanılır)</label>
+                <select value={editing.defaultPaymentTerm || ""} onChange={e => setEditing({ ...editing, defaultPaymentTerm: e.target.value })}
+                  style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
+                  <option value="">— seç —</option>
+                  <option value="30 Gün Vade">30 Gün Vade</option>
+                  <option value="60 Gün Vade">60 Gün Vade</option>
+                  <option value="90 Gün Vade">90 Gün Vade</option>
+                  <option value="PEŞİN ÖDEME">PEŞİN ÖDEME</option>
+                  <option value="%100 Teslimde Ödeme">%100 Teslimde Ödeme</option>
+                </select>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                <div><label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Default Nakliye</label>
+                  <input value={editing.defaultShipping || ""} onChange={e => setEditing({ ...editing, defaultShipping: e.target.value })} style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+                </div>
+                <div><label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Default Döviz</label>
+                  <select value={editing.defaultCurrency || "TL"} onChange={e => setEditing({ ...editing, defaultCurrency: e.target.value })}
+                    style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
+                    <option value="TL">TL</option><option value="DOLAR">DOLAR</option><option value="EURO">EURO</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+            <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setEditing(null)} disabled={saving} style={{ padding: "7px 14px", fontSize: 12, border: "1px solid #d6d3d1", background: "#fff", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+              <button onClick={handleSave} disabled={saving || !canEdit} style={btnPrimary}>
+                {saving ? "Kaydediliyor..." : "💾 Kaydet"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

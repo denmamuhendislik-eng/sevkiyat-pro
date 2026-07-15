@@ -38,8 +38,8 @@ const XLSX = require("xlsx");
 
 const { createOAuthClient, fetchAllVioReports } = require("./gmail");
 const { parseStockReport, parseAkibetExcel, parsePurchaseExcel, parsePurchaseWithPrices, parseSalesOrdersReport, parseOverheadExcel, parseSuppliesExcel, parseCariEkstreExcel, parseCocPartsKonf, parseCocCertificatesListesi, TRACKED_CUSTOMERS } = require("./parsers");
-const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCocPartsReport, saveCocCertificatesReport, saveQuoteMasterData, saveQuoteArchive, saveQuoteParts, promoteQuoteStaging, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
-const { parseQuoteMasterData, parseQuoteArchive, extractQuotePartsFromArchive } = require("./quoteParser");
+const { saveReport, appendAutomationLog, saveUnitCostPartitions, saveOverheadReport, saveCariEkstreReport, saveCocPartsReport, saveCocCertificatesReport, saveQuoteMasterData, saveQuoteArchive, saveQuoteParts, saveQuoteCustomers, promoteQuoteStaging, saveCurrencyRates, saveMonthlyInventorySnapshot, readAppDoc } = require("./firestore");
+const { parseQuoteMasterData, parseQuoteArchive, extractQuotePartsFromArchive, extractQuoteCustomersFromArchive } = require("./quoteParser");
 const { fetchTcmbRates } = require("./tcmb");
 const { calculateSimpleInventoryValue } = require("./inventoryCalcSimple");
 
@@ -1032,6 +1032,10 @@ exports.importQuoteExcelHttp = onRequest(
         const partsExtract = extractQuotePartsFromArchive(archiveParsed);
         const partsOut = await saveQuoteParts(db, partsExtract, { staging });
         results.parts = { ...partsOut, summary: partsExtract.summary };
+        // Arşivden müşteri master çıkar
+        const customersExtract = extractQuoteCustomersFromArchive(archiveParsed);
+        const customersOut = await saveQuoteCustomers(db, customersExtract, { staging });
+        results.customers = { ...customersOut, summary: customersExtract.summary };
       }
 
       logger.info("[QuoteImport] ✓ Yüklendi", { staging, mode, results });
