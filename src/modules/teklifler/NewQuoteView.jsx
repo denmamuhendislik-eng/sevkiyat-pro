@@ -193,6 +193,9 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
             machines: l.machines,
             fasonWorks: l.fasonWorks,
             specialToolCost: l.specialToolCost,
+            specialToolMode: l.specialToolMode || "spread",
+            specialToolDescription: l.specialToolDescription || "",
+            term: l.term || "",
             technicalNote: l.technicalNote,
             costPerUnit: r.perUnit.totalCost,
             salePricePerUnit: r.perUnit.salePrice,
@@ -463,10 +466,15 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
                 quoteNo, quoteDate, customerName, customerPhone, customerEmail,
                 paymentTerm, shipping, shippingCost, shippingIncluded,
                 currency, exchangeRate, quoteType, term, notes, status,
-                lines: lines.map(l => ({
-                  stockCode: l.stockCode, musteriKodu: l.musteriKodu, stockName: l.stockName,
-                  quantity: l.quantity, unit: l.unit, term: l.term,
-                })),
+                lines: lines.map((l, i) => {
+                  const r = calc.lineResults[i];
+                  return {
+                    stockCode: l.stockCode, musteriKodu: l.musteriKodu, stockName: l.stockName,
+                    quantity: l.quantity, unit: l.unit, term: l.term,
+                    linePrice: r?.total?.salePrice || 0,
+                    salePricePerUnit: r?.perUnit?.salePrice || 0,
+                  };
+                }),
                 totalPriceTl: calc.totalSaleTl,
               };
               await generateQuotePdf(preview, calc);
@@ -743,10 +751,19 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
         )}
       </div>
 
-      {/* Teknik Not */}
-      <div style={{ marginBottom: 10 }}>
-        <label style={miniLabel}>Teknik Not</label>
-        <input value={line.technicalNote || ""} onChange={e => update(idx, "technicalNote", e.target.value)} placeholder="Özel işlem, tolerans, notlar..." style={miniInput} />
+      {/* Termin + Teknik Not */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 3fr", gap: 6, marginBottom: 10 }}>
+        <div>
+          <label style={miniLabel}>Termin (satır bazlı)</label>
+          <input value={line.term || ""} onChange={e => update(idx, "term", e.target.value)} placeholder="örn. 30 GÜN — boş bırakırsan meta termin" style={miniInput} />
+          <div style={{ fontSize: 9, color: "#a8a29e", marginTop: 2 }}>
+            Boş bırakırsan üstteki genel termin kullanılır. Farklıysa PDF'te bu satırda görünür.
+          </div>
+        </div>
+        <div>
+          <label style={miniLabel}>Teknik Not</label>
+          <input value={line.technicalNote || ""} onChange={e => update(idx, "technicalNote", e.target.value)} placeholder="Özel işlem, tolerans, notlar..." style={miniInput} />
+        </div>
       </div>
 
       {/* HESAP ÖZETİ (kompakt) */}
@@ -1004,6 +1021,9 @@ function makeBlankLine() {
     machines: [],
     fasonWorks: [],
     specialToolCost: 0,
+    specialToolMode: "spread",
+    specialToolDescription: "",
+    term: "",
     technicalNote: "",
     fromLibrary: false,
   };

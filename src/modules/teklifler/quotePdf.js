@@ -115,14 +115,14 @@ function buildQuoteHtml(quote, calc) {
       <tr><td style="padding:4px 10px;font-size:10px;color:#57534e;">Nakliye</td>
         <td style="padding:4px 10px;text-align:right;font-family:'JetBrains Mono','Courier New',monospace;font-size:10px;">${showInCurrency(shippingCost)}</td></tr>
       <tr style="border-top:2px solid #1e40af;background:#eff6ff;">
-        <td style="padding:10px 10px;font-size:12px;font-weight:700;color:#1e40af;">TOPLAM ${currency}</td>
+        <td style="padding:10px 10px;font-size:12px;font-weight:700;color:#1e40af;">TOPLAM / TOTAL</td>
         <td style="padding:10px 10px;text-align:right;font-family:'JetBrains Mono','Courier New',monospace;font-size:14px;font-weight:800;color:#1e40af;">
           ${showInCurrency(totalSale + shippingCost)}
         </td></tr>
     `
     : `
       <tr style="border-top:2px solid #1e40af;background:#eff6ff;">
-        <td style="padding:10px 10px;font-size:12px;font-weight:700;color:#1e40af;">TOPLAM ${currency}${shippingIncluded && shippingCost > 0 ? " (Nakliye Dahil)" : ""}</td>
+        <td style="padding:10px 10px;font-size:12px;font-weight:700;color:#1e40af;">TOPLAM / TOTAL${shippingIncluded && shippingCost > 0 ? " (Nakliye Dahil)" : ""}</td>
         <td style="padding:10px 10px;text-align:right;font-family:'JetBrains Mono','Courier New',monospace;font-size:14px;font-weight:800;color:#1e40af;">
           ${showInCurrency(totalSale)}
         </td></tr>
@@ -153,13 +153,13 @@ function buildQuoteHtml(quote, calc) {
       </div>
       <div style="display:flex; gap:8px; flex-shrink:0;">
         <div style="padding:6px 12px; background:#eff6ff; border-radius:6px; border:1px solid #bfdbfe;">
-          <div style="font-size:8px; color:#57534e; text-transform:uppercase; letter-spacing:0.5px;">Teklif No</div>
+          <div style="font-size:8px; color:#57534e; text-transform:uppercase; letter-spacing:0.5px;">Teklif No / Quote No</div>
           <div style="font-size:14px; font-weight:800; color:#1e40af; font-family:'JetBrains Mono','Courier New',monospace; letter-spacing:1px;">
             ${esc(quote.quoteNo || "—")}
           </div>
         </div>
         <div style="padding:6px 12px; background:#f9fafb; border-radius:6px; border:1px solid #e7e5e4;">
-          <div style="font-size:8px; color:#57534e; text-transform:uppercase; letter-spacing:0.5px;">Tarih</div>
+          <div style="font-size:8px; color:#57534e; text-transform:uppercase; letter-spacing:0.5px;">Tarih / Date</div>
           <div style="font-size:14px; font-weight:700; color:#1c1917;">${fmtDate(quote.quoteDate)}</div>
         </div>
       </div>
