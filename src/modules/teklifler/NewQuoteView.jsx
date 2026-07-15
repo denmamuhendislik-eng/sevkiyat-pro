@@ -589,7 +589,6 @@ function PartsSearchBox({ partsLib, onSelect }) {
 // ==================== Alt component: Kalem Editörü ====================
 
 function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsData, machineRatesData, partsLib, paymentTerm, update, updateDim, onRemove }) {
-  const [showDetail, setShowDetail] = useState(false);
 
   const addMachine = () => update(idx, "machines", [...(line.machines || []), { name: "", timeMin: 0, ratePerMin: 0 }]);
   const updateMachine = (mi, field, value) => {
@@ -635,11 +634,12 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
         <span style={{ fontSize: 11, fontWeight: 600, color: "#57534e" }}>Kalem #{idx + 1}</span>
         {line.fromLibrary && <span style={{ padding: "2px 6px", background: "#dcfce7", color: "#166534", borderRadius: 3, fontSize: 9, fontWeight: 600 }}>KÜTÜPHANEDEN</span>}
-        <button onClick={() => setShowDetail(!showDetail)} style={{ marginLeft: "auto", padding: "3px 10px", background: showDetail ? "#dbeafe" : "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>
-          {showDetail ? "🔽 Detayı Gizle" : "🔍 Maliyet Detayı"}
-        </button>
-        <button onClick={onRemove} style={{ padding: "3px 8px", background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>🗑 Sil</button>
+        <button onClick={onRemove} style={{ marginLeft: "auto", padding: "3px 8px", background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: 3, fontSize: 10, cursor: "pointer" }}>🗑 Sil</button>
       </div>
+
+      {/* 2 KOLON: SOL = giriş alanları, SAĞ = detay panel */}
+      <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(340px, 400px)", gap: 14, alignItems: "start" }}>
+        <div>
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(160px, 1fr))", gap: 8, marginBottom: 10 }}>
         <div>
@@ -811,11 +811,15 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
           {" · "}Aralık: {calcResult.margins.quantityBracket} · Grup: {calcResult.margins.paymentGroup}
         </div>
       )}
+        </div>
 
-      {/* DETAY PANEL — 1 adet için kırılım */}
-      {showDetail && calcResult && (
-        <LineDetailPanel idx={idx} line={line} calcResult={calcResult} selectedMat={selectedMat} paymentTerm={paymentTerm} update={update} />
-      )}
+        {/* SAĞ SÜTUN: DETAY PANEL — her zaman açık, uzun kalemlerde takip için sticky */}
+        <div style={{ position: "sticky", top: 10, alignSelf: "start", maxHeight: "calc(100vh - 40px)", overflow: "auto" }}>
+          {calcResult
+            ? <LineDetailPanel idx={idx} line={line} calcResult={calcResult} selectedMat={selectedMat} paymentTerm={paymentTerm} update={update} />
+            : <div style={{ padding: 10, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6, color: "#94a3b8", fontSize: 11 }}>Hesap için hammadde/makine/fason bilgisi girin</div>}
+        </div>
+      </div>
     </div>
   );
 }
@@ -903,7 +907,7 @@ function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, upda
   const totalProfitPerUnit = totalSalePerUnit - totalCostPerUnit;
 
   return (
-    <div style={{ marginTop: 10, padding: 12, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6 }}>
+    <div style={{ padding: 12, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6 }}>
       <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "#1e293b" }}>
         📊 1 Adet İçin Maliyet Kırılımı ({qty} adet × formül)
       </div>
