@@ -420,15 +420,45 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved }) {
                   </tr>
                 </thead>
                 <tbody>
-                  {(calc.separateToolItems || []).map((t, i) => (
+                  {(calc.separateToolItems || []).map((t, i) => {
+                    const srcIdx = Number(t?.sourceLineIdx) || 0;
+                    const srcLine = lines[srcIdx] || {};
+                    const srcCalc = calc.lineResults[srcIdx]?.margins || {};
+                    const isOv = !!srcCalc?.overrideActive?.specialTool;
+                    const defPct = (srcCalc?.defaults?.specialTool || 0) * 100;
+                    const curOv = srcLine.overrides?.specialToolMarginPct;
+                    const setOv = (val) => {
+                      const next = { ...(srcLine.overrides || {}) };
+                      if (val === "" || val === null || val === undefined) delete next.specialToolMarginPct;
+                      else next.specialToolMarginPct = Number(val);
+                      updateLine(srcIdx, "overrides", next);
+                    };
+                    return (
                     <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
                       <td style={tdS}>{t?.description || "—"}</td>
                       <td style={{ ...tdS, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{fmt(t?.cost || 0)}</td>
                       <td style={{ ...tdS, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 600 }}>{fmt(t?.sale || 0)}</td>
-                      <td style={{ ...tdS, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#16a34a" }}>+{fmt(t?.profit || 0)} (%{((Number(t?.margin) || 0) * 100).toFixed(1)})</td>
-                      <td style={{ ...tdS, fontSize: 10, color: "#78716c" }}>Kalem #{(Number(t?.sourceLineIdx) || 0) + 1}</td>
+                      <td style={{ ...tdS, textAlign: "right", fontVariantNumeric: "tabular-nums", color: "#16a34a" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                          <span>+{fmt(t?.profit || 0)}</span>
+                          <span style={{ fontSize: 10, color: "#78716c" }}>(</span>
+                          <input
+                            type="number"
+                            step="0.1"
+                            value={isOv ? curOv : ""}
+                            placeholder={defPct.toFixed(1)}
+                            onChange={e => setOv(e.target.value)}
+                            style={{ width: 50, padding: "1px 3px", fontSize: 11, textAlign: "right", border: `1px solid ${isOv ? "#3b82f6" : "#cbd5e1"}`, borderRadius: 3 }}
+                            title={isOv ? "Override aktif — auto'ya döndürmek için sıfırla" : `Auto: %${defPct.toFixed(2)} (bracket materialFasonPct)`}
+                          />
+                          <span style={{ fontSize: 10, color: "#78716c" }}>%)</span>
+                          {isOv && <button onClick={() => setOv("")} style={{ padding: "0 4px", fontSize: 9, border: "1px solid #cbd5e1", background: "#fff", borderRadius: 3, cursor: "pointer" }} title="Auto'ya döndür">↺</button>}
+                        </div>
+                      </td>
+                      <td style={{ ...tdS, fontSize: 10, color: "#78716c" }}>Kalem #{srcIdx + 1}</td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             );
@@ -784,7 +814,7 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
 
       {/* DETAY PANEL — 1 adet için kırılım */}
       {showDetail && calcResult && (
-        <LineDetailPanel line={line} calcResult={calcResult} selectedMat={selectedMat} paymentTerm={paymentTerm} />
+        <LineDetailPanel idx={idx} line={line} calcResult={calcResult} selectedMat={selectedMat} paymentTerm={paymentTerm} update={update} />
       )}
     </div>
   );
@@ -792,7 +822,40 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
 
 // ==================== Detay Panel — 1 adet için kırılım ====================
 
-function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
+// Marj override input satırı — default etiket + input + auto sıfırlama
+function MarginRow({ label, defaultPct, effectivePct, active, currentValue, onChange, hint }) {
+  return (
+    <>
+      <td style={detailLabel}>
+        {label}
+        {" "}
+        {active
+          ? <span style={{ background: "#dbeafe", color: "#1e40af", padding: "1px 5px", borderRadius: 3, fontSize: 9, fontWeight: 600, marginLeft: 4 }}>OVERRIDE</span>
+          : <span style={{ background: "#f5f5f4", color: "#78716c", padding: "1px 5px", borderRadius: 3, fontSize: 9, marginLeft: 4 }}>AUTO</span>}
+      </td>
+      <td style={detailValue}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "flex-end" }}>
+          {!active && <span style={{ fontSize: 10, color: "#a8a29e" }}>varsayılan %{defaultPct.toFixed(2)}</span>}
+          <input
+            type="number"
+            step="0.1"
+            value={active ? currentValue : ""}
+            placeholder={defaultPct.toFixed(1)}
+            onChange={e => onChange(e.target.value)}
+            style={{ width: 60, padding: "2px 4px", fontSize: 11, textAlign: "right", border: "1px solid #cbd5e1", borderRadius: 3 }}
+            title={hint || "Boş bırakırsan bracket + grup marjı kullanılır"}
+          />
+          <span style={{ fontSize: 11 }}>%</span>
+          {active && (
+            <button onClick={() => onChange("")} style={{ padding: "1px 5px", fontSize: 9, border: "1px solid #cbd5e1", background: "#fff", borderRadius: 3, cursor: "pointer" }} title="Auto'ya döndür">↺</button>
+          )}
+        </div>
+      </td>
+    </>
+  );
+}
+
+function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, update }) {
   if (!calcResult || !calcResult.margins || !calcResult.perUnit) {
     return <div style={{ padding: 10, color: "#a8a29e", fontSize: 11 }}>Hesap için hammadde/makine/fason bilgisi girin</div>;
   }
@@ -801,11 +864,22 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
   const fasonWorks = line.fasonWorks || [];
   const margins = calcResult.margins || {};
   const perUnit = calcResult.perUnit || {};
+  const defaults = margins.defaults || {};
+  const activeOv = margins.overrideActive || {};
+  const currentOv = line.overrides || {};
+
+  const setOverride = (key, val) => {
+    const next = { ...(line.overrides || {}) };
+    if (val === "" || val === null || val === undefined) delete next[key];
+    else next[key] = Number(val);
+    update(idx, "overrides", next);
+  };
 
   // Adet başına marj çarpanları (calcResult.margins'ten)
   const materialMarginPct = (margins.material || 0) * 100;
   const laborMarginPct = (margins.labor || 0) * 100;
   const fasonMarginPct = (margins.fason || 0) * 100;
+  const specialToolMarginPct = (margins.specialTool || 0) * 100;
 
   // Adet başına kalemler
   const matPerUnit = perUnit.material || 0;
@@ -821,7 +895,7 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
   const fasonProfitPerUnit = fasonSalePerUnit - fasonPerUnit;
 
   const toolPerUnit = perUnit.specialTool || 0;
-  const toolSalePerUnit = toolPerUnit * (1 + (margins.fason || 0));
+  const toolSalePerUnit = toolPerUnit * (1 + (margins.specialTool || 0));
   const toolProfitPerUnit = toolSalePerUnit - toolPerUnit;
 
   const totalCostPerUnit = perUnit.totalCost || 0;
@@ -843,7 +917,17 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
               <tr><td style={detailLabel}>Ağırlık</td><td style={detailValue}>{calcResult.weightKg.toFixed(3)} kg</td></tr>
               <tr><td style={detailLabel}>Birim fiyat</td><td style={detailValue}>{fmt(selectedMat?.priceTlPerKg || 0)} TL/kg</td></tr>
               <tr><td style={detailLabel}>Malzeme maliyeti (adet)</td><td style={detailValueBold}>{fmt(matPerUnit)} TL</td></tr>
-              <tr><td style={detailLabel}>Marj (miktar aralığı + vade grubu)</td><td style={detailValue}>%{materialMarginPct.toFixed(2)}</td></tr>
+              <tr>
+                <MarginRow
+                  label="Marj (miktar + vade grubu)"
+                  defaultPct={(defaults.material || 0) * 100}
+                  effectivePct={materialMarginPct}
+                  active={activeOv.material}
+                  currentValue={currentOv.materialMarginPct}
+                  onChange={v => setOverride("materialMarginPct", v)}
+                  hint="Revizyonda müşteriye düşük fiyat vermek için düşürebilirsin"
+                />
+              </tr>
               <tr style={{ borderTop: "1px solid #cbd5e1" }}>
                 <td style={detailLabel}><b>Satış (adet)</b></td>
                 <td style={detailValueBold}>{fmt(matSalePerUnit)} TL</td>
@@ -887,8 +971,15 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
                 <td style={detailValueBold}>{fmt(laborPerUnit)} TL</td>
               </tr>
               <tr>
-                <td colSpan="3" style={detailLabel}>Marj (miktar aralığı + malzeme özel)</td>
-                <td style={detailValue}>%{laborMarginPct.toFixed(2)}</td>
+                <td colSpan="2" style={detailLabel}></td>
+                <MarginRow
+                  label="Marj (miktar + malz özel)"
+                  defaultPct={(defaults.labor || 0) * 100}
+                  effectivePct={laborMarginPct}
+                  active={activeOv.labor}
+                  currentValue={currentOv.laborMarginPct}
+                  onChange={v => setOverride("laborMarginPct", v)}
+                />
               </tr>
               <tr>
                 <td colSpan="3" style={detailLabel}><b>Satış (adet)</b></td>
@@ -933,8 +1024,15 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
                 <td style={detailValueBold}>{fmt(fasonPerUnit)} TL</td>
               </tr>
               <tr>
-                <td colSpan="2" style={detailLabel}>Marj</td>
-                <td style={detailValue}>%{fasonMarginPct.toFixed(2)}</td>
+                <td colSpan="1" style={detailLabel}></td>
+                <MarginRow
+                  label="Marj"
+                  defaultPct={(defaults.fason || 0) * 100}
+                  effectivePct={fasonMarginPct}
+                  active={activeOv.fason}
+                  currentValue={currentOv.fasonMarginPct}
+                  onChange={v => setOverride("fasonMarginPct", v)}
+                />
               </tr>
               <tr>
                 <td colSpan="2" style={detailLabel}><b>Satış (adet)</b></td>
@@ -957,7 +1055,16 @@ function LineDetailPanel({ line, calcResult, selectedMat, paymentTerm }) {
             <tbody>
               <tr><td style={detailLabel}>Toplam maliyet ({qty} adete yayılıyor)</td><td style={detailValue}>{fmt(line.specialToolCost || 0)} TL</td></tr>
               <tr><td style={detailLabel}>Adet maliyet</td><td style={detailValueBold}>{fmt(toolPerUnit)} TL</td></tr>
-              <tr><td style={detailLabel}>Marj</td><td style={detailValue}>%{fasonMarginPct.toFixed(2)}</td></tr>
+              <tr>
+                <MarginRow
+                  label="Marj"
+                  defaultPct={(defaults.specialTool || 0) * 100}
+                  effectivePct={specialToolMarginPct}
+                  active={activeOv.specialTool}
+                  currentValue={currentOv.specialToolMarginPct}
+                  onChange={v => setOverride("specialToolMarginPct", v)}
+                />
+              </tr>
               <tr><td style={detailLabel}><b>Satış (adet)</b></td><td style={detailValueBold}>{fmt(toolSalePerUnit)} TL</td></tr>
               <tr><td style={detailLabel}>Kâr (adet)</td><td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(toolProfitPerUnit)} TL</td></tr>
             </tbody>

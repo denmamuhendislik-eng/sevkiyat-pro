@@ -144,10 +144,26 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
   //   İşçilik satış = maliyet × (1 + işçilik marj + malzeme özel marj)
   //   Fason satış = maliyet × (1 + malz/fason marj)
   //   Aparat satış = maliyet × (1 + malz/fason marj)  — teklif başına dağıtım
-  const materialMargin = (qMargin.materialFasonPct || 0) + (groupMargin || 0);
-  const laborMargin = (qMargin.laborPct || 0) + (matSpecialPct || 0);
-  const fasonMargin = qMargin.materialFasonPct || 0;
-  const specialToolMargin = qMargin.materialFasonPct || 0;
+  const materialMarginDefault = (qMargin.materialFasonPct || 0) + (groupMargin || 0);
+  const laborMarginDefault = (qMargin.laborPct || 0) + (matSpecialPct || 0);
+  const fasonMarginDefault = qMargin.materialFasonPct || 0;
+  const specialToolMarginDefault = qMargin.materialFasonPct || 0;
+
+  // Override desteği: kullanıcı revizyonda satır bazlı marja elle müdahale edebilir.
+  // Override boş/null ise default (bracket + grup) marjı kullanılır.
+  const ov = line.overrides || {};
+  const hasOv = (v) => v !== null && v !== undefined && v !== "" && !isNaN(Number(v));
+  const eff = (def, v) => (hasOv(v) ? Number(v) / 100 : def);
+  const materialMargin = eff(materialMarginDefault, ov.materialMarginPct);
+  const laborMargin = eff(laborMarginDefault, ov.laborMarginPct);
+  const fasonMargin = eff(fasonMarginDefault, ov.fasonMarginPct);
+  const specialToolMargin = eff(specialToolMarginDefault, ov.specialToolMarginPct);
+  const overrideActive = {
+    material: hasOv(ov.materialMarginPct),
+    labor: hasOv(ov.laborMarginPct),
+    fason: hasOv(ov.fasonMarginPct),
+    specialTool: hasOv(ov.specialToolMarginPct),
+  };
 
   const materialSaleTotal = materialCostTotal * (1 + materialMargin);
   const laborSaleTotal = laborCostTotal * (1 + laborMargin);
@@ -199,6 +215,15 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
       material: materialMargin,
       labor: laborMargin,
       fason: fasonMargin,
+      specialTool: specialToolMargin,
+      // Default (override öncesi) — UI "auto" değeri göstermek için
+      defaults: {
+        material: materialMarginDefault,
+        labor: laborMarginDefault,
+        fason: fasonMarginDefault,
+        specialTool: specialToolMarginDefault,
+      },
+      overrideActive,
       paymentGroup: group,
       groupMargin,
       materialSpecialMargin: matSpecialPct,
