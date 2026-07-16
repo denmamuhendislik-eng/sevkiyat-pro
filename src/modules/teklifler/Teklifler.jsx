@@ -645,11 +645,11 @@ function MaterialPricesView({ canEdit }) {
   const [unitCosts, setUnitCosts] = useState({ byStock: {} });
   const [unitConversions, setUnitConversions] = useState({ conversions: {} });
   const [staging, setStaging] = useState(false);
-  const [mode, setMode] = useState("latest"); // latest | avg
+  const [mode, setMode] = useState("max"); // latest | max | avg — default max (güvenli)
   const [search, setSearch] = useState("");
   const [saving, setSaving] = useState({});
   const [expanded, setExpanded] = useState({}); // material adı → detay açık mı
-  const [stokInput, setStokInput] = useState({}); // material adı → yeni stok kodu inputu
+  const [stokPickerFor, setStokPickerFor] = useState(null); // { materialName, query, selected: Set }
 
   useEffect(() => {
     const u1 = subscribeQuoteMaterials(d => setMaterialsData(d || { materials: {} }), { staging });
@@ -668,14 +668,22 @@ function MaterialPricesView({ canEdit }) {
     return f.sort((a, b) => a[0].localeCompare(b[0]));
   }, [materials, search]);
 
-  const handleAddStok = async (materialName, stokKodu) => {
-    if (!stokKodu?.trim()) return;
+  const handleAddStokBulk = async (materialName, stokKodlariToAdd) => {
+    if (!Array.isArray(stokKodlariToAdd) || stokKodlariToAdd.length === 0) return;
     const mat = materials[materialName] || {};
-    const next = [...(mat.stokKodlari || []), stokKodu.trim()];
+    const existingSet = new Set(mat.stokKodlari || []);
+    const next = [...(mat.stokKodlari || [])];
+    for (const sk of stokKodlariToAdd) {
+      const trimmed = String(sk || "").trim();
+      if (trimmed && !existingSet.has(trimmed)) {
+        next.push(trimmed);
+        existingSet.add(trimmed);
+      }
+    }
     setSaving(s => ({ ...s, [materialName]: true }));
     try {
       await saveQuoteMaterialUpdate(materialName, { stokKodlari: next }, { canEdit, staging });
-      setStokInput(s => ({ ...s, [materialName]: "" }));
+      setStokPickerFor(null);
     } catch (e) {
       alert("Kaydedilemedi: " + e.message);
     } finally {
@@ -740,13 +748,20 @@ function MaterialPricesView({ canEdit }) {
           <input type="checkbox" checked={staging} onChange={e => setStaging(e.target.checked)} /> Staging
         </label>
         <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => setMode("max")}
+            title="Son 90 gün içindeki en yüksek TL/kg (kâr kaybını önler — güvenli)"
+            style={{ padding: "4px 10px", fontSize: 11, border: "1px solid " + (mode === "max" ? "#534AB7" : "#d6d3d1"), background: mode === "max" ? "#534AB7" : "#fff", color: mode === "max" ? "#fff" : "#57534e", borderRadius: 4, cursor: "pointer" }}>
+            🔺 En Yüksek (90g)
+          </button>
           <button onClick={() => setMode("latest")}
+            title="En son alım tarihinden"
             style={{ padding: "4px 10px", fontSize: 11, border: "1px solid " + (mode === "latest" ? "#534AB7" : "#d6d3d1"), background: mode === "latest" ? "#534AB7" : "#fff", color: mode === "latest" ? "#fff" : "#57534e", borderRadius: 4, cursor: "pointer" }}>
-            En Güncel
+            📅 En Güncel
           </button>
           <button onClick={() => setMode("avg")}
+            title="Son 180 gün ağırlıklı ortalama (kg × TL / toplam kg)"
             style={{ padding: "4px 10px", fontSize: 11, border: "1px solid " + (mode === "avg" ? "#534AB7" : "#d6d3d1"), background: mode === "avg" ? "#534AB7" : "#fff", color: mode === "avg" ? "#fff" : "#57534e", borderRadius: 4, cursor: "pointer" }}>
-            Ort. (180 gün)
+            📊 Ort. (180g)
           </button>
         </div>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔎 Malzeme ara"
@@ -775,7 +790,7 @@ function MaterialPricesView({ canEdit }) {
               <th style={th}>Malzeme</th>
               <th style={th}>Bağlı Stok Kodları</th>
               <th style={{ ...th, textAlign: "right" }}>Master TL/kg</th>
-              <th style={{ ...th, textAlign: "right" }}>Öneri TL/kg ({mode === "latest" ? "En Güncel" : "Ort. 180g"})</th>
+              <th style={{ ...th, textAlign: "right" }}>Öneri TL/kg ({mode === "max" ? "En Yüksek 90g" : mode === "latest" ? "En Güncel" : "Ort. 180g"})</th>
               <th style={th}>Kaynak / Uyarı</th>
               <th style={th}>İşlem</th>
             </tr>
@@ -873,6 +888,16 @@ function MaterialPricesView({ canEdit }) {
                           </span>
                         </div>
                       )}
+                      {suggest.source?.mode === "max" && (
+                        <div>
+                          <span style={{ fontFamily: "ui-monospace, monospace" }}>{suggest.source.stokKodu}</span>
+                          <br />
+                          <span style={{ color: "#78716c" }}>
+                            {suggest.source.orderDate} · {suggest.source.daysAgo}g önce
+                            {suggest.source.fallbackAll && <span style={{ color: "#d97706" }}> · ⚠ 90g'de alım yok, tüm data</span>}
+                          </span>
+                        </div>
+                      )}
                       {suggest.source?.mode === "avg" && (
                         <div>
                           <span style={{ color: "#78716c" }}>{suggest.source.totalKg.toFixed(0)} kg / {suggest.source.totalTl.toFixed(0)} TL</span>
@@ -898,23 +923,13 @@ function MaterialPricesView({ canEdit }) {
                         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
                           <div>
                             <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>➕ Stok Kodu Ekle</div>
-                            <div style={{ display: "flex", gap: 6 }}>
-                              <input list={`stokList_${name.replace(/\s+/g, "_")}`}
-                                value={stokInput[name] || ""}
-                                onChange={e => setStokInput(s => ({ ...s, [name]: e.target.value }))}
-                                onKeyDown={e => { if (e.key === "Enter") handleAddStok(name, stokInput[name] || ""); }}
-                                placeholder="Stok kodu yaz veya seç..."
-                                style={{ flex: 1, padding: "4px 8px", fontSize: 11, border: "1px solid #d6d3d1", borderRadius: 3, fontFamily: "ui-monospace, monospace" }} />
-                              <datalist id={`stokList_${name.replace(/\s+/g, "_")}`}>
-                                {allStokKodlari.filter(sk => !(mat.stokKodlari || []).includes(sk)).slice(0, 500).map(sk => {
-                                  const slot = unitCosts.byStock[sk];
-                                  return <option key={sk} value={sk}>{slot?.lastName || ""}</option>;
-                                })}
-                              </datalist>
-                              <button onClick={() => handleAddStok(name, stokInput[name] || "")} disabled={!canEdit || isSaving}
-                                style={{ padding: "4px 10px", fontSize: 11, background: "#534AB7", color: "#fff", border: "none", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
-                                Ekle
-                              </button>
+                            <button onClick={() => setStokPickerFor({ materialName: name, query: "", selected: new Set() })}
+                              disabled={!canEdit || isSaving}
+                              style={{ padding: "6px 12px", fontSize: 11, background: "#534AB7", color: "#fff", border: "none", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                              📋 Çoklu Seçim ile Ekle
+                            </button>
+                            <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
+                              Modal açılır — birden fazla stok kodunu tek seferde seçebilirsin.
                             </div>
                           </div>
                           <div>
@@ -922,7 +937,8 @@ function MaterialPricesView({ canEdit }) {
                             <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
                               <thead>
                                 <tr style={{ background: "#f5f5f4" }}>
-                                  <th style={{ padding: 4, textAlign: "left" }}>Stok</th>
+                                  <th style={{ padding: 4, textAlign: "left" }}>Stok Kodu</th>
+                                  <th style={{ padding: 4, textAlign: "left" }}>Stok Adı</th>
                                   <th style={{ padding: 4, textAlign: "right" }}>Son Alım</th>
                                   <th style={{ padding: 4, textAlign: "right" }}>TL/kg</th>
                                   <th style={{ padding: 4, textAlign: "right" }}>Yaş</th>
@@ -932,13 +948,14 @@ function MaterialPricesView({ canEdit }) {
                                 {(suggest.candidates || []).map(c => (
                                   <tr key={c.stokKodu} style={{ borderTop: "1px solid #e7e5e4" }}>
                                     <td style={{ padding: 4, fontFamily: "ui-monospace, monospace" }}>{c.stokKodu}</td>
+                                    <td style={{ padding: 4, color: "#57534e" }}>{c.lastName || "—"}</td>
                                     <td style={{ padding: 4, textAlign: "right" }}>{c.orderDate}</td>
                                     <td style={{ padding: 4, textAlign: "right", fontWeight: 600 }}>{c.tlPerKg.toFixed(2)}</td>
                                     <td style={{ padding: 4, textAlign: "right", color: c.isStale ? "#dc2626" : "#78716c" }}>{c.daysAgo}g</td>
                                   </tr>
                                 ))}
                                 {(suggest.candidates || []).length === 0 && (
-                                  <tr><td colSpan="4" style={{ padding: 8, color: "#a8a29e", textAlign: "center" }}>Bağlı stok kodu için alım kaydı yok</td></tr>
+                                  <tr><td colSpan="5" style={{ padding: 8, color: "#a8a29e", textAlign: "center" }}>Bağlı stok kodu için alım kaydı yok</td></tr>
                                 )}
                               </tbody>
                             </table>
@@ -964,6 +981,130 @@ function MaterialPricesView({ canEdit }) {
             })}
           </tbody>
         </table>
+      </div>
+
+      {/* ÇOKLU STOK SEÇİM MODALI */}
+      {stokPickerFor && (
+        <StokPickerModal
+          materialName={stokPickerFor.materialName}
+          existingCodes={new Set(materials[stokPickerFor.materialName]?.stokKodlari || [])}
+          unitCosts={unitCosts}
+          onCancel={() => setStokPickerFor(null)}
+          onConfirm={(codes) => handleAddStokBulk(stokPickerFor.materialName, codes)}
+          isSaving={saving[stokPickerFor.materialName]}
+        />
+      )}
+    </div>
+  );
+}
+
+// Çoklu stok kodu seçim modalı — arama + checkbox liste
+function StokPickerModal({ materialName, existingCodes, unitCosts, onCancel, onConfirm, isSaving }) {
+  const [query, setQuery] = useState("");
+  const [selected, setSelected] = useState(new Set());
+  const allStok = useMemo(() => {
+    const list = Object.entries(unitCosts?.byStock || {})
+      .map(([code, slot]) => ({
+        code,
+        name: slot?.lastName || "",
+        lastOrderDate: (slot?.partitions || []).reduce((max, p) => (p.orderDate > max ? p.orderDate : max), ""),
+      }))
+      .filter(x => !existingCodes.has(x.code));
+    return list.sort((a, b) => a.code.localeCompare(b.code));
+  }, [unitCosts, existingCodes]);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("tr-TR");
+    if (!q) return allStok;
+    return allStok.filter(x =>
+      x.code.toLocaleLowerCase("tr-TR").includes(q) ||
+      (x.name || "").toLocaleLowerCase("tr-TR").includes(q)
+    );
+  }, [allStok, query]);
+
+  const toggle = (code) => {
+    setSelected(prev => {
+      const next = new Set(prev);
+      if (next.has(code)) next.delete(code);
+      else next.add(code);
+      return next;
+    });
+  };
+  const selectAllVisible = () => setSelected(new Set(filtered.map(x => x.code)));
+  const clearSelection = () => setSelected(new Set());
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+      onClick={(e) => { if (e.target === e.currentTarget && !isSaving) onCancel(); }}>
+      <div style={{ background: "#fff", borderRadius: 8, padding: 16, maxWidth: 720, width: "90%", maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+          📋 <b>{materialName}</b> için stok kodu seç
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 10 }}>
+          <input value={query} onChange={e => setQuery(e.target.value)}
+            placeholder="🔎 kod veya isimle ara..."
+            style={{ flex: 1, padding: "6px 10px", fontSize: 12, border: "1px solid #d6d3d1", borderRadius: 4 }} />
+          <button onClick={selectAllVisible} disabled={filtered.length === 0}
+            style={{ padding: "4px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>
+            ✓ Görünenleri Seç ({filtered.length})
+          </button>
+          {selected.size > 0 && (
+            <button onClick={clearSelection}
+              style={{ padding: "4px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>
+              ✕ Seçimi Temizle
+            </button>
+          )}
+        </div>
+        <div style={{ flex: 1, overflowY: "auto", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+            <thead style={{ position: "sticky", top: 0, background: "#f5f5f4", zIndex: 1 }}>
+              <tr>
+                <th style={{ padding: "6px 8px", textAlign: "left", width: 30, borderBottom: "1px solid #e7e5e4" }}></th>
+                <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #e7e5e4" }}>Stok Kodu</th>
+                <th style={{ padding: "6px 8px", textAlign: "left", borderBottom: "1px solid #e7e5e4" }}>Stok Adı</th>
+                <th style={{ padding: "6px 8px", textAlign: "right", borderBottom: "1px solid #e7e5e4" }}>Son Alım</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.slice(0, 500).map(x => {
+                const isSel = selected.has(x.code);
+                return (
+                  <tr key={x.code}
+                    onClick={() => toggle(x.code)}
+                    style={{ borderBottom: "1px solid #f5f5f4", cursor: "pointer", background: isSel ? "#eff6ff" : "transparent" }}>
+                    <td style={{ padding: "6px 8px" }}>
+                      <input type="checkbox" checked={isSel} onChange={() => toggle(x.code)} onClick={e => e.stopPropagation()} />
+                    </td>
+                    <td style={{ padding: "6px 8px", fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{x.code}</td>
+                    <td style={{ padding: "6px 8px", color: "#57534e" }}>{x.name || <span style={{ color: "#a8a29e" }}>—</span>}</td>
+                    <td style={{ padding: "6px 8px", textAlign: "right", color: "#78716c" }}>{x.lastOrderDate || "—"}</td>
+                  </tr>
+                );
+              })}
+              {filtered.length === 0 && (
+                <tr><td colSpan="4" style={{ padding: 20, textAlign: "center", color: "#a8a29e" }}>Eşleşen stok bulunamadı</td></tr>
+              )}
+            </tbody>
+          </table>
+          {filtered.length > 500 && (
+            <div style={{ padding: 8, textAlign: "center", fontSize: 10, color: "#a8a29e", background: "#f5f5f4" }}>
+              İlk 500 sonuç gösteriliyor — daha fazla eşleşme var, aramayı daralt
+            </div>
+          )}
+        </div>
+        <div style={{ display: "flex", gap: 8, justifyContent: "space-between", alignItems: "center", marginTop: 10 }}>
+          <div style={{ fontSize: 11, color: "#57534e" }}>
+            <b>{selected.size}</b> stok kodu seçildi
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onCancel} disabled={isSaving}
+              style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+            <button onClick={() => onConfirm(Array.from(selected))} disabled={isSaving || selected.size === 0}
+              style={{ padding: "6px 14px", fontSize: 12, background: selected.size > 0 ? "#534AB7" : "#a8a29e", color: "#fff", border: "none", borderRadius: 4, cursor: isSaving ? "wait" : selected.size > 0 ? "pointer" : "not-allowed" }}>
+              {isSaving ? "Ekleniyor..." : `✓ ${selected.size} Kodu Ekle`}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );

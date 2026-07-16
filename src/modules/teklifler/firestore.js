@@ -401,6 +401,31 @@ export function suggestMaterialPriceTl(materialName, materials, unitCosts, unitC
     return { tlPerKg: totalTl / totalKg, source: { mode: "avg", windowDays: avgWindowDays, totalKg, totalTl }, warnings, candidates };
   }
 
+  if (mode === "max") {
+    // En yüksek TL/kg — son 90 gün içinde (default). Kâr kaybını önler.
+    const maxWindowDays = 90;
+    const cutoff = new Date(now.getTime() - maxWindowDays * 86400000).toISOString().slice(0, 10);
+    const eligible = candidates.filter(c => c.orderDate >= cutoff);
+    const pool = eligible.length > 0 ? eligible : candidates; // pencerede yoksa fallback tümü
+    const top = pool.slice().sort((a, b) => b.tlPerKg - a.tlPerKg)[0];
+    return {
+      tlPerKg: top.tlPerKg,
+      source: {
+        mode: "max",
+        windowDays: maxWindowDays,
+        stokKodu: top.stokKodu,
+        orderDate: top.orderDate,
+        unitPriceTl: top.unitPriceTl,
+        factor: top.factor,
+        daysAgo: top.daysAgo,
+        isStale: top.isStale,
+        fallbackAll: eligible.length === 0, // pencerede alım yoktu, tüm data'ya bakıldı
+      },
+      warnings,
+      candidates,
+    };
+  }
+
   // "latest" — en son tarihli candidate
   const latest = candidates.slice().sort((a, b) => b.orderDate.localeCompare(a.orderDate))[0];
   return {
