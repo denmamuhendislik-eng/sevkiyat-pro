@@ -17,7 +17,7 @@ import { generateCocPdf, buildCocPdfBlob } from './cocPdf';
 import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
-import { customerBadge, KNOWN_CUSTOMERS, matchCustomer } from './customerMeta';
+import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -208,7 +208,11 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     for (const [id, o] of Object.entries(salesOrders || {})) {
       if (!o || !o.teslimTarihi) continue;
       if (Number(o.kalanMiktar || 0) <= 0) continue;
-      if (customerFilter !== 'all' && !matchCustomer(o.customerCode, customerFilter)) continue;
+      if (customerFilter !== 'all') {
+        if (customerFilter === OTHER_CUSTOMER_CODE) {
+          if (isKnownCustomer(o.customerCode)) continue;
+        } else if (!matchCustomer(o.customerCode, customerFilter)) continue;
+      }
       const ov = planOverrides[id];
       if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
       const teslimDate = new Date(o.teslimTarihi + 'T00:00:00Z');
@@ -1380,11 +1384,12 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 onClick={() => setCustomerFilter('all')}
                 style={filterBtnStyle(customerFilter === 'all')}
               >Tümü</button>
-              {KNOWN_CUSTOMERS.map(c => (
+              {ALL_CUSTOMER_GROUPS.map(c => (
                 <button
                   key={c.code}
                   onClick={() => setCustomerFilter(c.code)}
                   style={filterBtnStyle(customerFilter === c.code)}
+                  title={c.code === OTHER_CUSTOMER_CODE ? "Bilinmeyen müşteriler (ASL/RKT/DNM dışı)" : c.code}
                 >{c.shortLabel}</button>
               ))}
             </div>
@@ -1568,9 +1573,12 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           {/* KPI strip */}
           <div style={{ marginTop: 14, display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))', gap: 10 }}>
             {renderKpi('Toplam', grouped.kpi.totalRows, grouped.kpi.totalBedel, '#1e293b', '#fff')}
-            {KNOWN_CUSTOMERS.map(c => {
+            {ALL_CUSTOMER_GROUPS.map(c => {
               const s = grouped.kpi.perCustomer[c.code];
-              const badge = customerBadge(c.code);
+              // DĞR için bilinmeyen kod → boyama; bilinen kod → gerçek badge
+              const badge = c.code === OTHER_CUSTOMER_CODE
+                ? { bg: '#4b5563', fg: '#f3f4f6' }
+                : customerBadge(c.code);
               return renderKpi(c.shortLabel, s?.count || 0, s?.bedel || 0, badge.bg, badge.fg);
             })}
           </div>
@@ -2348,7 +2356,11 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               for (const [id, o] of Object.entries(salesOrders || {})) {
                 if (!o || !o.teslimTarihi) continue;
                 if (Number(o.kalanMiktar || 0) <= 0) continue;
-                if (autoPlanModal.customerFilter !== 'all' && !matchCustomer(o.customerCode, autoPlanModal.customerFilter)) continue;
+                if (autoPlanModal.customerFilter !== 'all') {
+                  if (autoPlanModal.customerFilter === OTHER_CUSTOMER_CODE) {
+                    if (isKnownCustomer(o.customerCode)) continue;
+                  } else if (!matchCustomer(o.customerCode, autoPlanModal.customerFilter)) continue;
+                }
                 const ov = planOverrides[id];
                 if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
                 const week = ov?.plannedWeek || getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z'));
@@ -2408,7 +2420,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                           cursor: 'pointer',
                         }}
                       >Tümü</button>
-                      {KNOWN_CUSTOMERS.map(c => (
+                      {ALL_CUSTOMER_GROUPS.map(c => (
                         <button
                           key={c.code}
                           onClick={() => setAutoPlanModal({ ...autoPlanModal, customerFilter: c.code })}
@@ -3593,7 +3605,11 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
     const list = Object.values(certificates).filter(c => {
       if (!c?.certNo) return false;
       if (yearFilter !== 'all' && c.certNo.substring(0, 4) !== yearFilter) return false;
-      if (customerFilter && customerFilter !== 'all' && !matchCustomer(c.customerCode, customerFilter)) return false;
+      if (customerFilter && customerFilter !== 'all') {
+        if (customerFilter === OTHER_CUSTOMER_CODE) {
+          if (isKnownCustomer(c.customerCode)) return false;
+        } else if (!matchCustomer(c.customerCode, customerFilter)) return false;
+      }
       const hay = `${c.certNo} ${c.orderNo || ''} ${c.stokKodu || ''} ${c.description || ''} ${c.serialNo || ''}`.toLocaleLowerCase('tr-TR');
       if (qMain && !hay.includes(qMain)) return false;
       if (qCoc && !hay.includes(qCoc)) return false;
@@ -4153,7 +4169,11 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
     const qLocal = (partsSearch || '').trim().toLocaleLowerCase('tr-TR');
     const list = Object.values(cocParts?.parts || {}).filter(p => {
       if (!p?.stokKodu) return false;
-      if (customerFilter && customerFilter !== 'all' && !matchCustomer(p.customerCode, customerFilter)) return false;
+      if (customerFilter && customerFilter !== 'all') {
+        if (customerFilter === OTHER_CUSTOMER_CODE) {
+          if (isKnownCustomer(p.customerCode)) return false;
+        } else if (!matchCustomer(p.customerCode, customerFilter)) return false;
+      }
       const skel = isSkeleton(p);
       if (completionFilter === 'complete' && skel) return false;
       if (completionFilter === 'skeleton' && !skel) return false;
@@ -4170,7 +4190,11 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
     let total = 0, complete = 0, skel = 0;
     for (const p of Object.values(cocParts?.parts || {})) {
       if (!p?.stokKodu) continue;
-      if (customerFilter && customerFilter !== 'all' && !matchCustomer(p.customerCode, customerFilter)) continue;
+      if (customerFilter && customerFilter !== 'all') {
+        if (customerFilter === OTHER_CUSTOMER_CODE) {
+          if (isKnownCustomer(p.customerCode)) continue;
+        } else if (!matchCustomer(p.customerCode, customerFilter)) continue;
+      }
       total++;
       if (isSkeleton(p)) skel++; else complete++;
     }

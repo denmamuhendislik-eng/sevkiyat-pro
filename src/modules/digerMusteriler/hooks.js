@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments, subscribeAutomationLog, subscribeCocParts, subscribeCocCertificates, subscribeDriveConfig } from "./firestore";
 import { getISOWeek } from "../../shared/weekUtils";
-import { matchCustomer, KNOWN_CUSTOMERS } from "./customerMeta";
+import { matchCustomer, KNOWN_CUSTOMERS, isKnownCustomer, OTHER_CUSTOMER_CODE } from "./customerMeta";
 
 export function useSalesOrders() {
   const [salesOrders, setSalesOrders] = useState({});
@@ -135,7 +135,14 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
     const rows = [];
     const deferredRows = [];
     for (const [id, o] of Object.entries(salesOrders || {})) {
-      if (customerFilter && customerFilter !== "all" && !matchCustomer(o.customerCode, customerFilter)) continue;
+      if (customerFilter && customerFilter !== "all") {
+        if (customerFilter === OTHER_CUSTOMER_CODE) {
+          // DĞR filtresi: bilinen müşterilerden HİÇBİRİNE uymayanlar
+          if (isKnownCustomer(o.customerCode)) continue;
+        } else if (!matchCustomer(o.customerCode, customerFilter)) {
+          continue;
+        }
+      }
       if (q) {
         const hay = `${o.stokKodu || ""} ${o.stokAdi || ""} ${o.belgeNo || ""}`.toLocaleLowerCase("tr-TR");
         if (!hay.includes(q)) continue;
@@ -204,12 +211,12 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
     const totalRows = rows.length;
     const totalBedel = rows.reduce((s, o) => s + (o.toplamBedel || 0), 0);
     // perCustomer: alt hesapları (120-116-1 vs.) ana hesap (120-116) altında topla.
-    // Bilinen bir müşteriye eşleşmeyen kodlar kendi altında kalır (edge case).
+    // Bilinmeyen müşteriler tek "DĞR" grubu altında birleşir → KPI'da tek kart görünür.
     const perCustomer = {};
     for (const o of rows) {
       const known = KNOWN_CUSTOMERS.find(k => matchCustomer(o.customerCode, k.code));
-      const cc = known ? known.code : (o.customerCode || "?");
-      if (!perCustomer[cc]) perCustomer[cc] = { count: 0, bedel: 0, name: o.customerName || "" };
+      const cc = known ? known.code : OTHER_CUSTOMER_CODE;
+      if (!perCustomer[cc]) perCustomer[cc] = { count: 0, bedel: 0, name: known ? (o.customerName || "") : "Diğer Müşteriler" };
       perCustomer[cc].count += 1;
       perCustomer[cc].bedel += o.toplamBedel || 0;
     }
