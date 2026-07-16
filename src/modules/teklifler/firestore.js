@@ -244,6 +244,7 @@ export function findRevisionChain(allQuotesForYear, baseQuoteNo, customerName) {
 // Malzeme master'ında bir satırı güncelle (stok kodu eşlemesi, fiyat, tarihçe).
 // updates: { stokKodlari?: [], priceTlPerKg?, priceUsdPerKg?, note? }
 // pushHistory: fiyat güncellendiyse priceHistory array'ine kayıt eklenir
+// TL fiyat güncellenip USD verilmediyse: currencyRateUsd üzerinden otomatik hesap
 export async function saveQuoteMaterialUpdate(materialName, updates, { canEdit, staging = false, userEmail = "", source = "manual" } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!materialName) throw new Error("materialName zorunlu");
@@ -252,6 +253,7 @@ export async function saveQuoteMaterialUpdate(materialName, updates, { canEdit, 
   const snap = await getDoc(ref);
   const existing = snap.exists() ? snap.data() : {};
   const existingMat = existing?.materials?.[materialName] || {};
+  const currencyRateUsd = Number(existing?.currencyRateUsd) || 0;
 
   const patch = {};
   if (Array.isArray(updates.stokKodlari)) {
@@ -272,6 +274,14 @@ export async function saveQuoteMaterialUpdate(materialName, updates, { canEdit, 
   }
   if (updates.priceUsdPerKg != null && !isNaN(Number(updates.priceUsdPerKg))) {
     patch.priceUsdPerKg = Number(updates.priceUsdPerKg);
+  }
+  // TL güncelleniyor ama USD verilmedi → kur bilgisiyle otomatik
+  if (patch.priceTlPerKg != null && patch.priceUsdPerKg == null && currencyRateUsd > 0) {
+    patch.priceUsdPerKg = Number((patch.priceTlPerKg / currencyRateUsd).toFixed(4));
+  }
+  // USD güncelleniyor ama TL verilmedi → kur bilgisiyle otomatik
+  if (patch.priceUsdPerKg != null && patch.priceTlPerKg == null && currencyRateUsd > 0) {
+    patch.priceTlPerKg = Number((patch.priceUsdPerKg * currencyRateUsd).toFixed(2));
   }
   if (updates.note != null) patch.note = String(updates.note);
 

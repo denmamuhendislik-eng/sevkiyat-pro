@@ -67,7 +67,7 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
       {activeTab === "list" && <QuoteListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openQuote} />}
       {activeTab === "parts" && <PartsLibraryView />}
       {activeTab === "customers" && <CustomersView canEdit={canEdit} />}
-      {activeTab === "master" && <MasterDataView />}
+      {activeTab === "master" && <MasterDataView canEdit={canEdit} />}
       {activeTab === "materialPrices" && isAdmin && <MaterialPricesView canEdit={canEdit && isAdmin} />}
       {activeTab === "margins" && isAdmin && <MarginEditorView canEdit={canEdit && isAdmin} />}
       {activeTab === "import" && isAdmin && <ImportView />}
@@ -534,12 +534,13 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
 
 // ==================== Master Data görüntüsü ====================
 
-function MasterDataView() {
+function MasterDataView({ canEdit }) {
   const [staging, setStaging] = useState(false);
   const [materials, setMaterials] = useState(null);
   const [fasonWorks, setFasonWorks] = useState(null);
   const [options, setOptions] = useState(null);
   const [policy, setPolicy] = useState(null);
+  const [savingMat, setSavingMat] = useState({});
 
   useEffect(() => {
     const u1 = subscribeQuoteMaterials(setMaterials, { staging });
@@ -548,6 +549,24 @@ function MasterDataView() {
     const u4 = subscribeQuotePolicy(setPolicy, { staging });
     return () => { u1(); u2(); u3(); u4(); };
   }, [staging]);
+
+  const kurUsd = Number(materials?.currencyRateUsd) || 0;
+
+  const handleMatPrice = async (matName, field, value) => {
+    const v = Number(value);
+    if (!Number.isFinite(v) || v < 0) return;
+    const current = materials?.materials?.[matName] || {};
+    if ((field === "priceTlPerKg" && v === Number(current.priceTlPerKg)) ||
+        (field === "priceUsdPerKg" && v === Number(current.priceUsdPerKg))) return;
+    setSavingMat(s => ({ ...s, [matName]: true }));
+    try {
+      await saveQuoteMaterialUpdate(matName, { [field]: v }, { canEdit, staging, source: "manual" });
+    } catch (e) {
+      alert("Kaydedilemedi: " + e.message);
+    } finally {
+      setSavingMat(s => ({ ...s, [matName]: false }));
+    }
+  };
 
   return (
     <div>
@@ -558,20 +577,43 @@ function MasterDataView() {
       </div>
 
       <Card title={`Malzemeler (${Object.keys(materials?.materials || {}).length})`}>
-        {materials?.currencyRateUsd > 0 && <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>Döviz kuru: <b>1 $ = {materials.currencyRateUsd} TL</b></div>}
-        <div style={{ maxHeight: 300, overflowY: "auto", fontSize: 11 }}>
+        {kurUsd > 0 && (
+          <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>
+            Döviz kuru: <b>1 $ = {kurUsd} TL</b> · TL değişirse USD otomatik güncellenir (aynı yönde tersine de)
+          </div>
+        )}
+        {canEdit && <div style={{ fontSize: 10, color: "#1e40af", marginBottom: 6 }}>💡 TL/kg veya $/kg alanına yazıp Tab basın — diğer değer kur bazında otomatik hesaplanır.</div>}
+        <div style={{ maxHeight: 400, overflowY: "auto", fontSize: 11 }}>
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead><tr style={{ background: "#f5f5f4", textAlign: "left" }}>
               <th style={miniTh}>Ad</th><th style={miniTh}>Şekil</th><th style={miniThR}>Özgül</th><th style={miniThR}>$/kg</th><th style={miniThR}>TL/kg</th>
             </tr></thead>
             <tbody>
-              {Object.values(materials?.materials || {}).map(m => (
+              {Object.values(materials?.materials || {}).sort((a, b) => (a.name || "").localeCompare(b.name || "")).map(m => (
                 <tr key={m.name} style={{ borderTop: "1px solid #f5f5f4" }}>
                   <td style={miniTd}>{m.name}</td>
                   <td style={miniTd}>{m.shape}</td>
                   <td style={miniTdR}>{m.density}</td>
-                  <td style={miniTdR}>{m.priceUsdPerKg}</td>
-                  <td style={miniTdR}>{Number(m.priceTlPerKg).toFixed(2)}</td>
+                  <td style={miniTdR}>
+                    {canEdit ? (
+                      <input type="number" step="0.001"
+                        key={`usd-${m.priceUsdPerKg}-${m.priceTlPerKg}`}
+                        defaultValue={m.priceUsdPerKg || 0}
+                        disabled={!!savingMat[m.name]}
+                        onBlur={e => handleMatPrice(m.name, "priceUsdPerKg", e.target.value)}
+                        style={{ width: 70, padding: "2px 4px", fontSize: 11, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 3 }} />
+                    ) : (m.priceUsdPerKg || 0)}
+                  </td>
+                  <td style={miniTdR}>
+                    {canEdit ? (
+                      <input type="number" step="0.01"
+                        key={`tl-${m.priceTlPerKg}-${m.priceUsdPerKg}`}
+                        defaultValue={Number(m.priceTlPerKg) || 0}
+                        disabled={!!savingMat[m.name]}
+                        onBlur={e => handleMatPrice(m.name, "priceTlPerKg", e.target.value)}
+                        style={{ width: 80, padding: "2px 4px", fontSize: 11, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 3 }} />
+                    ) : Number(m.priceTlPerKg).toFixed(2)}
+                  </td>
                 </tr>
               ))}
             </tbody>
