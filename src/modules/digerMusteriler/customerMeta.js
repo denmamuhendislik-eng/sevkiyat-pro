@@ -4,6 +4,7 @@
 export function customerBadge(code) {
   if (matchCustomer(code, "120-0107")) return { bg: "#1e293b", fg: "#f1f5f9", label: "ASL" };
   if (matchCustomer(code, "120-116"))  return { bg: "#78350f", fg: "#fef3c7", label: "RKT" };
+  if (matchCustomer(code, "120-115"))  return { bg: "#064e3b", fg: "#d1fae5", label: "DNM" };
   return { bg: "#475569", fg: "#fff", label: "?" };
 }
 
@@ -12,6 +13,7 @@ export function shortName(fullName) {
   if (!fullName) return "";
   if (fullName.includes("ASELSAN")) return "Aselsan Konya";
   if (fullName.includes("ROKETSAN")) return "Roketsan";
+  if (fullName.includes("DENMA")) return "Denma Dış Ticaret";
   return fullName.slice(0, 30);
 }
 
@@ -27,8 +29,11 @@ export function matchCustomer(code, targetCode) {
 }
 
 // UI filtre butonları — ana hesap kodları.
-// Backend TRACKED_CUSTOMER_PREFIXES ile eşleşmeli (functions/parsers.js:1199).
+// Aselsan/Roketsan: hem VIO açık sipariş hem ekstre sevk verisi var (tam takip).
+// Denma: sadece VIO açık sipariş görünür — ekstre parseri Denma'yı almıyor, cari
+//        bakiye/COC gibi ekstre-bağımlı özellikler DNM için beklenmez.
 export const KNOWN_CUSTOMERS = [
   { code: "120-0107", shortLabel: "ASL" },
   { code: "120-116",  shortLabel: "RKT" },
+  { code: "120-115",  shortLabel: "DNM" },
 ];
