@@ -17,7 +17,7 @@ import { generateCocPdf, buildCocPdfBlob } from './cocPdf';
 import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
-import { customerBadge, KNOWN_CUSTOMERS } from './customerMeta';
+import { customerBadge, KNOWN_CUSTOMERS, matchCustomer } from './customerMeta';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -208,7 +208,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
     for (const [id, o] of Object.entries(salesOrders || {})) {
       if (!o || !o.teslimTarihi) continue;
       if (Number(o.kalanMiktar || 0) <= 0) continue;
-      if (customerFilter !== 'all' && o.customerCode !== customerFilter) continue;
+      if (customerFilter !== 'all' && !matchCustomer(o.customerCode, customerFilter)) continue;
       const ov = planOverrides[id];
       if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
       const teslimDate = new Date(o.teslimTarihi + 'T00:00:00Z');
@@ -2348,7 +2348,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               for (const [id, o] of Object.entries(salesOrders || {})) {
                 if (!o || !o.teslimTarihi) continue;
                 if (Number(o.kalanMiktar || 0) <= 0) continue;
-                if (autoPlanModal.customerFilter !== 'all' && o.customerCode !== autoPlanModal.customerFilter) continue;
+                if (autoPlanModal.customerFilter !== 'all' && !matchCustomer(o.customerCode, autoPlanModal.customerFilter)) continue;
                 const ov = planOverrides[id];
                 if (ov?.status === 'deferred' || ov?.status === 'cancelled') continue;
                 const week = ov?.plannedWeek || getISOWeek(new Date(o.teslimTarihi + 'T00:00:00Z'));
@@ -3593,7 +3593,7 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
     const list = Object.values(certificates).filter(c => {
       if (!c?.certNo) return false;
       if (yearFilter !== 'all' && c.certNo.substring(0, 4) !== yearFilter) return false;
-      if (customerFilter && customerFilter !== 'all' && c.customerCode !== customerFilter) return false;
+      if (customerFilter && customerFilter !== 'all' && !matchCustomer(c.customerCode, customerFilter)) return false;
       const hay = `${c.certNo} ${c.orderNo || ''} ${c.stokKodu || ''} ${c.description || ''} ${c.serialNo || ''}`.toLocaleLowerCase('tr-TR');
       if (qMain && !hay.includes(qMain)) return false;
       if (qCoc && !hay.includes(qCoc)) return false;
@@ -4153,7 +4153,7 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
     const qLocal = (partsSearch || '').trim().toLocaleLowerCase('tr-TR');
     const list = Object.values(cocParts?.parts || {}).filter(p => {
       if (!p?.stokKodu) return false;
-      if (customerFilter && customerFilter !== 'all' && p.customerCode !== customerFilter) return false;
+      if (customerFilter && customerFilter !== 'all' && !matchCustomer(p.customerCode, customerFilter)) return false;
       const skel = isSkeleton(p);
       if (completionFilter === 'complete' && skel) return false;
       if (completionFilter === 'skeleton' && !skel) return false;
@@ -4170,7 +4170,7 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
     let total = 0, complete = 0, skel = 0;
     for (const p of Object.values(cocParts?.parts || {})) {
       if (!p?.stokKodu) continue;
-      if (customerFilter && customerFilter !== 'all' && p.customerCode !== customerFilter) continue;
+      if (customerFilter && customerFilter !== 'all' && !matchCustomer(p.customerCode, customerFilter)) continue;
       total++;
       if (isSkeleton(p)) skel++; else complete++;
     }

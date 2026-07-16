@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { subscribeSalesOrders, subscribePlanOverrides, subscribeBomModels, subscribeShipments, subscribeAutomationLog, subscribeCocParts, subscribeCocCertificates, subscribeDriveConfig } from "./firestore";
 import { getISOWeek } from "../../shared/weekUtils";
+import { matchCustomer, KNOWN_CUSTOMERS } from "./customerMeta";
 
 export function useSalesOrders() {
   const [salesOrders, setSalesOrders] = useState({});
@@ -134,7 +135,7 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
     const rows = [];
     const deferredRows = [];
     for (const [id, o] of Object.entries(salesOrders || {})) {
-      if (customerFilter && customerFilter !== "all" && o.customerCode !== customerFilter) continue;
+      if (customerFilter && customerFilter !== "all" && !matchCustomer(o.customerCode, customerFilter)) continue;
       if (q) {
         const hay = `${o.stokKodu || ""} ${o.stokAdi || ""} ${o.belgeNo || ""}`.toLocaleLowerCase("tr-TR");
         if (!hay.includes(q)) continue;
@@ -202,9 +203,12 @@ export function useWeekGroupedOrders(salesOrders, planOverrides, { customerFilte
     // 4) KPI — filter-aware
     const totalRows = rows.length;
     const totalBedel = rows.reduce((s, o) => s + (o.toplamBedel || 0), 0);
+    // perCustomer: alt hesapları (120-116-1 vs.) ana hesap (120-116) altında topla.
+    // Bilinen bir müşteriye eşleşmeyen kodlar kendi altında kalır (edge case).
     const perCustomer = {};
     for (const o of rows) {
-      const cc = o.customerCode || "?";
+      const known = KNOWN_CUSTOMERS.find(k => matchCustomer(o.customerCode, k.code));
+      const cc = known ? known.code : (o.customerCode || "?");
       if (!perCustomer[cc]) perCustomer[cc] = { count: 0, bedel: 0, name: o.customerName || "" };
       perCustomer[cc].count += 1;
       perCustomer[cc].bedel += o.toplamBedel || 0;
