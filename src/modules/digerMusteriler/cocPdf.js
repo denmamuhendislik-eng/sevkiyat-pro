@@ -195,9 +195,35 @@ function escapeHtml(str) {
     .replace(/'/g, "&#39;");
 }
 
+// Sadece PDF görüntüsünde: aynı orderNo'ya sahip satırları tek satırda birleştir.
+// Miktarlar toplanır, seri no'lar unique + virgüllü. Kayıt yapısı bozulmaz (audit trail).
+// Bir COC'de zaten tek stok var (stokMismatch check), o yüzden orderNo tek anahtar.
+function groupLineItemsForDisplay(items) {
+  if (!Array.isArray(items) || items.length <= 1) return items;
+  const map = new Map();
+  for (const li of items) {
+    const key = String(li.orderNo || "");
+    if (!map.has(key)) map.set(key, { orderNo: key, quantity: 0, serials: new Set() });
+    const g = map.get(key);
+    g.quantity += Number(li.quantity) || 0;
+    if (li.serialNo && li.serialNo !== "---") g.serials.add(String(li.serialNo));
+  }
+  return Array.from(map.values()).map((g, i) => ({
+    siraNo: i + 1,
+    orderNo: g.orderNo,
+    quantity: g.quantity,
+    serialNo: g.serials.size > 0 ? Array.from(g.serials).join(", ") : "---",
+  }));
+}
+
 // Ortak PDF render — jsPDF instance döndürür
 async function renderCocPdf(cert) {
-  const html = buildCocHtml(cert);
+  // Görüntü için satır grupla (kayıt yapısına dokunma — sadece PDF için)
+  const displayCert = {
+    ...cert,
+    lineItems: groupLineItemsForDisplay(cert.lineItems),
+  };
+  const html = buildCocHtml(displayCert);
   const container = document.createElement("div");
   container.style.position = "absolute";
   container.style.left = "-9999px";
