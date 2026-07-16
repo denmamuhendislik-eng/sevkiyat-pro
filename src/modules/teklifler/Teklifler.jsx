@@ -1,9 +1,11 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   subscribeQuoteMaterials, subscribeQuoteFasonWorks, subscribeQuoteOptions,
   subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts, subscribeQuoteCustomers,
   saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision,
+  saveQuoteMaterialUpdate, suggestMaterialPriceTl,
 } from "./firestore";
+import { subscribeUnitCosts, subscribeUnitConversions } from "../maliyet/firestore";
 import NewQuoteView from "./NewQuoteView";
 import { generateQuotePdf } from "./quotePdf";
 import { calculateQuoteTotal } from "./quoteCalc";
@@ -35,6 +37,7 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
           { id: "parts", label: "🔩 Parça Kütüphanesi" },
           { id: "customers", label: "👥 Müşteriler" },
           { id: "master", label: "🎯 Master Data" },
+          { id: "materialPrices", label: "🧱 Hammadde Fiyatı", adminOnly: true },
           { id: "margins", label: "💰 Marj Editörü", adminOnly: true },
           { id: "import", label: "📥 Excel İçe Aktar", adminOnly: true },
         ].filter(t => !t.adminOnly || isAdmin).map(t => (
@@ -65,6 +68,7 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
       {activeTab === "parts" && <PartsLibraryView />}
       {activeTab === "customers" && <CustomersView canEdit={canEdit} />}
       {activeTab === "master" && <MasterDataView />}
+      {activeTab === "materialPrices" && isAdmin && <MaterialPricesView canEdit={canEdit && isAdmin} />}
       {activeTab === "margins" && isAdmin && <MarginEditorView canEdit={canEdit && isAdmin} />}
       {activeTab === "import" && isAdmin && <ImportView />}
     </div>
@@ -630,6 +634,288 @@ function MasterDataView() {
           ))}
         </div>
       </Card>
+    </div>
+  );
+}
+
+// ==================== Hammadde Fiyatı Yönetimi (admin) ====================
+
+function MaterialPricesView({ canEdit }) {
+  const [materialsData, setMaterialsData] = useState({ materials: {} });
+  const [unitCosts, setUnitCosts] = useState({ byStock: {} });
+  const [unitConversions, setUnitConversions] = useState({ conversions: {} });
+  const [staging, setStaging] = useState(false);
+  const [mode, setMode] = useState("latest"); // latest | avg
+  const [search, setSearch] = useState("");
+  const [saving, setSaving] = useState({});
+  const [expanded, setExpanded] = useState({}); // material adı → detay açık mı
+  const [stokInput, setStokInput] = useState({}); // material adı → yeni stok kodu inputu
+
+  useEffect(() => {
+    const u1 = subscribeQuoteMaterials(d => setMaterialsData(d || { materials: {} }), { staging });
+    const u2 = subscribeUnitCosts(d => setUnitCosts(d || { byStock: {} }));
+    const u3 = subscribeUnitConversions(d => setUnitConversions(d || { conversions: {} }));
+    return () => { u1(); u2(); u3(); };
+  }, [staging]);
+
+  const materials = materialsData?.materials || {};
+  const allStokKodlari = useMemo(() => Object.keys(unitCosts?.byStock || {}).sort(), [unitCosts]);
+
+  const filtered = useMemo(() => {
+    const list = Object.entries(materials);
+    const q = search.trim().toLocaleLowerCase("tr-TR");
+    const f = q ? list.filter(([name]) => name.toLocaleLowerCase("tr-TR").includes(q)) : list;
+    return f.sort((a, b) => a[0].localeCompare(b[0]));
+  }, [materials, search]);
+
+  const handleAddStok = async (materialName, stokKodu) => {
+    if (!stokKodu?.trim()) return;
+    const mat = materials[materialName] || {};
+    const next = [...(mat.stokKodlari || []), stokKodu.trim()];
+    setSaving(s => ({ ...s, [materialName]: true }));
+    try {
+      await saveQuoteMaterialUpdate(materialName, { stokKodlari: next }, { canEdit, staging });
+      setStokInput(s => ({ ...s, [materialName]: "" }));
+    } catch (e) {
+      alert("Kaydedilemedi: " + e.message);
+    } finally {
+      setSaving(s => ({ ...s, [materialName]: false }));
+    }
+  };
+
+  const handleRemoveStok = async (materialName, stokKodu) => {
+    const mat = materials[materialName] || {};
+    const next = (mat.stokKodlari || []).filter(s => s !== stokKodu);
+    setSaving(s => ({ ...s, [materialName]: true }));
+    try {
+      await saveQuoteMaterialUpdate(materialName, { stokKodlari: next }, { canEdit, staging });
+    } catch (e) {
+      alert("Kaydedilemedi: " + e.message);
+    } finally {
+      setSaving(s => ({ ...s, [materialName]: false }));
+    }
+  };
+
+  const handleApplyPrice = async (materialName, newPrice, source) => {
+    if (!newPrice || newPrice <= 0) return;
+    if (!confirm(`${materialName} → yeni fiyat: ${newPrice.toFixed(2)} TL/kg\n\nMaster'a yazılacak. Onaylıyor musun?`)) return;
+    setSaving(s => ({ ...s, [materialName]: true }));
+    try {
+      await saveQuoteMaterialUpdate(materialName, { priceTlPerKg: newPrice }, { canEdit, staging, source });
+    } catch (e) {
+      alert("Kaydedilemedi: " + e.message);
+    } finally {
+      setSaving(s => ({ ...s, [materialName]: false }));
+    }
+  };
+
+  const handleManualPrice = async (materialName, newPrice) => {
+    setSaving(s => ({ ...s, [materialName]: true }));
+    try {
+      await saveQuoteMaterialUpdate(materialName, { priceTlPerKg: Number(newPrice) }, { canEdit, staging, source: "manual" });
+    } catch (e) {
+      alert("Kaydedilemedi: " + e.message);
+    } finally {
+      setSaving(s => ({ ...s, [materialName]: false }));
+    }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 11 }}>
+          <input type="checkbox" checked={staging} onChange={e => setStaging(e.target.checked)} /> Staging
+        </label>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button onClick={() => setMode("latest")}
+            style={{ padding: "4px 10px", fontSize: 11, border: "1px solid " + (mode === "latest" ? "#534AB7" : "#d6d3d1"), background: mode === "latest" ? "#534AB7" : "#fff", color: mode === "latest" ? "#fff" : "#57534e", borderRadius: 4, cursor: "pointer" }}>
+            En Güncel
+          </button>
+          <button onClick={() => setMode("avg")}
+            style={{ padding: "4px 10px", fontSize: 11, border: "1px solid " + (mode === "avg" ? "#534AB7" : "#d6d3d1"), background: mode === "avg" ? "#534AB7" : "#fff", color: mode === "avg" ? "#fff" : "#57534e", borderRadius: 4, cursor: "pointer" }}>
+            Ort. (180 gün)
+          </button>
+        </div>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔎 Malzeme ara"
+          style={{ flex: 1, minWidth: 200, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }} />
+        <span style={{ fontSize: 11, color: "#78716c" }}>{filtered.length} malzeme · {allStokKodlari.length} alım stok kodu</span>
+      </div>
+
+      <div style={{ padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11, color: "#1e40af", marginBottom: 12 }}>
+        💡 Her malzemeye <b>birden fazla</b> hammadde stok kodu eşleyebilirsin (aynı malzeme farklı ölçülerde açılmış olabilir). Öneri fiyat en son alım tarihinden veya son 180 günün ağırlıklı ortalamasından hesaplanır. <b>Master fiyat sadece "Uygula" butonuyla değişir</b>, otomatik yazım yok.
+      </div>
+
+      <div style={{ border: "1px solid #e7e5e4", borderRadius: 6, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
+              <th style={th}>Malzeme</th>
+              <th style={th}>Bağlı Stok Kodları</th>
+              <th style={{ ...th, textAlign: "right" }}>Master TL/kg</th>
+              <th style={{ ...th, textAlign: "right" }}>Öneri TL/kg ({mode === "latest" ? "En Güncel" : "Ort. 180g"})</th>
+              <th style={th}>Kaynak / Uyarı</th>
+              <th style={th}>İşlem</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filtered.map(([name, mat]) => {
+              const suggest = suggestMaterialPriceTl(name, materials, unitCosts, unitConversions, { mode });
+              const isSaving = !!saving[name];
+              const isExpanded = !!expanded[name];
+              const stokList = mat.stokKodlari || [];
+              const diff = (suggest.tlPerKg && mat.priceTlPerKg)
+                ? ((suggest.tlPerKg - mat.priceTlPerKg) / mat.priceTlPerKg) * 100
+                : null;
+              return (
+                <React.Fragment key={name}>
+                  <tr style={{ borderTop: "1px solid #f5f5f4" }}>
+                    <td style={{ ...td, fontWeight: 500 }}>
+                      <button onClick={() => setExpanded(e => ({ ...e, [name]: !e[name] }))}
+                        style={{ marginRight: 4, background: "transparent", border: "none", cursor: "pointer", fontSize: 10 }}>
+                        {isExpanded ? "▼" : "▶"}
+                      </button>
+                      {name}
+                    </td>
+                    <td style={td}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                        {stokList.length === 0 && <span style={{ fontSize: 10, color: "#a8a29e" }}>eşleme yok</span>}
+                        {stokList.map(sk => (
+                          <span key={sk} style={{ padding: "2px 6px", background: "#dbeafe", color: "#1e40af", borderRadius: 3, fontSize: 10, fontFamily: "ui-monospace, monospace", display: "flex", alignItems: "center", gap: 4 }}>
+                            {sk}
+                            <button onClick={() => handleRemoveStok(name, sk)} disabled={isSaving || !canEdit}
+                              style={{ background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>×</button>
+                          </span>
+                        ))}
+                      </div>
+                    </td>
+                    <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                      <input type="number" step="0.01" value={mat.priceTlPerKg || 0}
+                        onChange={e => setMaterialsData(prev => ({
+                          ...prev,
+                          materials: { ...(prev.materials || {}), [name]: { ...(prev.materials?.[name] || {}), priceTlPerKg: Number(e.target.value) || 0 } },
+                        }))}
+                        onBlur={e => {
+                          const v = Number(e.target.value) || 0;
+                          if (v !== (materials[name]?.priceTlPerKg || 0)) handleManualPrice(name, v);
+                        }}
+                        disabled={!canEdit || isSaving}
+                        style={{ width: 80, padding: "3px 6px", fontSize: 11, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 3 }} />
+                    </td>
+                    <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
+                      {suggest.tlPerKg
+                        ? <>
+                            <b>{suggest.tlPerKg.toFixed(2)}</b>
+                            {diff !== null && (
+                              <div style={{ fontSize: 9, color: Math.abs(diff) > 20 ? "#dc2626" : Math.abs(diff) > 5 ? "#d97706" : "#78716c" }}>
+                                {diff > 0 ? "▲" : "▼"} {Math.abs(diff).toFixed(1)}%
+                              </div>
+                            )}
+                          </>
+                        : <span style={{ fontSize: 10, color: "#a8a29e" }}>—</span>}
+                    </td>
+                    <td style={{ ...td, fontSize: 10 }}>
+                      {suggest.source?.mode === "latest" && (
+                        <div>
+                          <span style={{ fontFamily: "ui-monospace, monospace" }}>{suggest.source.stokKodu}</span>
+                          <br />
+                          <span style={{ color: suggest.source.isStale ? "#dc2626" : "#78716c" }}>
+                            {suggest.source.orderDate} · {suggest.source.daysAgo}g önce
+                            {suggest.source.isStale && " ⚠ eski"}
+                          </span>
+                        </div>
+                      )}
+                      {suggest.source?.mode === "avg" && (
+                        <div>
+                          <span style={{ color: "#78716c" }}>{suggest.source.totalKg.toFixed(0)} kg / {suggest.source.totalTl.toFixed(0)} TL</span>
+                        </div>
+                      )}
+                      {(suggest.warnings || []).slice(0, 2).map((w, i) => (
+                        <div key={i} style={{ color: "#d97706", fontSize: 9 }}>⚠ {w}</div>
+                      ))}
+                    </td>
+                    <td style={td}>
+                      {suggest.tlPerKg && (
+                        <button onClick={() => handleApplyPrice(name, suggest.tlPerKg, mode === "latest" ? "auto-suggest-latest" : "auto-suggest-avg")}
+                          disabled={!canEdit || isSaving || Math.abs((suggest.tlPerKg - (mat.priceTlPerKg || 0))) < 0.01}
+                          style={{ padding: "3px 8px", fontSize: 10, background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                          ✅ Uygula
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                  {isExpanded && (
+                    <tr style={{ background: "#fafaf9" }}>
+                      <td colSpan="6" style={{ padding: 12 }}>
+                        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>➕ Stok Kodu Ekle</div>
+                            <div style={{ display: "flex", gap: 6 }}>
+                              <input list={`stokList_${name.replace(/\s+/g, "_")}`}
+                                value={stokInput[name] || ""}
+                                onChange={e => setStokInput(s => ({ ...s, [name]: e.target.value }))}
+                                onKeyDown={e => { if (e.key === "Enter") handleAddStok(name, stokInput[name] || ""); }}
+                                placeholder="Stok kodu yaz veya seç..."
+                                style={{ flex: 1, padding: "4px 8px", fontSize: 11, border: "1px solid #d6d3d1", borderRadius: 3, fontFamily: "ui-monospace, monospace" }} />
+                              <datalist id={`stokList_${name.replace(/\s+/g, "_")}`}>
+                                {allStokKodlari.filter(sk => !(mat.stokKodlari || []).includes(sk)).slice(0, 500).map(sk => {
+                                  const slot = unitCosts.byStock[sk];
+                                  return <option key={sk} value={sk}>{slot?.lastName || ""}</option>;
+                                })}
+                              </datalist>
+                              <button onClick={() => handleAddStok(name, stokInput[name] || "")} disabled={!canEdit || isSaving}
+                                style={{ padding: "4px 10px", fontSize: 11, background: "#534AB7", color: "#fff", border: "none", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                                Ekle
+                              </button>
+                            </div>
+                          </div>
+                          <div>
+                            <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>📊 Tüm Alım Adayları</div>
+                            <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr style={{ background: "#f5f5f4" }}>
+                                  <th style={{ padding: 4, textAlign: "left" }}>Stok</th>
+                                  <th style={{ padding: 4, textAlign: "right" }}>Son Alım</th>
+                                  <th style={{ padding: 4, textAlign: "right" }}>TL/kg</th>
+                                  <th style={{ padding: 4, textAlign: "right" }}>Yaş</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(suggest.candidates || []).map(c => (
+                                  <tr key={c.stokKodu} style={{ borderTop: "1px solid #e7e5e4" }}>
+                                    <td style={{ padding: 4, fontFamily: "ui-monospace, monospace" }}>{c.stokKodu}</td>
+                                    <td style={{ padding: 4, textAlign: "right" }}>{c.orderDate}</td>
+                                    <td style={{ padding: 4, textAlign: "right", fontWeight: 600 }}>{c.tlPerKg.toFixed(2)}</td>
+                                    <td style={{ padding: 4, textAlign: "right", color: c.isStale ? "#dc2626" : "#78716c" }}>{c.daysAgo}g</td>
+                                  </tr>
+                                ))}
+                                {(suggest.candidates || []).length === 0 && (
+                                  <tr><td colSpan="4" style={{ padding: 8, color: "#a8a29e", textAlign: "center" }}>Bağlı stok kodu için alım kaydı yok</td></tr>
+                                )}
+                              </tbody>
+                            </table>
+                            {Array.isArray(mat.priceHistory) && mat.priceHistory.length > 0 && (
+                              <div style={{ marginTop: 10 }}>
+                                <div style={{ fontSize: 10, fontWeight: 600, marginBottom: 4 }}>📜 Fiyat Değişim Tarihçesi (son 5)</div>
+                                <ul style={{ fontSize: 9, color: "#78716c", margin: 0, paddingLeft: 16 }}>
+                                  {mat.priceHistory.slice(-5).reverse().map((h, i) => (
+                                    <li key={i}>
+                                      {String(h.date).slice(0, 10)}: {Number(h.oldPrice).toFixed(2)} → <b>{Number(h.newPrice).toFixed(2)}</b> TL/kg ({h.source})
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

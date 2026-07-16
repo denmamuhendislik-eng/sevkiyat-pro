@@ -241,6 +241,145 @@ export function findRevisionChain(allQuotesForYear, baseQuoteNo, customerName) {
     .sort((a, b) => (Number(a.revNo) || 0) - (Number(b.revNo) || 0));
 }
 
+// Malzeme master'ında bir satırı güncelle (stok kodu eşlemesi, fiyat, tarihçe).
+// updates: { stokKodlari?: [], priceTlPerKg?, priceUsdPerKg?, note? }
+// pushHistory: fiyat güncellendiyse priceHistory array'ine kayıt eklenir
+export async function saveQuoteMaterialUpdate(materialName, updates, { canEdit, staging = false, userEmail = "", source = "manual" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!materialName) throw new Error("materialName zorunlu");
+  const name = "quoteMaterials" + (staging ? "_staging" : "");
+  const ref = doc(db, APP_COL, name);
+  const snap = await getDoc(ref);
+  const existing = snap.exists() ? snap.data() : {};
+  const existingMat = existing?.materials?.[materialName] || {};
+
+  const patch = {};
+  if (Array.isArray(updates.stokKodlari)) {
+    // dedup + trim
+    patch.stokKodlari = [...new Set(updates.stokKodlari.map(s => String(s || "").trim()).filter(Boolean))];
+  }
+  if (updates.priceTlPerKg != null && !isNaN(Number(updates.priceTlPerKg))) {
+    patch.priceTlPerKg = Number(updates.priceTlPerKg);
+  }
+  if (updates.priceUsdPerKg != null && !isNaN(Number(updates.priceUsdPerKg))) {
+    patch.priceUsdPerKg = Number(updates.priceUsdPerKg);
+  }
+  if (updates.note != null) patch.note = String(updates.note);
+
+  // Fiyat değiştiyse tarihçeye ekle
+  if (patch.priceTlPerKg != null && patch.priceTlPerKg !== existingMat.priceTlPerKg) {
+    const hist = Array.isArray(existingMat.priceHistory) ? existingMat.priceHistory.slice() : [];
+    hist.push({
+      date: new Date().toISOString(),
+      oldPrice: Number(existingMat.priceTlPerKg) || 0,
+      newPrice: patch.priceTlPerKg,
+      updatedBy: userEmail || "",
+      source, // "manual" | "auto-suggest-latest" | "auto-suggest-avg"
+    });
+    // Son 20 kaydı tut
+    patch.priceHistory = hist.slice(-20);
+  }
+
+  patch.updatedAt = new Date().toISOString();
+  patch.updatedBy = userEmail || "";
+
+  await setDoc(ref, {
+    materials: {
+      [materialName]: patch,
+    },
+  }, { merge: true });
+  return { updated: Object.keys(patch) };
+}
+
+// Alım tarihçesinden bir malzeme için TL/kg öneri hesapla.
+// materials: quoteMaterials.materials
+// unitCosts: maliyet/unitCosts.byStock
+// unitConversions: maliyet/unitConversions.conversions
+// mode: "latest" (en güncel) | "avg" (ağırlıklı ortalama, son N gün)
+// Döner: { tlPerKg, source: {stokKodu, orderDate, unitPriceTl, factor, isStale}, warnings: [], candidates: [...] }
+export function suggestMaterialPriceTl(materialName, materials, unitCosts, unitConversions, { mode = "latest", avgWindowDays = 180, staleDays = 180 } = {}) {
+  const mat = materials?.[materialName];
+  if (!mat) return { tlPerKg: null, source: null, warnings: ["Malzeme yok"], candidates: [] };
+  const stokKodlari = Array.isArray(mat.stokKodlari) ? mat.stokKodlari : [];
+  if (stokKodlari.length === 0) return { tlPerKg: null, source: null, warnings: ["Bağlı stok kodu yok — Alım Eşleştirme yapın"], candidates: [] };
+
+  const byStock = unitCosts?.byStock || {};
+  const conversions = unitConversions?.conversions || {};
+  const now = new Date();
+
+  // Her stok kodu için son alım partition'ını çıkar
+  const candidates = [];
+  const warnings = [];
+  for (const sk of stokKodlari) {
+    const slot = byStock[sk];
+    if (!slot || !Array.isArray(slot.partitions) || slot.partitions.length === 0) {
+      warnings.push(`${sk}: alım kaydı yok`);
+      continue;
+    }
+    const conv = conversions[sk];
+    if (!conv || !conv.factor || conv.bomUnit !== "KG") {
+      warnings.push(`${sk}: birim çevirisi eksik veya bomUnit ≠ KG (Maliyet → Birim Çevrimleri)`);
+      continue;
+    }
+    const factor = Number(conv.factor);
+    // Partition'lar orderDate'e göre artan sıralı — son elemanı al
+    const sorted = slot.partitions.slice().sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+    const last = sorted[sorted.length - 1];
+    if (!last?.orderDate || !last?.unitPriceTl) {
+      warnings.push(`${sk}: son partition eksik`);
+      continue;
+    }
+    const daysAgo = Math.floor((now.getTime() - new Date(last.orderDate).getTime()) / 86400000);
+    const tlPerKg = Number(last.unitPriceTl) / factor;
+    candidates.push({
+      stokKodu: sk,
+      lastName: slot.lastName || last.name || "",
+      orderDate: last.orderDate,
+      unitPriceTl: Number(last.unitPriceTl),
+      factor,
+      tlPerKg,
+      daysAgo,
+      isStale: daysAgo > staleDays,
+      partitions: sorted, // hafif tutmak istersek slice(-6) yapılabilir
+    });
+  }
+  if (candidates.length === 0) return { tlPerKg: null, source: null, warnings, candidates: [] };
+
+  if (mode === "avg") {
+    // Ağırlıklı ortalama: son N gün içindeki tüm alımlar
+    const cutoff = new Date(now.getTime() - avgWindowDays * 86400000).toISOString().slice(0, 10);
+    let totalKg = 0, totalTl = 0;
+    for (const c of candidates) {
+      for (const p of c.partitions) {
+        if (!p.orderDate || p.orderDate < cutoff) continue;
+        const kg = (Number(p.originalQty) || 0) * c.factor;
+        const bedel = (Number(p.unitPriceTl) || 0) * (Number(p.originalQty) || 0);
+        totalKg += kg;
+        totalTl += bedel;
+      }
+    }
+    if (totalKg <= 0) return { tlPerKg: null, source: null, warnings: [...warnings, `Son ${avgWindowDays} gün alımı yok, "en güncel" moduna geçin`], candidates };
+    return { tlPerKg: totalTl / totalKg, source: { mode: "avg", windowDays: avgWindowDays, totalKg, totalTl }, warnings, candidates };
+  }
+
+  // "latest" — en son tarihli candidate
+  const latest = candidates.slice().sort((a, b) => b.orderDate.localeCompare(a.orderDate))[0];
+  return {
+    tlPerKg: latest.tlPerKg,
+    source: {
+      mode: "latest",
+      stokKodu: latest.stokKodu,
+      orderDate: latest.orderDate,
+      unitPriceTl: latest.unitPriceTl,
+      factor: latest.factor,
+      daysAgo: latest.daysAgo,
+      isStale: latest.isStale,
+    },
+    warnings,
+    candidates,
+  };
+}
+
 // Parça kütüphanesine yeni parça ekle veya güncelle
 export async function saveQuotePart(stokKodu, partData, { canEdit, staging = false } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
