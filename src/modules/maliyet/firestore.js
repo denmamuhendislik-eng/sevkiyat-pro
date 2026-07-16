@@ -384,6 +384,7 @@ export async function saveUnitCostPartitions(existing, newPartitions, { canEdit 
       supplier: p.supplier || "",
       _rawPrice: p._rawPrice || 0,
       _rawTotalBedel: p._rawTotalBedel || 0,
+      _qty2: p._qty2 || 0, // 2. birim miktarı (VIO — genelde kg): factor otomatik hesabı için
       _has2ndUnitDiscrepancy: !!p._has2ndUnitDiscrepancy,
       importedAt: importStamp,
     });

@@ -258,6 +258,15 @@ export async function saveQuoteMaterialUpdate(materialName, updates, { canEdit, 
     // dedup + trim
     patch.stokKodlari = [...new Set(updates.stokKodlari.map(s => String(s || "").trim()).filter(Boolean))];
   }
+  // stokKodlariFactors: { [stokKodu]: kgPerUnit } — birim çevirisi için manuel factor
+  if (updates.stokKodlariFactors && typeof updates.stokKodlariFactors === "object") {
+    const clean = {};
+    for (const [k, v] of Object.entries(updates.stokKodlariFactors)) {
+      const f = Number(v);
+      if (Number.isFinite(f) && f > 0) clean[k] = f;
+    }
+    patch.stokKodlariFactors = { ...(existingMat.stokKodlariFactors || {}), ...clean };
+  }
   if (updates.priceTlPerKg != null && !isNaN(Number(updates.priceTlPerKg))) {
     patch.priceTlPerKg = Number(updates.priceTlPerKg);
   }
@@ -308,6 +317,7 @@ export function suggestMaterialPriceTl(materialName, materials, unitCosts, unitC
   const now = new Date();
 
   // Her stok kodu için son alım partition'ını çıkar
+  const materialFactors = mat.stokKodlariFactors || {};
   const candidates = [];
   const warnings = [];
   for (const sk of stokKodlari) {
@@ -316,12 +326,40 @@ export function suggestMaterialPriceTl(materialName, materials, unitCosts, unitC
       warnings.push(`${sk}: alım kaydı yok`);
       continue;
     }
-    const conv = conversions[sk];
-    if (!conv || !conv.factor || conv.bomUnit !== "KG") {
-      warnings.push(`${sk}: birim çevirisi eksik veya bomUnit ≠ KG (Maliyet → Birim Çevrimleri)`);
+    // 3 katmanlı factor fallback:
+    //   1) Master'da manuel girilmiş: materialFactors[sk]
+    //   2) Maliyet unitConversions bomUnit === "KG" ise: conversions[sk].factor
+    //   3) Partition'da _qty2 varsa: _qty2 / originalQty (VIO alım 2. birim)
+    let factor = null;
+    let factorSource = "";
+    if (materialFactors[sk] > 0) {
+      factor = Number(materialFactors[sk]);
+      factorSource = "master";
+    } else {
+      const conv = conversions[sk];
+      if (conv?.factor > 0 && conv.bomUnit === "KG") {
+        factor = Number(conv.factor);
+        factorSource = "unitConversions";
+      } else {
+        // _qty2 fallback — herhangi bir partition'da varsa dene
+        const partsWithQty2 = slot.partitions.filter(p => Number(p._qty2) > 0 && Number(p.originalQty) > 0);
+        if (partsWithQty2.length > 0) {
+          const factors = partsWithQty2.map(p => Number(p._qty2) / Number(p.originalQty));
+          const avg = factors.reduce((a, b) => a + b, 0) / factors.length;
+          // Sanity check: makul aralıkta ve tutarlı olmalı
+          const allInRange = factors.every(f => f >= 0.001 && f <= 10000);
+          const maxDev = Math.max(...factors.map(f => Math.abs(f - avg) / avg));
+          if (allInRange && maxDev < 0.15) {
+            factor = avg;
+            factorSource = "vio-qty2";
+          }
+        }
+      }
+    }
+    if (!factor) {
+      warnings.push(`${sk}: birim çevirisi eksik (chip yanındaki input'a "1 AD = X kg" yaz)`);
       continue;
     }
-    const factor = Number(conv.factor);
     // Partition'lar orderDate'e göre artan sıralı — son elemanı al
     const sorted = slot.partitions.slice().sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
     const last = sorted[sorted.length - 1];
@@ -337,10 +375,11 @@ export function suggestMaterialPriceTl(materialName, materials, unitCosts, unitC
       orderDate: last.orderDate,
       unitPriceTl: Number(last.unitPriceTl),
       factor,
+      factorSource, // "master" | "unitConversions" | "vio-qty2"
       tlPerKg,
       daysAgo,
       isStale: daysAgo > staleDays,
-      partitions: sorted, // hafif tutmak istersek slice(-6) yapılabilir
+      partitions: sorted,
     });
   }
   if (candidates.length === 0) return { tlPerKg: null, source: null, warnings, candidates: [] };

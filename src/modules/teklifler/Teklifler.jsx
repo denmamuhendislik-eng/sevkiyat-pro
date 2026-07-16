@@ -696,6 +696,19 @@ function MaterialPricesView({ canEdit }) {
     }
   };
 
+  const handleSetFactor = async (materialName, stokKodu, kgPerUnit) => {
+    setSaving(s => ({ ...s, [materialName]: true }));
+    try {
+      await saveQuoteMaterialUpdate(materialName, {
+        stokKodlariFactors: { [stokKodu]: kgPerUnit },
+      }, { canEdit, staging });
+    } catch (e) {
+      alert("Kaydedilemedi: " + e.message);
+    } finally {
+      setSaving(s => ({ ...s, [materialName]: false }));
+    }
+  };
+
   const handleApplyPrice = async (materialName, newPrice, source) => {
     if (!newPrice || newPrice <= 0) return;
     if (!confirm(`${materialName} → yeni fiyat: ${newPrice.toFixed(2)} TL/kg\n\nMaster'a yazılacak. Onaylıyor musun?`)) return;
@@ -743,6 +756,16 @@ function MaterialPricesView({ canEdit }) {
 
       <div style={{ padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11, color: "#1e40af", marginBottom: 12 }}>
         💡 Her malzemeye <b>birden fazla</b> hammadde stok kodu eşleyebilirsin (aynı malzeme farklı ölçülerde açılmış olabilir). Öneri fiyat en son alım tarihinden veya son 180 günün ağırlıklı ortalamasından hesaplanır. <b>Master fiyat sadece "Uygula" butonuyla değişir</b>, otomatik yazım yok.
+        <div style={{ marginTop: 6, fontSize: 10 }}>
+          <b>Birim çevirisi kaynağı:</b>{" "}
+          <span style={{ padding: "1px 4px", background: "#fef3c7", color: "#92400e", borderRadius: 2, fontWeight: 700 }}>V</span> VIO alım 2. birim (otomatik, gelecek alımlarda)
+          {" · "}
+          <span style={{ padding: "1px 4px", background: "#dbeafe", color: "#1e40af", borderRadius: 2, fontWeight: 700 }}>U</span> Maliyet Birim Çevrimleri
+          {" · "}
+          <span style={{ padding: "1px 4px", background: "#dcfce7", color: "#166534", borderRadius: 2, fontWeight: 700 }}>M</span> Master'da manuel girildi (chip yanına yaz)
+          {" · "}
+          <span style={{ padding: "1px 4px", background: "#fee2e2", color: "#991b1b", borderRadius: 2, fontWeight: 700 }}>?</span> Yok — factor yaz veya öneri hesaplanmıyor
+        </div>
       </div>
 
       <div style={{ border: "1px solid #e7e5e4", borderRadius: 6, overflow: "hidden" }}>
@@ -777,15 +800,41 @@ function MaterialPricesView({ canEdit }) {
                       {name}
                     </td>
                     <td style={td}>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 4, alignItems: "center" }}>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
                         {stokList.length === 0 && <span style={{ fontSize: 10, color: "#a8a29e" }}>eşleme yok</span>}
-                        {stokList.map(sk => (
-                          <span key={sk} style={{ padding: "2px 6px", background: "#dbeafe", color: "#1e40af", borderRadius: 3, fontSize: 10, fontFamily: "ui-monospace, monospace", display: "flex", alignItems: "center", gap: 4 }}>
-                            {sk}
-                            <button onClick={() => handleRemoveStok(name, sk)} disabled={isSaving || !canEdit}
-                              style={{ background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 12, lineHeight: 1 }}>×</button>
-                          </span>
-                        ))}
+                        {stokList.map(sk => {
+                          const cand = (suggest.candidates || []).find(c => c.stokKodu === sk);
+                          const currentFactor = mat.stokKodlariFactors?.[sk] || 0;
+                          const autoFactor = cand?.factorSource !== "master" && cand?.factor ? cand.factor : null;
+                          const displayFactor = currentFactor > 0 ? currentFactor : (autoFactor || 0);
+                          const src = cand?.factorSource;
+                          const srcBg = src === "master" ? "#dcfce7" : src === "unitConversions" ? "#dbeafe" : src === "vio-qty2" ? "#fef3c7" : "#fee2e2";
+                          const srcFg = src === "master" ? "#166534" : src === "unitConversions" ? "#1e40af" : src === "vio-qty2" ? "#92400e" : "#991b1b";
+                          const srcLabel = src === "master" ? "M" : src === "unitConversions" ? "U" : src === "vio-qty2" ? "V" : "?";
+                          const srcTitle = src === "master" ? "Master'da manuel girildi"
+                            : src === "unitConversions" ? "Maliyet Birim Çevrimleri'nden"
+                            : src === "vio-qty2" ? "VIO alım 2. birim'den otomatik"
+                            : "Birim çevirisi yok — kg değerini yaz";
+                          return (
+                            <span key={sk} style={{ padding: "3px 6px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 3, fontSize: 10, display: "inline-flex", alignItems: "center", gap: 4 }}>
+                              <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{sk}</span>
+                              <span style={{ color: "#78716c" }}>·</span>
+                              <input type="number" step="0.001" defaultValue={displayFactor || ""}
+                                placeholder={autoFactor ? autoFactor.toFixed(2) : "kg/AD"}
+                                onBlur={e => {
+                                  const v = Number(e.target.value);
+                                  if (v > 0 && v !== currentFactor) handleSetFactor(name, sk, v);
+                                }}
+                                disabled={!canEdit || isSaving}
+                                title={srcTitle}
+                                style={{ width: 50, padding: "1px 3px", fontSize: 10, textAlign: "right", border: "1px solid #cbd5e1", borderRadius: 2 }} />
+                              <span style={{ fontSize: 8, color: "#78716c" }}>kg/AD</span>
+                              <span title={srcTitle} style={{ padding: "0 3px", background: srcBg, color: srcFg, borderRadius: 2, fontSize: 8, fontWeight: 700 }}>{srcLabel}</span>
+                              <button onClick={() => handleRemoveStok(name, sk)} disabled={isSaving || !canEdit}
+                                style={{ background: "transparent", border: "none", color: "#dc2626", cursor: "pointer", fontSize: 12, lineHeight: 1, marginLeft: 2 }}>×</button>
+                            </span>
+                          );
+                        })}
                       </div>
                     </td>
                     <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
