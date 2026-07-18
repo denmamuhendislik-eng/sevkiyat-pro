@@ -18,6 +18,7 @@ import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
+import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus } from './subComponents';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -2296,6 +2297,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           orders={cocModalOrders}
           cocParts={cocParts}
           cocCertificates={cocCertificates}
+          bomModels={bomModels}
           canEdit={canEdit}
           onClose={closeCocModal}
         />
@@ -3197,7 +3199,7 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
 // Form: müşteri+sipariş+stok+parça read-only, revizyon dropdown, miktar editable
 // (kısmi sevk), kontrol tarihi, seri no, feragat. Auto-suggest: sertifika no.
 // ====================================================================
-function CocModal({ orders, cocParts, cocCertificates, canEdit, onClose }) {
+function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClose }) {
   const today = new Date();
   const yyyy = String(today.getFullYear());
   const mm = String(today.getMonth() + 1).padStart(2, '0');
@@ -3223,6 +3225,21 @@ function CocModal({ orders, cocParts, cocCertificates, canEdit, onClose }) {
   const [feragatText, setFeragatText] = useState('');
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
+
+  // Alt bileşenler (Faz 2A — sadece görüntüleme)
+  // resolveSubComponents üç kaynaktan çeker: certificate snapshot → bomModels → cocParts.manualSubComponents
+  const subResolution = useMemo(() => resolveSubComponents({
+    stokKodu: firstOrder.stokKodu,
+    bomModels: bomModels || {},
+    cocParts: cocParts || {},
+    certificateSubComponents: null, // yeni COC — snapshot yok
+  }), [firstOrder.stokKodu, bomModels, cocParts]);
+  const [showStandardFasteners, setShowStandardFasteners] = useState(false);
+  const subClassified = useMemo(
+    () => classifySubComponents(subResolution.list, cocParts || {}),
+    [subResolution.list, cocParts]
+  );
+  const subStatus = useMemo(() => summarizeStatus(subClassified.required), [subClassified.required]);
 
   // Çoklu satır state — her sipariş için bir line item
   const [lineItems, setLineItems] = useState(() => orderList.map((o, i) => ({
@@ -3548,6 +3565,120 @@ function CocModal({ orders, cocParts, cocCertificates, canEdit, onClose }) {
               </tbody>
             </table>
           </div>
+        </div>
+
+        {/* ALT BİLEŞENLER — montajlı parçalar için (Faz 2A: sadece görüntü) */}
+        <div style={{ padding: '0 20px 14px', fontSize: 12 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500 }}>
+              🔧 Alt Bileşenler
+              {subResolution.source === 'bom' && <span style={{ marginLeft: 6, fontSize: 9, color: '#166534', background: '#dcfce7', padding: '1px 5px', borderRadius: 3 }}>BOM</span>}
+              {subResolution.source === 'manual' && <span style={{ marginLeft: 6, fontSize: 9, color: '#92400e', background: '#fef3c7', padding: '1px 5px', borderRadius: 3 }}>MANUEL</span>}
+              {subResolution.source === 'none' && <span style={{ marginLeft: 6, fontSize: 9, color: '#991b1b', background: '#fee2e2', padding: '1px 5px', borderRadius: 3 }}>YOK</span>}
+            </label>
+            {subResolution.source !== 'none' && (
+              <div style={{ fontSize: 11, color: '#57534e' }}>
+                <b>{subStatus.complete}</b>/{subStatus.total} tamam
+                {subStatus.partial > 0 && <span style={{ color: '#d97706' }}> · {subStatus.partial} kısmi</span>}
+                {subStatus.missing > 0 && <span style={{ color: '#dc2626' }}> · {subStatus.missing} eksik</span>}
+              </div>
+            )}
+          </div>
+
+          {subResolution.source === 'none' && (
+            <div style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 6, fontSize: 11, color: '#92400e' }}>
+              ⚠ Bu parçanın BOM'u yüklü değil ve manuel alt bileşen listesi de yok.
+              <div style={{ marginTop: 6, fontSize: 10, color: '#78350f' }}>
+                Alt bileşen belgesi takibi yapmak için:
+                <br />• MRP → BOM Yükle sekmesinden BOM Excel'ini yükle, veya
+                <br />• Manuel Alt Bileşen Ekle (Faz 2B'de gelecek)
+                <br />Şimdilik ana parça bazlı COC oluşturmaya devam edebilirsin.
+              </div>
+            </div>
+          )}
+
+          {subResolution.source !== 'none' && (
+            <>
+              {subClassified.standard.length > 0 && (
+                <div style={{ marginBottom: 6, fontSize: 10, color: '#78716c' }}>
+                  💡 {subResolution.list.length} alt bileşen bulundu, {subClassified.standard.length}'ü standart bağlantı elemanı (cıvata/somun/pul vb.) — gizlendi.
+                  <button onClick={() => setShowStandardFasteners(v => !v)}
+                    style={{ marginLeft: 6, padding: '2px 8px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: 'pointer' }}>
+                    {showStandardFasteners ? 'Gizle' : 'Göster'}
+                  </button>
+                </div>
+              )}
+              <div style={{ border: '1px solid #e7e5e4', borderRadius: 6, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: '#f5f5f4', textAlign: 'left', color: '#44403c' }}>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 40 }}>SVY</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>STOK KODU</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>AÇIKLAMA</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 60, textAlign: 'right' }}>MİKTAR</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 60 }}>TİP</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 160 }}>BELGE DURUMU</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {subClassified.required.map((s, i) => {
+                      const st = subComponentStatus(s);
+                      const need = docTypesForSupplyType(s.supplyType);
+                      return (
+                        <tr key={`req-${i}`} style={{ borderTop: '1px solid #f5f5f4' }}>
+                          <td style={{ padding: '4px 8px', color: '#78716c' }}>L{s.level}</td>
+                          <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{s.stokKodu}</td>
+                          <td style={{ padding: '4px 8px' }}>{s.stokAdi || '—'}</td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right' }}>{s.qty} {s.unit}</td>
+                          <td style={{ padding: '4px 8px' }}>
+                            <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3,
+                              background: s.supplyType === 'buy' ? '#dbeafe' : '#dcfce7',
+                              color: s.supplyType === 'buy' ? '#1e40af' : '#166534' }}>
+                              {s.supplyType === 'buy' ? 'BUY' : 'MAKE'}
+                            </span>
+                          </td>
+                          <td style={{ padding: '4px 8px' }}>
+                            <span style={{ padding: '1px 6px', fontSize: 9, fontWeight: 600, borderRadius: 3,
+                              background: st.status === 'complete' ? '#dcfce7' : st.status === 'partial' ? '#fef3c7' : '#fee2e2',
+                              color: st.status === 'complete' ? '#166534' : st.status === 'partial' ? '#92400e' : '#991b1b' }}>
+                              {st.status === 'complete' ? '✓ Tamam' : st.status === 'partial' ? `${st.have}/${st.need} Kısmi` : `0/${st.need} Eksik`}
+                            </span>
+                            <div style={{ fontSize: 8, color: '#a8a29e', marginTop: 2 }}>
+                              gerekli: {need.map(n => n.replace('Sertifikasi', '').replace('Coc', 'COC').replace('Raporu', '')).join(' · ')}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                    {showStandardFasteners && subClassified.standard.map((s, i) => (
+                      <tr key={`std-${i}`} style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
+                        <td style={{ padding: '4px 8px', color: '#a8a29e' }}>L{s.level}</td>
+                        <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#a8a29e' }}>{s.stokKodu}</td>
+                        <td style={{ padding: '4px 8px', color: '#78716c' }}>{s.stokAdi || '—'}</td>
+                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#78716c' }}>{s.qty} {s.unit}</td>
+                        <td style={{ padding: '4px 8px' }}>
+                          <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3, background: '#f5f5f4', color: '#78716c' }}>
+                            STD
+                          </span>
+                        </td>
+                        <td style={{ padding: '4px 8px', fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>
+                          Standart bağlantı — COC gerekmez
+                        </td>
+                      </tr>
+                    ))}
+                    {subClassified.required.length === 0 && !showStandardFasteners && (
+                      <tr><td colSpan="6" style={{ padding: 10, textAlign: 'center', color: '#a8a29e', fontSize: 10 }}>
+                        Gerektiren alt bileşen yok — sadece standart bağlantı elemanları
+                      </td></tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
+                📋 Belge yükleme + manuel giriş sonraki adımda (Faz 2B/2C). Şimdilik BOM'dan otomatik tespit + durum takibi.
+              </div>
+            </>
+          )}
         </div>
 
         {/* Hata */}
