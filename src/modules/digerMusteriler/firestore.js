@@ -217,6 +217,80 @@ export async function saveCocPart(part, { canEdit }) {
   return { stokKodu: part.stokKodu };
 }
 
+// COC parça master'ında requiresCoc override — bir stok kodu için
+// heuristik'i geçersiz kılar. null (default), true (hep gerekli), false (hep atla).
+export async function saveCocPartRequiresCoc(stokKodu, requiresCoc, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!stokKodu) throw new Error("stokKodu zorunlu");
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  const val = requiresCoc === true ? true : requiresCoc === false ? false : null;
+  await setDoc(ref, {
+    parts: {
+      [stokKodu]: {
+        requiresCoc: val,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  }, { merge: true });
+  return { stokKodu, requiresCoc: val };
+}
+
+// COC parça master'ına manuel alt bileşen listesi kaydet — BOM yüklü değilse
+// kullanıcı elle girer. Sonraki COC'ta buradan otomatik gelir.
+// list: [{stokKodu, stokAdi, qty, unit, supplyType, level}]
+export async function saveCocPartManualSubComponents(stokKodu, list, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!stokKodu) throw new Error("stokKodu zorunlu");
+  if (!Array.isArray(list)) throw new Error("list array olmalı");
+  const clean = list
+    .map(x => ({
+      stokKodu: String(x.stokKodu || "").trim(),
+      stokAdi: String(x.stokAdi || "").trim(),
+      level: Number(x.level) || 1,
+      qty: Number(x.qty) || 0,
+      unit: String(x.unit || "AD").trim(),
+      supplyType: String(x.supplyType || "make").toLowerCase(),
+    }))
+    .filter(x => x.stokKodu);
+  const ref = doc(db, APP_COL, COC_PARTS_DOC);
+  await setDoc(ref, {
+    parts: {
+      [stokKodu]: {
+        manualSubComponents: clean,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  }, { merge: true });
+  return { stokKodu, count: clean.length };
+}
+
+// Sertifikaya alt bileşen snapshot'ı yaz — o COC'a özel donmuş kayıt.
+// Aynı sertifikayı sonradan düzenlerken bu snapshot yeniden yüklenir
+// (audit trail — BOM değişirse eski COC'un içeriği bozulmaz).
+export async function saveCertSubComponents(certNo, siraNo, subComponents, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!certNo) throw new Error("certNo zorunlu");
+  if (!Array.isArray(subComponents)) throw new Error("subComponents array olmalı");
+  const year = certNo.substring(0, 4);
+  if (!/^\d{4}$/.test(year)) throw new Error(`Geçersiz sertifika no: ${certNo}`);
+  const sira = String(siraNo || "1").trim() || "1";
+  const id = `${certNo}_${sira}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        subComponents,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+    year,
+  }, { merge: true });
+  return { id, year, count: subComponents.length };
+}
+
 // COC parça master kaydını siler.
 export async function deleteCocPart(stokKodu, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok");
