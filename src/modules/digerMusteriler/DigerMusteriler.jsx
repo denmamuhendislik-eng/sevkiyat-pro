@@ -5,6 +5,7 @@ import {
   saveCocCertificate, updateCocCertificate, deleteCocCertificate,
   saveCocPart, deleteCocPart, suggestNextCertNo,
   saveCocPartRequiresCoc, saveCocPartManualSubComponents,
+  uploadCocSubComponentAttachment, deleteCocSubComponentAttachment,
   uploadCocAttachment, deleteCocAttachment, downloadCocAttachmentBlob,
   appendCocCertificateAttachment, setCocCertificateAttachmentList, setCocCertificateOthers,
   setCocCertificateNaCategories,
@@ -3236,11 +3237,70 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
     certificateSubComponents: null, // yeni COC — snapshot yok
   }), [firstOrder.stokKodu, bomModels, cocParts]);
   const [showStandardFasteners, setShowStandardFasteners] = useState(false);
+  // subComponentsState: kaynaktan gelen liste + docs alanı (yükleme sonrası tutulur).
+  // subResolution.list değişirse (BOM/manual/certificate switch) state sync olur ama
+  // aynı stokKodu için mevcut docs korunur.
+  const [subComponentsState, setSubComponentsState] = useState([]);
+  useEffect(() => {
+    setSubComponentsState(prev => {
+      const prevMap = Object.fromEntries((prev || []).map(p => [p.stokKodu, p]));
+      return (subResolution.list || []).map(s => ({
+        ...s,
+        docs: prevMap[s.stokKodu]?.docs || s.docs || {},
+      }));
+    });
+    // subResolution.list ref-eşitliği tetikleyebilir; deps sadece source ve length
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [subResolution.source, subResolution.list.length, firstOrder.stokKodu]);
+
   const subClassified = useMemo(
-    () => classifySubComponents(subResolution.list, cocParts || {}),
-    [subResolution.list, cocParts]
+    () => classifySubComponents(subComponentsState, cocParts || {}),
+    [subComponentsState, cocParts]
   );
   const subStatus = useMemo(() => summarizeStatus(subClassified.required), [subClassified.required]);
+
+  // Detay expand: hangi satır açık
+  const [expandedSubIdx, setExpandedSubIdx] = useState({}); // { stokKodu: bool }
+  const toggleSubExpand = (stokKodu) => setExpandedSubIdx(prev => ({ ...prev, [stokKodu]: !prev[stokKodu] }));
+
+  // Belge yükleme durumu
+  const [uploadingDoc, setUploadingDoc] = useState({}); // { "stokKodu|category": bool }
+
+  const handleUploadSubDoc = async (subStokKodu, category, file) => {
+    if (!file) return;
+    if (!certNo) { alert('Önce sertifika no belirle'); return; }
+    const key = `${subStokKodu}|${category}`;
+    setUploadingDoc(u => ({ ...u, [key]: true }));
+    try {
+      const meta = await uploadCocSubComponentAttachment(certNo, subStokKodu, category, file, { canEdit });
+      setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
+        ? { ...s, docs: { ...(s.docs || {}), [category]: meta } }
+        : s));
+    } catch (e) {
+      alert('Belge yüklenemedi: ' + e.message);
+    } finally {
+      setUploadingDoc(u => ({ ...u, [key]: false }));
+    }
+  };
+
+  const handleDeleteSubDoc = async (subStokKodu, category) => {
+    const sub = subComponentsState.find(s => s.stokKodu === subStokKodu);
+    const meta = sub?.docs?.[category];
+    if (!meta?.path) return;
+    if (!confirm(`${category} belgesi silinsin mi?\n\n${meta.name || ''}`)) return;
+    const key = `${subStokKodu}|${category}`;
+    setUploadingDoc(u => ({ ...u, [key]: true }));
+    try {
+      await deleteCocSubComponentAttachment(meta.path);
+      setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
+        ? { ...s, docs: { ...(s.docs || {}), [category]: null } }
+        : s));
+    } catch (e) {
+      alert('Belge silinemedi: ' + e.message);
+    } finally {
+      setUploadingDoc(u => ({ ...u, [key]: false }));
+    }
+  };
   // Manuel giriş editörü: null = kapalı, array = editleniyor
   const [manualEditor, setManualEditor] = useState(null);
   const [savingManual, setSavingManual] = useState(false);
@@ -3685,9 +3745,18 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                       const st = subComponentStatus(s);
                       const need = docTypesForSupplyType(s.supplyType);
                       const savingThis = !!savingRequires[s.stokKodu];
+                      const isExp = !!expandedSubIdx[s.stokKodu];
                       return (
-                        <tr key={`req-${i}`} style={{ borderTop: '1px solid #f5f5f4' }}>
-                          <td style={{ padding: '4px 8px', color: '#78716c' }}>L{s.level}</td>
+                        <React.Fragment key={`req-${i}`}>
+                        <tr style={{ borderTop: '1px solid #f5f5f4' }}>
+                          <td style={{ padding: '4px 8px', color: '#78716c' }}>
+                            <button onClick={() => toggleSubExpand(s.stokKodu)}
+                              title="Belge yönetim panelini aç/kapa"
+                              style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 10, marginRight: 2 }}>
+                              {isExp ? '▼' : '▶'}
+                            </button>
+                            L{s.level}
+                          </td>
                           <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{s.stokKodu}</td>
                           <td style={{ padding: '4px 8px' }}>{s.stokAdi || '—'}</td>
                           <td style={{ padding: '4px 8px', textAlign: 'right' }}>{s.qty} {s.unit}</td>
@@ -3716,6 +3785,66 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                             </div>
                           </td>
                         </tr>
+                        {isExp && (
+                          <tr style={{ background: '#fafaf9' }}>
+                            <td colSpan="6" style={{ padding: '10px 20px' }}>
+                              <div style={{ fontSize: 10, color: '#57534e', fontWeight: 600, marginBottom: 6 }}>
+                                📎 <span style={{ fontFamily: 'ui-monospace, monospace' }}>{s.stokKodu}</span> — Belge Yükleme
+                              </div>
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 8 }}>
+                                {need.map(cat => {
+                                  const uploadKey = `${s.stokKodu}|${cat}`;
+                                  const isUploading = !!uploadingDoc[uploadKey];
+                                  const meta = s.docs?.[cat];
+                                  const label = cat === 'hammaddeSertifikasi' ? 'Hammadde Sertifikası'
+                                    : cat === 'olcumRaporu' ? 'Ölçüm Raporu (balonlu dahil)'
+                                    : cat === 'fasonSertifikasi' ? 'Fason Sertifikası'
+                                    : cat === 'tedarikciCoc' ? 'Tedarikçi COC'
+                                    : cat;
+                                  return (
+                                    <div key={cat} style={{ padding: 8, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 4 }}>
+                                      <div style={{ fontSize: 10, fontWeight: 600, color: '#44403c', marginBottom: 4 }}>{label}</div>
+                                      {meta ? (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                          <div style={{ fontSize: 9, color: '#166534', wordBreak: 'break-all' }}>
+                                            📄 {meta.name || 'dosya.pdf'}
+                                            {meta.size ? <span style={{ color: '#78716c' }}> · {(meta.size / 1024).toFixed(0)} KB</span> : null}
+                                          </div>
+                                          <div style={{ display: 'flex', gap: 4 }}>
+                                            <a href={meta.url} target="_blank" rel="noreferrer"
+                                              style={{ padding: '2px 6px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, textDecoration: 'none' }}>
+                                              📥 Aç
+                                            </a>
+                                            <button onClick={() => handleDeleteSubDoc(s.stokKodu, cat)} disabled={isUploading || !canEdit}
+                                              style={{ padding: '2px 6px', fontSize: 9, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                              🗑 Sil
+                                            </button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                          {isUploading ? 'Yükleniyor...' : '📤 Dosya Seç'}
+                                          <input type="file" accept="application/pdf,image/*"
+                                            style={{ display: 'none' }}
+                                            disabled={isUploading || !canEdit}
+                                            onChange={e => {
+                                              const f = e.target.files?.[0];
+                                              if (f) handleUploadSubDoc(s.stokKodu, cat, f);
+                                              e.target.value = '';
+                                            }} />
+                                        </label>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                              <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
+                                💡 Drive önerisi + kütüphane geçmişi Faz 2E'de gelecek. Şimdilik manuel yükleme.
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </React.Fragment>
                       );
                     })}
                     {showStandardFasteners && subClassified.standard.map((s, i) => {
@@ -3753,7 +3882,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                 </table>
               </div>
               <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
-                📋 Belge yükleme sonraki adımda (Faz 2C). Şimdilik BOM/manuel'den otomatik tespit + durum takibi + heuristic override.
+                📋 Satırın önündeki ▶ ile detayı aç → dosya seç ile belge yükle. Snapshot save Faz 2D'de gelecek (şimdilik yükleme sonrası "Kaydet" basmadan modal kapatırsan URL'ler kaybolur).
               </div>
             </>
           )}

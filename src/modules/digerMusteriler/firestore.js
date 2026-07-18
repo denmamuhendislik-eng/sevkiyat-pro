@@ -472,6 +472,34 @@ export async function downloadCocAttachmentBlob(storagePath) {
   return await getBlob(storageRef(storage, storagePath));
 }
 
+// Alt bileşen belgesini Storage'a yükle — Faz 2C.
+// path: coc/{year}/{certNo}/sub/{subStokKodu}/{category}_{timestamp}_{ad}.pdf
+// URL Firebase Storage'ın kendi token'lı download URL'i (getDownloadURL).
+export async function uploadCocSubComponentAttachment(certNo, subStokKodu, category, file, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!certNo || !subStokKodu || !category || !file) throw new Error("certNo, subStokKodu, category, file zorunlu");
+  const year = certNo.substring(0, 4);
+  if (!/^\d{4}$/.test(year)) throw new Error(`Geçersiz certNo: ${certNo}`);
+  const safeName = String(file.name).replace(/[^\w.\-]/g, "_");
+  const safeStok = String(subStokKodu).replace(/[^\w.\-]/g, "_");
+  const path = `coc/${year}/${certNo}/sub/${safeStok}/${category}_${Date.now()}_${safeName}`;
+  const r = storageRef(storage, path);
+  await uploadBytes(r, file);
+  const url = await getDownloadURL(r);
+  return { url, path, name: file.name, size: file.size, category, subStokKodu, uploadedAt: new Date().toISOString() };
+}
+
+export async function deleteCocSubComponentAttachment(storagePath) {
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!storagePath) throw new Error("storagePath zorunlu");
+  try {
+    await deleteObject(storageRef(storage, storagePath));
+  } catch (e) {
+    if (e?.code !== "storage/object-not-found") throw e;
+  }
+}
+
 // Sertifika kategorisine yeni dosya EKLE — array yapısı (birden fazla dosya/kategori).
 // Geriye dönük uyumluluk: mevcut field obje (tekli) ise array'e çevrilir, sonra eklenir.
 export async function appendCocCertificateAttachment(certNo, siraNo, category, attachmentMeta, currentList, { canEdit }) {
