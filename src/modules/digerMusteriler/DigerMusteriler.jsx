@@ -4,6 +4,7 @@ import { useSalesOrders, usePlanOverrides, useBomModels, useShipments, useAutoma
 import {
   saveCocCertificate, updateCocCertificate, deleteCocCertificate,
   saveCocPart, deleteCocPart, suggestNextCertNo,
+  saveCocPartRequiresCoc, saveCocPartManualSubComponents,
   uploadCocAttachment, deleteCocAttachment, downloadCocAttachmentBlob,
   appendCocCertificateAttachment, setCocCertificateAttachmentList, setCocCertificateOthers,
   setCocCertificateNaCategories,
@@ -3240,6 +3241,51 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
     [subResolution.list, cocParts]
   );
   const subStatus = useMemo(() => summarizeStatus(subClassified.required), [subClassified.required]);
+  // Manuel giriş editörü: null = kapalı, array = editleniyor
+  const [manualEditor, setManualEditor] = useState(null);
+  const [savingManual, setSavingManual] = useState(false);
+  const [savingRequires, setSavingRequires] = useState({}); // { [stokKodu]: bool }
+
+  const openManualEditor = () => {
+    // Mevcut kaynak "manual" ise onu, başka bir şey ise boş başla
+    const seed = subResolution.source === 'manual' ? subResolution.list : [];
+    setManualEditor(seed.map(s => ({ ...s })));
+  };
+  const addManualRow = () => setManualEditor(prev => [...(prev || []), { stokKodu: '', stokAdi: '', qty: 1, unit: 'AD', supplyType: 'make', level: 1 }]);
+  const updateManualRow = (idx, key, val) => setManualEditor(prev => prev.map((r, i) => i === idx ? { ...r, [key]: val } : r));
+  const removeManualRow = (idx) => setManualEditor(prev => prev.filter((_, i) => i !== idx));
+  const saveManualList = async () => {
+    if (!manualEditor) return;
+    const clean = manualEditor.filter(r => r.stokKodu?.trim());
+    setSavingManual(true);
+    try {
+      await saveCocPartManualSubComponents(firstOrder.stokKodu, clean, { canEdit });
+      setManualEditor(null);
+    } catch (e) {
+      alert('Manuel liste kaydedilemedi: ' + e.message);
+    } finally {
+      setSavingManual(false);
+    }
+  };
+
+  // requiresCoc override — bir alt bileşen stok kodu için heuristic'i geçersiz kıl
+  const toggleRequiresCoc = async (sub) => {
+    const partMaster = cocParts?.parts?.[sub.stokKodu];
+    const current = partMaster?.requiresCoc; // true | false | undefined
+    // Heuristik: adı standart görünüyorsa default false, değilse default true
+    const heuristicRequires = !isStandardFastener(sub.stokAdi);
+    // Toggle mantığı: mevcut effective true ise false yap, false ise true yap
+    const effective = current === true ? true : current === false ? false : heuristicRequires;
+    const next = !effective;
+    setSavingRequires(s => ({ ...s, [sub.stokKodu]: true }));
+    try {
+      await saveCocPartRequiresCoc(sub.stokKodu, next, { canEdit });
+    } catch (e) {
+      alert('Kaydedilemedi: ' + e.message);
+    } finally {
+      setSavingRequires(s => ({ ...s, [sub.stokKodu]: false }));
+    }
+  };
 
   // Çoklu satır state — her sipariş için bir line item
   const [lineItems, setLineItems] = useState(() => orderList.map((o, i) => ({
@@ -3590,24 +3636,38 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
               ⚠ Bu parçanın BOM'u yüklü değil ve manuel alt bileşen listesi de yok.
               <div style={{ marginTop: 6, fontSize: 10, color: '#78350f' }}>
                 Alt bileşen belgesi takibi yapmak için:
-                <br />• MRP → BOM Yükle sekmesinden BOM Excel'ini yükle, veya
-                <br />• Manuel Alt Bileşen Ekle (Faz 2B'de gelecek)
-                <br />Şimdilik ana parça bazlı COC oluşturmaya devam edebilirsin.
+                <br />• MRP → BOM Yükle sekmesinden BOM Excel'ini yükle (bir kere iş, tekrar kullanılır), veya
+                <br />• Aşağıdaki butondan elle liste gir (sonraki COC'ta otomatik gelir)
               </div>
+              <button onClick={openManualEditor} disabled={!canEdit}
+                style={{ marginTop: 8, padding: '6px 12px', fontSize: 11, background: '#92400e', color: '#fff', border: 'none', borderRadius: 4, cursor: canEdit ? 'pointer' : 'not-allowed', fontWeight: 500 }}>
+                ✏ Manuel Alt Bileşen Ekle
+              </button>
             </div>
           )}
 
           {subResolution.source !== 'none' && (
             <>
-              {subClassified.standard.length > 0 && (
-                <div style={{ marginBottom: 6, fontSize: 10, color: '#78716c' }}>
-                  💡 {subResolution.list.length} alt bileşen bulundu, {subClassified.standard.length}'ü standart bağlantı elemanı (cıvata/somun/pul vb.) — gizlendi.
-                  <button onClick={() => setShowStandardFasteners(v => !v)}
-                    style={{ marginLeft: 6, padding: '2px 8px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: 'pointer' }}>
-                    {showStandardFasteners ? 'Gizle' : 'Göster'}
-                  </button>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                <div style={{ fontSize: 10, color: '#78716c' }}>
+                  {subClassified.standard.length > 0 && (
+                    <>
+                      💡 {subResolution.list.length} alt bileşen bulundu, {subClassified.standard.length}'ü standart bağlantı elemanı — gizlendi.
+                      <button onClick={() => setShowStandardFasteners(v => !v)}
+                        style={{ marginLeft: 6, padding: '2px 8px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: 'pointer' }}>
+                        {showStandardFasteners ? 'Gizle' : 'Göster'}
+                      </button>
+                    </>
+                  )}
                 </div>
-              )}
+                {(subResolution.source === 'manual' || subResolution.source === 'bom') && (
+                  <button onClick={openManualEditor} disabled={!canEdit}
+                    title={subResolution.source === 'bom' ? 'BOM yerine manuel liste kullanacaksan bu manuel liste öncelik alır' : 'Mevcut manuel listeyi düzenle'}
+                    style={{ padding: '3px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px solid #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                    ✏ {subResolution.source === 'manual' ? 'Manuel Listeyi Düzenle' : 'Manuel Liste Oluştur'}
+                  </button>
+                )}
+              </div>
               <div style={{ border: '1px solid #e7e5e4', borderRadius: 6, overflow: 'hidden' }}>
                 <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
                   <thead>
@@ -3624,6 +3684,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                     {subClassified.required.map((s, i) => {
                       const st = subComponentStatus(s);
                       const need = docTypesForSupplyType(s.supplyType);
+                      const savingThis = !!savingRequires[s.stokKodu];
                       return (
                         <tr key={`req-${i}`} style={{ borderTop: '1px solid #f5f5f4' }}>
                           <td style={{ padding: '4px 8px', color: '#78716c' }}>L{s.level}</td>
@@ -3638,11 +3699,18 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                             </span>
                           </td>
                           <td style={{ padding: '4px 8px' }}>
-                            <span style={{ padding: '1px 6px', fontSize: 9, fontWeight: 600, borderRadius: 3,
-                              background: st.status === 'complete' ? '#dcfce7' : st.status === 'partial' ? '#fef3c7' : '#fee2e2',
-                              color: st.status === 'complete' ? '#166534' : st.status === 'partial' ? '#92400e' : '#991b1b' }}>
-                              {st.status === 'complete' ? '✓ Tamam' : st.status === 'partial' ? `${st.have}/${st.need} Kısmi` : `0/${st.need} Eksik`}
-                            </span>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                              <span style={{ padding: '1px 6px', fontSize: 9, fontWeight: 600, borderRadius: 3,
+                                background: st.status === 'complete' ? '#dcfce7' : st.status === 'partial' ? '#fef3c7' : '#fee2e2',
+                                color: st.status === 'complete' ? '#166534' : st.status === 'partial' ? '#92400e' : '#991b1b' }}>
+                                {st.status === 'complete' ? '✓ Tamam' : st.status === 'partial' ? `${st.have}/${st.need} Kısmi` : `0/${st.need} Eksik`}
+                              </span>
+                              <button onClick={() => toggleRequiresCoc(s)} disabled={savingThis || !canEdit}
+                                title="Bu stoku standart bağlantı elemanı olarak işaretle (COC gerekmez)"
+                                style={{ padding: '1px 4px', fontSize: 8, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', opacity: savingThis ? 0.5 : 1 }}>
+                                {savingThis ? '...' : '→ STD'}
+                              </button>
+                            </div>
                             <div style={{ fontSize: 8, color: '#a8a29e', marginTop: 2 }}>
                               gerekli: {need.map(n => n.replace('Sertifikasi', '').replace('Coc', 'COC').replace('Raporu', '')).join(' · ')}
                             </div>
@@ -3650,22 +3718,32 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                         </tr>
                       );
                     })}
-                    {showStandardFasteners && subClassified.standard.map((s, i) => (
-                      <tr key={`std-${i}`} style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
-                        <td style={{ padding: '4px 8px', color: '#a8a29e' }}>L{s.level}</td>
-                        <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#a8a29e' }}>{s.stokKodu}</td>
-                        <td style={{ padding: '4px 8px', color: '#78716c' }}>{s.stokAdi || '—'}</td>
-                        <td style={{ padding: '4px 8px', textAlign: 'right', color: '#78716c' }}>{s.qty} {s.unit}</td>
-                        <td style={{ padding: '4px 8px' }}>
-                          <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3, background: '#f5f5f4', color: '#78716c' }}>
-                            STD
-                          </span>
-                        </td>
-                        <td style={{ padding: '4px 8px', fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>
-                          Standart bağlantı — COC gerekmez
-                        </td>
-                      </tr>
-                    ))}
+                    {showStandardFasteners && subClassified.standard.map((s, i) => {
+                      const savingThis = !!savingRequires[s.stokKodu];
+                      return (
+                        <tr key={`std-${i}`} style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
+                          <td style={{ padding: '4px 8px', color: '#a8a29e' }}>L{s.level}</td>
+                          <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#a8a29e' }}>{s.stokKodu}</td>
+                          <td style={{ padding: '4px 8px', color: '#78716c' }}>{s.stokAdi || '—'}</td>
+                          <td style={{ padding: '4px 8px', textAlign: 'right', color: '#78716c' }}>{s.qty} {s.unit}</td>
+                          <td style={{ padding: '4px 8px' }}>
+                            <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3, background: '#f5f5f4', color: '#78716c' }}>
+                              STD
+                            </span>
+                          </td>
+                          <td style={{ padding: '4px 8px' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>Standart bağlantı — COC gerekmez</span>
+                              <button onClick={() => toggleRequiresCoc(s)} disabled={savingThis || !canEdit}
+                                title="Bu stoku özel parça olarak işaretle (COC gerektirir)"
+                                style={{ padding: '1px 4px', fontSize: 8, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', opacity: savingThis ? 0.5 : 1 }}>
+                                {savingThis ? '...' : '→ COC gerektir'}
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
                     {subClassified.required.length === 0 && !showStandardFasteners && (
                       <tr><td colSpan="6" style={{ padding: 10, textAlign: 'center', color: '#a8a29e', fontSize: 10 }}>
                         Gerektiren alt bileşen yok — sadece standart bağlantı elemanları
@@ -3675,7 +3753,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                 </table>
               </div>
               <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
-                📋 Belge yükleme + manuel giriş sonraki adımda (Faz 2B/2C). Şimdilik BOM'dan otomatik tespit + durum takibi.
+                📋 Belge yükleme sonraki adımda (Faz 2C). Şimdilik BOM/manuel'den otomatik tespit + durum takibi + heuristic override.
               </div>
             </>
           )}
@@ -3706,6 +3784,98 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
           }}>📄 {saving ? 'İşleniyor...' : 'Kaydet ve PDF İndir'}</button>
         </div>
       </div>
+
+      {/* MANUEL ALT BİLEŞEN EDİTÖRÜ — sub-modal */}
+      {manualEditor !== null && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget && !savingManual) setManualEditor(null); }}>
+          <div style={{ background: '#fff', borderRadius: 8, padding: 16, width: '90%', maxWidth: 900, maxHeight: '85vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 24px rgba(0,0,0,0.25)' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+              ✏ Manuel Alt Bileşen Listesi — <span style={{ fontFamily: 'ui-monospace, monospace', color: '#1e40af' }}>{firstOrder.stokKodu}</span>
+            </div>
+            <div style={{ fontSize: 10, color: '#78716c', marginBottom: 10 }}>
+              Bu liste <code>cocParts.parts[{firstOrder.stokKodu}].manualSubComponents</code> master'ına yazılır — sonraki COC'ta otomatik gelir. BOM varsa manuel bu listeye öncelik verilmez, BOM kullanılır (silmek istersen bu listeyi boşalt).
+            </div>
+            <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #e7e5e4', borderRadius: 4, marginBottom: 10 }}>
+              <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                <thead style={{ position: 'sticky', top: 0, background: '#f5f5f4' }}>
+                  <tr style={{ textAlign: 'left', color: '#44403c' }}>
+                    <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 50 }}>LVL</th>
+                    <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>STOK KODU *</th>
+                    <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>STOK ADI</th>
+                    <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 80, textAlign: 'right' }}>MİKTAR</th>
+                    <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 70 }}>BR</th>
+                    <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 90 }}>TİP</th>
+                    <th style={{ padding: '6px 8px', width: 40 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {manualEditor.map((r, i) => (
+                    <tr key={i} style={{ borderTop: '1px solid #f5f5f4' }}>
+                      <td style={{ padding: '4px 8px' }}>
+                        <input type="number" min="1" value={r.level || 1} onChange={e => updateManualRow(i, 'level', Number(e.target.value) || 1)}
+                          disabled={savingManual} style={{ width: 40, padding: '3px 5px', fontSize: 11, textAlign: 'center', border: '1px solid #d6d3d1', borderRadius: 3 }} />
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <input value={r.stokKodu} onChange={e => updateManualRow(i, 'stokKodu', e.target.value)}
+                          disabled={savingManual} placeholder="MM-9111-XXXX" style={{ width: '100%', padding: '3px 6px', fontSize: 11, fontFamily: 'ui-monospace, monospace', border: '1px solid #d6d3d1', borderRadius: 3 }} />
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <input value={r.stokAdi} onChange={e => updateManualRow(i, 'stokAdi', e.target.value)}
+                          disabled={savingManual} placeholder="Açıklama" style={{ width: '100%', padding: '3px 6px', fontSize: 11, border: '1px solid #d6d3d1', borderRadius: 3 }} />
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <input type="number" step="0.001" min="0" value={r.qty || 0} onChange={e => updateManualRow(i, 'qty', Number(e.target.value) || 0)}
+                          disabled={savingManual} style={{ width: '100%', padding: '3px 6px', fontSize: 11, textAlign: 'right', border: '1px solid #d6d3d1', borderRadius: 3 }} />
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <select value={r.unit || 'AD'} onChange={e => updateManualRow(i, 'unit', e.target.value)}
+                          disabled={savingManual} style={{ width: '100%', padding: '3px 5px', fontSize: 11, border: '1px solid #d6d3d1', borderRadius: 3, background: '#fff' }}>
+                          <option value="AD">AD</option>
+                          <option value="KG">KG</option>
+                          <option value="MT">MT</option>
+                          <option value="LT">LT</option>
+                          <option value="M2">M²</option>
+                        </select>
+                      </td>
+                      <td style={{ padding: '4px 8px' }}>
+                        <select value={r.supplyType || 'make'} onChange={e => updateManualRow(i, 'supplyType', e.target.value)}
+                          disabled={savingManual} style={{ width: '100%', padding: '3px 5px', fontSize: 11, border: '1px solid #d6d3d1', borderRadius: 3, background: '#fff' }}>
+                          <option value="make">MAKE</option>
+                          <option value="buy">BUY</option>
+                        </select>
+                      </td>
+                      <td style={{ padding: '4px 8px', textAlign: 'center' }}>
+                        <button onClick={() => removeManualRow(i)} disabled={savingManual}
+                          title="Satırı sil" style={{ background: 'transparent', border: 'none', color: '#dc2626', cursor: 'pointer', fontSize: 14 }}>🗑</button>
+                      </td>
+                    </tr>
+                  ))}
+                  {manualEditor.length === 0 && (
+                    <tr><td colSpan="7" style={{ padding: 20, textAlign: 'center', color: '#a8a29e', fontSize: 10 }}>
+                      Henüz satır yok — aşağıdaki + Satır Ekle butonuna bas
+                    </td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
+              <button onClick={addManualRow} disabled={savingManual}
+                style={{ padding: '6px 12px', fontSize: 11, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 4, cursor: 'pointer', fontWeight: 500 }}>
+                + Satır Ekle
+              </button>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button onClick={() => setManualEditor(null)} disabled={savingManual}
+                  style={{ padding: '6px 14px', fontSize: 12, background: '#f5f5f4', color: '#57534e', border: '1px solid #d6d3d1', borderRadius: 4, cursor: 'pointer' }}>İptal</button>
+                <button onClick={saveManualList} disabled={savingManual || !canEdit}
+                  style={{ padding: '6px 14px', fontSize: 12, background: '#1e40af', color: '#fff', border: 'none', borderRadius: 4, cursor: canEdit ? 'pointer' : 'not-allowed', fontWeight: 500 }}>
+                  {savingManual ? 'Kaydediliyor...' : '✓ Kaydet'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
