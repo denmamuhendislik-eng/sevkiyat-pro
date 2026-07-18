@@ -153,6 +153,8 @@ function buildCocHtml(cert) {
 
   ${feragatBlock}
 
+  ${buildSubComponentsBlock(cert)}
+
   <!-- Signature block — gerçek imza görselleri -->
   <div style="margin-top:30px; display:grid; grid-template-columns:1fr 1fr; gap:30px;">
     <div style="text-align:center;">
@@ -214,6 +216,85 @@ function groupLineItemsForDisplay(items) {
     quantity: g.quantity,
     serialNo: g.serials.size > 0 ? Array.from(g.serials).join(", ") : "---",
   }));
+}
+
+// Alt bileşen tablosu (Faz 3) — cert.subComponents snapshot varsa göster.
+// Standart bağlantı elemanları burada gösterilmez (COC gerektirmez).
+// Belge durumu: H (hammadde), Ö (ölçüm), F (fason), T (tedarikçi COC) — sadece gerekli olanlar.
+function buildSubComponentsBlock(cert) {
+  const list = Array.isArray(cert.subComponents) ? cert.subComponents : [];
+  if (list.length === 0) return "";
+  // requiresCoc override + heuristik burada tekrar uygulanmaz — snapshot alındığında
+  // classify edilmişti. Ama boş docs'lu bir standart eleman snapshot'a girmiş olabilir;
+  // requiresCoc alanı istisna (snapshot'ta yok), o yüzden şimdi heuristikle son eleme:
+  const STANDARD_KEYS = ["CIVATA", "SOMUN", "HELICOIL", "PUL", "RONDELA", "SEGMAN", "PIN", "VIDA", "SAPLAMA", "TAPA", "TIRTIR", "SETASKUR", "YAY PUL", "RIVETLI"];
+  const isStd = (name) => {
+    const s = String(name || "").toLocaleUpperCase("tr-TR");
+    return STANDARD_KEYS.some(kw => s.includes(kw));
+  };
+  const shown = list.filter(s => !isStd(s.stokAdi));
+  if (shown.length === 0) return "";
+
+  const rows = shown.map((s, i) => {
+    const docs = s.docs || {};
+    const isBuy = String(s.supplyType || "make").toLowerCase() === "buy";
+    // Belge durumu — küçük ✓/✗ rozetleri
+    const badge = (present, label, title) => present
+      ? `<span title="${title}" style="display:inline-block; padding:1px 5px; margin:0 2px; background:#dcfce7; color:#166534; border-radius:2px; font-size:8px; font-weight:600;">${label} ✓</span>`
+      : `<span title="${title}" style="display:inline-block; padding:1px 5px; margin:0 2px; background:#fee2e2; color:#991b1b; border-radius:2px; font-size:8px; font-weight:600;">${label} ✗</span>`;
+    const docsHtml = isBuy
+      ? badge(!!docs.tedarikciCoc, "T", "Tedarikçi COC")
+      : `${badge(!!docs.hammaddeSertifikasi, "H", "Hammadde Sertifikası")}${badge(!!docs.olcumRaporu, "Ö", "Ölçüm Raporu")}${badge(!!docs.fasonSertifikasi, "F", "Fason Sertifikası")}`;
+    return `
+      <tr style="background:#fff; border-bottom:1px solid #f5f5f4;">
+        <td style="padding:6px 8px; font-size:9px; color:#78716c; text-align:center;">${i + 1}</td>
+        <td style="padding:6px 8px; font-family:'JetBrains Mono','Courier New',monospace; font-size:9px; font-weight:500;">${escapeHtml(s.stokKodu || "")}</td>
+        <td style="padding:6px 8px; font-size:9px;">${escapeHtml(s.stokAdi || "—")}</td>
+        <td style="padding:6px 8px; font-size:9px; text-align:right;">${escapeHtml(String(s.qty || ""))} ${escapeHtml(s.unit || "")}</td>
+        <td style="padding:6px 8px; text-align:center;">
+          <span style="display:inline-block; padding:1px 5px; background:${isBuy ? "#dbeafe" : "#dcfce7"}; color:${isBuy ? "#1e40af" : "#166534"}; border-radius:2px; font-size:8px; font-weight:600;">${isBuy ? "BUY" : "MAKE"}</span>
+        </td>
+        <td style="padding:6px 8px; text-align:center;">${docsHtml}</td>
+      </tr>
+    `;
+  }).join("");
+
+  // Özet
+  const complete = shown.filter(s => {
+    const d = s.docs || {};
+    const buy = String(s.supplyType || "make").toLowerCase() === "buy";
+    return buy ? !!d.tedarikciCoc : !!(d.hammaddeSertifikasi && d.olcumRaporu && d.fasonSertifikasi);
+  }).length;
+
+  return `
+    <div style="margin-top:16px; padding:10px 12px; background:#fafaf9; border:1px solid #e7e5e4; border-radius:6px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+        <div style="font-size:9px; color:#78716c; font-weight:600;">
+          SUB-COMPONENTS / ALT BİLEŞENLER
+        </div>
+        <div style="font-size:9px; color:#57534e;">
+          <strong>${complete}/${shown.length}</strong> tamam
+        </div>
+      </div>
+      <table style="width:100%; border-collapse:collapse; font-size:9px;">
+        <thead>
+          <tr style="background:#e7e5e4; color:#44403c; text-align:left;">
+            <th style="padding:5px 8px; font-weight:600; font-size:8px; width:25px; text-align:center;">#</th>
+            <th style="padding:5px 8px; font-weight:600; font-size:8px;">STOK KODU / CODE</th>
+            <th style="padding:5px 8px; font-weight:600; font-size:8px;">AÇIKLAMA / DESCRIPTION</th>
+            <th style="padding:5px 8px; font-weight:600; font-size:8px; text-align:right; width:55px;">MİK</th>
+            <th style="padding:5px 8px; font-weight:600; font-size:8px; text-align:center; width:50px;">TİP</th>
+            <th style="padding:5px 8px; font-weight:600; font-size:8px; text-align:center; width:110px;">BELGELER</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div style="margin-top:4px; font-size:7px; color:#a8a29e;">
+        H: Hammadde Sertifikası · Ö: Ölçüm Raporu · F: Fason Sertifikası · T: Tedarikçi COC
+        · ${complete === shown.length ? "Tüm belgeler tamamlandı." : `${shown.length - complete} eksik belge var.`}
+      </div>
+    </div>
+  `;
 }
 
 // Ortak PDF render — jsPDF instance döndürür
