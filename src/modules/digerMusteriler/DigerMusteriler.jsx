@@ -5239,6 +5239,38 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
         }
       }
 
+      // 4) Alt bileşenler klasörü — Faz 4
+      // cert.subComponents varsa her bileşenin belgelerini alt-bilesenler/{stokKodu}/ altına.
+      const subComps = Array.isArray(cert.subComponents) ? cert.subComponents : [];
+      if (subComps.length > 0) {
+        const CAT_LABELS = {
+          hammaddeSertifikasi: 'Hammadde Sertifikasi',
+          olcumRaporu: 'Olcum Raporu',
+          fasonSertifikasi: 'Fason Sertifikasi',
+          tedarikciCoc: 'Tedarikci COC',
+        };
+        const rootFolder = zip.folder('Alt Bilesenler');
+        for (const s of subComps) {
+          const docs = s.docs || {};
+          const hasAny = Object.values(docs).some(d => d?.path);
+          if (!hasAny) continue; // belgesi olmayan bileşen için klasör açma
+          const subFolder = rootFolder.folder(sanitize(s.stokKodu || 'bilesen'));
+          const used = new Set();
+          for (const [cat, meta] of Object.entries(docs)) {
+            if (!meta?.path) continue;
+            const label = CAT_LABELS[cat] || cat;
+            const originalName = meta.name || 'dosya.pdf';
+            const ext = originalName.includes('.') ? originalName.substring(originalName.lastIndexOf('.')) : '';
+            const baseName = `${label}${ext}`;
+            const name = dedupeName(used, sanitize(baseName));
+            fetchAll.push(
+              downloadCocAttachmentBlob(meta.path).then(b => subFolder.file(name, b))
+                .catch(e => console.warn(`Alt bileşen belgesi indirilemedi: ${s.stokKodu}/${cat}`, e.message))
+            );
+          }
+        }
+      }
+
       await Promise.all(fetchAll);
 
       const blob = await zip.generateAsync({ type: 'blob' });
