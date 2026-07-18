@@ -3228,14 +3228,19 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
-  // Alt bileşenler (Faz 2A — sadece görüntüleme)
-  // resolveSubComponents üç kaynaktan çeker: certificate snapshot → bomModels → cocParts.manualSubComponents
+  // Alt bileşenler — Faz 2A/B/C/D
+  // resolveSubComponents üç kaynaktan çeker (öncelik sırayla):
+  //   1) certificate snapshot (edit senaryosu, o COC'a özel donmuş)
+  //   2) bomModels (yüklü BOM ağacı)
+  //   3) cocParts.manualSubComponents (elle girilmiş master)
+  // firstOrder.certificateSubComponents varsa (edit için orders içinde geldi) onu kullan
+  const editCertSubComponents = firstOrder?._editCertSubComponents || null;
   const subResolution = useMemo(() => resolveSubComponents({
     stokKodu: firstOrder.stokKodu,
     bomModels: bomModels || {},
     cocParts: cocParts || {},
-    certificateSubComponents: null, // yeni COC — snapshot yok
-  }), [firstOrder.stokKodu, bomModels, cocParts]);
+    certificateSubComponents: editCertSubComponents,
+  }), [firstOrder.stokKodu, bomModels, cocParts, editCertSubComponents]);
   const [showStandardFasteners, setShowStandardFasteners] = useState(false);
   // subComponentsState: kaynaktan gelen liste + docs alanı (yükleme sonrası tutulur).
   // subResolution.list değişirse (BOM/manual/certificate switch) state sync olur ama
@@ -3400,6 +3405,11 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
     serialNo: li.serialNo,
     feragatText: feragatVar ? feragatText : '',
     feragatStatus: feragatVar ? 'VAR' : 'YOK',
+    // Alt bileşen snapshot — Faz 2D. Her siraNo'ya aynı liste yazılır
+    // (aynı stokKodu → alt bileşenler aynı). Snapshot: docs URL'leri dahil,
+    // kaynak (bom/manual) ve requiresCoc override bilgisi anlık halinde donar.
+    subComponents: Array.isArray(subComponentsState) ? subComponentsState : [],
+    subComponentsSource: subResolution.source,
     source: 'ui',
   });
 
@@ -3882,7 +3892,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                 </table>
               </div>
               <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
-                📋 Satırın önündeki ▶ ile detayı aç → dosya seç ile belge yükle. Snapshot save Faz 2D'de gelecek (şimdilik yükleme sonrası "Kaydet" basmadan modal kapatırsan URL'ler kaybolur).
+                📋 Satırın önündeki ▶ ile detayı aç → dosya seç ile belge yükle. Kaydet basınca alt bileşen listesi + belge URL'leri sertifika ile birlikte donar (snapshot).
               </div>
             </>
           )}
