@@ -118,6 +118,17 @@ export function classifySubComponents(list, cocParts) {
 export const DOC_TYPES_MAKE = ["hammaddeSertifikasi", "olcumRaporu", "fasonSertifikasi"];
 export const DOC_TYPES_BUY = ["tedarikciCoc"];
 
+// Alt bileşen belge kategorisi → Drive/COC master kategorisi eşleşmesi.
+// searchCocDrive backend'i mevcut COC kategorilerini bekliyor (driveConfig.foldersByCategory).
+// Alt bileşen için de aynı Drive klasörlerini yeniden kullanıyoruz — kullanıcının
+// tanımladığı ayarları ikinci kez yapmaya gerek yok.
+export const SUB_DOC_TO_DRIVE_CATEGORY = {
+  hammaddeSertifikasi: "rawMaterialCert",
+  olcumRaporu: "measurement",
+  fasonSertifikasi: "surfaceTreatment",
+  tedarikciCoc: "fai", // yaklaşık — Aselsan'a giden tedarikçi belgesi ile benzer akış
+};
+
 export function docTypesForSupplyType(supplyType) {
   const s = String(supplyType || "").toLowerCase();
   if (s === "buy") return DOC_TYPES_BUY;

@@ -20,7 +20,7 @@ import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
-import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus } from './subComponents';
+import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY } from './subComponents';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -3288,6 +3288,54 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
     }
   };
 
+  // Drive önerisi state: { stokKodu, category, results, loading, error }
+  const [driveSearchState, setDriveSearchState] = useState(null);
+
+  const runDriveSearch = async (subStokKodu, category, altName) => {
+    setDriveSearchState({ stokKodu: subStokKodu, category, results: null, loading: true, error: null });
+    try {
+      const driveCategory = SUB_DOC_TO_DRIVE_CATEGORY[category];
+      if (!driveCategory) throw new Error(`Bu kategori için Drive arama tanımlanmamış: ${category}`);
+      const res = await searchCocDrive({ category: driveCategory, stokKodu: subStokKodu, altName: altName || "" });
+      setDriveSearchState({ stokKodu: subStokKodu, category, results: res?.results || [], loading: false, error: res?.message || null });
+    } catch (e) {
+      setDriveSearchState({ stokKodu: subStokKodu, category, results: [], loading: false, error: e.message });
+    }
+  };
+
+  const closeDriveSearch = () => setDriveSearchState(null);
+
+  const importFromDrive = async (subStokKodu, category, fileId) => {
+    if (!certNo) { alert('Önce sertifika no belirle'); return; }
+    const key = `${subStokKodu}|${category}`;
+    setUploadingDoc(u => ({ ...u, [key]: true }));
+    try {
+      const driveCategory = SUB_DOC_TO_DRIVE_CATEGORY[category];
+      const year = certNo.substring(0, 4);
+      const res = await importCocDriveFile({ fileId, certNo, certYear: year, category: driveCategory, stokKodu: subStokKodu });
+      if (!res?.success) throw new Error(res?.message || 'Drive import başarısız');
+      const meta = res.coc || {};
+      const newDoc = {
+        url: meta.downloadUrl,
+        path: meta.storagePath,
+        name: meta.filename || 'drive-file.pdf',
+        size: meta.size || 0,
+        category,
+        subStokKodu,
+        uploadedAt: meta.uploadedAt || new Date().toISOString(),
+        source: 'drive',
+      };
+      setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
+        ? { ...s, docs: { ...(s.docs || {}), [category]: newDoc } }
+        : s));
+      closeDriveSearch();
+    } catch (e) {
+      alert('Drive dosyası aktarılamadı: ' + e.message);
+    } finally {
+      setUploadingDoc(u => ({ ...u, [key]: false }));
+    }
+  };
+
   const handleDeleteSubDoc = async (subStokKodu, category) => {
     const sub = subComponentsState.find(s => s.stokKodu === subStokKodu);
     const meta = sub?.docs?.[category];
@@ -3832,17 +3880,24 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                                           </div>
                                         </div>
                                       ) : (
-                                        <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
-                                          {isUploading ? 'Yükleniyor...' : '📤 Dosya Seç'}
-                                          <input type="file" accept="application/pdf,image/*"
-                                            style={{ display: 'none' }}
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                          <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', textAlign: 'center' }}>
+                                            {isUploading ? 'Yükleniyor...' : '📤 Dosya Seç'}
+                                            <input type="file" accept="application/pdf,image/*"
+                                              style={{ display: 'none' }}
+                                              disabled={isUploading || !canEdit}
+                                              onChange={e => {
+                                                const f = e.target.files?.[0];
+                                                if (f) handleUploadSubDoc(s.stokKodu, cat, f);
+                                                e.target.value = '';
+                                              }} />
+                                          </label>
+                                          <button onClick={() => runDriveSearch(s.stokKodu, cat, s.stokAdi)}
                                             disabled={isUploading || !canEdit}
-                                            onChange={e => {
-                                              const f = e.target.files?.[0];
-                                              if (f) handleUploadSubDoc(s.stokKodu, cat, f);
-                                              e.target.value = '';
-                                            }} />
-                                        </label>
+                                            style={{ padding: '3px 6px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                            🔍 Drive'dan Öner
+                                          </button>
+                                        </div>
                                       )}
                                     </div>
                                   );
@@ -3892,7 +3947,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                 </table>
               </div>
               <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
-                📋 Satırın önündeki ▶ ile detayı aç → dosya seç ile belge yükle. Kaydet basınca alt bileşen listesi + belge URL'leri sertifika ile birlikte donar (snapshot).
+                📋 Satırın önündeki ▶ ile detayı aç → dosya seç veya Drive'dan öner. Kaydet basınca alt bileşen listesi + belge URL'leri sertifika ile birlikte donar (snapshot).
               </div>
             </>
           )}
@@ -3923,6 +3978,66 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
           }}>📄 {saving ? 'İşleniyor...' : 'Kaydet ve PDF İndir'}</button>
         </div>
       </div>
+
+      {/* DRIVE ÖNERİ SUB-MODAL — Faz 2E-1 */}
+      {driveSearchState && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeDriveSearch(); }}>
+          <div style={{ background: '#fff', borderRadius: 8, padding: 16, width: '90%', maxWidth: 720, maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 24px rgba(0,0,0,0.25)' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+              🔍 Drive'dan Öneri — <span style={{ fontFamily: 'ui-monospace, monospace', color: '#1e40af' }}>{driveSearchState.stokKodu}</span>
+              <span style={{ marginLeft: 6, padding: '2px 6px', background: '#eff6ff', color: '#1e40af', borderRadius: 3, fontSize: 10, fontWeight: 500 }}>
+                {driveSearchState.category}
+              </span>
+            </div>
+            {driveSearchState.loading && (
+              <div style={{ padding: 20, textAlign: 'center', color: '#78716c', fontSize: 11 }}>Drive'da aranıyor...</div>
+            )}
+            {!driveSearchState.loading && driveSearchState.error && driveSearchState.results.length === 0 && (
+              <div style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, fontSize: 11, color: '#92400e' }}>
+                ⚠ {driveSearchState.error}
+              </div>
+            )}
+            {!driveSearchState.loading && driveSearchState.results && driveSearchState.results.length === 0 && !driveSearchState.error && (
+              <div style={{ padding: 20, textAlign: 'center', color: '#a8a29e', fontSize: 11 }}>Sonuç bulunamadı</div>
+            )}
+            {!driveSearchState.loading && driveSearchState.results && driveSearchState.results.length > 0 && (
+              <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #e7e5e4', borderRadius: 4 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead style={{ position: 'sticky', top: 0, background: '#f5f5f4' }}>
+                    <tr style={{ textAlign: 'left', color: '#44403c' }}>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>Dosya Adı</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 120 }}>Klasör</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 90, textAlign: 'right' }}>Tarih</th>
+                      <th style={{ padding: '6px 8px', width: 90 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {driveSearchState.results.map((r, i) => (
+                      <tr key={r.id || i} style={{ borderTop: '1px solid #f5f5f4' }}>
+                        <td style={{ padding: '6px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 10, wordBreak: 'break-all' }}>{r.name || r.filename || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10, color: '#78716c' }}>{r.parentName || r.folder || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10, color: '#78716c', textAlign: 'right' }}>{r.modifiedTime ? String(r.modifiedTime).slice(0, 10) : '—'}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'center' }}>
+                          <button onClick={() => importFromDrive(driveSearchState.stokKodu, driveSearchState.category, r.id)}
+                            disabled={!canEdit}
+                            style={{ padding: '3px 8px', fontSize: 10, background: '#1e40af', color: '#fff', border: 'none', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', fontWeight: 500 }}>
+                            📥 Aktar
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+              <button onClick={closeDriveSearch}
+                style={{ padding: '6px 14px', fontSize: 12, background: '#f5f5f4', color: '#57534e', border: '1px solid #d6d3d1', borderRadius: 4, cursor: 'pointer' }}>Kapat</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MANUEL ALT BİLEŞEN EDİTÖRÜ — sub-modal */}
       {manualEditor !== null && (
