@@ -14,6 +14,7 @@ import {
   subscribeQuotesForYear, saveQuoteCustomer, saveQuotePart,
 } from "../teklifler/firestore";
 import { calculateWeightKg } from "../teklifler/quoteCalc";
+import { generateFeasibilityPdf } from "./feasibilityPdf";
 
 export default function Yapilabilirlik({ isAdmin, isUretim, isSales, onCreateQuoteFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
@@ -1090,14 +1091,24 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
         </div>
       )}
 
-      {!readonlyForm && (
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
+        <button onClick={async () => {
+          try {
+            await generateFeasibilityPdf({ ...study, studyNo });
+          } catch (e) {
+            alert("PDF hatası: " + e.message);
+          }
+        }}
+          style={{ padding: "8px 16px", fontSize: 13, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
+          📄 PDF Önizle
+        </button>
+        {!readonlyForm && (
           <button onClick={handleSave} disabled={saving || !canEdit}
             style={{ padding: "8px 20px", fontSize: 13, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: saving ? "wait" : (canEdit ? "pointer" : "not-allowed"), fontWeight: 500 }}>
             {saving ? "Kaydediliyor..." : "💾 Kaydet"}
           </button>
-        </div>
-      )}
+        )}
+      </div>
 
       {/* PARÇA UYGULAMA ONAY MODALI — Faz Y-3D Karar 1-B */}
       {confirmApplyPart && (
@@ -1235,6 +1246,9 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
                       <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                         <button onClick={() => onOpen(s, { readOnly: false })}
                           style={{ padding: "3px 8px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer" }}>✏ Aç</button>
+                        <button onClick={async () => { try { await generateFeasibilityPdf(s); } catch (e) { alert("PDF hatası: " + e.message); } }}
+                          title="Yapılabilirlik PDF indir"
+                          style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
                         {status === "approved" && onCreateQuote && (
                           <button onClick={() => onCreateQuote(s)}
                             title="Bu yapılabilirlikten yeni teklif oluştur"
