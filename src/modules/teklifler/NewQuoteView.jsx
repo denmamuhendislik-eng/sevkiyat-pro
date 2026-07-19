@@ -48,6 +48,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
   const [baseQuoteNo, setBaseQuoteNo] = useState("");
   const [parentQuoteNo, setParentQuoteNo] = useState(null);
   const [revisionReason, setRevisionReason] = useState("");
+  const [feasibilityNo, setFeasibilityNo] = useState(""); // yapılabilirlik bağlantısı (Faz Y-5)
   const isRevision = revNo > 0;
   const isLocked = readOnly;
   const canEditForm = canEdit && !isLocked;
@@ -62,9 +63,10 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
   }, [staging]);
 
-  // İlk yüklemede quote no otomatik önerisi (sadece yeni teklif için)
+  // İlk yüklemede quote no otomatik önerisi — feasibility'den gelirse
+  // initialQuote var ama quoteNo boş; o zaman da öneri fetch et
   useEffect(() => {
-    if (!quoteNo && !initialQuote) {
+    if (!quoteNo && (!initialQuote || !initialQuote.quoteNo)) {
       suggestNextQuoteNo().then(setQuoteNo).catch(() => {});
     }
   }, [quoteNo, initialQuote]);
@@ -92,6 +94,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     setBaseQuoteNo(initialQuote.baseQuoteNo || initialQuote.quoteNo || "");
     setParentQuoteNo(initialQuote.parentQuoteNo || null);
     setRevisionReason(initialQuote.revisionReason || "");
+    setFeasibilityNo(initialQuote.feasibilityNo || "");
   }, [initialQuote]);
 
   // Malzeme adları currency için USD kuru
@@ -222,6 +225,8 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         baseQuoteNo: baseQuoteNo || quoteNo,
         parentQuoteNo: parentQuoteNo || null,
         revisionReason: isRevision ? revisionReason.trim() : null,
+        // Yapılabilirlik bağlantısı (Faz Y-5)
+        feasibilityNo: feasibilityNo || null,
         lines: lines.map((l, i) => {
           const r = calc.lineResults[i];
           return {
@@ -287,7 +292,17 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         }
       }
 
-      setSaveResult({ ok: true, ...out, message: `Teklif kaydedildi: ${quoteNo}` });
+      // Yapılabilirlik bağlantısı — teklif kaydedildikten sonra feasibility'ye linkedQuoteNo yaz
+      if (feasibilityNo) {
+        try {
+          const { linkFeasibilityToQuote } = await import("../yapilabilirlik/firestore");
+          await linkFeasibilityToQuote(feasibilityNo, quoteNo, { canEdit, staging });
+        } catch (e) {
+          console.warn("Yapılabilirlik'e teklif bağlanamadı:", feasibilityNo, e.message);
+        }
+      }
+
+      setSaveResult({ ok: true, ...out, message: `Teklif kaydedildi: ${quoteNo}${feasibilityNo ? ` (yapılabilirlik ${feasibilityNo} bağlandı)` : ""}` });
       onSaved && onSaved();
     } catch (e) {
       setSaveError(e.message || "Kaydetme hatası");
@@ -331,8 +346,16 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         </div>
       )}
 
+      {/* YAPILABILIRLIK BAĞLANTI BANNER (Faz Y-5) */}
+      {feasibilityNo && !isRevision && (
+        <div style={{ marginBottom: 12, padding: 10, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, fontSize: 11, color: "#166534" }}>
+          🔬 <b>Yapılabilirlik'ten oluşturuldu</b> — <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{feasibilityNo}</span>
+          <br /><span style={{ fontSize: 10, color: "#15803d" }}>Kalem detayları otomatik dolduruldu. Kaydettiğinde yapılabilirlik "💼 Teklife Dönüştü" durumuna geçer.</span>
+        </div>
+      )}
+
       <div style={{ marginBottom: 12, padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11, color: "#1e40af" }}>
-        💡 <b>{isRevision ? `Revizyon ${revNo}` : "Yeni Teklif"}</b> — üstte müşteri + meta, aşağıda parça arama / ekleme. {!isRevision && "Kaydettiğinde her yeni stok kodu otomatik kütüphaneye yazılır."}
+        💡 <b>{isRevision ? `Revizyon ${revNo}` : (feasibilityNo ? "Teklif (Yapılabilirlik'ten)" : "Yeni Teklif")}</b> — üstte müşteri + meta, aşağıda parça arama / ekleme. {!isRevision && "Kaydettiğinde her yeni stok kodu otomatik kütüphaneye yazılır."}
       </div>
 
       <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>

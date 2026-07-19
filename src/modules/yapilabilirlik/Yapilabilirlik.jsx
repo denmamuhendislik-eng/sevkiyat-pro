@@ -15,7 +15,7 @@ import {
 } from "../teklifler/firestore";
 import { calculateWeightKg } from "../teklifler/quoteCalc";
 
-export default function Yapilabilirlik({ isAdmin, isUretim, isSales }) {
+export default function Yapilabilirlik({ isAdmin, isUretim, isSales, onCreateQuoteFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
   const [activeTab, setActiveTab] = useState("new");
   const [pendingOpen, setPendingOpen] = useState(null); // {study, readOnly}
@@ -58,7 +58,7 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales }) {
           onSaved={() => { setPendingOpen(null); setActiveTab("list"); }}
         />
       )}
-      {activeTab === "list" && <FeasibilityListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openStudy} />}
+      {activeTab === "list" && <FeasibilityListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openStudy} onCreateQuote={onCreateQuoteFromFeasibility} />}
     </div>
   );
 }
@@ -1141,7 +1141,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
 
 // ==================== Liste ====================
 
-function FeasibilityListView({ canEdit, isAdmin, onOpen }) {
+function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
   const [staging, setStaging] = useState(false);
@@ -1232,9 +1232,21 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen }) {
                     </td>
                     <td style={{ padding: "6px 10px", fontSize: 10, color: "#78716c" }}>{sig.signed}/{sig.total}</td>
                     <td style={{ padding: "6px 10px" }}>
-                      <div style={{ display: "flex", gap: 4 }}>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                         <button onClick={() => onOpen(s, { readOnly: false })}
                           style={{ padding: "3px 8px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer" }}>✏ Aç</button>
+                        {status === "approved" && onCreateQuote && (
+                          <button onClick={() => onCreateQuote(s)}
+                            title="Bu yapılabilirlikten yeni teklif oluştur"
+                            style={{ padding: "3px 8px", fontSize: 10, background: "#dbeafe", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer", fontWeight: 500 }}>
+                            💼 Teklif Oluştur
+                          </button>
+                        )}
+                        {status === "convertedToQuote" && s.linkedQuoteNo && (
+                          <span style={{ padding: "3px 8px", fontSize: 10, background: "#dcfce7", color: "#166534", borderRadius: 3, fontFamily: "ui-monospace, monospace" }}>
+                            → {s.linkedQuoteNo}
+                          </span>
+                        )}
                         {isAdmin && status !== "convertedToQuote" && (
                           <button onClick={() => handleDelete(s.studyNo)} disabled={!!deleting[s.studyNo]}
                             style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑</button>

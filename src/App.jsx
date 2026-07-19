@@ -155,6 +155,7 @@ export default function App() {
   // App states
   const [page, setPage] = useState("planning");
   const [pendingMrpTab, setPendingMrpTab] = useState(null);
+  const [pendingQuoteFromFeasibility, setPendingQuoteFromFeasibility] = useState(null); // yapılabilirlik → teklif
   const [selYear, setSelYear] = useState(2026);
   const [products, setProducts] = useState(PARSED.products);
   const [yearsData, setYearsData] = useState(PARSED.yearsData);
@@ -3400,8 +3401,8 @@ ${el.innerHTML}
           {/* ========== DIGER MUSTERILER PAGE ========== */}
           {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
           {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
-          {page==="teklifler"&&canSeeTeklifler&&<Teklifler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
-          {page==="yapilabilirlik"&&canSeeYapilabilirlik&&<Yapilabilirlik isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
+          {page==="teklifler"&&canSeeTeklifler&&<Teklifler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} pendingFromFeasibility={pendingQuoteFromFeasibility} onConsumePendingFromFeasibility={()=>setPendingQuoteFromFeasibility(null)} />}
+          {page==="yapilabilirlik"&&canSeeYapilabilirlik&&<Yapilabilirlik isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onCreateQuoteFromFeasibility={(study)=>{ setPendingQuoteFromFeasibility(study); setPage("teklifler"); }} />}
 
           {/* ========== MALIYET PAGE ========== */}
           {page==="maliyet"&&isAdmin&&<Maliyet isAdmin={isAdmin} isUretim={isUretim} />}

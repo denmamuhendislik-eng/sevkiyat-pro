@@ -13,7 +13,7 @@ import { calculateQuoteTotal } from "./quoteCalc";
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
 const PROMOTE_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/promoteQuoteStagingHttp";
 
-export default function Teklifler({ isAdmin, isUretim, isSales }) {
+export default function Teklifler({ isAdmin, isUretim, isSales, pendingFromFeasibility, onConsumePendingFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
   const [activeTab, setActiveTab] = useState("new");
   // Revizyon/görüntüleme akışı — QuoteListView tetikler, NewQuoteView tüketir
@@ -22,6 +22,21 @@ export default function Teklifler({ isAdmin, isUretim, isSales }) {
     setPendingOpen({ quote, readOnly });
     setActiveTab("new");
   };
+
+  // Yapılabilirlik'ten teklif oluştur — App.jsx'ten study geldiğinde payload'a çevir
+  useEffect(() => {
+    if (pendingFromFeasibility) {
+      import("../yapilabilirlik/toQuote").then(({ feasibilityToQuotePayload }) => {
+        const payload = feasibilityToQuotePayload(pendingFromFeasibility);
+        if (payload) {
+          setPendingOpen({ quote: payload, readOnly: false });
+          setActiveTab("new");
+        }
+        onConsumePendingFromFeasibility && onConsumePendingFromFeasibility();
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFromFeasibility]);
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
