@@ -9,6 +9,7 @@ import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
 import DigerMusteriler, { MusteriDashboard } from "./modules/digerMusteriler";
 import Teklifler from "./modules/teklifler";
+import Yapilabilirlik from "./modules/yapilabilirlik";
 import Maliyet from "./modules/maliyet/Maliyet";
 import { parseBomExcel as parseBomExcelModule, isFasonOp, getDefaultWC } from "./shared/bomParser";
 import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
@@ -2398,10 +2399,11 @@ ${el.innerHTML}
     XLSX.writeFile(wb, `${isEN?"PackList":"CekiListe"}_${dateStr.replace(/\./g,"")}.xlsx`);
   };
 
-  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"},{id:"mrp",icon:"⚙️",l:"MRP Planlama"},{id:"digerMusteriler",icon:"🤝",l:"Diğer Müşteriler"},{id:"musteriDashboard",icon:"📈",l:"Müşteri Dashboard"},{id:"teklifler",icon:"📋",l:"Teklifler"},{id:"maliyet",icon:"💰",l:"Maliyet"}];
+  const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"},{id:"mrp",icon:"⚙️",l:"MRP Planlama"},{id:"digerMusteriler",icon:"🤝",l:"Diğer Müşteriler"},{id:"musteriDashboard",icon:"📈",l:"Müşteri Dashboard"},{id:"yapilabilirlik",icon:"🔬",l:"Yapılabilirlik"},{id:"teklifler",icon:"📋",l:"Teklifler"},{id:"maliyet",icon:"💰",l:"Maliyet"}];
   const canSeeMRP = isAdmin || isUretim || isSales;
   const canSeeDigerMusteriler = isAdmin || isSales;
   const canSeeTeklifler = isAdmin || isSales || isUretim;
+  const canSeeYapilabilirlik = isAdmin || isSales || isUretim;
 
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
@@ -2447,8 +2449,9 @@ ${el.innerHTML}
             if (n.id === "digerMusteriler" && !canSeeDigerMusteriler) return false;
             if (n.id === "musteriDashboard" && !canSeeDigerMusteriler) return false;
             if (n.id === "teklifler" && !canSeeTeklifler) return false;
+            if (n.id === "yapilabilirlik" && !canSeeYapilabilirlik) return false;
             if (n.id === "maliyet" && !isAdmin) return false;
-            if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard", "teklifler"].includes(n.id)) return false;
+            if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard", "teklifler", "yapilabilirlik"].includes(n.id)) return false;
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
           }).map(n=>(
@@ -3398,6 +3401,7 @@ ${el.innerHTML}
           {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
           {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
           {page==="teklifler"&&canSeeTeklifler&&<Teklifler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
+          {page==="yapilabilirlik"&&canSeeYapilabilirlik&&<Yapilabilirlik isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
 
           {/* ========== MALIYET PAGE ========== */}
           {page==="maliyet"&&isAdmin&&<Maliyet isAdmin={isAdmin} isUretim={isUretim} />}
