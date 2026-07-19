@@ -5,8 +5,9 @@ import {
   FEASIBILITY_ROLES, GM_ROLE_KEY, computeStudyStatus, countSignatures,
 } from "./firestore";
 import {
-  EVALUATION_QUESTIONS, PRODUCT_DIMENSIONS, ITEM_CATEGORIES, SOURCE_TYPES,
-  WORK_TYPES, DECISIONS, RECEIVED_DATA_TYPES, makeEmptyStudy, makeEmptyItem,
+  EVALUATION_QUESTIONS, EVALUATION_DEPARTMENTS, PRODUCT_DIMENSIONS,
+  ITEM_CATEGORIES, SOURCE_TYPES, WORK_TYPES, DECISIONS, RECEIVED_DATA_TYPES,
+  makeEmptyStudy, makeEmptyItem,
 } from "./schema";
 
 export default function Yapilabilirlik({ isAdmin, isUretim, isSales }) {
@@ -133,6 +134,29 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
   // Kalem toplamları (UI özet için)
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
   const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
+
+  // Accordion açık/kapalı durumları — default hepsi açık
+  const [openDepts, setOpenDepts] = useState(() => Object.fromEntries(EVALUATION_DEPARTMENTS.map(d => [d.key, true])));
+  const toggleDept = (deptKey) => setOpenDepts(prev => ({ ...prev, [deptKey]: !prev[deptKey] }));
+
+  // Her departman için soru grubu + cevap ilerlemesi
+  const deptQuestions = useMemo(() => {
+    const map = {};
+    for (const d of EVALUATION_DEPARTMENTS) map[d.key] = [];
+    for (const q of EVALUATION_QUESTIONS) {
+      if (map[q.dept]) map[q.dept].push(q);
+    }
+    return map;
+  }, []);
+  const deptProgress = useMemo(() => {
+    const p = {};
+    for (const d of EVALUATION_DEPARTMENTS) {
+      const questions = deptQuestions[d.key] || [];
+      const answered = questions.filter(q => (study.evaluation?.[q.key]?.answer)).length;
+      p[d.key] = { total: questions.length, answered };
+    }
+    return p;
+  }, [deptQuestions, study.evaluation]);
 
   const handleSave = async () => {
     if (readonlyForm) return;
@@ -355,32 +379,70 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
         )}
       </div>
 
-      {/* DEĞERLENDİRME */}
+      {/* DEĞERLENDİRME — Departman accordion (Faz Y-3B) */}
       <div style={cardStyle}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>3️⃣ Yapılabilirlik Değerlendirmesi</div>
-        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-          <thead>
-            <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
-              <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Değerlendirme Sorusu</th>
-              <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 60, textAlign: "center" }}>EVET</th>
-              <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 60, textAlign: "center" }}>HAYIR</th>
-              <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>AÇIKLAMA</th>
-            </tr>
-          </thead>
-          <tbody>
-            {EVALUATION_QUESTIONS.map(q => {
-              const v = study.evaluation?.[q.key] || {};
-              return (
-                <tr key={q.key} style={{ borderTop: "1px solid #f5f5f4" }}>
-                  <td style={{ padding: "4px 8px" }}>{q.label}</td>
-                  <td style={{ padding: "4px 8px", textAlign: "center" }}><input type="radio" name={`eval_${q.key}`} checked={v.answer === "yes"} onChange={() => updateEvaluation(q.key, "answer", "yes")} disabled={readonlyForm} /></td>
-                  <td style={{ padding: "4px 8px", textAlign: "center" }}><input type="radio" name={`eval_${q.key}`} checked={v.answer === "no"} onChange={() => updateEvaluation(q.key, "answer", "no")} disabled={readonlyForm} /></td>
-                  <td style={{ padding: "3px 4px" }}><input value={v.note || ""} onChange={e => updateEvaluation(q.key, "note", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>3️⃣ Yapılabilirlik Değerlendirmesi</div>
+          <div style={{ fontSize: 11, color: "#78716c" }}>
+            Toplam: <b>{Object.values(deptProgress).reduce((s, p) => s + p.answered, 0)}</b>/{EVALUATION_QUESTIONS.length} soru cevaplandı
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
+          💡 Her departman kendi bölümünde ilgili soruları cevaplar. Bir başka departman adına da cevap verilebilir (yetki devri gibi).
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {EVALUATION_DEPARTMENTS.map(dept => {
+            const questions = deptQuestions[dept.key] || [];
+            const prog = deptProgress[dept.key];
+            const isOpen = !!openDepts[dept.key];
+            const complete = prog.answered === prog.total && prog.total > 0;
+            return (
+              <div key={dept.key} style={{ border: "1px solid " + (complete ? "#86efac" : "#e7e5e4"), borderRadius: 6, overflow: "hidden" }}>
+                <button onClick={() => toggleDept(dept.key)}
+                  style={{ width: "100%", padding: "10px 12px", background: complete ? "#f0fdf4" : dept.bg, border: "none", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 10, color: "#78716c" }}>{isOpen ? "▼" : "▶"}</span>
+                    <span style={{ fontSize: 14 }}>{dept.icon}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: dept.color }}>{dept.label}</span>
+                    <span style={{ fontSize: 10, color: "#78716c" }}>({prog.total} soru)</span>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span style={{ padding: "2px 8px", background: complete ? "#dcfce7" : "#f5f5f4", color: complete ? "#166534" : "#57534e", borderRadius: 3, fontSize: 10, fontWeight: 600 }}>
+                      {complete ? "✓ Tamamlandı" : `${prog.answered}/${prog.total}`}
+                    </span>
+                  </div>
+                </button>
+                {isOpen && (
+                  <div style={{ padding: "8px 12px", background: "#fff" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                      <thead>
+                        <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
+                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Soru</th>
+                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 60, textAlign: "center" }}>EVET</th>
+                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 60, textAlign: "center" }}>HAYIR</th>
+                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>AÇIKLAMA</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {questions.map(q => {
+                          const v = study.evaluation?.[q.key] || {};
+                          return (
+                            <tr key={q.key} style={{ borderTop: "1px solid #f5f5f4" }}>
+                              <td style={{ padding: "4px 8px" }}>{q.label}</td>
+                              <td style={{ padding: "4px 8px", textAlign: "center" }}><input type="radio" name={`eval_${q.key}`} checked={v.answer === "yes"} onChange={() => updateEvaluation(q.key, "answer", "yes")} disabled={readonlyForm} /></td>
+                              <td style={{ padding: "4px 8px", textAlign: "center" }}><input type="radio" name={`eval_${q.key}`} checked={v.answer === "no"} onChange={() => updateEvaluation(q.key, "answer", "no")} disabled={readonlyForm} /></td>
+                              <td style={{ padding: "3px 4px" }}><input value={v.note || ""} onChange={e => updateEvaluation(q.key, "note", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* KALEM DETAYI — Aparat/Takım/Model/Ölçme + Fason (Faz Y-3A) */}

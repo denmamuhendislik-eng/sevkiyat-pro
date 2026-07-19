@@ -2,19 +2,29 @@
 // Excel formuyla birebir eşleşen alanlar ve default değerler.
 
 // FR-71.1 — 12 madde yapılabilirlik değerlendirme soruları
+// Her sorunun `dept` alanı hangi departmanın cevaplayacağını gösterir.
 export const EVALUATION_QUESTIONS = [
-  { key: "canMeetDemands",       label: "Şirketin imkanları müşteri taleplerini karşılıyor mu?" },
-  { key: "needsInvestment",      label: "Ek yatırım gerekiyor mu?" },
-  { key: "hasCapacity",          label: "Yeterli kapasite ve imkanlar mevcut mu?" },
-  { key: "companyBenefit",       label: "Şirkete getireceği ilerleme ve katkı payı var mı?" },
-  { key: "materialSupply",       label: "Malzeme ve yan ürünleri temin edebilme imkanı" },
-  { key: "shipmentTerms",        label: "Sevkiyat ve teslimat şartları belirlenmiş mi?" },
-  { key: "specialCharacteristics", label: "Özel karakteristikler belirlenmiş mi?" },
-  { key: "paymentTerms",         label: "Ödeme koşulları açık bir şekilde belirlenmiş mi?" },
-  { key: "qmsRequirements",      label: "Kalite Yönetim Sistemi gereklilikleri belirlenmiş mi?" },
-  { key: "technicalDocs",        label: "Gerekli teknik dokümanlar ve standartlar temin edilebilmiş mi?" },
-  { key: "quoteValidityPeriod",  label: "Teklifin geçerlilik süresi belirlenmiş mi?" },
-  { key: "contractDisputes",     label: "Sözleşmeden kaynaklanabilecek ihtilaflar durumunda çözüm belirlenmiş mi?" },
+  { key: "canMeetDemands",       label: "Şirketin imkanları müşteri taleplerini karşılıyor mu?",              dept: "production" },
+  { key: "needsInvestment",      label: "Ek yatırım gerekiyor mu?",                                           dept: "production" },
+  { key: "hasCapacity",          label: "Yeterli kapasite ve imkanlar mevcut mu?",                            dept: "production" },
+  { key: "companyBenefit",       label: "Şirkete getireceği ilerleme ve katkı payı var mı?",                  dept: "management" },
+  { key: "materialSupply",       label: "Malzeme ve yan ürünleri temin edebilme imkanı",                      dept: "purchasing" },
+  { key: "shipmentTerms",        label: "Sevkiyat ve teslimat şartları belirlenmiş mi?",                      dept: "sales" },
+  { key: "specialCharacteristics", label: "Özel karakteristikler belirlenmiş mi?",                            dept: "cadCam" },
+  { key: "paymentTerms",         label: "Ödeme koşulları açık bir şekilde belirlenmiş mi?",                   dept: "sales" },
+  { key: "qmsRequirements",      label: "Kalite Yönetim Sistemi gereklilikleri belirlenmiş mi?",              dept: "management" },
+  { key: "technicalDocs",        label: "Gerekli teknik dokümanlar ve standartlar temin edilebilmiş mi?",     dept: "purchasing" },
+  { key: "quoteValidityPeriod",  label: "Teklifin geçerlilik süresi belirlenmiş mi?",                         dept: "sales" },
+  { key: "contractDisputes",     label: "Sözleşmeden kaynaklanabilecek ihtilaflar durumunda çözüm belirlenmiş mi?", dept: "sales" },
+];
+
+// Departmanlar — accordion başlıkları
+export const EVALUATION_DEPARTMENTS = [
+  { key: "sales",       label: "Satış ve Proje",             icon: "💼", color: "#1e40af", bg: "#eff6ff" },
+  { key: "purchasing",  label: "Satınalma / Tedarik",         icon: "📦", color: "#92400e", bg: "#fef3c7" },
+  { key: "cadCam",      label: "Cad / Cam",                   icon: "🖥",  color: "#7c3aed", bg: "#f5f3ff" },
+  { key: "production",  label: "Üretim",                      icon: "⚙️", color: "#0f766e", bg: "#f0fdfa" },
+  { key: "management",  label: "Kalite / Genel Müdür",        icon: "⭐", color: "#991b1b", bg: "#fef2f2" },
 ];
 
 // Kalem kategorileri — teklife aktarım için 2 grup:
