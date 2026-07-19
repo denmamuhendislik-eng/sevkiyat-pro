@@ -16,7 +16,7 @@ import {
 import { calculateWeightKg } from "../teklifler/quoteCalc";
 import { generateFeasibilityPdf } from "./feasibilityPdf";
 
-export default function Yapilabilirlik({ isAdmin, isUretim, isSales, onCreateQuoteFromFeasibility }) {
+export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, onCreateQuoteFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
   const [activeTab, setActiveTab] = useState("new");
   const [pendingOpen, setPendingOpen] = useState(null); // {study, readOnly}
@@ -54,6 +54,7 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, onCreateQuo
       {activeTab === "new" && (
         <NewFeasibilityView
           canEdit={canEdit} isAdmin={isAdmin} isSales={isSales} isUretim={isUretim}
+          authUser={authUser}
           initialStudy={pendingOpen?.study || null}
           readOnly={!!pendingOpen?.readOnly}
           onSaved={() => { setPendingOpen(null); setActiveTab("list"); }}
@@ -66,16 +67,22 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, onCreateQuo
 
 // ==================== Yeni Yapılabilirlik Form ====================
 
-function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy, readOnly, onSaved }) {
-  const isGM = !!isAdmin; // App.jsx'e ekleyeceğimiz özel GM rol prop'una geçilebilir; şimdilik admin = GM
+function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, initialStudy, readOnly, onSaved }) {
+  const isGM = !!isAdmin; // Şu an admin = GM; ileride ayrı role flag'i eklenebilir
+  const userEmail = authUser?.email || "";
+  const userDisplayRole = isAdmin ? "Genel Müdür"
+    : isSales ? "Satış ve Proje Yöneticisi"
+    : isUretim ? "Üretim Yöneticisi"
+    : "Kullanıcı";
+
   const [studyNo, setStudyNo] = useState("");
   const [study, setStudy] = useState(() => makeEmptyStudy(""));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [saveResult, setSaveResult] = useState(null);
   const [staging, setStaging] = useState(false);
-  const [signRolePicker, setSignRolePicker] = useState(null); // {roleKey}
-  const readonlyForm = readOnly;
+  const [signRolePicker, setSignRolePicker] = useState(null); // {roleKey} — delegate seçici popup
+  const explicitReadOnly = readOnly;
 
   // Teklif modülünden veri subscribe'ları (Faz Y-3D)
   const [customersData, setCustomersData] = useState({ customers: {} });
@@ -390,36 +397,40 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
     }
   };
 
-  const handleSignRole = async (roleKey, signerRoleLabel) => {
+  // Delegate seçici popup — İmzala butonu bunu tetikler.
+  // Kullanıcı hangi role için imzalayacağını seçer (kendi rolü veya delegate).
+  const openSignPicker = (roleKey) => {
     if (!studyNo) { setError("Önce yapılabilirliği kaydet"); return; }
     if (roleKey === GM_ROLE_KEY && !isGM) {
       setError("Genel Müdür imzası için sadece GM yetkilidir");
       return;
     }
+    setSignRolePicker({ roleKey });
+  };
+
+  // Gerçek imza atma — popup'ta "Onayla" basınca çağrılır.
+  // signerRoleLabel: imzayı atan kişinin GERÇEK rolü (audit için)
+  const handleSignRole = async (roleKey, signerRoleLabel) => {
     try {
-      // İmza atanın gerçek rolü — isAdmin/isSales/isUretim'e göre en yakın etiket
-      const actualLabel = signerRoleLabel || (isAdmin ? "Genel Müdür"
-        : isSales ? "Satış ve Proje Yöneticisi"
-        : isUretim ? "Üretim Yöneticisi"
-        : "Kullanıcı");
       await signFeasibilityRole(studyNo, roleKey, {
-        signerName: "kullanıcı",
-        signerRoleLabel: actualLabel,
+        signerName: userEmail || "kullanıcı",
+        signerRoleLabel: signerRoleLabel || userDisplayRole,
         isGeneralManager: isGM,
         canEdit,
         staging,
       });
       // State'i optimist güncelle
+      const targetRoleLabel = FEASIBILITY_ROLES.find(r => r.key === roleKey)?.label;
       setStudy(prev => ({
         ...prev,
         signatures: {
           ...(prev.signatures || {}),
           [roleKey]: {
             signedAt: new Date().toISOString(),
-            signedBy: "kullanıcı",
+            signedBy: userEmail || "kullanıcı",
             signedForRole: roleKey,
-            actualRole: actualLabel,
-            isDelegate: FEASIBILITY_ROLES.find(r => r.key === roleKey)?.label !== actualLabel,
+            actualRole: signerRoleLabel || userDisplayRole,
+            isDelegate: targetRoleLabel !== (signerRoleLabel || userDisplayRole),
           },
         },
       }));
@@ -445,6 +456,10 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
 
   const status = computeStudyStatus(study);
   const sigCount = countSignatures(study);
+  // Kilit mekanizması (Y-4): approved veya converted olan yapılabilirlik form alanları readOnly.
+  // İmza kartları hâlâ tıklanabilir (iptal edilebilir) — kilit sadece form alanlarına.
+  const isLocked = status === "approved" || status === "convertedToQuote";
+  const readonlyForm = explicitReadOnly || isLocked;
 
   const cardStyle = { padding: 14, border: "1px solid #e7e5e4", borderRadius: 6, background: "#fff", marginBottom: 12 };
   const labelStyle = { display: "block", fontSize: 11, color: "#57534e", marginBottom: 3, fontWeight: 500 };
@@ -456,6 +471,24 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
       <div style={{ marginBottom: 12, padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11, color: "#1e40af" }}>
         💡 <b>Yapılabilirlik</b> — müşteri talebi geldiğinde teknik + ticari ekipler değerlendirir. Onaylanınca doğrudan satışçıya düşer, teklife dönüşür.
       </div>
+
+      {/* KİLİT BANNER — Y-4: onaylı yapılabilirlik form kilitli */}
+      {isLocked && (
+        <div style={{ marginBottom: 12, padding: 12, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 4, fontSize: 12, color: "#991b1b", display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 20 }}>🔒</span>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontWeight: 600 }}>
+              {status === "convertedToQuote" ? "Teklife Dönüştü — Kilitli" : "Onaylı — Kilitli"}
+            </div>
+            <div style={{ fontSize: 11, color: "#7f1d1d", marginTop: 2 }}>
+              Form alanları düzenleme kilitli. Değişiklik gerekliyse ekipten bir imzayı iptal et → değerlendirmeye döner.
+              {status === "convertedToQuote" && study.linkedQuoteNo && (
+                <span style={{ marginLeft: 6 }}>Bağlı teklif: <b style={{ fontFamily: "ui-monospace, monospace" }}>{study.linkedQuoteNo}</b></span>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       <div style={{ display: "flex", gap: 10, marginBottom: 12 }}>
         <label style={{ fontSize: 11 }}>
@@ -1056,7 +1089,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
                       {String(sig.signedAt).slice(0, 10)}
                       {sig.isDelegate && <span style={{ display: "block", color: "#d97706" }}>({sig.actualRole} yerine)</span>}
                     </div>
-                    {!readonlyForm && (
+                    {!explicitReadOnly && canEdit && (
                       <button onClick={() => handleUnsignRole(r.key)}
                         style={{ marginTop: 4, padding: "2px 6px", fontSize: 9, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 2, cursor: "pointer" }}>
                         ↺ İptal
@@ -1064,9 +1097,9 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
                     )}
                   </>
                 ) : (
-                  <button onClick={() => canSignThis ? handleSignRole(r.key) : alert("GM imzası için sadece GM yetkilidir")}
-                    disabled={readonlyForm || !canEdit}
-                    style={{ padding: "4px 8px", fontSize: 10, background: canSignThis ? "#1e40af" : "#e7e5e4", color: canSignThis ? "#fff" : "#a8a29e", border: "none", borderRadius: 3, cursor: (readonlyForm || !canEdit || !canSignThis) ? "not-allowed" : "pointer" }}>
+                  <button onClick={() => canSignThis ? openSignPicker(r.key) : alert("GM imzası için sadece GM yetkilidir")}
+                    disabled={!canEdit}
+                    style={{ padding: "4px 8px", fontSize: 10, background: canSignThis ? "#1e40af" : "#e7e5e4", color: canSignThis ? "#fff" : "#a8a29e", border: "none", borderRadius: 3, cursor: (!canEdit || !canSignThis) ? "not-allowed" : "pointer" }}>
                     {canSignThis ? "İmzala" : "Sadece GM"}
                   </button>
                 )}
@@ -1109,6 +1142,75 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
           </button>
         )}
       </div>
+
+      {/* DELEGATE İMZA SEÇİCİ POPUP — Y-4 */}
+      {signRolePicker && (() => {
+        const targetRole = FEASIBILITY_ROLES.find(r => r.key === signRolePicker.roleKey);
+        const isGmRole = signRolePicker.roleKey === GM_ROLE_KEY;
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={(e) => { if (e.target === e.currentTarget) setSignRolePicker(null); }}>
+            <div style={{ background: "#fff", borderRadius: 8, padding: 20, maxWidth: 480, width: "90%", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+              <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 4 }}>
+                ✍️ İmza — <span style={{ color: "#1e40af" }}>{targetRole?.label}</span>
+              </div>
+              <div style={{ fontSize: 11, color: "#78716c", marginBottom: 12 }}>
+                Bu imzayı kim adına atıyorsun?
+              </div>
+
+              {isGmRole ? (
+                // GM için sadece GM
+                <div style={{ padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, color: "#1e40af", fontWeight: 500 }}>
+                    ⭐ Genel Müdür rolü sadece GM tarafından imzalanabilir.
+                  </div>
+                  <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
+                    İmzalayan: <b>{userEmail || "sen"}</b> ({userDisplayRole})
+                  </div>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+                  {/* Seçenek 1: Kendi rolüm için */}
+                  <button onClick={() => handleSignRole(signRolePicker.roleKey, userDisplayRole)}
+                    style={{ padding: 10, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, cursor: "pointer", textAlign: "left" }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#166534" }}>
+                      ✓ Kendi rolüm — <span style={{ color: "#1c1917" }}>{userDisplayRole}</span>
+                    </div>
+                    {targetRole?.label !== userDisplayRole && (
+                      <div style={{ fontSize: 10, color: "#d97706", marginTop: 3 }}>
+                        ⚠ Bu <b>{targetRole?.label}</b> yerine imzalayacaksın (delegate).
+                        PDF'te "({userDisplayRole} yerine)" notu görünür.
+                      </div>
+                    )}
+                  </button>
+                  {/* Seçenek 2: Farklı rol adına imzala */}
+                  <div style={{ fontSize: 10, color: "#78716c", marginTop: 4, marginBottom: 4 }}>
+                    Ya da başka bir rol adına imzala:
+                  </div>
+                  {FEASIBILITY_ROLES.filter(r => r.key !== GM_ROLE_KEY && r.label !== userDisplayRole).map(r => (
+                    <button key={r.key}
+                      onClick={() => handleSignRole(signRolePicker.roleKey, r.label)}
+                      style={{ padding: 8, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 3, cursor: "pointer", textAlign: "left", fontSize: 11 }}>
+                      🎭 <b>{r.label}</b> yerine
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+                <button onClick={() => setSignRolePicker(null)}
+                  style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+                {isGmRole && (
+                  <button onClick={() => handleSignRole(signRolePicker.roleKey, "Genel Müdür")}
+                    style={{ padding: "6px 14px", fontSize: 12, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
+                    ⭐ İmzala
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        );
+      })()}
 
       {/* PARÇA UYGULAMA ONAY MODALI — Faz Y-3D Karar 1-B */}
       {confirmApplyPart && (

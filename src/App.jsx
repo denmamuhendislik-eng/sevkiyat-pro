@@ -3402,7 +3402,7 @@ ${el.innerHTML}
           {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
           {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
           {page==="teklifler"&&canSeeTeklifler&&<Teklifler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} pendingFromFeasibility={pendingQuoteFromFeasibility} onConsumePendingFromFeasibility={()=>setPendingQuoteFromFeasibility(null)} />}
-          {page==="yapilabilirlik"&&canSeeYapilabilirlik&&<Yapilabilirlik isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onCreateQuoteFromFeasibility={(study)=>{ setPendingQuoteFromFeasibility(study); setPage("teklifler"); }} />}
+          {page==="yapilabilirlik"&&canSeeYapilabilirlik&&<Yapilabilirlik isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} authUser={authUser} onCreateQuoteFromFeasibility={(study)=>{ setPendingQuoteFromFeasibility(study); setPage("teklifler"); }} />}
 
           {/* ========== MALIYET PAGE ========== */}
           {page==="maliyet"&&isAdmin&&<Maliyet isAdmin={isAdmin} isUretim={isUretim} />}
