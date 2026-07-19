@@ -20,7 +20,7 @@ import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
-import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY } from './subComponents';
+import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent } from './subComponents';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -3305,6 +3305,22 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
 
   const closeDriveSearch = () => setDriveSearchState(null);
 
+  // Kütüphane geçmişi state: { stokKodu, category, results: [historical], loading }
+  const [historyState, setHistoryState] = useState(null);
+  const openHistoryPicker = (subStokKodu, category) => {
+    const historicals = findHistoricalDocsForSubComponent(cocCertificates?.certificates || {}, subStokKodu, category, { limit: 15, excludeCertNo: certNo });
+    setHistoryState({ stokKodu: subStokKodu, category, results: historicals });
+  };
+  const closeHistoryPicker = () => setHistoryState(null);
+  const useHistoricalDoc = (subStokKodu, category, doc) => {
+    // Aynı Storage path'ini yeniden kullan — dosya kopyası yok, sadece referans.
+    // Silme riski: kaynak COC'un o belgesi silinirse buradaki de kırılır (küçük risk kabul).
+    setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
+      ? { ...s, docs: { ...(s.docs || {}), [category]: { ...doc, category, subStokKodu, source: 'library' } } }
+      : s));
+    closeHistoryPicker();
+  };
+
   const importFromDrive = async (subStokKodu, category, fileId) => {
     if (!certNo) { alert('Önce sertifika no belirle'); return; }
     const key = `${subStokKodu}|${category}`;
@@ -3897,6 +3913,17 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                                             style={{ padding: '3px 6px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
                                             🔍 Drive'dan Öner
                                           </button>
+                                          {(() => {
+                                            const cnt = findHistoricalDocsForSubComponent(cocCertificates?.certificates || {}, s.stokKodu, cat, { limit: 1, excludeCertNo: certNo }).length;
+                                            return cnt > 0 ? (
+                                              <button onClick={() => openHistoryPicker(s.stokKodu, cat)}
+                                                disabled={isUploading || !canEdit}
+                                                title={`Aynı stok kodu için önceki COC'larda ${cnt}+ belge bulundu`}
+                                                style={{ padding: '3px 6px', fontSize: 9, background: '#f0fdf4', color: '#166534', border: '1px solid #86efac', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                                📚 Geçmişten Al ({cnt}+)
+                                              </button>
+                                            ) : null;
+                                          })()}
                                         </div>
                                       )}
                                     </div>
@@ -4033,6 +4060,71 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
             )}
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
               <button onClick={closeDriveSearch}
+                style={{ padding: '6px 14px', fontSize: 12, background: '#f5f5f4', color: '#57534e', border: '1px solid #d6d3d1', borderRadius: 4, cursor: 'pointer' }}>Kapat</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* KÜTÜPHANE GEÇMİŞ SUB-MODAL — Faz 2E-2 */}
+      {historyState && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeHistoryPicker(); }}>
+          <div style={{ background: '#fff', borderRadius: 8, padding: 16, width: '90%', maxWidth: 720, maxHeight: '80vh', display: 'flex', flexDirection: 'column', boxShadow: '0 8px 24px rgba(0,0,0,0.25)' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 6 }}>
+              📚 Kütüphane Geçmişi — <span style={{ fontFamily: 'ui-monospace, monospace', color: '#166534' }}>{historyState.stokKodu}</span>
+              <span style={{ marginLeft: 6, padding: '2px 6px', background: '#f0fdf4', color: '#166534', borderRadius: 3, fontSize: 10, fontWeight: 500 }}>
+                {historyState.category}
+              </span>
+            </div>
+            <div style={{ fontSize: 10, color: '#78716c', marginBottom: 10 }}>
+              Aynı stok kodu için önceki COC'larda kullanılmış belgeler. Seçilen belge referans olarak kullanılır (aynı Storage dosyası — yeni upload yok).
+            </div>
+            {historyState.results.length === 0 && (
+              <div style={{ padding: 20, textAlign: 'center', color: '#a8a29e', fontSize: 11 }}>Önceki COC'larda bu belge bulunamadı</div>
+            )}
+            {historyState.results.length > 0 && (
+              <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #e7e5e4', borderRadius: 4 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead style={{ position: 'sticky', top: 0, background: '#f5f5f4' }}>
+                    <tr style={{ textAlign: 'left', color: '#44403c' }}>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>COC No</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>Sipariş No</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>Ana Parça</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>Belge Adı</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, textAlign: 'right' }}>Tarih</th>
+                      <th style={{ padding: '6px 8px', width: 130 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {historyState.results.map((h, i) => (
+                      <tr key={`${h.certNo}-${h.siraNo}-${i}`} style={{ borderTop: '1px solid #f5f5f4' }}>
+                        <td style={{ padding: '6px 8px', fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 10 }}>{h.certNo}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10 }}>{h.orderNo || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10, color: '#78716c', fontFamily: 'ui-monospace, monospace' }}>{h.parentStokKodu || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10, wordBreak: 'break-all' }}>{h.doc.name}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10, color: '#78716c', textAlign: 'right' }}>{h.controlDate || '—'}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'center' }}>
+                          <div style={{ display: 'flex', gap: 4, justifyContent: 'flex-end' }}>
+                            <a href={h.doc.url} target="_blank" rel="noreferrer"
+                              style={{ padding: '3px 6px', fontSize: 9, background: '#f5f5f4', color: '#57534e', border: '1px solid #d6d3d1', borderRadius: 3, textDecoration: 'none' }}>
+                              👁 Aç
+                            </a>
+                            <button onClick={() => useHistoricalDoc(historyState.stokKodu, historyState.category, h.doc)}
+                              disabled={!canEdit}
+                              style={{ padding: '3px 8px', fontSize: 9, background: '#166534', color: '#fff', border: 'none', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', fontWeight: 500 }}>
+                              ✓ Kullan
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+              <button onClick={closeHistoryPicker}
                 style={{ padding: '6px 14px', fontSize: 12, background: '#f5f5f4', color: '#57534e', border: '1px solid #d6d3d1', borderRadius: 4, cursor: 'pointer' }}>Kapat</button>
             </div>
           </div>

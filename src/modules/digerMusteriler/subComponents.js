@@ -118,6 +118,43 @@ export function classifySubComponents(list, cocParts) {
 export const DOC_TYPES_MAKE = ["hammaddeSertifikasi", "olcumRaporu", "fasonSertifikasi"];
 export const DOC_TYPES_BUY = ["tedarikciCoc"];
 
+// Aynı alt bileşen stokKodu için kütüphane geçmişi: mevcut cocCertificates'tan
+// aynı stokKodu'nun daha önce yüklenmiş belgelerini topla.
+//
+// Dönüş: [{ certNo, siraNo, orderNo, controlDate, docs: {category: {url, path, name}} }]
+// En yeni COC önce, sadece bu category için belgesi olan cert'ler.
+export function findHistoricalDocsForSubComponent(certificates, subStokKodu, category, { limit = 10, excludeCertNo = null } = {}) {
+  if (!certificates || typeof certificates !== "object") return [];
+  const results = [];
+  for (const cert of Object.values(certificates)) {
+    if (!cert?.certNo) continue;
+    if (excludeCertNo && cert.certNo === excludeCertNo) continue;
+    const subs = Array.isArray(cert.subComponents) ? cert.subComponents : [];
+    for (const s of subs) {
+      if (s?.stokKodu !== subStokKodu) continue;
+      const doc = s?.docs?.[category];
+      if (!doc?.url || !doc?.path) continue;
+      results.push({
+        certNo: cert.certNo,
+        siraNo: cert.siraNo || "1",
+        orderNo: cert.orderNo || "",
+        controlDate: cert.controlDateIso || cert.controlDate || "",
+        parentStokKodu: cert.stokKodu || "",
+        doc: {
+          url: doc.url,
+          path: doc.path,
+          name: doc.name || "dosya.pdf",
+          size: doc.size || 0,
+          uploadedAt: doc.uploadedAt || "",
+        },
+      });
+    }
+  }
+  // En yeni önce
+  results.sort((a, b) => (b.controlDate || "").localeCompare(a.controlDate || ""));
+  return results.slice(0, limit);
+}
+
 // Alt bileşen belge kategorisi → Drive/COC master kategorisi eşleşmesi.
 // searchCocDrive backend'i mevcut COC kategorilerini bekliyor (driveConfig.foldersByCategory).
 // Alt bileşen için de aynı Drive klasörlerini yeniden kullanıyoruz — kullanıcının
