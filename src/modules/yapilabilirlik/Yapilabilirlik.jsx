@@ -9,6 +9,11 @@ import {
   ITEM_CATEGORIES, SOURCE_TYPES, WORK_TYPES, DECISIONS, RECEIVED_DATA_TYPES,
   makeEmptyStudy, makeEmptyItem,
 } from "./schema";
+import {
+  subscribeQuoteCustomers, subscribeQuoteParts, subscribeQuoteMaterials,
+  subscribeQuotesForYear, saveQuoteCustomer, saveQuotePart,
+} from "../teklifler/firestore";
+import { calculateWeightKg } from "../teklifler/quoteCalc";
 
 export default function Yapilabilirlik({ isAdmin, isUretim, isSales }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
@@ -70,6 +75,135 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
   const [staging, setStaging] = useState(false);
   const [signRolePicker, setSignRolePicker] = useState(null); // {roleKey}
   const readonlyForm = readOnly;
+
+  // Teklif modülünden veri subscribe'ları (Faz Y-3D)
+  const [customersData, setCustomersData] = useState({ customers: {} });
+  const [partsLib, setPartsLib] = useState({ parts: {} });
+  const [materialsData, setMaterialsData] = useState({ materials: {} });
+  const [quotesForYear, setQuotesForYear] = useState({ quotes: {} });
+  const currentYear = String(new Date().getFullYear());
+
+  useEffect(() => {
+    const u1 = subscribeQuoteCustomers(d => setCustomersData(d || { customers: {} }), { staging });
+    const u2 = subscribeQuoteParts(d => setPartsLib(d || { parts: {} }), { staging });
+    const u3 = subscribeQuoteMaterials(d => setMaterialsData(d || { materials: {} }), { staging });
+    const u4 = subscribeQuotesForYear(currentYear, d => setQuotesForYear(d || { quotes: {} }), { staging });
+    return () => { u1(); u2(); u3(); u4(); };
+  }, [staging, currentYear]);
+
+  const customerList = useMemo(() => Object.values(customersData?.customers || {}), [customersData]);
+  const materialList = useMemo(() => Object.values(materialsData?.materials || {}), [materialsData]);
+
+  // Müşteri seçilince otomatik doldurma
+  const applyCustomer = (name) => {
+    update("customerName", name);
+    const c = customersData?.customers?.[name];
+    if (c) {
+      if (c.code) update("customerCode", c.code);
+      if (c.phone) update("customerContact", c.phone);
+      if (c.email) update("customerEmail", c.email);
+    }
+  };
+
+  // Parça arama (Faz Y-3D)
+  const [partSearchOpen, setPartSearchOpen] = useState(false);
+  const [partSearchQuery, setPartSearchQuery] = useState("");
+  const [confirmApplyPart, setConfirmApplyPart] = useState(null); // parça objesi
+
+  const partSearchResults = useMemo(() => {
+    const q = partSearchQuery.trim().toLocaleLowerCase("tr-TR");
+    if (!q || q.length < 2) return [];
+    const arr = Object.values(partsLib?.parts || {});
+    return arr.filter(p =>
+      (p.stokKodu || "").toLocaleLowerCase("tr-TR").includes(q) ||
+      (p.stokAdi || "").toLocaleLowerCase("tr-TR").includes(q) ||
+      (p.musteriKodu || "").toLocaleLowerCase("tr-TR").includes(q)
+    ).slice(0, 15);
+  }, [partSearchQuery, partsLib]);
+
+  const applyPart = (part) => {
+    // Kullanıcı onayı ile mevcut değerlerin üzerine yazılır (Karar 1-B)
+    setStudy(prev => {
+      const next = { ...prev };
+      next.stockCode = part.stokKodu || "";
+      next.partNo = part.stokKodu || next.partNo;
+      next.partName = part.stokAdi || next.partName;
+      next.musteriKodu = part.musteriKodu || "";
+      // Hammadde
+      if (part.hammadde) {
+        if (part.hammadde.tur) next.materialType = part.hammadde.tur;
+        if (part.hammadde.agirlikKg) next.weightKg = Number(part.hammadde.agirlikKg) || 0;
+        // Ebat "EN:20 × BOY:30 × UZ:100" formatındaysa parse et
+        if (typeof part.hammadde.ebat === "string") {
+          const m = part.hammadde.ebat;
+          const en = m.match(/EN\s*:?\s*(\d+(?:[.,]\d+)?)/i);
+          const boy = m.match(/BOY\s*:?\s*(\d+(?:[.,]\d+)?)/i);
+          const uz = m.match(/UZ(?:UNLUK)?\s*:?\s*(\d+(?:[.,]\d+)?)/i);
+          next.dimensions = {
+            en: en ? Number(String(en[1]).replace(",", ".")) || 0 : 0,
+            boy: boy ? Number(String(boy[1]).replace(",", ".")) || 0 : 0,
+            uzunluk: uz ? Number(String(uz[1]).replace(",", ".")) || 0 : 0,
+          };
+        }
+      }
+      // Şekil bilgisi materialsData'dan malzeme türüne göre
+      const mat = materialsData?.materials?.[next.materialType];
+      if (mat?.shape) next.materialShape = mat.shape;
+      // Operasyonlar (varsa) — operations.details'a yerleştir
+      if (part.operasyonlar) {
+        const makineler = String(part.operasyonlar.makineler || "").split(/[,;/]/).map(s => s.trim()).filter(Boolean);
+        const toplam = Number(part.operasyonlar.toplamSureDk) || 0;
+        if (makineler.length > 0) {
+          const per = toplam / makineler.length;
+          next.operations = {
+            ...(prev.operations || {}),
+            count: makineler.length,
+            totalMinutes: toplam,
+            details: makineler.map(m => ({ operationName: "", machine: m, minutes: per })),
+          };
+        }
+      }
+      // Fason işleri
+      if (part.fason?.isler) {
+        const iskeleti = String(part.fason.isler).split(/[,;/]/).map(s => s.trim()).filter(Boolean);
+        if (iskeleti.length > 0) {
+          next.fasonItems = iskeleti.map(name => ({ ...makeEmptyItem(), name }));
+        }
+      }
+      // Aparat
+      if (part.aparat?.varMi && Number(part.aparat.maliyet) > 0) {
+        next.toolingItems = [{
+          ...makeEmptyItem(),
+          name: part.aparat.aciklama || (part.stokAdi ? `${part.stokAdi} — Aparat` : "Aparat"),
+          unitCost: Number(part.aparat.maliyet) || 0,
+        }];
+      }
+      return next;
+    });
+    setConfirmApplyPart(null);
+    setPartSearchOpen(false);
+    setPartSearchQuery("");
+  };
+
+  // Referans teklifler — seçilen parça için son 12 aylık teklif geçmişi
+  const referenceQuotes = useMemo(() => {
+    if (!study.stockCode) return [];
+    const all = Object.values(quotesForYear?.quotes || {});
+    return all
+      .filter(q => (q.lines || []).some(l => l.stockCode === study.stockCode))
+      .sort((a, b) => (b.quoteDate || "").localeCompare(a.quoteDate || ""))
+      .slice(0, 5);
+  }, [study.stockCode, quotesForYear]);
+
+  // Ağırlık otomatik hesap (calculateWeightKg helper'ı ile)
+  const selectedMaterialMaster = materialsData?.materials?.[study.materialType];
+  const autoWeightKg = useMemo(() => calculateWeightKg({
+    shape: study.materialShape || selectedMaterialMaster?.shape,
+    en: study.dimensions?.en,
+    boy: study.dimensions?.boy,
+    uzunluk: study.dimensions?.uzunluk,
+    density: selectedMaterialMaster?.density,
+  }), [study.materialShape, study.dimensions, selectedMaterialMaster]);
 
   useEffect(() => {
     if (initialStudy) {
@@ -200,6 +334,52 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
     try {
       const payload = { ...study, studyNo };
       const out = await saveFeasibilityStudy(payload, { canEdit, staging, userEmail: "" });
+
+      // Yeni müşteri ise quoteCustomers'a otomatik ekle (Karar 4)
+      if (study.customerName && !customersData?.customers?.[study.customerName]) {
+        try {
+          await saveQuoteCustomer(study.customerName, {
+            name: study.customerName,
+            phone: study.customerContact || "",
+            email: study.customerEmail || "",
+          }, { canEdit, staging });
+        } catch (e) {
+          console.warn("Müşteri kütüphaneye eklenemedi:", e.message);
+        }
+      }
+
+      // Yeni parça ise quoteParts'a otomatik ekle
+      const partCode = (study.partNo || study.stockCode || "").trim();
+      if (partCode && !partsLib?.parts?.[partCode]) {
+        try {
+          const machineNames = (study.operations?.details || []).map(d => d.machine).filter(Boolean).join(",");
+          const totalMin = (study.operations?.details || []).reduce((s, d) => s + (Number(d.minutes) || 0), 0) || Number(study.operations?.totalMinutes) || 0;
+          const fasonNames = (study.fasonItems || []).map(f => f.name).filter(Boolean).join(",");
+          const fasonToplam = (study.fasonItems || []).reduce((s, f) => s + (Number(f.qty) || 0) * (Number(f.unitCost) || 0), 0);
+          const aparatToplam = (study.toolingItems || []).reduce((s, t) => s + (Number(t.qty) || 0) * (Number(t.unitCost) || 0), 0);
+          const enV = Number(study.dimensions?.en) || 0, boyV = Number(study.dimensions?.boy) || 0, uzV = Number(study.dimensions?.uzunluk) || 0;
+          await saveQuotePart(partCode, {
+            stokKodu: partCode,
+            stokAdi: study.partName || "",
+            musteriKodu: study.musteriKodu || "",
+            hammadde: {
+              tur: study.materialType || study.material || "",
+              ebat: (enV || boyV || uzV) ? `EN:${enV} × BOY:${boyV} × UZ:${uzV}` : "",
+              agirlikKg: Number(study.weightKg) || 0,
+            },
+            operasyonlar: { makineler: machineNames, toplamSureDk: totalMin },
+            fason: { isler: fasonNames, tahminiToplam: fasonToplam },
+            aparat: { varMi: aparatToplam > 0, aciklama: "", maliyet: aparatToplam },
+            sonMusteri: study.customerName,
+            sonTeklifTarihi: new Date().toISOString().slice(0, 10),
+            sonTeklifNo: `FEAS-${studyNo}`,
+            createdBy: "feasibility",
+          }, { canEdit, staging });
+        } catch (e) {
+          console.warn("Parça kütüphaneye eklenemedi:", e.message);
+        }
+      }
+
       setSaveResult({ ok: true, ...out, message: `Yapılabilirlik kaydedildi: ${studyNo}` });
       onSaved && onSaved();
     } catch (e) {
@@ -294,7 +474,80 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
         </div>
       </div>
 
-      {/* KAPAK */}
+      {/* PARÇA ARAMA — Faz Y-3D */}
+      <div style={{ ...cardStyle, background: "#f0f9ff", border: "1px solid #bfdbfe" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>🔍 Parça Ara / Ekle</div>
+          {study.stockCode && (
+            <span style={{ padding: "2px 8px", background: "#dbeafe", color: "#1e40af", borderRadius: 3, fontSize: 10, fontWeight: 500 }}>
+              Kütüphaneden: <b style={{ fontFamily: "ui-monospace, monospace" }}>{study.stockCode}</b>
+            </span>
+          )}
+        </div>
+        <div style={{ position: "relative" }}>
+          <input
+            value={partSearchQuery}
+            onChange={e => { setPartSearchQuery(e.target.value); setPartSearchOpen(true); }}
+            onFocus={() => setPartSearchOpen(true)}
+            placeholder="Stok kodu, parça adı veya müşteri kodu ile ara (en az 2 karakter)..."
+            disabled={readonlyForm}
+            style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }}
+          />
+          {partSearchOpen && partSearchResults.length > 0 && (
+            <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 2, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 4, boxShadow: "0 4px 8px rgba(0,0,0,0.08)", zIndex: 10, maxHeight: 300, overflowY: "auto" }}>
+              {partSearchResults.map(p => (
+                <div key={p.stokKodu}
+                  onClick={() => setConfirmApplyPart(p)}
+                  style={{ padding: 8, borderBottom: "1px solid #f5f5f4", cursor: "pointer" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f5f5f4"}
+                  onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                    <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, fontWeight: 500 }}>{p.stokKodu}</span>
+                    {p.musteriKodu && <span style={{ fontSize: 9, color: "#78716c", padding: "1px 5px", background: "#f5f5f4", borderRadius: 2 }}>müş: {p.musteriKodu}</span>}
+                    <span style={{ padding: "1px 5px", background: "#dcfce7", color: "#166534", borderRadius: 2, fontSize: 9, fontWeight: 500 }}>
+                      {p.kullanimSayisi || 0}× kullanıldı
+                    </span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#44403c", marginTop: 2 }}>{p.stokAdi || "—"}</div>
+                  <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>
+                    Son teklif: {p.sonTeklifTarihi || "—"} · {p.sonMusteri || "?"}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+          {partSearchOpen && partSearchQuery.length >= 2 && partSearchResults.length === 0 && (
+            <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 2, padding: 12, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e", zIndex: 10 }}>
+              🆕 Bu arama için parça bulunamadı — bu **yeni** bir parça. Aşağıdaki formu manuel doldurabilirsin. Kayıt sonrası kütüphaneye eklenir.
+            </div>
+          )}
+        </div>
+        {partSearchOpen && (
+          <button onClick={() => setPartSearchOpen(false)}
+            style={{ marginTop: 6, padding: "2px 8px", fontSize: 10, background: "transparent", color: "#78716c", border: "none", cursor: "pointer" }}>
+            × arama kapat
+          </button>
+        )}
+
+        {/* Referans teklifler */}
+        {study.stockCode && referenceQuotes.length > 0 && (
+          <div style={{ marginTop: 8, padding: 8, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#44403c", marginBottom: 4 }}>🎯 Referans Teklifler ({currentYear})</div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+              {referenceQuotes.map((q, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", fontSize: 10, color: "#57534e" }}>
+                  <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{q.quoteNo}</span>
+                  <span>{q.customerName}</span>
+                  <span style={{ color: "#78716c" }}>{q.quoteDate}</span>
+                  <span style={{ marginLeft: "auto", fontWeight: 600 }}>{Number(q.totalPriceTl || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {q.currency || "TL"}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* KAPAK — Bilgi */}
       <div style={cardStyle}>
         <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>1️⃣ Bilgi</div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
@@ -308,7 +561,12 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
           </div>
           <div>
             <label style={labelStyle}>Müşteri Adı *</label>
-            <input value={study.customerName || ""} onChange={e => update("customerName", e.target.value)} disabled={readonlyForm} style={inputStyle} />
+            <input list="feasibilityCustomerList" value={study.customerName || ""} onChange={e => applyCustomer(e.target.value)} disabled={readonlyForm} style={inputStyle} placeholder="Yaz veya listeden seç" />
+            <datalist id="feasibilityCustomerList">
+              {customerList.map(c => (
+                <option key={c.name} value={c.name}>{c.totalQuotes || 0} teklif · son: {c.lastQuoteDate || "—"}</option>
+              ))}
+            </datalist>
           </div>
           <div>
             <label style={labelStyle}>Müşteri Kodu</label>
@@ -319,24 +577,24 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
             <input value={study.partName || ""} onChange={e => update("partName", e.target.value)} disabled={readonlyForm} style={inputStyle} />
           </div>
           <div>
-            <label style={labelStyle}>Parça No</label>
+            <label style={labelStyle}>Parça No / Stok Kodu</label>
             <input value={study.partNo || ""} onChange={e => update("partNo", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} />
           </div>
           <div>
-            <label style={labelStyle}>Malzeme</label>
-            <input value={study.material || ""} onChange={e => update("material", e.target.value)} disabled={readonlyForm} style={inputStyle} />
+            <label style={labelStyle}>Müşteri Parça Kodu</label>
+            <input value={study.musteriKodu || ""} onChange={e => update("musteriKodu", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} />
           </div>
           <div>
             <label style={labelStyle}>Müşteri Teklif No</label>
             <input value={study.customerQuoteNo || ""} onChange={e => update("customerQuoteNo", e.target.value)} disabled={readonlyForm} style={inputStyle} />
           </div>
           <div>
-            <label style={labelStyle}>Müşteri İrtibat</label>
+            <label style={labelStyle}>Müşteri İrtibat (tel)</label>
             <input value={study.customerContact || ""} onChange={e => update("customerContact", e.target.value)} disabled={readonlyForm} style={inputStyle} />
           </div>
           <div>
-            <label style={labelStyle}>Yardımcı Malzeme</label>
-            <input value={study.otherMaterials || ""} onChange={e => update("otherMaterials", e.target.value)} disabled={readonlyForm} style={inputStyle} />
+            <label style={labelStyle}>Müşteri E-posta</label>
+            <input value={study.customerEmail || ""} onChange={e => update("customerEmail", e.target.value)} disabled={readonlyForm} style={inputStyle} />
           </div>
           <div style={{ gridColumn: "span 2" }}>
             <label style={labelStyle}>Sevkiyat Adresi</label>
@@ -371,6 +629,81 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
                 </label>
               ))}
             </div>
+          </div>
+        </div>
+      </div>
+
+      {/* HAMMADDE BLOĞU — Faz Y-3D */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>🧱 Hammadde Bilgisi</div>
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
+          Malzeme türü + ölçüler + ağırlık — bu bilgiler teklife hammadde olarak birebir aktarılır.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
+          <div>
+            <label style={labelStyle}>Malzeme Türü</label>
+            <input list="feasibilityMaterialList" value={study.materialType || ""} onChange={e => update("materialType", e.target.value)} disabled={readonlyForm} style={inputStyle} placeholder="AL-6061..." />
+            <datalist id="feasibilityMaterialList">
+              {materialList.map(m => (
+                <option key={m.name} value={m.name}>{m.shape} · {m.priceTlPerKg}TL/kg</option>
+              ))}
+            </datalist>
+            {selectedMaterialMaster && (
+              <div style={{ fontSize: 9, color: "#1e40af", marginTop: 2 }}>
+                💡 {selectedMaterialMaster.shape} · özgül {selectedMaterialMaster.density} · <b>{Number(selectedMaterialMaster.priceTlPerKg || 0).toFixed(2)} TL/kg</b>
+              </div>
+            )}
+          </div>
+          <div>
+            <label style={labelStyle}>Şekil</label>
+            <select value={study.materialShape || selectedMaterialMaster?.shape || ""} onChange={e => update("materialShape", e.target.value)} disabled={readonlyForm} style={inputStyle}>
+              <option value="">—</option>
+              <option value="DİKDÖRTGEN">DİKDÖRTGEN</option>
+              <option value="SİLİNDİR">SİLİNDİR</option>
+              <option value="ALTIGEN">ALTIGEN</option>
+              <option value="EBATSIZ">EBATSIZ</option>
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>EN (mm)</label>
+            <input type="number" value={study.dimensions?.en || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), en: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>BOY (mm)</label>
+            <input type="number" value={study.dimensions?.boy || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), boy: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>UZUNLUK (mm)</label>
+            <input type="number" value={study.dimensions?.uzunluk || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), uzunluk: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Ağırlık kg <span style={{ fontSize: 9, color: "#78716c" }}>(auto)</span></label>
+            <input type="number" step="0.001"
+              value={study.weightKg || 0}
+              onChange={e => update("weightKg", Number(e.target.value) || 0)}
+              placeholder={autoWeightKg > 0 ? autoWeightKg.toFixed(3) : "0.000"}
+              disabled={readonlyForm}
+              style={{ ...inputStyle, background: "#fef3c7" }} />
+            {autoWeightKg > 0 && Math.abs((study.weightKg || 0) - autoWeightKg) > 0.001 && (
+              <button onClick={() => update("weightKg", Number(autoWeightKg.toFixed(4)))} disabled={readonlyForm}
+                style={{ marginTop: 2, padding: "2px 6px", fontSize: 9, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, cursor: "pointer" }}>
+                ↺ auto: {autoWeightKg.toFixed(3)}
+              </button>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 3fr", gap: 8, marginTop: 8 }}>
+          <div>
+            <label style={labelStyle}>Sipariş Miktarı</label>
+            <input type="number" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Malzeme Notu (eski alan)</label>
+            <input value={study.material || ""} onChange={e => update("material", e.target.value)} disabled={readonlyForm} placeholder="opsiyonel" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Yardımcı Malzeme</label>
+            <input value={study.otherMaterials || ""} onChange={e => update("otherMaterials", e.target.value)} disabled={readonlyForm} style={inputStyle} />
           </div>
         </div>
       </div>
@@ -761,6 +1094,43 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
             style={{ padding: "8px 20px", fontSize: 13, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: saving ? "wait" : (canEdit ? "pointer" : "not-allowed"), fontWeight: 500 }}>
             {saving ? "Kaydediliyor..." : "💾 Kaydet"}
           </button>
+        </div>
+      )}
+
+      {/* PARÇA UYGULAMA ONAY MODALI — Faz Y-3D Karar 1-B */}
+      {confirmApplyPart && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setConfirmApplyPart(null); }}>
+          <div style={{ background: "#fff", borderRadius: 8, padding: 20, maxWidth: 500, width: "90%", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#1e40af", marginBottom: 10 }}>
+              🔄 Bu parçadan doldur?
+            </div>
+            <div style={{ fontSize: 12, marginBottom: 12 }}>
+              <div style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{confirmApplyPart.stokKodu}</div>
+              <div style={{ color: "#57534e", marginTop: 2 }}>{confirmApplyPart.stokAdi || "—"}</div>
+              <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
+                Son teklif: {confirmApplyPart.sonTeklifTarihi || "—"} · {confirmApplyPart.sonMusteri || "?"}
+              </div>
+            </div>
+            <div style={{ fontSize: 11, color: "#92400e", padding: 10, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, marginBottom: 12 }}>
+              ⚠ Aşağıdaki alanlar bu parçadan gelen değerlerle <b>üzerine yazılacak</b>:
+              <ul style={{ margin: "4px 0 0 20px", padding: 0, fontSize: 10 }}>
+                <li>Parça No, Parça Adı, Müşteri Parça Kodu</li>
+                <li>Hammadde (tür, ölçüler, ağırlık)</li>
+                <li>Operasyonlar (makine listesi, süre)</li>
+                <li>Aparat kalemi (varsa maliyet)</li>
+                <li>Fason iş listesi (fiyatları elle güncelle)</li>
+              </ul>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              <button onClick={() => setConfirmApplyPart(null)}
+                style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+              <button onClick={() => applyPart(confirmApplyPart)}
+                style={{ padding: "6px 14px", fontSize: 12, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
+                ✓ Evet, Doldur
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>

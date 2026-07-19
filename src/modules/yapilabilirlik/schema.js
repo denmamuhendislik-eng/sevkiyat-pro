@@ -107,9 +107,18 @@ export function makeEmptyStudy(studyNo) {
     customerCode: "",
     customerName: "",
     customerContact: "",
+    customerEmail: "",
     partNo: "",
     partName: "",
-    material: "",
+    stockCode: "",       // Sevkiyat Pro parça kütüphanesi kodu (aramadan gelir)
+    musteriKodu: "",     // Müşterinin kendi parça kodu
+    material: "",        // eski alan (backward-compat)
+    // YENİ hammadde bloğu (Faz Y-3D)
+    materialType: "",    // quoteMaterials.materials key (AL-6061 vb.)
+    materialShape: "",   // DİKDÖRTGEN | SİLİNDİR | ALTIGEN | EBATSIZ
+    dimensions: { en: 0, boy: 0, uzunluk: 0 },
+    weightKg: 0,         // otomatik hesap veya manuel override
+    quantity: 1,         // sipariş adedi
     customerQuoteNo: "",
     otherMaterials: "",
     otherQualityRequirements: "",
