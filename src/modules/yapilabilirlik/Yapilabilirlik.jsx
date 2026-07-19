@@ -5,8 +5,8 @@ import {
   FEASIBILITY_ROLES, GM_ROLE_KEY, computeStudyStatus, countSignatures,
 } from "./firestore";
 import {
-  EVALUATION_QUESTIONS, PRODUCT_DIMENSIONS, WORK_TYPES, DECISIONS,
-  RECEIVED_DATA_TYPES, makeEmptyStudy,
+  EVALUATION_QUESTIONS, PRODUCT_DIMENSIONS, ITEM_CATEGORIES, SOURCE_TYPES,
+  WORK_TYPES, DECISIONS, RECEIVED_DATA_TYPES, makeEmptyStudy, makeEmptyItem,
 } from "./schema";
 
 export default function Yapilabilirlik({ isAdmin, isUretim, isSales }) {
@@ -99,7 +99,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
   }));
   const removeDemand = (idx) => setStudy(prev => ({ ...prev, demands: (prev.demands || []).filter((_, i) => i !== idx) }));
 
-  // Ürün detayı tablosu
+  // Ürün detayı tablosu (eski yapı — geri uyumluluk için, yeni formda kullanılmıyor)
   const addProduct = () => setStudy(prev => {
     const nextNo = (prev.productDetails || []).length + 1;
     return { ...prev, productDetails: [...(prev.productDetails || []), { no: nextNo, partCode: "", partName: "" }] };
@@ -112,6 +112,27 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
     ...prev,
     productDetails: (prev.productDetails || []).filter((_, i) => i !== idx).map((p, i) => ({ ...p, no: i + 1 })),
   }));
+
+  // YENİ (Faz Y-3A): kalem detay tabloları — tooling ve fason ayrı array'ler
+  const addItem = (category) => setStudy(prev => {
+    const arrKey = category === "tooling" ? "toolingItems" : "fasonItems";
+    return { ...prev, [arrKey]: [...(prev[arrKey] || []), makeEmptyItem()] };
+  });
+  const updateItem = (category, idx, key, value) => setStudy(prev => {
+    const arrKey = category === "tooling" ? "toolingItems" : "fasonItems";
+    return {
+      ...prev,
+      [arrKey]: (prev[arrKey] || []).map((it, i) => i === idx ? { ...it, [key]: value } : it),
+    };
+  });
+  const removeItem = (category, idx) => setStudy(prev => {
+    const arrKey = category === "tooling" ? "toolingItems" : "fasonItems";
+    return { ...prev, [arrKey]: (prev[arrKey] || []).filter((_, i) => i !== idx) };
+  });
+
+  // Kalem toplamları (UI özet için)
+  const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
+  const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
 
   const handleSave = async () => {
     if (readonlyForm) return;
@@ -362,83 +383,107 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
         </table>
       </div>
 
-      {/* ÜRÜN DETAYI */}
-      <div style={cardStyle}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
-          <div style={{ fontSize: 13, fontWeight: 600 }}>4️⃣ Ürün Detayı (FR-71.2)</div>
-          <button onClick={addProduct} disabled={readonlyForm} style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>+ Ürün Ekle</button>
-        </div>
-        {(study.productDetails || []).length === 0 ? (
-          <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Henüz ürün yok</div>
-        ) : (
-          <div style={{ overflowX: "auto" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10, minWidth: 900 }}>
-              <thead>
-                <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
-                  <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9, width: 30 }}>NO</th>
-                  <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9 }}>Parça Kodu</th>
-                  <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9 }}>Parça Adı</th>
-                  {PRODUCT_DIMENSIONS.map(d => (
-                    <th key={d.key} colSpan={d.hasSourceType ? 3 : 2} style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9, textAlign: "center", borderLeft: "1px solid #e7e5e4" }}>
-                      {d.label}
-                    </th>
-                  ))}
-                  <th style={{ padding: "5px 6px", width: 30 }}></th>
-                </tr>
-                <tr style={{ background: "#fafaf9", textAlign: "left", color: "#78716c" }}>
-                  <th colSpan="3"></th>
-                  {PRODUCT_DIMENSIONS.map(d => (
-                    <>
-                      <th key={`${d.key}_ans`} style={{ padding: "3px 6px", fontSize: 8, textAlign: "center", borderLeft: "1px solid #e7e5e4" }}>E/H</th>
-                      <th key={`${d.key}_cost`} style={{ padding: "3px 6px", fontSize: 8, textAlign: "right" }}>Birim TL</th>
-                      {d.hasSourceType && <th key={`${d.key}_src`} style={{ padding: "3px 6px", fontSize: 8, textAlign: "center" }}>Kaynak</th>}
-                    </>
-                  ))}
-                  <th></th>
-                </tr>
-              </thead>
-              <tbody>
-                {(study.productDetails || []).map((p, i) => (
-                  <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
-                    <td style={{ padding: "3px 6px", fontWeight: 600, textAlign: "center", color: "#1e40af" }}>{p.no}</td>
-                    <td style={{ padding: "3px 4px" }}><input value={p.partCode || ""} onChange={e => updateProduct(i, "partCode", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, fontFamily: "ui-monospace, monospace", border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
-                    <td style={{ padding: "3px 4px" }}><input value={p.partName || ""} onChange={e => updateProduct(i, "partName", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
-                    {PRODUCT_DIMENSIONS.map(d => {
-                      const ansKey = d.key;
-                      const costKey = `${d.key}UnitCost`;
-                      const srcKey = `${d.key}SourceType`;
+      {/* KALEM DETAYI — Aparat/Takım/Model/Ölçme + Fason (Faz Y-3A) */}
+      {ITEM_CATEGORIES.map(cat => {
+        const arrKey = cat.key === "tooling" ? "toolingItems" : "fasonItems";
+        const items = study[arrKey] || [];
+        const total = cat.key === "tooling" ? toolingTotal : fasonTotal;
+        return (
+          <div key={cat.key} style={cardStyle}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+              <div style={{ fontSize: 13, fontWeight: 600 }}>
+                {cat.icon} {cat.label}
+                {items.length > 0 && (
+                  <span style={{ marginLeft: 8, fontSize: 11, color: "#57534e", fontWeight: 500 }}>
+                    · {items.length} kalem · Toplam: <b>{total.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL</b>
+                  </span>
+                )}
+              </div>
+              <button onClick={() => addItem(cat.key)} disabled={readonlyForm}
+                style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>
+                + Kalem Ekle
+              </button>
+            </div>
+            <div style={{ fontSize: 10, color: "#78716c", marginBottom: 8 }}>{cat.description}</div>
+            {items.length === 0 ? (
+              <div style={{ padding: 16, textAlign: "center", color: "#a8a29e", fontSize: 11, background: "#fafaf9", borderRadius: 4 }}>Henüz kalem yok</div>
+            ) : (
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, minWidth: 780 }}>
+                  <thead>
+                    <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9 }}>Ad</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9 }}>Açıklama</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9, width: 60, textAlign: "right" }}>Adet</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9, width: 90, textAlign: "right" }}>Birim TL</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9, width: 90, textAlign: "right" }}>Tutar</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9, width: 90 }}>Tedarik</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9 }}>Tedarikçi</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 9, width: 70, textAlign: "right" }}>Termin (gün)</th>
+                      <th style={{ padding: "5px 6px", width: 30 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {items.map((it, i) => {
+                      const lineTotal = (Number(it.qty) || 0) * (Number(it.unitCost) || 0);
                       return (
-                        <>
-                          <td key={`${d.key}_a`} style={{ padding: "3px 4px", textAlign: "center", borderLeft: "1px solid #e7e5e4" }}>
-                            <select value={p[ansKey] || ""} onChange={e => updateProduct(i, ansKey, e.target.value)} disabled={readonlyForm} style={{ width: 55, padding: 2, fontSize: 9, border: "1px solid #d6d3d1", borderRadius: 2 }}>
-                              <option value="">—</option>
-                              <option value="yes">EVET</option>
-                              <option value="no">HAYIR</option>
+                        <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
+                          <td style={{ padding: "3px 4px" }}>
+                            <input value={it.name || ""} onChange={e => updateItem(cat.key, i, "name", e.target.value)} disabled={readonlyForm}
+                              placeholder="örn. Bağlama fikstürü" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          </td>
+                          <td style={{ padding: "3px 4px" }}>
+                            <input value={it.description || ""} onChange={e => updateItem(cat.key, i, "description", e.target.value)} disabled={readonlyForm}
+                              placeholder="ebat/özellik" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          </td>
+                          <td style={{ padding: "3px 4px" }}>
+                            <input type="number" step="1" value={it.qty || 0} onChange={e => updateItem(cat.key, i, "qty", Number(e.target.value) || 0)} disabled={readonlyForm}
+                              style={{ width: "100%", padding: 3, fontSize: 10, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          </td>
+                          <td style={{ padding: "3px 4px" }}>
+                            <input type="number" step="0.01" value={it.unitCost || 0} onChange={e => updateItem(cat.key, i, "unitCost", Number(e.target.value) || 0)} disabled={readonlyForm}
+                              style={{ width: "100%", padding: 3, fontSize: 10, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          </td>
+                          <td style={{ padding: "3px 6px", textAlign: "right", fontWeight: 600, color: "#166534", fontVariantNumeric: "tabular-nums" }}>
+                            {lineTotal.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </td>
+                          <td style={{ padding: "3px 4px" }}>
+                            <select value={it.sourceType || "direct"} onChange={e => updateItem(cat.key, i, "sourceType", e.target.value)} disabled={readonlyForm}
+                              style={{ width: "100%", padding: 2, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2, background: "#fff" }}>
+                              {SOURCE_TYPES.map(s => <option key={s.key} value={s.key}>{s.label}</option>)}
                             </select>
                           </td>
-                          <td key={`${d.key}_c`} style={{ padding: "3px 4px" }}>
-                            <input type="number" value={p[costKey] || 0} onChange={e => updateProduct(i, costKey, Number(e.target.value) || 0)} disabled={readonlyForm || p[ansKey] !== "yes"} style={{ width: 70, padding: 3, fontSize: 10, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          <td style={{ padding: "3px 4px" }}>
+                            <input value={it.supplier || ""} onChange={e => updateItem(cat.key, i, "supplier", e.target.value)} disabled={readonlyForm}
+                              placeholder="firma" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
                           </td>
-                          {d.hasSourceType && (
-                            <td key={`${d.key}_s`} style={{ padding: "3px 4px", textAlign: "center" }}>
-                              <select value={p[srcKey] || ""} onChange={e => updateProduct(i, srcKey, e.target.value)} disabled={readonlyForm || p[ansKey] !== "yes"} style={{ width: 65, padding: 2, fontSize: 9, border: "1px solid #d6d3d1", borderRadius: 2 }}>
-                                <option value="">—</option>
-                                <option value="direct">Direkt</option>
-                                <option value="outsource">Fason</option>
-                              </select>
-                            </td>
-                          )}
-                        </>
+                          <td style={{ padding: "3px 4px" }}>
+                            <input type="number" step="1" value={it.deliveryDays || 0} onChange={e => updateItem(cat.key, i, "deliveryDays", Number(e.target.value) || 0)} disabled={readonlyForm}
+                              style={{ width: "100%", padding: 3, fontSize: 10, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          </td>
+                          <td style={{ padding: "3px 6px", textAlign: "center" }}>
+                            <button onClick={() => removeItem(cat.key, i)} disabled={readonlyForm}
+                              style={{ background: "transparent", border: "none", color: "#dc2626", cursor: readonlyForm ? "not-allowed" : "pointer" }}>🗑</button>
+                          </td>
+                        </tr>
                       );
                     })}
-                    <td style={{ padding: "3px 6px", textAlign: "center" }}><button onClick={() => removeProduct(i)} disabled={readonlyForm} style={{ background: "transparent", border: "none", color: "#dc2626", cursor: readonlyForm ? "not-allowed" : "pointer" }}>🗑</button></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
+                  </tbody>
+                  <tfoot>
+                    <tr style={{ background: "#f9fafb", borderTop: "2px solid #e7e5e4" }}>
+                      <td colSpan="4" style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, color: "#57534e" }}>Toplam:</td>
+                      <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#166534", fontVariantNumeric: "tabular-nums" }}>
+                        {total.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} TL
+                      </td>
+                      <td colSpan="4"></td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        );
+      })}
 
       {/* KARAR */}
       <div style={cardStyle}>
