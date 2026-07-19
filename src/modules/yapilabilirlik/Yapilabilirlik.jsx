@@ -131,6 +131,38 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
     return { ...prev, [arrKey]: (prev[arrKey] || []).filter((_, i) => i !== idx) };
   });
 
+  // Operasyonlar (Faz Y-3C) — üretim/CAD-CAM için
+  const updateOperations = (key, value) => setStudy(prev => ({
+    ...prev,
+    operations: { ...(prev.operations || {}), [key]: value },
+  }));
+  const addOperationDetail = () => setStudy(prev => ({
+    ...prev,
+    operations: {
+      ...(prev.operations || {}),
+      details: [...(prev.operations?.details || []), { operationName: "", machine: "", minutes: 0 }],
+    },
+  }));
+  const updateOperationDetail = (idx, key, value) => setStudy(prev => ({
+    ...prev,
+    operations: {
+      ...(prev.operations || {}),
+      details: (prev.operations?.details || []).map((d, i) => i === idx ? { ...d, [key]: value } : d),
+    },
+  }));
+  const removeOperationDetail = (idx) => setStudy(prev => ({
+    ...prev,
+    operations: {
+      ...(prev.operations || {}),
+      details: (prev.operations?.details || []).filter((_, i) => i !== idx),
+    },
+  }));
+  // Detay sayısı → operasyon sayısı ve toplam süre otomatik hesaplama (detay varsa)
+  const opsDetailCount = (study.operations?.details || []).length;
+  const opsDetailTotal = (study.operations?.details || []).reduce((s, d) => s + (Number(d.minutes) || 0), 0);
+  const effectiveOpCount = opsDetailCount > 0 ? opsDetailCount : (Number(study.operations?.count) || 0);
+  const effectiveTotalMin = opsDetailCount > 0 ? opsDetailTotal : (Number(study.operations?.totalMinutes) || 0);
+
   // Kalem toplamları (UI özet için)
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
   const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
@@ -442,6 +474,102 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* OPERASYONLAR — Üretim / CAD-CAM sorumlusu (Faz Y-3C) */}
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>
+            ⚙️ Operasyon ve Süre
+            {effectiveOpCount > 0 && (
+              <span style={{ marginLeft: 8, fontSize: 11, color: "#57534e", fontWeight: 500 }}>
+                · {effectiveOpCount} operasyon · Toplam: <b>{effectiveTotalMin.toLocaleString("tr-TR")} dk</b>
+                {effectiveTotalMin > 0 && <span style={{ marginLeft: 4, color: "#78716c" }}>({(effectiveTotalMin / 60).toFixed(2)} sa)</span>}
+              </span>
+            )}
+          </div>
+        </div>
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
+          Üretim / CAD-CAM sorumlusu: parça kaç operasyondan ve ne kadar sürede çıkacak? Detay eklerseniz otomatik hesaplanır, yoksa manuel toplam girebilirsiniz.
+        </div>
+
+        {/* Hızlı özet — detay yoksa manuel giriş */}
+        {opsDetailCount === 0 && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
+            <div>
+              <label style={labelStyle}>Operasyon Sayısı</label>
+              <input type="number" min="0" step="1" value={study.operations?.count || 0} onChange={e => updateOperations("count", Number(e.target.value) || 0)} disabled={readonlyForm} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Toplam Süre (dakika)</label>
+              <input type="number" min="0" step="0.1" value={study.operations?.totalMinutes || 0} onChange={e => updateOperations("totalMinutes", Number(e.target.value) || 0)} disabled={readonlyForm} style={inputStyle} />
+            </div>
+          </div>
+        )}
+
+        {/* Detay tablosu (opsiyonel) — varsa manuel giriş devre dışı */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, marginBottom: 6 }}>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c" }}>Operasyon Detayı (opsiyonel — teklife makine bazlı aktarım için)</div>
+          <button onClick={addOperationDetail} disabled={readonlyForm}
+            style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>
+            + Operasyon Ekle
+          </button>
+        </div>
+        {opsDetailCount === 0 ? (
+          <div style={{ padding: 12, textAlign: "center", color: "#a8a29e", fontSize: 10, background: "#fafaf9", borderRadius: 4 }}>
+            Detay yok — üstteki toplam alanları kullanılıyor
+          </div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+            <thead>
+              <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
+                <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 40, textAlign: "center" }}>#</th>
+                <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Operasyon Adı</th>
+                <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Makine</th>
+                <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 100, textAlign: "right" }}>Süre (dk)</th>
+                <th style={{ padding: "5px 8px", width: 30 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(study.operations?.details || []).map((op, i) => (
+                <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
+                  <td style={{ padding: "3px 6px", textAlign: "center", color: "#78716c" }}>{i + 1}</td>
+                  <td style={{ padding: "3px 4px" }}>
+                    <input value={op.operationName || ""} onChange={e => updateOperationDetail(i, "operationName", e.target.value)} disabled={readonlyForm}
+                      placeholder="örn. Frezeleme" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                  </td>
+                  <td style={{ padding: "3px 4px" }}>
+                    <input value={op.machine || ""} onChange={e => updateOperationDetail(i, "machine", e.target.value)} disabled={readonlyForm}
+                      placeholder="MAZAK-5, T22..." style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                  </td>
+                  <td style={{ padding: "3px 4px" }}>
+                    <input type="number" step="0.1" min="0" value={op.minutes || 0} onChange={e => updateOperationDetail(i, "minutes", Number(e.target.value) || 0)} disabled={readonlyForm}
+                      style={{ width: "100%", padding: 3, fontSize: 10, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                  </td>
+                  <td style={{ padding: "3px 6px", textAlign: "center" }}>
+                    <button onClick={() => removeOperationDetail(i)} disabled={readonlyForm}
+                      style={{ background: "transparent", border: "none", color: "#dc2626", cursor: readonlyForm ? "not-allowed" : "pointer" }}>🗑</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr style={{ background: "#f9fafb", borderTop: "2px solid #e7e5e4" }}>
+                <td colSpan="3" style={{ padding: "6px 8px", textAlign: "right", fontWeight: 600, color: "#57534e" }}>Toplam:</td>
+                <td style={{ padding: "6px 8px", textAlign: "right", fontWeight: 700, color: "#166534" }}>
+                  {opsDetailTotal.toLocaleString("tr-TR")} dk
+                </td>
+                <td></td>
+              </tr>
+            </tfoot>
+          </table>
+        )}
+
+        <div style={{ marginTop: 8 }}>
+          <label style={labelStyle}>Operasyon Notu</label>
+          <input value={study.operations?.note || ""} onChange={e => updateOperations("note", e.target.value)} disabled={readonlyForm}
+            placeholder="Örn. Hassas tolerans, özel setup gerekli..." style={inputStyle} />
         </div>
       </div>
 
