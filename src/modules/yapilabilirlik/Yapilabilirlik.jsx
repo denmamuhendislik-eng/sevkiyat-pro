@@ -633,80 +633,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
         </div>
       </div>
 
-      {/* HAMMADDE BLOĞU — Faz Y-3D */}
-      <div style={cardStyle}>
-        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>🧱 Hammadde Bilgisi</div>
-        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
-          Malzeme türü + ölçüler + ağırlık — bu bilgiler teklife hammadde olarak birebir aktarılır.
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
-          <div>
-            <label style={labelStyle}>Malzeme Türü</label>
-            <input list="feasibilityMaterialList" value={study.materialType || ""} onChange={e => update("materialType", e.target.value)} disabled={readonlyForm} style={inputStyle} placeholder="AL-6061..." />
-            <datalist id="feasibilityMaterialList">
-              {materialList.map(m => (
-                <option key={m.name} value={m.name}>{m.shape} · {m.priceTlPerKg}TL/kg</option>
-              ))}
-            </datalist>
-            {selectedMaterialMaster && (
-              <div style={{ fontSize: 9, color: "#1e40af", marginTop: 2 }}>
-                💡 {selectedMaterialMaster.shape} · özgül {selectedMaterialMaster.density} · <b>{Number(selectedMaterialMaster.priceTlPerKg || 0).toFixed(2)} TL/kg</b>
-              </div>
-            )}
-          </div>
-          <div>
-            <label style={labelStyle}>Şekil</label>
-            <select value={study.materialShape || selectedMaterialMaster?.shape || ""} onChange={e => update("materialShape", e.target.value)} disabled={readonlyForm} style={inputStyle}>
-              <option value="">—</option>
-              <option value="DİKDÖRTGEN">DİKDÖRTGEN</option>
-              <option value="SİLİNDİR">SİLİNDİR</option>
-              <option value="ALTIGEN">ALTIGEN</option>
-              <option value="EBATSIZ">EBATSIZ</option>
-            </select>
-          </div>
-          <div>
-            <label style={labelStyle}>EN (mm)</label>
-            <input type="number" value={study.dimensions?.en || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), en: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>BOY (mm)</label>
-            <input type="number" value={study.dimensions?.boy || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), boy: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>UZUNLUK (mm)</label>
-            <input type="number" value={study.dimensions?.uzunluk || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), uzunluk: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>Ağırlık kg <span style={{ fontSize: 9, color: "#78716c" }}>(auto)</span></label>
-            <input type="number" step="0.001"
-              value={study.weightKg || 0}
-              onChange={e => update("weightKg", Number(e.target.value) || 0)}
-              placeholder={autoWeightKg > 0 ? autoWeightKg.toFixed(3) : "0.000"}
-              disabled={readonlyForm}
-              style={{ ...inputStyle, background: "#fef3c7" }} />
-            {autoWeightKg > 0 && Math.abs((study.weightKg || 0) - autoWeightKg) > 0.001 && (
-              <button onClick={() => update("weightKg", Number(autoWeightKg.toFixed(4)))} disabled={readonlyForm}
-                style={{ marginTop: 2, padding: "2px 6px", fontSize: 9, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, cursor: "pointer" }}>
-                ↺ auto: {autoWeightKg.toFixed(3)}
-              </button>
-            )}
-          </div>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 3fr", gap: 8, marginTop: 8 }}>
-          <div>
-            <label style={labelStyle}>Sipariş Miktarı</label>
-            <input type="number" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>Malzeme Notu (eski alan)</label>
-            <input value={study.material || ""} onChange={e => update("material", e.target.value)} disabled={readonlyForm} placeholder="opsiyonel" style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>Yardımcı Malzeme</label>
-            <input value={study.otherMaterials || ""} onChange={e => update("otherMaterials", e.target.value)} disabled={readonlyForm} style={inputStyle} />
-          </div>
-        </div>
-      </div>
+
 
       {/* İSTER TABLOSU */}
       <div style={cardStyle}>
@@ -807,6 +734,81 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, initialStudy,
               </div>
             );
           })}
+        </div>
+      </div>
+
+      {/* HAMMADDE BLOĞU — Faz Y-3D (üretim öncesi bilgiler) */}
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>🧱 Hammadde Bilgisi</div>
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
+          Malzeme türü + ölçüler + ağırlık — bu bilgiler teklife hammadde olarak birebir aktarılır.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
+          <div>
+            <label style={labelStyle}>Malzeme Türü</label>
+            <input list="feasibilityMaterialList" value={study.materialType || ""} onChange={e => update("materialType", e.target.value)} disabled={readonlyForm} style={inputStyle} placeholder="AL-6061..." />
+            <datalist id="feasibilityMaterialList">
+              {materialList.map(m => (
+                <option key={m.name} value={m.name}>{m.shape} · {m.priceTlPerKg}TL/kg</option>
+              ))}
+            </datalist>
+            {selectedMaterialMaster && (
+              <div style={{ fontSize: 9, color: "#1e40af", marginTop: 2 }}>
+                💡 {selectedMaterialMaster.shape} · özgül {selectedMaterialMaster.density} · <b>{Number(selectedMaterialMaster.priceTlPerKg || 0).toFixed(2)} TL/kg</b>
+              </div>
+            )}
+          </div>
+          <div>
+            <label style={labelStyle}>Şekil</label>
+            <select value={study.materialShape || selectedMaterialMaster?.shape || ""} onChange={e => update("materialShape", e.target.value)} disabled={readonlyForm} style={inputStyle}>
+              <option value="">—</option>
+              <option value="DİKDÖRTGEN">DİKDÖRTGEN</option>
+              <option value="SİLİNDİR">SİLİNDİR</option>
+              <option value="ALTIGEN">ALTIGEN</option>
+              <option value="EBATSIZ">EBATSIZ</option>
+            </select>
+          </div>
+          <div>
+            <label style={labelStyle}>EN (mm)</label>
+            <input type="number" value={study.dimensions?.en || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), en: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>BOY (mm)</label>
+            <input type="number" value={study.dimensions?.boy || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), boy: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>UZUNLUK (mm)</label>
+            <input type="number" value={study.dimensions?.uzunluk || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), uzunluk: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Ağırlık kg <span style={{ fontSize: 9, color: "#78716c" }}>(auto)</span></label>
+            <input type="number" step="0.001"
+              value={study.weightKg || 0}
+              onChange={e => update("weightKg", Number(e.target.value) || 0)}
+              placeholder={autoWeightKg > 0 ? autoWeightKg.toFixed(3) : "0.000"}
+              disabled={readonlyForm}
+              style={{ ...inputStyle, background: "#fef3c7" }} />
+            {autoWeightKg > 0 && Math.abs((study.weightKg || 0) - autoWeightKg) > 0.001 && (
+              <button onClick={() => update("weightKg", Number(autoWeightKg.toFixed(4)))} disabled={readonlyForm}
+                style={{ marginTop: 2, padding: "2px 6px", fontSize: 9, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, cursor: "pointer" }}>
+                ↺ auto: {autoWeightKg.toFixed(3)}
+              </button>
+            )}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 3fr", gap: 8, marginTop: 8 }}>
+          <div>
+            <label style={labelStyle}>Sipariş Miktarı</label>
+            <input type="number" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm} style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Malzeme Notu (eski alan)</label>
+            <input value={study.material || ""} onChange={e => update("material", e.target.value)} disabled={readonlyForm} placeholder="opsiyonel" style={inputStyle} />
+          </div>
+          <div>
+            <label style={labelStyle}>Yardımcı Malzeme</label>
+            <input value={study.otherMaterials || ""} onChange={e => update("otherMaterials", e.target.value)} disabled={readonlyForm} style={inputStyle} />
+          </div>
         </div>
       </div>
 
