@@ -947,8 +947,23 @@ exports.listFaiArchiveFolders = onCall(
       const folders = await listArchiveFolders(saKey, { rootFolderId, limit: Number(limit) || 500 });
       return { success: true, count: folders.length, folders };
     } catch (err) {
-      logger.error("[FAI Archive List] Hata", { error: err.message });
-      throw new HttpsError("internal", err.message);
+      // Drive API hatalarını detaylı logla ve client'a anlamlı mesaj gönder
+      const errMsg = err?.errors?.[0]?.message || err?.message || String(err);
+      const errCode = err?.code || err?.status || "unknown";
+      logger.error("[FAI Archive List] Hata", {
+        error: errMsg,
+        code: errCode,
+        rootFolderId,
+        stack: err?.stack,
+      });
+      // 404/403 için özel mesaj
+      if (errCode === 404 || String(errMsg).toLowerCase().includes("not found")) {
+        throw new HttpsError("not-found", `Klasör bulunamadı veya erişim yok: ${errMsg}. Service Account'un (coc-drive-reader@sevkiyat-pro.iam.gserviceaccount.com) klasöre paylaşılması gerekir.`);
+      }
+      if (errCode === 403 || String(errMsg).toLowerCase().includes("permission")) {
+        throw new HttpsError("permission-denied", `Erişim reddedildi: ${errMsg}. Service Account'un (coc-drive-reader@sevkiyat-pro.iam.gserviceaccount.com) klasöre 'Görüntüleyen' yetkisiyle paylaşılması gerekir.`);
+      }
+      throw new HttpsError("internal", `Drive listeleme hatası: ${errMsg}`);
     }
   },
 );

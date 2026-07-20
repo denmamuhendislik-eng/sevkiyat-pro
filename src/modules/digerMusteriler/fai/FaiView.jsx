@@ -1361,21 +1361,45 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
 // ==================== Arşiv İmport Modalı (F-9B) ====================
 
 function ArchiveImportModal({ onClose, canEdit, staging, existingKeys }) {
-  const [rootFolderId, setRootFolderId] = useState("1Cdateqg41bBLcM8snJTbCwwzTcbk0FfA"); // FAİ KAYITLARI varsayılan
+  const [inputValue, setInputValue] = useState("https://drive.google.com/drive/folders/1Cdateqg41bBLcM8snJTbCwwzTcbk0FfA");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [folders, setFolders] = useState(null);
   const [selected, setSelected] = useState(new Set());
   const [saving, setSaving] = useState(false);
 
+  // Drive URL veya ID'den folder ID'yi çıkar
+  const extractFolderId = (input) => {
+    if (!input) return "";
+    const s = input.trim();
+    // URL formatı: https://drive.google.com/drive/folders/{ID}?usp=... veya .../folders/{ID}/...
+    const urlMatch = s.match(/\/folders\/([a-zA-Z0-9_-]+)/);
+    if (urlMatch) return urlMatch[1];
+    // URL parametresi olabilir
+    const queryMatch = s.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (queryMatch) return queryMatch[1];
+    // Sadece ID
+    if (/^[a-zA-Z0-9_-]{20,}$/.test(s)) return s;
+    return "";
+  };
+
   const handleList = async () => {
-    if (!rootFolderId.trim()) { setError("Kök klasör ID gir"); return; }
+    const folderId = extractFolderId(inputValue);
+    if (!folderId) { setError("Drive klasör URL'si veya ID'si gir (örn: https://drive.google.com/drive/folders/1AbC...)"); return; }
     setLoading(true); setError(""); setFolders(null);
     try {
-      const res = await listFaiArchiveFolders({ rootFolderId: rootFolderId.trim(), limit: 500 });
+      const res = await listFaiArchiveFolders({ rootFolderId: folderId, limit: 500 });
       setFolders(res?.folders || []);
     } catch (e) {
-      setError(e.message || "Drive listeleme hatası");
+      // Cloud Function hatalarını daha açıklayıcı hale getir
+      const msg = e.message || "Drive listeleme hatası";
+      let hint = "";
+      if (msg.toLowerCase().includes("internal")) {
+        hint = "\n\n💡 Muhtemel nedenler:\n• Service Account'un klasöre erişimi yok — Drive'da klasörü coc-drive-reader@sevkiyat-pro.iam.gserviceaccount.com adresine paylaşın\n• Cloud Function henüz redeploy edilmedi\n• Klasör ID yanlış";
+      } else if (msg.toLowerCase().includes("not found") || msg.toLowerCase().includes("permission")) {
+        hint = "\n\n💡 Service Account'un bu klasöre erişimi yok — Drive'da klasörü paylaşın (Görüntüleyen yetkisi):\ncoc-drive-reader@sevkiyat-pro.iam.gserviceaccount.com";
+      }
+      setError(msg + hint);
     } finally {
       setLoading(false);
     }
@@ -1443,20 +1467,28 @@ function ArchiveImportModal({ onClose, canEdit, staging, existingKeys }) {
       onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
       <div style={{ background: "#fff", borderRadius: 8, padding: 16, width: "90%", maxWidth: 900, maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}>
         <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>📥 Drive Arşiv İçe Aktar</div>
-        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
-          Drive'daki FAİ KAYITLARI kök klasörünün ID'sini gir. Alt klasörler listelenir, seçtiklerin FAI arşivine eklenir. Dosyalar Drive'da kalır — Sevkiyat Pro sadece link tutar.
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 6 }}>
+          Drive'daki FAİ KAYITLARI klasörünün <b>URL'sini yapıştır</b> (veya ID'sini gir). Alt klasörler listelenir, seçtiklerin FAI arşivine eklenir. Dosyalar Drive'da kalır — Sevkiyat Pro sadece link tutar.
+        </div>
+        <div style={{ fontSize: 10, color: "#1e40af", marginBottom: 10, padding: 6, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 3 }}>
+          💡 <b>Nasıl bulunur:</b> Drive'da klasörü aç → Adres çubuğundan URL'yi kopyala → aşağıya yapıştır. Örn: <code>https://drive.google.com/drive/folders/1AbC...</code>
         </div>
         <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
-          <input value={rootFolderId} onChange={e => setRootFolderId(e.target.value)}
-            placeholder="Drive kök klasör ID"
+          <input value={inputValue} onChange={e => setInputValue(e.target.value)}
+            placeholder="Drive URL veya klasör ID"
             style={{ flex: 1, padding: "6px 10px", fontSize: 12, border: "1px solid #d6d3d1", borderRadius: 4, fontFamily: "ui-monospace, monospace" }} />
           <button onClick={handleList} disabled={loading}
             style={{ padding: "6px 14px", fontSize: 12, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: loading ? "wait" : "pointer", fontWeight: 500 }}>
             {loading ? "Aranıyor..." : "🔍 Listele"}
           </button>
         </div>
+        {inputValue && extractFolderId(inputValue) && (
+          <div style={{ fontSize: 9, color: "#78716c", marginBottom: 8, marginTop: -4 }}>
+            ID: <span style={{ fontFamily: "ui-monospace, monospace" }}>{extractFolderId(inputValue)}</span>
+          </div>
+        )}
         {error && (
-          <div style={{ padding: 10, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11, color: "#991b1b", marginBottom: 10 }}>⚠ {error}</div>
+          <div style={{ padding: 10, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11, color: "#991b1b", marginBottom: 10, whiteSpace: "pre-wrap" }}>⚠ {error}</div>
         )}
         {folders && (
           <>
