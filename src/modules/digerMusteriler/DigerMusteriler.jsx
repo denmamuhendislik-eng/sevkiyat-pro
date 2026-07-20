@@ -22,6 +22,7 @@ import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
 import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent } from './subComponents';
 import FaiView from './fai/FaiView';
+import { subscribeFaiArchive } from './fai/firestore';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -3263,6 +3264,18 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
     cocParts: cocParts || {},
     certificateSubComponents: editCertSubComponents,
   }), [firstOrder.stokKodu, bomModels, cocParts, editCertSubComponents]);
+
+  // FAI arşiv uyarısı — bu stok kodu için önceki FAI kayıtları var mı?
+  const [faiArchiveData, setFaiArchiveData] = useState({ records: {} });
+  useEffect(() => {
+    const unsub = subscribeFaiArchive(setFaiArchiveData);
+    return unsub;
+  }, []);
+  const faiArchiveMatches = useMemo(() => {
+    if (!firstOrder.stokKodu) return [];
+    const arr = Object.values(faiArchiveData?.records || {});
+    return arr.filter(r => (r.stockCode || r.partNumber) === firstOrder.stokKodu);
+  }, [firstOrder.stokKodu, faiArchiveData]);
   const [showStandardFasteners, setShowStandardFasteners] = useState(false);
   // subComponentsState: kaynaktan gelen liste + docs alanı (yükleme sonrası tutulur).
   // subResolution.list değişirse (BOM/manual/certificate switch) state sync olur ama
@@ -3694,6 +3707,32 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
             )}
           </div>
         </div>
+
+        {/* FAI ARŞİV UYARISI — bu stok için önceki FAI kayıtları varsa */}
+        {faiArchiveMatches.length > 0 && (
+          <div style={{ margin: '0 20px 12px', padding: 10, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, fontSize: 11, color: '#92400e' }}>
+            🔬 <b>Bu parça için arşivde {faiArchiveMatches.length} FAI kaydı var:</b>{' '}
+            {faiArchiveMatches.slice(0, 8).map((a, i) => (
+              <span key={i} style={{ display: 'inline-block', marginRight: 6, marginTop: 2 }}>
+                {(a.attachments?.other || []).filter(x => x?.isDriveLink).map((x, j) => (
+                  <a key={j} href={x.driveUrl} target="_blank" rel="noreferrer"
+                    style={{ padding: '2px 6px', background: '#fff', color: '#92400e', border: '1px solid #fde68a', borderRadius: 3, fontSize: 10, fontWeight: 600, textDecoration: 'none' }}>
+                    📂 FAİ-{a.faiNo}
+                  </a>
+                ))}
+                {(!a.attachments?.other || !a.attachments.other.some(x => x?.isDriveLink)) && (
+                  <span style={{ padding: '2px 6px', background: '#fff', color: '#92400e', borderRadius: 3, fontSize: 10, fontWeight: 600 }}>
+                    FAİ-{a.faiNo}
+                  </span>
+                )}
+              </span>
+            ))}
+            {faiArchiveMatches.length > 8 && <span style={{ fontSize: 10, color: '#78350f' }}>+{faiArchiveMatches.length - 8} daha</span>}
+            <div style={{ marginTop: 4, fontSize: 10, color: '#78350f' }}>
+              Parça daha önce müşteriye FAI onayı ile teslim edilmiş. Bu belgeleri gerekirse Drive'dan indirip COC ekleri arasına yükleyebilirsin.
+            </div>
+          </div>
+        )}
 
         {/* Sevkiyat tablosu (multi-line) */}
         <div style={{ padding: '0 20px 14px', fontSize: 12 }}>
