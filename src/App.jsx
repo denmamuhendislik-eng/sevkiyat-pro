@@ -156,6 +156,7 @@ export default function App() {
   const [page, setPage] = useState("planning");
   const [pendingMrpTab, setPendingMrpTab] = useState(null);
   const [pendingQuoteFromFeasibility, setPendingQuoteFromFeasibility] = useState(null); // yapılabilirlik → teklif
+  const [pendingFaiFromFeasibility, setPendingFaiFromFeasibility] = useState(null); // yapılabilirlik → FAI
   const [selYear, setSelYear] = useState(2026);
   const [products, setProducts] = useState(PARSED.products);
   const [yearsData, setYearsData] = useState(PARSED.yearsData);
@@ -3399,10 +3400,10 @@ ${el.innerHTML}
           {page==="mrp"&&canSeeMRP&&<MRPPlanlama db={db} userRole={userRole} authUser={authUser} products={products} yearsData={yearsData} setProducts={setProducts} initialTab={pendingMrpTab} onConsumeInitialTab={()=>setPendingMrpTab(null)} onNavigateToPage={setPage}/>}
 
           {/* ========== DIGER MUSTERILER PAGE ========== */}
-          {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }}/>}
+          {page==="digerMusteriler"&&canSeeDigerMusteriler&&<DigerMusteriler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} onNavigateToMrp={(tab)=>{ if(tab) setPendingMrpTab(tab); setPage("mrp"); }} pendingFaiFromFeasibility={pendingFaiFromFeasibility} onConsumePendingFai={()=>setPendingFaiFromFeasibility(null)}/>}
           {page==="musteriDashboard"&&canSeeDigerMusteriler&&<MusteriDashboard isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} />}
           {page==="teklifler"&&canSeeTeklifler&&<Teklifler isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} pendingFromFeasibility={pendingQuoteFromFeasibility} onConsumePendingFromFeasibility={()=>setPendingQuoteFromFeasibility(null)} />}
-          {page==="yapilabilirlik"&&canSeeYapilabilirlik&&<Yapilabilirlik isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} authUser={authUser} onCreateQuoteFromFeasibility={(study)=>{ setPendingQuoteFromFeasibility(study); setPage("teklifler"); }} />}
+          {page==="yapilabilirlik"&&canSeeYapilabilirlik&&<Yapilabilirlik isAdmin={isAdmin} isUretim={isUretim} isSales={isSales} authUser={authUser} onCreateQuoteFromFeasibility={(study)=>{ setPendingQuoteFromFeasibility(study); setPage("teklifler"); }} onStartFaiFromFeasibility={(study)=>{ setPendingFaiFromFeasibility(study); setPage("digerMusteriler"); }} />}
 
           {/* ========== MALIYET PAGE ========== */}
           {page==="maliyet"&&isAdmin&&<Maliyet isAdmin={isAdmin} isUretim={isUretim} />}

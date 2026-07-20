@@ -18,15 +18,32 @@ import { customerBadge, matchCustomer, isKnownCustomer, OTHER_CUSTOMER_CODE } fr
 import {
   subscribeQuoteCustomers, subscribeQuoteParts,
 } from "../../teklifler/firestore";
-import { generateFaiPdf } from "./faiPdf";
+import { generateFaiPdf, buildFaiPdfBlob } from "./faiPdf";
+import { downloadCocAttachmentBlob } from "../firestore";
+import JSZip from "jszip";
 
-export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels }) {
+export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels, pendingFromFeasibility, onConsumeFeasibility }) {
   const [subTab, setSubTab] = useState("list");
   const [pendingOpen, setPendingOpen] = useState(null); // { record, readOnly }
   const openRecord = (record, { readOnly = false } = {}) => {
     setPendingOpen({ record, readOnly });
     setSubTab("new");
   };
+
+  // Feasibility'den FAI Başlat — payload'ı FAI initialRecord'a çevir ve Yeni FAI sekmesini aç
+  useEffect(() => {
+    if (pendingFromFeasibility) {
+      import("./fromFeasibility").then(({ feasibilityToFaiPayload }) => {
+        const payload = feasibilityToFaiPayload(pendingFromFeasibility);
+        if (payload) {
+          setPendingOpen({ record: payload, readOnly: false });
+          setSubTab("new");
+        }
+        onConsumeFeasibility && onConsumeFeasibility();
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingFromFeasibility]);
 
   return (
     <div>
@@ -302,6 +319,50 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
     }
   };
 
+  // İmza akışı (F-7)
+  const handleSignRoleUi = async (roleKey) => {
+    if (!faiNo) { alert("Önce FAI'yi kaydet"); return; }
+    const role = FAI_ROLES.find(r => r.key === roleKey);
+    try {
+      await signFaiRole(faiNo, roleKey, {
+        canEdit, staging,
+        userEmail: "kullanici",
+        roleLabel: role?.label || "",
+      });
+      // Optimist güncelle
+      setRecord(prev => ({
+        ...prev,
+        signatures: { ...(prev.signatures || {}), [roleKey]: { signedAt: new Date().toISOString(), signedBy: "kullanici", signedRoleLabel: role?.label } },
+      }));
+    } catch (e) { alert(e.message); }
+  };
+
+  const handleUnsignRoleUi = async (roleKey) => {
+    const role = FAI_ROLES.find(r => r.key === roleKey);
+    if (!confirm(`${role?.label} imzası iptal edilsin mi?`)) return;
+    try {
+      await unsignFaiRole(faiNo, roleKey, { canEdit, staging });
+      setRecord(prev => {
+        const next = { ...prev, signatures: { ...(prev.signatures || {}) } };
+        delete next.signatures[roleKey];
+        return next;
+      });
+    } catch (e) { alert(e.message); }
+  };
+
+  // Durum değiştirme (F-7)
+  const handleChangeStatus = async (newStatus) => {
+    if (!faiNo) { alert("Önce FAI'yi kaydet"); return; }
+    const badge = FAI_STATUSES.find(s => s.key === newStatus);
+    const note = newStatus === "rejected"
+      ? prompt(`Reddedildi olarak işaretle. Not (opsiyonel):`, "")
+      : "";
+    try {
+      await updateFaiStatus(faiNo, newStatus, { canEdit, staging, note: note || "" });
+      setRecord(prev => ({ ...prev, status: newStatus }));
+    } catch (e) { alert(e.message); }
+  };
+
   const badgeForStatus = FAI_STATUSES.find(s => s.key === status);
 
   // Basit stiller
@@ -318,6 +379,13 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
       <div style={{ marginBottom: 12, padding: 10, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11, color: "#1e40af" }}>
         🔬 <b>İlk Ürün Muayenesi (FAI)</b> — SAE AS9102 uyumlu. Sarı alanlar zorunlu, mavi alanlar şarta bağlı, beyaz alanlar opsiyoneldir.
       </div>
+
+      {record.linkedFeasibilityNo && (
+        <div style={{ marginBottom: 12, padding: 10, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, fontSize: 11, color: "#166534" }}>
+          🎯 <b>Yapılabilirlik'ten oluşturuldu</b> — <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{record.linkedFeasibilityNo}</span>
+          <br /><span style={{ fontSize: 10, color: "#15803d" }}>Parça bilgisi + hammadde + fason kalemleri otomatik dolduruldu. Karakteristik ölçümler ve Form 3 elle doldurulmalıdır.</span>
+        </div>
+      )}
 
       {isLocked && (
         <div style={{ marginBottom: 12, padding: 12, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, fontSize: 12, color: "#166534", display: "flex", alignItems: "center", gap: 10 }}>
@@ -380,6 +448,47 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           )}
         </div>
         {partSearchOpen && <button onClick={() => setPartSearchOpen(false)} style={{ marginTop: 6, padding: "2px 8px", fontSize: 10, background: "transparent", color: "#78716c", border: "none", cursor: "pointer" }}>× kapat</button>}
+      </div>
+
+      {/* ONAY AKIŞI + İMZALAR (F-7) */}
+      <div style={cardStyle}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+          <div style={{ fontSize: 13, fontWeight: 600 }}>✍️ İmzalar ve Durum</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {FAI_STATUSES.filter(s => s.key !== status).map(s => (
+              <button key={s.key} onClick={() => handleChangeStatus(s.key)} disabled={!canEdit || !faiNo}
+                title={`Durumu değiştir: ${s.label}`}
+                style={{ padding: "3px 8px", fontSize: 10, background: s.bg, color: s.color, border: "1px solid " + s.color, borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", opacity: canEdit ? 1 : 0.5 }}>
+                → {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+          {FAI_ROLES.map(r => {
+            const sig = record.signatures?.[r.key];
+            return (
+              <div key={r.key} style={{ padding: 10, border: "1px solid " + (sig ? "#86efac" : "#e7e5e4"), background: sig ? "#f0fdf4" : "#fafaf9", borderRadius: 4 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "#44403c", marginBottom: 4 }}>{r.label}</div>
+                {sig ? (
+                  <>
+                    <div style={{ fontSize: 10, color: "#166534", fontWeight: 600 }}>✓ İmzalandı</div>
+                    <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>{String(sig.signedAt).slice(0, 10)}</div>
+                    {!readonlyForm && canEdit && (
+                      <button onClick={() => handleUnsignRoleUi(r.key)}
+                        style={{ marginTop: 4, padding: "2px 6px", fontSize: 9, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 2, cursor: "pointer" }}>↺ İptal</button>
+                    )}
+                  </>
+                ) : (
+                  <button onClick={() => handleSignRoleUi(r.key)} disabled={!canEdit || !faiNo}
+                    style={{ padding: "4px 8px", fontSize: 10, background: "#1e40af", color: "#fff", border: "none", borderRadius: 3, cursor: (!canEdit || !faiNo) ? "not-allowed" : "pointer" }}>
+                    İmzala
+                  </button>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* FORM SEKMESI — 3 form arası geçiş */}
@@ -789,6 +898,10 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           style={{ padding: "8px 16px", fontSize: 13, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
           📄 PDF Önizle (3 sayfa)
         </button>
+        <button onClick={() => downloadFaiZip({ ...record, faiNo })}
+          style={{ padding: "8px 16px", fontSize: 13, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
+          📦 ZIP İndir
+        </button>
         {!readonlyForm && (
           <button onClick={handleSave} disabled={saving || !canEdit}
             style={{ padding: "8px 20px", fontSize: 13, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: saving ? "wait" : (canEdit ? "pointer" : "not-allowed"), fontWeight: 500 }}>
@@ -801,6 +914,65 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
 }
 
 // ==================== Liste ====================
+
+// FAI paketi ZIP indirme — Faz F-6
+async function downloadFaiZip(record) {
+  try {
+    const zip = new JSZip();
+    // 1) FAI PDF kökte
+    const pdfBlob = await buildFaiPdfBlob(record);
+    const safe = (s) => String(s || "").replace(/[^\w.\-]/g, "_").substring(0, 60);
+    zip.file(`FAI_${safe(record.faiNo)}.pdf`, pdfBlob);
+    // 2) Ekler kategori bazlı klasörler
+    const CAT_LABELS = {
+      balloonedDrawing:       "Balonlu Resim",
+      materialCertificates:   "Malzeme Sertifikalari",
+      testReports:            "Kabul Test Raporlari",
+      productionDocs:         "Uretim Dokumanlari",
+      nonconformanceDocs:     "Uygunsuzluk Belgeleri",
+      customerApprovalLetter: "Musteri Onay Yazisi",
+      other:                  "Diger",
+    };
+    const attach = record.attachments || {};
+    const fetchAll = [];
+    for (const [key, label] of Object.entries(CAT_LABELS)) {
+      const items = Array.isArray(attach[key]) ? attach[key] : (attach[key] ? [attach[key]] : []);
+      if (items.length === 0) continue;
+      const folder = zip.folder(safe(label));
+      const used = new Set();
+      for (const meta of items) {
+        if (!meta?.path) continue;
+        const originalName = meta.name || "dosya.pdf";
+        let name = safe(originalName);
+        // dedup
+        let i = 1;
+        while (used.has(name)) {
+          const ext = name.includes(".") ? name.substring(name.lastIndexOf(".")) : "";
+          const base = name.substring(0, name.length - ext.length);
+          name = `${base}_${i++}${ext}`;
+        }
+        used.add(name);
+        fetchAll.push(
+          downloadCocAttachmentBlob(meta.path).then(b => folder.file(name, b))
+            .catch(e => console.warn(`Ek indirilemedi: ${key}/${name}`, e.message))
+        );
+      }
+    }
+    await Promise.all(fetchAll);
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const zipName = `FAI_${safe(record.faiNo)}_${safe(record.partNumber || record.partName || "")}.zip`;
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = zipName;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  } catch (e) {
+    alert("ZIP hatası: " + e.message);
+  }
+}
 
 function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
   const currentYear = new Date().getFullYear();
@@ -914,6 +1086,9 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
                         <button onClick={async () => { try { await generateFaiPdf(r); } catch (e) { alert("PDF hatası: " + e.message); } }}
                           title="FAI PDF indir (3 sayfa)"
                           style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
+                        <button onClick={() => downloadFaiZip(r)}
+                          title="FAI paketi (PDF + ekler) ZIP indir"
+                          style={{ padding: "3px 8px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>📦 ZIP</button>
                         {isAdmin && status !== "customerApproved" && (
                           <button onClick={() => handleDelete(r.faiNo)} disabled={!!deleting[r.faiNo]}
                             style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑</button>
