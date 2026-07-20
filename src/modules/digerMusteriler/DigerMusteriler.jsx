@@ -21,6 +21,7 @@ import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
 import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent } from './subComponents';
+import FaiView from './fai/FaiView';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -1450,6 +1451,16 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                   borderLeft: '1px solid #d6d3d1',
                 }}
               >📄 Uygunluk Belgeleri</button>
+              <button
+                onClick={() => setViewMode('fai')}
+                style={{
+                  padding: '5px 10px', fontSize: 12, border: 'none',
+                  background: viewMode === 'fai' ? '#534AB7' : '#fff',
+                  color: viewMode === 'fai' ? '#fff' : '#44403c',
+                  cursor: 'pointer', fontWeight: viewMode === 'fai' ? 500 : 400,
+                  borderLeft: '1px solid #d6d3d1',
+                }}
+              >🔬 FAİ Belgeleri</button>
               {isAdmin && (
                 <button
                   onClick={() => setViewMode('driveConfig')}
@@ -2220,6 +2231,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
           {viewMode === 'coc' && (
             <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} cocParts={cocParts} />
+          )}
+
+          {viewMode === 'fai' && (
+            <FaiView canEdit={canEdit} isAdmin={isAdmin} customerFilter={customerFilter} searchText={searchText} cocParts={cocParts} bomModels={bomModels} />
           )}
 
           {viewMode === 'driveConfig' && (
