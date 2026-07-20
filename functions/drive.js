@@ -472,6 +472,9 @@ async function downloadDriveFile(saKeyJson, fileId) {
 // FAI Arşiv (F-9B) — verilen kök klasörün altındaki tüm klasörleri listeler.
 // Her alt klasör bir FAI kaydına karşılık gelir (klasör adı = stokKodu + FAI no).
 // Sadece klasör metadata döner — dosya indirme yapmaz.
+// Not: mevcut walkAndMatchFolders ile aynı pattern — corpora/allDrives
+// parametreleri yok (SA erişim izniyle uyumsuz olabilir, çalışan diğer
+// aramalarla aynı yaklaşım tercih edildi).
 async function listArchiveFolders(saKeyJson, { rootFolderId, limit = 500 }) {
   if (!rootFolderId) throw new Error("rootFolderId zorunlu");
   const drive = getDrive(saKeyJson);
@@ -479,17 +482,17 @@ async function listArchiveFolders(saKeyJson, { rootFolderId, limit = 500 }) {
   let pageToken = null;
   do {
     const res = await drive.files.list({
-      q: `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
-      fields: "nextPageToken, files(id, name, modifiedTime, createdTime, webViewLink)",
-      pageSize: Math.min(1000, limit - results.length),
+      q: `'${rootFolderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: "nextPageToken, files(id, name, modifiedTime, webViewLink)",
+      pageSize: 100,
       pageToken,
-      corpora: "allDrives",
-      includeItemsFromAllDrives: true,
       supportsAllDrives: true,
+      includeItemsFromAllDrives: true,
     });
     (res.data.files || []).forEach(f => results.push(f));
     pageToken = res.data.nextPageToken;
-  } while (pageToken && results.length < limit);
+    if (results.length >= limit) break;
+  } while (pageToken);
   return results;
 }
 
