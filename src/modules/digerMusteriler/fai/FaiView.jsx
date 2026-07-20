@@ -18,6 +18,7 @@ import { customerBadge, matchCustomer, isKnownCustomer, OTHER_CUSTOMER_CODE } fr
 import {
   subscribeQuoteCustomers, subscribeQuoteParts,
 } from "../../teklifler/firestore";
+import { generateFaiPdf } from "./faiPdf";
 
 export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels }) {
   const [subTab, setSubTab] = useState("list");
@@ -780,14 +781,21 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
         </div>
       )}
 
-      {!readonlyForm && (
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginBottom: 20 }}>
+        <button onClick={async () => {
+          try { await generateFaiPdf({ ...record, faiNo }); }
+          catch (e) { alert("PDF hatası: " + e.message); }
+        }}
+          style={{ padding: "8px 16px", fontSize: 13, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
+          📄 PDF Önizle (3 sayfa)
+        </button>
+        {!readonlyForm && (
           <button onClick={handleSave} disabled={saving || !canEdit}
             style={{ padding: "8px 20px", fontSize: 13, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: saving ? "wait" : (canEdit ? "pointer" : "not-allowed"), fontWeight: 500 }}>
             {saving ? "Kaydediliyor..." : "💾 Kaydet"}
           </button>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
@@ -903,6 +911,9 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
                       <div style={{ display: "flex", gap: 4 }}>
                         <button onClick={() => onOpen(r, { readOnly: false })}
                           style={{ padding: "3px 8px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer" }}>✏ Aç</button>
+                        <button onClick={async () => { try { await generateFaiPdf(r); } catch (e) { alert("PDF hatası: " + e.message); } }}
+                          title="FAI PDF indir (3 sayfa)"
+                          style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
                         {isAdmin && status !== "customerApproved" && (
                           <button onClick={() => handleDelete(r.faiNo)} disabled={!!deleting[r.faiNo]}
                             style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑</button>
