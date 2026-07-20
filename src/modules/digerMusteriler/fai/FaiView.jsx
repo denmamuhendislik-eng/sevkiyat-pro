@@ -12,7 +12,7 @@ import {
 import {
   makeEmptyFai, FAI_STATUSES, FAI_ROLES,
   DETAIL_OR_ASSEMBLY_OPTIONS, FAI_TYPE_OPTIONS, CUSTOMER_APPROVAL_OPTIONS,
-  CHARACTERISTIC_TYPES,
+  CHARACTERISTIC_TYPES, FAI_ATTACHMENT_CATEGORIES,
 } from "./schema";
 import { customerBadge, matchCustomer, isKnownCustomer, OTHER_CUSTOMER_CODE } from "../customerMeta";
 import {
@@ -193,6 +193,7 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
         characteristicNo: String(nextNo),
         referenceLocation: "", characteristicType: "", requirement: "",
         results: "", specialToolId: "", nonconformanceNumber: "",
+        occurrenceCount: 1, // "N Yer" — çoklu ölçüm için
       }],
     };
   });
@@ -223,6 +224,62 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
   const sigCount = countFaiSignatures(record);
   const isLocked = status === "customerApproved"; // sadece müşteri onayı sonrası tam kilit
   const readonlyForm = readOnly || isLocked;
+
+  // Belge yükleme (F-4)
+  const [uploadingCat, setUploadingCat] = useState({}); // { catKey: bool }
+
+  const handleUpload = async (categoryKey, file) => {
+    if (!file) return;
+    if (!faiNo) { alert("Önce FAI No belirle"); return; }
+    setUploadingCat(u => ({ ...u, [categoryKey]: true }));
+    try {
+      const meta = await uploadFaiAttachment(faiNo, categoryKey, file, { canEdit });
+      const cat = FAI_ATTACHMENT_CATEGORIES.find(c => c.key === categoryKey);
+      setRecord(prev => {
+        const attach = { ...(prev.attachments || {}) };
+        if (cat?.multi) {
+          const list = Array.isArray(attach[categoryKey]) ? attach[categoryKey] : [];
+          attach[categoryKey] = [...list, meta];
+        } else {
+          attach[categoryKey] = meta;
+        }
+        return { ...prev, attachments: attach };
+      });
+    } catch (e) {
+      alert("Yükleme hatası: " + e.message);
+    } finally {
+      setUploadingCat(u => ({ ...u, [categoryKey]: false }));
+    }
+  };
+
+  const handleDeleteAttachment = async (categoryKey, index = null) => {
+    const cat = FAI_ATTACHMENT_CATEGORIES.find(c => c.key === categoryKey);
+    const attach = record.attachments || {};
+    let target;
+    if (cat?.multi) {
+      const list = Array.isArray(attach[categoryKey]) ? attach[categoryKey] : [];
+      target = list[index];
+    } else {
+      target = attach[categoryKey];
+    }
+    if (!target?.path) return;
+    if (!confirm(`${target.name || 'Dosya'} silinsin mi?`)) return;
+    try {
+      await deleteFaiAttachment(target.path);
+      setRecord(prev => {
+        const a = { ...(prev.attachments || {}) };
+        if (cat?.multi) {
+          const list = Array.isArray(a[categoryKey]) ? a[categoryKey] : [];
+          a[categoryKey] = list.filter((_, i) => i !== index);
+        } else {
+          a[categoryKey] = null;
+        }
+        return { ...prev, attachments: a };
+      });
+    } catch (e) {
+      alert("Silme hatası: " + e.message);
+    }
+  };
 
   const handleSave = async () => {
     if (readonlyForm) return;
@@ -604,32 +661,45 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
                     <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
                       <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 40, textAlign: "center" }}>5. #</th>
                       <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 80 }}>6. Ref</th>
-                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 100 }}>7. Tür</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 90 }}>7. Tür</th>
                       <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10 }}>8. Gereksinim</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 55, textAlign: "center" }}>N Yer</th>
                       <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10 }}>9. Ölçüm Sonucu</th>
-                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 100 }}>10. Özel Ölçüm</th>
-                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 100 }}>11. Uygunsuzluk</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 90 }}>10. Özel Ölçüm</th>
+                      <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 90 }}>11. Uygunsuzluk</th>
                       <th style={{ padding: "5px 6px", width: 30 }}></th>
                     </tr>
                   </thead>
                   <tbody>
-                    {(record.characteristics || []).map((c, i) => (
-                      <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
-                        <td style={{ padding: "3px 6px", textAlign: "center", fontWeight: 600, color: "#1e40af" }}>{c.characteristicNo}</td>
-                        <td style={{ padding: "3px 4px" }}><input value={c.referenceLocation || ""} onChange={e => updateCharacteristic(i, "referenceLocation", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="Sf 1/A2" /></td>
-                        <td style={{ padding: "3px 4px" }}>
-                          <select value={c.characteristicType || ""} onChange={e => updateCharacteristic(i, "characteristicType", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2, background: "#fff" }}>
-                            <option value="">—</option>
-                            {CHARACTERISTIC_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
-                          </select>
-                        </td>
-                        <td style={{ padding: "3px 4px" }}><input value={c.requirement || ""} onChange={e => updateCharacteristic(i, "requirement", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="20 ±0.05" /></td>
-                        <td style={{ padding: "3px 4px" }}><input value={c.results || ""} onChange={e => updateCharacteristic(i, "results", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="19.98" /></td>
-                        <td style={{ padding: "3px 4px" }}><input value={c.specialToolId || ""} onChange={e => updateCharacteristic(i, "specialToolId", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
-                        <td style={{ padding: "3px 4px" }}><input value={c.nonconformanceNumber || ""} onChange={e => updateCharacteristic(i, "nonconformanceNumber", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, fontFamily: "ui-monospace, monospace", border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
-                        <td style={{ padding: "3px 4px", textAlign: "center" }}><button onClick={() => removeCharacteristic(i)} disabled={readonlyForm} style={{ background: "transparent", border: "none", color: "#dc2626", cursor: readonlyForm ? "not-allowed" : "pointer" }}>🗑</button></td>
-                      </tr>
-                    ))}
+                    {(record.characteristics || []).map((c, i) => {
+                      const hasNoncnf = !!(c.nonconformanceNumber && c.nonconformanceNumber.trim());
+                      return (
+                        <tr key={i} style={{ borderTop: "1px solid #f5f5f4", background: hasNoncnf ? "#fef2f2" : "transparent" }}>
+                          <td style={{ padding: "3px 6px", textAlign: "center", fontWeight: 600, color: "#1e40af" }}>{c.characteristicNo}</td>
+                          <td style={{ padding: "3px 4px" }}><input value={c.referenceLocation || ""} onChange={e => updateCharacteristic(i, "referenceLocation", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="Sf 1/A2" /></td>
+                          <td style={{ padding: "3px 4px" }}>
+                            <select value={c.characteristicType || ""} onChange={e => updateCharacteristic(i, "characteristicType", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2, background: "#fff" }}>
+                              <option value="">—</option>
+                              {CHARACTERISTIC_TYPES.map(t => <option key={t.key} value={t.key}>{t.label}</option>)}
+                            </select>
+                          </td>
+                          <td style={{ padding: "3px 4px" }}><input value={c.requirement || ""} onChange={e => updateCharacteristic(i, "requirement", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="20 ±0.05" /></td>
+                          <td style={{ padding: "3px 4px" }}>
+                            <input type="number" min="1" value={c.occurrenceCount || 1} onChange={e => updateCharacteristic(i, "occurrenceCount", Number(e.target.value) || 1)} disabled={readonlyForm}
+                              title="Aynı özellik parça üzerinde N yerde varsa (ör. 4 Yer). Sonuçlar min-max ile listelenebilir."
+                              style={{ width: "100%", padding: 3, fontSize: 10, textAlign: "center", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          </td>
+                          <td style={{ padding: "3px 4px" }}>
+                            <input value={c.results || ""} onChange={e => updateCharacteristic(i, "results", e.target.value)} disabled={readonlyForm}
+                              placeholder={Number(c.occurrenceCount || 1) > 1 ? "min-max, örn. 19.98–20.02" : "19.98 veya Geçti"}
+                              style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                          </td>
+                          <td style={{ padding: "3px 4px" }}><input value={c.specialToolId || ""} onChange={e => updateCharacteristic(i, "specialToolId", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
+                          <td style={{ padding: "3px 4px" }}><input value={c.nonconformanceNumber || ""} onChange={e => updateCharacteristic(i, "nonconformanceNumber", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, fontFamily: "ui-monospace, monospace", border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="opsiyonel" /></td>
+                          <td style={{ padding: "3px 4px", textAlign: "center" }}><button onClick={() => removeCharacteristic(i)} disabled={readonlyForm} style={{ background: "transparent", border: "none", color: "#dc2626", cursor: readonlyForm ? "not-allowed" : "pointer" }}>🗑</button></td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -639,8 +709,60 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           <div style={cardStyle}>
             <label style={labelStyle}>Yorumlar</label>
             <textarea value={record.form3Comments || ""} onChange={e => update("form3Comments", e.target.value)} disabled={readonlyForm} rows={3} style={inputStyle} />
-            <div style={{ marginTop: 6, fontSize: 10, color: "#78716c" }}>
-              📎 Balonlu resim + belge yükleme F-4'te gelecek.
+          </div>
+
+          {/* EK BELGELER (F-4) — Form 3 altında konsolide */}
+          <div style={cardStyle}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>📎 Ek Belgeler</div>
+            <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
+              Bu belgeler FAI paketinin (ZIP) içine dahil edilir. Balonlu resim Form 3 karakteristik referansları için, malzeme sertifikaları Form 2 için gereklidir.
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 10 }}>
+              {FAI_ATTACHMENT_CATEGORIES.map(cat => {
+                const items = cat.multi
+                  ? (Array.isArray(record.attachments?.[cat.key]) ? record.attachments[cat.key] : [])
+                  : (record.attachments?.[cat.key] ? [record.attachments[cat.key]] : []);
+                const isUploading = !!uploadingCat[cat.key];
+                return (
+                  <div key={cat.key} style={{ padding: 10, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c", marginBottom: 6 }}>
+                      {cat.icon} {cat.label}
+                      {items.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: "#166534" }}>({items.length})</span>}
+                    </div>
+                    {items.length > 0 && (
+                      <div style={{ marginBottom: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                        {items.map((meta, idx) => (
+                          <div key={idx} style={{ padding: 4, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 3, display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                            <span style={{ flex: 1, color: "#166534", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={meta?.name}>
+                              📄 {meta?.name || "dosya"}
+                              {meta?.size ? <span style={{ marginLeft: 4, color: "#78716c" }}>· {(meta.size / 1024).toFixed(0)} KB</span> : null}
+                            </span>
+                            <a href={meta?.url} target="_blank" rel="noreferrer"
+                              style={{ padding: "1px 5px", fontSize: 9, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, textDecoration: "none" }}>Aç</a>
+                            {!readonlyForm && (
+                              <button onClick={() => handleDeleteAttachment(cat.key, cat.multi ? idx : null)}
+                                style={{ padding: "1px 5px", fontSize: 9, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 2, cursor: "pointer" }}>🗑</button>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {(!items.length || cat.multi) && !readonlyForm && (
+                      <label style={{ display: "inline-block", padding: "5px 10px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px dashed #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                        {isUploading ? "Yükleniyor..." : (cat.multi ? "📤 Dosya Ekle" : "📤 Dosya Seç")}
+                        <input type="file" accept="application/pdf,image/*"
+                          style={{ display: "none" }}
+                          disabled={isUploading || !canEdit}
+                          onChange={e => {
+                            const f = e.target.files?.[0];
+                            if (f) handleUpload(cat.key, f);
+                            e.target.value = "";
+                          }} />
+                      </label>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           </div>
         </>

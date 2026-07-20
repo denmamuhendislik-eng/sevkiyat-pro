@@ -138,6 +138,22 @@ export const FAI_ROLES = [
 // Kalite Kontrol için Diğer Müşteriler'de bir flag yok — canEdit yeterli (Kalite + Üretim + Satış)
 
 // ============================================================
+// Ek belge kategorileri — FAI paketine dahil edilecek
+// (talimatta belirtildi: malzeme sertifikaları, kabul test raporu,
+//  balonlu resim, uygunsuzluk belgeleri, üretim rota vb.)
+// ============================================================
+
+export const FAI_ATTACHMENT_CATEGORIES = [
+  { key: "balloonedDrawing",       label: "Balonlu Resim",              icon: "🎈", multi: false },
+  { key: "materialCertificates",   label: "Malzeme Uygunluk Sertifikaları", icon: "🧪", multi: true },
+  { key: "testReports",            label: "Kabul Test Raporu",          icon: "📊", multi: true },
+  { key: "productionDocs",         label: "Üretim Rotası / İş Talimatı", icon: "📋", multi: true },
+  { key: "nonconformanceDocs",     label: "Uygunsuzluk Belgeleri",       icon: "⚠️", multi: true },
+  { key: "customerApprovalLetter", label: "Müşteri Onay Yazısı",         icon: "🎉", multi: false },
+  { key: "other",                  label: "Diğer",                       icon: "📎", multi: true },
+];
+
+// ============================================================
 // Alt bileşen belge kategorileri (Form 1 alt parça listesi için)
 // COC alt bileşen sistemi ile aynı — yeniden kullanılır
 // ============================================================
