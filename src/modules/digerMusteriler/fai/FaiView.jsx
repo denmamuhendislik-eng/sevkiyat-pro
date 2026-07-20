@@ -20,6 +20,7 @@ import {
 } from "../../teklifler/firestore";
 import { generateFaiPdf, buildFaiPdfBlob } from "./faiPdf";
 import { downloadCocAttachmentBlob } from "../firestore";
+import { searchCocDrive, importCocDriveFile } from "../driveClient";
 import JSZip from "jszip";
 
 export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels, pendingFromFeasibility, onConsumeFeasibility }) {
@@ -265,6 +266,59 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
       });
     } catch (e) {
       alert("Yükleme hatası: " + e.message);
+    } finally {
+      setUploadingCat(u => ({ ...u, [categoryKey]: false }));
+    }
+  };
+
+  // Drive önerisi state + handler (F-9A)
+  const [driveSearchState, setDriveSearchState] = useState(null);
+
+  const runDriveSearch = async (categoryKey) => {
+    const cat = FAI_ATTACHMENT_CATEGORIES.find(c => c.key === categoryKey);
+    if (!cat?.driveCategory) { alert("Bu kategori için Drive arama tanımlanmamış"); return; }
+    if (!record.partNumber) { alert("Önce Parça No gir (Form 1 Alan 1)"); return; }
+    setDriveSearchState({ categoryKey, category: cat.driveCategory, results: null, loading: true, error: null });
+    try {
+      const res = await searchCocDrive({ category: cat.driveCategory, stokKodu: record.partNumber, altName: record.partName || "" });
+      setDriveSearchState({ categoryKey, category: cat.driveCategory, results: res?.results || [], loading: false, error: res?.message || null });
+    } catch (e) {
+      setDriveSearchState({ categoryKey, category: cat.driveCategory, results: [], loading: false, error: e.message });
+    }
+  };
+  const closeDriveSearch = () => setDriveSearchState(null);
+
+  const importFromDrive = async (categoryKey, fileId) => {
+    if (!faiNo) { alert("Önce FAI No belirle"); return; }
+    const cat = FAI_ATTACHMENT_CATEGORIES.find(c => c.key === categoryKey);
+    setUploadingCat(u => ({ ...u, [categoryKey]: true }));
+    try {
+      const year = "20" + String(faiNo).slice(0, 2);
+      const res = await importCocDriveFile({
+        fileId, certNo: faiNo, certYear: year,
+        category: cat?.driveCategory || "fai", stokKodu: record.partNumber || "",
+      });
+      if (!res?.success) throw new Error(res?.message || "Drive import başarısız");
+      const meta = res.coc || {};
+      const newDoc = {
+        url: meta.downloadUrl, path: meta.storagePath,
+        name: meta.filename || "drive-file.pdf", size: meta.size || 0,
+        category: categoryKey, uploadedAt: meta.uploadedAt || new Date().toISOString(),
+        source: "drive",
+      };
+      setRecord(prev => {
+        const attach = { ...(prev.attachments || {}) };
+        if (cat?.multi) {
+          const list = Array.isArray(attach[categoryKey]) ? attach[categoryKey] : [];
+          attach[categoryKey] = [...list, newDoc];
+        } else {
+          attach[categoryKey] = newDoc;
+        }
+        return { ...prev, attachments: attach };
+      });
+      closeDriveSearch();
+    } catch (e) {
+      alert("Drive dosyası aktarılamadı: " + e.message);
     } finally {
       setUploadingCat(u => ({ ...u, [categoryKey]: false }));
     }
@@ -858,17 +912,25 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
                       </div>
                     )}
                     {(!items.length || cat.multi) && !readonlyForm && (
-                      <label style={{ display: "inline-block", padding: "5px 10px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px dashed #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
-                        {isUploading ? "Yükleniyor..." : (cat.multi ? "📤 Dosya Ekle" : "📤 Dosya Seç")}
-                        <input type="file" accept="application/pdf,image/*"
-                          style={{ display: "none" }}
-                          disabled={isUploading || !canEdit}
-                          onChange={e => {
-                            const f = e.target.files?.[0];
-                            if (f) handleUpload(cat.key, f);
-                            e.target.value = "";
-                          }} />
-                      </label>
+                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                        <label style={{ display: "inline-block", padding: "5px 10px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px dashed #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                          {isUploading ? "Yükleniyor..." : (cat.multi ? "📤 Dosya Ekle" : "📤 Dosya Seç")}
+                          <input type="file" accept="application/pdf,image/*"
+                            style={{ display: "none" }}
+                            disabled={isUploading || !canEdit}
+                            onChange={e => {
+                              const f = e.target.files?.[0];
+                              if (f) handleUpload(cat.key, f);
+                              e.target.value = "";
+                            }} />
+                        </label>
+                        {cat.driveCategory && (
+                          <button onClick={() => runDriveSearch(cat.key)} disabled={isUploading || !canEdit}
+                            style={{ padding: "5px 10px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                            🔍 Drive'dan
+                          </button>
+                        )}
+                      </div>
                     )}
                   </div>
                 );
@@ -909,6 +971,66 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           </button>
         )}
       </div>
+
+      {/* DRIVE ARAMA SUB-MODAL — F-9A */}
+      {driveSearchState && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeDriveSearch(); }}>
+          <div style={{ background: "#fff", borderRadius: 8, padding: 16, width: "90%", maxWidth: 720, maxHeight: "80vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+              🔍 Drive'dan Öner — <span style={{ fontFamily: "ui-monospace, monospace", color: "#1e40af" }}>{record.partNumber}</span>
+              <span style={{ marginLeft: 6, padding: "2px 6px", background: "#eff6ff", color: "#1e40af", borderRadius: 3, fontSize: 10, fontWeight: 500 }}>
+                {FAI_ATTACHMENT_CATEGORIES.find(c => c.key === driveSearchState.categoryKey)?.label}
+              </span>
+            </div>
+            {driveSearchState.loading && (
+              <div style={{ padding: 20, textAlign: "center", color: "#78716c", fontSize: 11 }}>Drive'da aranıyor...</div>
+            )}
+            {!driveSearchState.loading && driveSearchState.error && (driveSearchState.results || []).length === 0 && (
+              <div style={{ padding: 12, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e" }}>
+                ⚠ {driveSearchState.error}
+              </div>
+            )}
+            {!driveSearchState.loading && (driveSearchState.results || []).length === 0 && !driveSearchState.error && (
+              <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Sonuç bulunamadı</div>
+            )}
+            {!driveSearchState.loading && (driveSearchState.results || []).length > 0 && (
+              <div style={{ flex: 1, overflowY: "auto", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead style={{ position: "sticky", top: 0, background: "#f5f5f4" }}>
+                    <tr style={{ textAlign: "left", color: "#44403c" }}>
+                      <th style={{ padding: "6px 8px", fontWeight: 600, fontSize: 10 }}>Dosya</th>
+                      <th style={{ padding: "6px 8px", fontWeight: 600, fontSize: 10, width: 120 }}>Klasör</th>
+                      <th style={{ padding: "6px 8px", fontWeight: 600, fontSize: 10, width: 90, textAlign: "right" }}>Tarih</th>
+                      <th style={{ padding: "6px 8px", width: 90 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {driveSearchState.results.map((r, i) => (
+                      <tr key={r.id || i} style={{ borderTop: "1px solid #f5f5f4" }}>
+                        <td style={{ padding: "6px 8px", fontFamily: "ui-monospace, monospace", fontSize: 10, wordBreak: "break-all" }}>{r.name || r.filename || "—"}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 10, color: "#78716c" }}>{r.parentName || r.folder || "—"}</td>
+                        <td style={{ padding: "6px 8px", fontSize: 10, color: "#78716c", textAlign: "right" }}>{r.modifiedTime ? String(r.modifiedTime).slice(0, 10) : "—"}</td>
+                        <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                          <button onClick={() => importFromDrive(driveSearchState.categoryKey, r.id)}
+                            disabled={!canEdit}
+                            style={{ padding: "3px 8px", fontSize: 10, background: "#1e40af", color: "#fff", border: "none", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500 }}>
+                            📥 Aktar
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 10 }}>
+              <button onClick={closeDriveSearch}
+                style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>Kapat</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

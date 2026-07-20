@@ -144,13 +144,13 @@ export const FAI_ROLES = [
 // ============================================================
 
 export const FAI_ATTACHMENT_CATEGORIES = [
-  { key: "balloonedDrawing",       label: "Balonlu Resim",              icon: "🎈", multi: false },
-  { key: "materialCertificates",   label: "Malzeme Uygunluk Sertifikaları", icon: "🧪", multi: true },
-  { key: "testReports",            label: "Kabul Test Raporu",          icon: "📊", multi: true },
-  { key: "productionDocs",         label: "Üretim Rotası / İş Talimatı", icon: "📋", multi: true },
-  { key: "nonconformanceDocs",     label: "Uygunsuzluk Belgeleri",       icon: "⚠️", multi: true },
-  { key: "customerApprovalLetter", label: "Müşteri Onay Yazısı",         icon: "🎉", multi: false },
-  { key: "other",                  label: "Diğer",                       icon: "📎", multi: true },
+  { key: "balloonedDrawing",       label: "Balonlu Resim",              icon: "🎈", multi: false, driveCategory: "bubbleDrawing" },
+  { key: "materialCertificates",   label: "Malzeme Uygunluk Sertifikaları", icon: "🧪", multi: true, driveCategory: "rawMaterialCert" },
+  { key: "testReports",            label: "Kabul Test Raporu",          icon: "📊", multi: true, driveCategory: "measurement" },
+  { key: "productionDocs",         label: "Üretim Rotası / İş Talimatı", icon: "📋", multi: true, driveCategory: null },
+  { key: "nonconformanceDocs",     label: "Uygunsuzluk Belgeleri",       icon: "⚠️", multi: true, driveCategory: null },
+  { key: "customerApprovalLetter", label: "Müşteri Onay Yazısı",         icon: "🎉", multi: false, driveCategory: null },
+  { key: "other",                  label: "Diğer",                       icon: "📎", multi: true, driveCategory: "fai" },
 ];
 
 // ============================================================
