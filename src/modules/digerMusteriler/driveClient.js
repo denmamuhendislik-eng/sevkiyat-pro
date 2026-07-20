@@ -16,3 +16,10 @@ export async function importCocDriveFile({ fileId, certNo, certYear, category, s
   const res = await fn({ fileId, certNo, certYear, category, stokKodu });
   return res.data; // { success, coc: {...meta}, master: {...meta} }
 }
+
+// FAI Arşiv Import (F-9B) — Drive kök klasöründe alt klasörleri listeler
+export async function listFaiArchiveFolders({ rootFolderId, limit = 500 }) {
+  const fn = httpsCallable(functions, "listFaiArchiveFolders");
+  const res = await fn({ rootFolderId, limit });
+  return res.data; // { success, count, folders: [{id, name, modifiedTime, webViewLink}] }
+}

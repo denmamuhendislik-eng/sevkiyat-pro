@@ -8,6 +8,8 @@ import {
   updateFaiStatus, signFaiRole, unsignFaiRole, deleteFaiRecord,
   uploadFaiAttachment, deleteFaiAttachment,
   computeFaiStatus, countFaiSignatures,
+  subscribeFaiArchive, saveFaiArchiveRecords, deleteFaiArchiveRecord,
+  archiveKey, parseFaiArchiveFolderName,
 } from "./firestore";
 import {
   makeEmptyFai, FAI_STATUSES, FAI_ROLES,
@@ -20,7 +22,7 @@ import {
 } from "../../teklifler/firestore";
 import { generateFaiPdf, buildFaiPdfBlob } from "./faiPdf";
 import { downloadCocAttachmentBlob } from "../firestore";
-import { searchCocDrive, importCocDriveFile } from "../driveClient";
+import { searchCocDrive, importCocDriveFile, listFaiArchiveFolders } from "../driveClient";
 import JSZip from "jszip";
 
 export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels, pendingFromFeasibility, onConsumeFeasibility }) {
@@ -93,12 +95,21 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
   // Subscribe: müşteri + parça kütüphaneleri (otomatik doldurma için)
   const [customersData, setCustomersData] = useState({ customers: {} });
   const [quotePartsLib, setQuotePartsLib] = useState({ parts: {} });
+  const [archiveData, setArchiveData] = useState({ records: {} });
   useEffect(() => {
     const u1 = subscribeQuoteCustomers(d => setCustomersData(d || { customers: {} }), { staging });
     const u2 = subscribeQuoteParts(d => setQuotePartsLib(d || { parts: {} }), { staging });
-    return () => { u1(); u2(); };
+    const u3 = subscribeFaiArchive(d => setArchiveData(d || { records: {} }), { staging });
+    return () => { u1(); u2(); u3(); };
   }, [staging]);
   const customerList = useMemo(() => Object.values(customersData?.customers || {}), [customersData]);
+
+  // F-9C: Bu parça no için arşivde FAI var mı?
+  const archiveMatches = useMemo(() => {
+    if (!record.partNumber) return [];
+    const arr = Object.values(archiveData?.records || {});
+    return arr.filter(a => (a.stockCode || a.partNumber) === record.partNumber);
+  }, [record.partNumber, archiveData]);
 
   useEffect(() => {
     if (initialRecord) {
@@ -438,6 +449,30 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
         <div style={{ marginBottom: 12, padding: 10, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, fontSize: 11, color: "#166534" }}>
           🎯 <b>Yapılabilirlik'ten oluşturuldu</b> — <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{record.linkedFeasibilityNo}</span>
           <br /><span style={{ fontSize: 10, color: "#15803d" }}>Parça bilgisi + hammadde + fason kalemleri otomatik dolduruldu. Karakteristik ölçümler ve Form 3 elle doldurulmalıdır.</span>
+        </div>
+      )}
+
+      {/* F-9C: Bu parça için arşivde FAI varsa uyar */}
+      {archiveMatches.length > 0 && (
+        <div style={{ marginBottom: 12, padding: 10, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e" }}>
+          ⚠ <b>Bu parça için arşivde {archiveMatches.length} FAI var:</b>{" "}
+          {archiveMatches.slice(0, 5).map((a, i) => (
+            <span key={i} style={{ display: "inline-block", marginRight: 6 }}>
+              {(a.attachments?.other || []).filter(x => x?.isDriveLink).map((x, j) => (
+                <a key={j} href={x.driveUrl} target="_blank" rel="noreferrer"
+                  style={{ padding: "1px 6px", background: "#fff", color: "#92400e", border: "1px solid #fde68a", borderRadius: 2, fontSize: 10, fontWeight: 600, textDecoration: "none" }}>
+                  📂 FAİ-{a.faiNo}
+                </a>
+              ))}
+              {(!a.attachments?.other || !a.attachments.other.some(x => x?.isDriveLink)) && (
+                <span style={{ padding: "1px 6px", background: "#fff", color: "#92400e", borderRadius: 2, fontSize: 10, fontWeight: 600 }}>
+                  FAİ-{a.faiNo}
+                </span>
+              )}
+            </span>
+          ))}
+          {archiveMatches.length > 5 && <span style={{ fontSize: 10, color: "#78350f" }}>+{archiveMatches.length - 5} daha</span>}
+          <br /><span style={{ fontSize: 10, color: "#78350f" }}>Aynı parça daha önce FAI edilmiş. Revizyon/güncelleme yapıyorsanız Kısmi FAI seçmeyi düşünün.</span>
         </div>
       )}
 
@@ -1101,13 +1136,20 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
   const [year, setYear] = useState(String(currentYear));
   const [staging, setStaging] = useState(false);
   const [data, setData] = useState({ records: {} });
+  const [archiveData, setArchiveData] = useState({ records: {} });
+  const [showArchive, setShowArchive] = useState(false);
   const [localSearch, setLocalSearch] = useState("");
   const [deleting, setDeleting] = useState({});
+  const [archiveImportOpen, setArchiveImportOpen] = useState(false);
 
   useEffect(() => {
     const unsub = subscribeFaiForYear(year, setData, { staging });
     return unsub;
   }, [year, staging]);
+  useEffect(() => {
+    const unsub = subscribeFaiArchive(setArchiveData, { staging });
+    return unsub;
+  }, [staging]);
 
   const records = useMemo(() => {
     const arr = Object.values(data?.records || {});
@@ -1141,6 +1183,18 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
     }
   };
 
+  // Arşiv verilerini de listele — showArchive true ise arşiv, false ise sadece bu yıl
+  const archiveRecords = useMemo(() => {
+    const arr = Object.values(archiveData?.records || {});
+    const q = (localSearch || searchText || "").trim().toLocaleLowerCase("tr-TR");
+    let f = arr;
+    if (q) f = f.filter(r =>
+      (r.partNumber || "").toLocaleLowerCase("tr-TR").includes(q) ||
+      (r.faiNo || "").toLocaleLowerCase("tr-TR").includes(q)
+    );
+    return f.sort((a, b) => Number(b.faiNo || 0) - Number(a.faiNo || 0));
+  }, [archiveData, localSearch, searchText]);
+
   return (
     <div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
@@ -1149,11 +1203,21 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
           {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
         </select>
         <label style={{ fontSize: 11 }}>
+          <input type="checkbox" checked={showArchive} onChange={e => setShowArchive(e.target.checked)} />
+          🗄 Arşiv Göster ({Object.keys(archiveData?.records || {}).length})
+        </label>
+        <label style={{ fontSize: 11 }}>
           <input type="checkbox" checked={staging} onChange={e => setStaging(e.target.checked)} /> Staging
         </label>
         <input value={localSearch} onChange={e => setLocalSearch(e.target.value)}
           placeholder="🔎 FAI no / parça / müşteri" style={{ flex: 1, minWidth: 200, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }} />
-        <span style={{ fontSize: 11, color: "#78716c" }}>{records.length} FAI</span>
+        <span style={{ fontSize: 11, color: "#78716c" }}>{records.length} güncel · {archiveRecords.length} arşiv</span>
+        {isAdmin && (
+          <button onClick={() => setArchiveImportOpen(true)}
+            style={{ padding: "6px 12px", fontSize: 11, background: "#166534", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
+            📥 Drive Arşiv İçe Aktar
+          </button>
+        )}
       </div>
 
       {records.length === 0 ? (
@@ -1224,6 +1288,253 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
           </table>
         </div>
       )}
+
+      {/* ARŞİV LİSTESİ (F-9B) — showArchive true ise */}
+      {showArchive && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 8, color: "#166534" }}>
+            🗄 Arşiv — Drive'dan İçe Aktarılmış Eski FAI Kayıtları ({archiveRecords.length})
+          </div>
+          {archiveRecords.length === 0 ? (
+            <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6, fontSize: 11 }}>
+              Arşivde kayıt yok. Admin "📥 Drive Arşiv İçe Aktar" ile içeri alabilir.
+            </div>
+          ) : (
+            <div style={{ border: "1px solid #86efac", borderRadius: 6, overflow: "hidden", background: "#f0fdf4" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead>
+                  <tr style={{ background: "#dcfce7", fontSize: 10, color: "#166534", textAlign: "left" }}>
+                    <th style={{ padding: "8px 10px" }}>FAI No</th>
+                    <th style={{ padding: "8px 10px" }}>Stok Kodu</th>
+                    <th style={{ padding: "8px 10px" }}>İçe Aktarıldı</th>
+                    <th style={{ padding: "8px 10px" }}>Drive</th>
+                    <th style={{ padding: "8px 10px" }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {archiveRecords.map(r => (
+                    <tr key={r.archiveKey || archiveKey(r.stockCode || r.partNumber, r.faiNo)} style={{ borderTop: "1px solid #86efac" }}>
+                      <td style={{ padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontWeight: 600, color: "#166534" }}>FAİ-{r.faiNo}</td>
+                      <td style={{ padding: "6px 10px", fontFamily: "ui-monospace, monospace" }}>{r.stockCode || r.partNumber}</td>
+                      <td style={{ padding: "6px 10px", fontSize: 10, color: "#57534e" }}>{r.importedAt ? String(r.importedAt).slice(0, 10) : "—"}</td>
+                      <td style={{ padding: "6px 10px" }}>
+                        {(r.attachments?.other || []).filter(a => a?.isDriveLink).map((a, i) => (
+                          <a key={i} href={a.driveUrl} target="_blank" rel="noreferrer"
+                            style={{ display: "inline-block", padding: "1px 6px", marginRight: 4, background: "#eff6ff", color: "#1e40af", borderRadius: 3, fontSize: 9, textDecoration: "none" }}>
+                            📂 {a.name || "Klasör"}
+                          </a>
+                        ))}
+                      </td>
+                      <td style={{ padding: "6px 10px", textAlign: "right" }}>
+                        {isAdmin && (
+                          <button onClick={async () => {
+                            const k = r.archiveKey || archiveKey(r.stockCode || r.partNumber, r.faiNo);
+                            if (!confirm(`FAİ-${r.faiNo} arşiv kaydı silinsin mi?`)) return;
+                            try { await deleteFaiArchiveRecord(k, { canEdit, staging }); }
+                            catch (e) { alert(e.message); }
+                          }}
+                            style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑</button>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ARŞİV İMPORT MODAL (F-9B) */}
+      {archiveImportOpen && (
+        <ArchiveImportModal
+          onClose={() => setArchiveImportOpen(false)}
+          canEdit={canEdit}
+          staging={staging}
+          existingKeys={new Set(Object.keys(archiveData?.records || {}))}
+        />
+      )}
+    </div>
+  );
+}
+
+// ==================== Arşiv İmport Modalı (F-9B) ====================
+
+function ArchiveImportModal({ onClose, canEdit, staging, existingKeys }) {
+  const [rootFolderId, setRootFolderId] = useState("1Cdateqg41bBLcM8snJTbCwwzTcbk0FfA"); // FAİ KAYITLARI varsayılan
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
+  const [folders, setFolders] = useState(null);
+  const [selected, setSelected] = useState(new Set());
+  const [saving, setSaving] = useState(false);
+
+  const handleList = async () => {
+    if (!rootFolderId.trim()) { setError("Kök klasör ID gir"); return; }
+    setLoading(true); setError(""); setFolders(null);
+    try {
+      const res = await listFaiArchiveFolders({ rootFolderId: rootFolderId.trim(), limit: 500 });
+      setFolders(res?.folders || []);
+    } catch (e) {
+      setError(e.message || "Drive listeleme hatası");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const parsedFolders = useMemo(() => {
+    if (!folders) return [];
+    return folders.map(f => {
+      const parsed = parseFaiArchiveFolderName(f.name);
+      return { ...f, parsed };
+    });
+  }, [folders]);
+
+  const validFolders = parsedFolders.filter(f => f.parsed);
+  const invalidFolders = parsedFolders.filter(f => !f.parsed);
+
+  const toggle = (id) => {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id); else n.add(id);
+      return n;
+    });
+  };
+  const selectAll = () => setSelected(new Set(validFolders.map(f => f.id)));
+  const clearSelection = () => setSelected(new Set());
+
+  const handleImport = async () => {
+    if (selected.size === 0) return;
+    setSaving(true);
+    try {
+      const records = [];
+      for (const f of validFolders) {
+        if (!selected.has(f.id)) continue;
+        records.push({
+          faiNo: f.parsed.faiNo,
+          stockCode: f.parsed.stokKodu,
+          partNumber: f.parsed.stokKodu,
+          partName: "",
+          status: "customerApproved",
+          source: "drive-archive",
+          attachments: {
+            other: [{
+              name: f.name,
+              driveUrl: f.webViewLink || `https://drive.google.com/drive/folders/${f.id}`,
+              driveId: f.id,
+              modifiedTime: f.modifiedTime,
+              isDriveLink: true,
+              uploadedAt: new Date().toISOString(),
+            }],
+          },
+        });
+      }
+      const out = await saveFaiArchiveRecords(records, { canEdit, staging });
+      alert(`✓ ${out.count} arşiv kaydı içe aktarıldı`);
+      onClose();
+    } catch (e) {
+      alert("İçe aktarma hatası: " + e.message);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.55)", zIndex: 2000, display: "flex", alignItems: "center", justifyContent: "center" }}
+      onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}>
+      <div style={{ background: "#fff", borderRadius: 8, padding: 16, width: "90%", maxWidth: 900, maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 8px 24px rgba(0,0,0,0.25)" }}>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>📥 Drive Arşiv İçe Aktar</div>
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
+          Drive'daki FAİ KAYITLARI kök klasörünün ID'sini gir. Alt klasörler listelenir, seçtiklerin FAI arşivine eklenir. Dosyalar Drive'da kalır — Sevkiyat Pro sadece link tutar.
+        </div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
+          <input value={rootFolderId} onChange={e => setRootFolderId(e.target.value)}
+            placeholder="Drive kök klasör ID"
+            style={{ flex: 1, padding: "6px 10px", fontSize: 12, border: "1px solid #d6d3d1", borderRadius: 4, fontFamily: "ui-monospace, monospace" }} />
+          <button onClick={handleList} disabled={loading}
+            style={{ padding: "6px 14px", fontSize: 12, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: loading ? "wait" : "pointer", fontWeight: 500 }}>
+            {loading ? "Aranıyor..." : "🔍 Listele"}
+          </button>
+        </div>
+        {error && (
+          <div style={{ padding: 10, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11, color: "#991b1b", marginBottom: 10 }}>⚠ {error}</div>
+        )}
+        {folders && (
+          <>
+            <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8, fontSize: 11 }}>
+              <span>{folders.length} klasör bulundu · {validFolders.length} geçerli · {invalidFolders.length} format uyumsuz</span>
+              <button onClick={selectAll} disabled={validFolders.length === 0}
+                style={{ marginLeft: "auto", padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>
+                ✓ Tümünü Seç ({validFolders.length})
+              </button>
+              {selected.size > 0 && (
+                <button onClick={clearSelection}
+                  style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>
+                  ✕ Seçimi Temizle
+                </button>
+              )}
+            </div>
+            <div style={{ flex: 1, overflowY: "auto", border: "1px solid #e7e5e4", borderRadius: 4, marginBottom: 10 }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                <thead style={{ position: "sticky", top: 0, background: "#f5f5f4" }}>
+                  <tr style={{ textAlign: "left", color: "#44403c" }}>
+                    <th style={{ padding: "5px 6px", width: 30 }}></th>
+                    <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10 }}>Klasör Adı</th>
+                    <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10 }}>Stok Kodu</th>
+                    <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 80 }}>FAI No</th>
+                    <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 100 }}>Tarih</th>
+                    <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 100 }}>Durum</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {validFolders.map(f => {
+                    const key = archiveKey(f.parsed.stokKodu, f.parsed.faiNo);
+                    const exists = existingKeys.has(key);
+                    const isSel = selected.has(f.id);
+                    return (
+                      <tr key={f.id}
+                        onClick={() => toggle(f.id)}
+                        style={{ borderTop: "1px solid #f5f5f4", cursor: "pointer", background: isSel ? "#eff6ff" : (exists ? "#fef3c7" : "transparent") }}>
+                        <td style={{ padding: "4px 6px" }}>
+                          <input type="checkbox" checked={isSel} onChange={() => toggle(f.id)} onClick={e => e.stopPropagation()} />
+                        </td>
+                        <td style={{ padding: "4px 6px", fontSize: 10 }}>{f.name}</td>
+                        <td style={{ padding: "4px 6px", fontFamily: "ui-monospace, monospace", fontSize: 10 }}>{f.parsed.stokKodu}</td>
+                        <td style={{ padding: "4px 6px", fontFamily: "ui-monospace, monospace", fontSize: 10, fontWeight: 600, color: "#1e40af" }}>{f.parsed.faiNo}</td>
+                        <td style={{ padding: "4px 6px", fontSize: 9, color: "#78716c" }}>{f.modifiedTime ? String(f.modifiedTime).slice(0, 10) : "—"}</td>
+                        <td style={{ padding: "4px 6px" }}>
+                          {exists ? <span style={{ padding: "1px 5px", background: "#fef3c7", color: "#92400e", borderRadius: 2, fontSize: 9 }}>Mevcut (birleşir)</span>
+                                  : <span style={{ padding: "1px 5px", background: "#dcfce7", color: "#166534", borderRadius: 2, fontSize: 9 }}>Yeni</span>}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {invalidFolders.length > 0 && invalidFolders.slice(0, 20).map(f => (
+                    <tr key={f.id} style={{ borderTop: "1px solid #f5f5f4", background: "#fafaf9" }}>
+                      <td style={{ padding: "4px 6px", color: "#a8a29e", fontSize: 10, textAlign: "center" }}>—</td>
+                      <td style={{ padding: "4px 6px", fontSize: 10, color: "#a8a29e" }} colSpan="5">
+                        ⚠ Format uyumsuz: {f.name}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+          <div style={{ fontSize: 11, color: "#57534e" }}>
+            <b>{selected.size}</b> klasör seçildi
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onClose} disabled={saving}
+              style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+            <button onClick={handleImport} disabled={saving || !canEdit || selected.size === 0}
+              style={{ padding: "6px 14px", fontSize: 12, background: selected.size > 0 ? "#166534" : "#a8a29e", color: "#fff", border: "none", borderRadius: 4, cursor: (saving || selected.size === 0) ? "not-allowed" : "pointer", fontWeight: 500 }}>
+              {saving ? "İçe aktarılıyor..." : `✓ ${selected.size} Kayıt İçe Aktar`}
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

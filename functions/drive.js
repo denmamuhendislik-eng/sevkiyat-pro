@@ -469,7 +469,32 @@ async function downloadDriveFile(saKeyJson, fileId) {
   };
 }
 
+// FAI Arşiv (F-9B) — verilen kök klasörün altındaki tüm klasörleri listeler.
+// Her alt klasör bir FAI kaydına karşılık gelir (klasör adı = stokKodu + FAI no).
+// Sadece klasör metadata döner — dosya indirme yapmaz.
+async function listArchiveFolders(saKeyJson, { rootFolderId, limit = 500 }) {
+  if (!rootFolderId) throw new Error("rootFolderId zorunlu");
+  const drive = getDrive(saKeyJson);
+  const results = [];
+  let pageToken = null;
+  do {
+    const res = await drive.files.list({
+      q: `'${rootFolderId}' in parents and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+      fields: "nextPageToken, files(id, name, modifiedTime, createdTime, webViewLink)",
+      pageSize: Math.min(1000, limit - results.length),
+      pageToken,
+      corpora: "allDrives",
+      includeItemsFromAllDrives: true,
+      supportsAllDrives: true,
+    });
+    (res.data.files || []).forEach(f => results.push(f));
+    pageToken = res.data.nextPageToken;
+  } while (pageToken && results.length < limit);
+  return results;
+}
+
 module.exports = {
   searchDriveCategory,
   downloadDriveFile,
+  listArchiveFolders,
 };

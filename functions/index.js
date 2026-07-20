@@ -865,7 +865,7 @@ exports.uploadCocFileHttp = onRequest(
 //    Storage'a yükler, COC'a metadata döner
 // Auth: Firebase ID token (Authorization: Bearer ...) zorunlu
 // ====================================================================
-const { searchDriveCategory, downloadDriveFile } = require("./drive");
+const { searchDriveCategory, downloadDriveFile, listArchiveFolders } = require("./drive");
 const crypto = require("crypto");
 
 // Firebase Storage download URL üretici (signed URL yerine — iam.signBlob izni gerektirmez).
@@ -921,6 +921,33 @@ exports.searchCocDrive = onCall(
       return { success: true, ...out };
     } catch (err) {
       logger.error("[COC Drive Search] Hata", { error: err.message });
+      throw new HttpsError("internal", err.message);
+    }
+  },
+);
+
+// FAI Arşiv Import (F-9B) — belirtilen kök klasörün alt klasörlerini listeler.
+// Frontend seçim yapıp toplu FAI kaydı oluşturur (dosya indirmez, Drive linki tutar).
+exports.listFaiArchiveFolders = onCall(
+  {
+    region: REGION,
+    timeoutSeconds: 300,
+    memory: "512MiB",
+    cors: true,
+    secrets: [COC_DRIVE_SA_KEY],
+  },
+  async (request) => {
+    requireAuth(request);
+    const { rootFolderId, limit } = request.data || {};
+    if (!rootFolderId) {
+      throw new HttpsError("invalid-argument", "rootFolderId zorunlu");
+    }
+    try {
+      const saKey = COC_DRIVE_SA_KEY.value();
+      const folders = await listArchiveFolders(saKey, { rootFolderId, limit: Number(limit) || 500 });
+      return { success: true, count: folders.length, folders };
+    } catch (err) {
+      logger.error("[FAI Archive List] Hata", { error: err.message });
       throw new HttpsError("internal", err.message);
     }
   },
