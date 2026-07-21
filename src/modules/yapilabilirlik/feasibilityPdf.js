@@ -328,9 +328,12 @@ async function renderFeasibilityPdf(study) {
     const canvasWidth = canvas.width;
     const canvasHeight = canvas.height;
 
-    // İçerik tek A4'e sığıyorsa direkt bas
+    // İçerik tek A4'e sığıyorsa direkt bas. HTML padding/whitespace nedeniyle
+    // birkaç mm taşma yaşanabildiği için küçük bir tolerans veriyoruz — aksi
+    // halde 2. sayfada neredeyse boş bir "devam" sayfası oluşuyordu.
+    const SINGLE_PAGE_TOLERANCE_MM = 8;
     const imgHeightMm = (canvasHeight * pdfWidth) / canvasWidth;
-    if (imgHeightMm <= pdfHeight) {
+    if (imgHeightMm <= pdfHeight + SINGLE_PAGE_TOLERANCE_MM) {
       pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pdfWidth, imgHeightMm);
       return pdf;
     }
@@ -338,6 +341,7 @@ async function renderFeasibilityPdf(study) {
     // Taşma var — sayfa sayfa dilimle. 2+ sayfada üstte kompakt "devam" şeridi çıkar.
     const pxPerMm = canvasWidth / pdfWidth;
     const CONTINUATION_STRIP_MM = 12;
+    const MIN_LAST_PAGE_CONTENT_MM = 25; // son sayfada bundan az içerik kalırsa öncekine birleştir
     const firstPageContentPx = pdfHeight * pxPerMm;
     const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM) * pxPerMm;
 
@@ -352,6 +356,16 @@ async function renderFeasibilityPdf(study) {
       slices.push({ offset, height: sliceHeight, isContinuation: !isFirst });
       offset += sliceHeight;
       pageIdx++;
+    }
+    // Son sayfa çok az içerik kaldıysa (< 25mm) — önceki sayfaya birleştir,
+    // "devam" sayfasında sadece şerit + boşluk görünmesin diye.
+    if (slices.length >= 2) {
+      const last = slices[slices.length - 1];
+      const lastHeightMm = last.height / pxPerMm;
+      if (lastHeightMm < MIN_LAST_PAGE_CONTENT_MM) {
+        slices[slices.length - 2].height += last.height;
+        slices.pop();
+      }
     }
     const totalPages = slices.length;
 
