@@ -5266,13 +5266,17 @@ function CocPartModal({ part, canEdit, onClose }) {
 
 // ====================================================================
 // ALT BİLEŞEN Belgeleri — CocDetailModal içinde kullanılır.
-// Cert.subComponents snapshot'ında saved required alt bileşenler için
-// belge (docs.hammaddeSertifikasi/olcumRaporu/fasonSertifikasi) yükle/sil.
-// Standart bağlantı elemanları filtre dışı.
+// Cert.subComponents snapshot'ında saved alt bileşenler için belge
+// (docs.hammaddeSertifikasi/olcumRaporu/fasonSertifikasi) yükle/sil.
+// classifySubComponents master'daki requiresCoc override + heuristikle
+// required/standard ayırır. Standart olanlar default gizli; toggle ile
+// standart-COC gerektir arasında geçiş yapılabilir (master'a yazar).
+// Drive'dan öner butonu da CocModal'daki gibi çalışır.
 // ====================================================================
 function CocSubComponentsSection({ cert: initialCert, canEdit }) {
   const year = initialCert.certNo.substring(0, 4);
   const { cocCertificates } = useCocCertificates(year);
+  const { cocParts } = useCocParts();
   const certId = `${initialCert.certNo}_${initialCert.siraNo || '1'}`;
   const liveCert = cocCertificates?.certificates?.[certId];
   const cert = liveCert
@@ -5280,18 +5284,20 @@ function CocSubComponentsSection({ cert: initialCert, canEdit }) {
     : initialCert;
 
   const allSubs = Array.isArray(cert.subComponents) ? cert.subComponents : [];
-  const requiredSubs = allSubs.filter(s => {
-    if (s?.requiresCoc === false) return false;
-    if (s?.requiresCoc === true) return true;
-    return !isStandardFastener(s?.stokAdi || s?.stokKodu || '');
-  });
+  const { required: requiredSubs, standard: standardSubs } = useMemo(
+    () => classifySubComponents(allSubs, cocParts || {}),
+    [allSubs, cocParts]
+  );
 
   const [uploadingDoc, setUploadingDoc] = useState({});
   const [expandedSub, setExpandedSub] = useState({});
   const [historyState, setHistoryState] = useState(null);
+  const [driveSearchState, setDriveSearchState] = useState(null);
+  const [savingRequires, setSavingRequires] = useState({});
+  const [showStandard, setShowStandard] = useState(false);
   const [error, setError] = useState('');
 
-  if (requiredSubs.length === 0) return null;
+  if (allSubs.length === 0) return null;
 
   const toggleSub = (k) => setExpandedSub(p => ({ ...p, [k]: !p[k] }));
 
@@ -5366,12 +5372,83 @@ function CocSubComponentsSection({ cert: initialCert, canEdit }) {
     }
   };
 
+  // Standart bağlantı toggle — master'a yaz. classifySubComponents cocParts değişimi
+  // sonrası required/standard listelerini otomatik günceller.
+  const handleToggleRequires = async (sub) => {
+    const partMaster = cocParts?.parts?.[sub.stokKodu];
+    const current = partMaster?.requiresCoc;
+    const heuristicRequires = !isStandardFastener(sub.stokAdi);
+    const effective = current === true ? true : current === false ? false : heuristicRequires;
+    const next = !effective;
+    setSavingRequires(s => ({ ...s, [sub.stokKodu]: true }));
+    try {
+      await saveCocPartRequiresCoc(sub.stokKodu, next, { canEdit });
+    } catch (e) {
+      setError('Kaydedilemedi: ' + e.message);
+    } finally {
+      setSavingRequires(s => ({ ...s, [sub.stokKodu]: false }));
+    }
+  };
+
+  // Drive'dan öner — searchCocDrive çağır, sonucu modal'da göster
+  const runDriveSearch = async (subStokKodu, category, altName) => {
+    setDriveSearchState({ stokKodu: subStokKodu, category, results: null, loading: true, error: null });
+    try {
+      const driveCategory = SUB_DOC_TO_DRIVE_CATEGORY[category];
+      if (!driveCategory) throw new Error(`Bu kategori için Drive arama tanımlanmamış: ${category}`);
+      const res = await searchCocDrive({ category: driveCategory, stokKodu: subStokKodu, altName: altName || '' });
+      setDriveSearchState({ stokKodu: subStokKodu, category, results: res?.results || [], loading: false, error: res?.message || null });
+    } catch (e) {
+      setDriveSearchState({ stokKodu: subStokKodu, category, results: [], loading: false, error: e.message });
+    }
+  };
+  const closeDriveSearch = () => setDriveSearchState(null);
+
+  const importFromDriveToSub = async (subStokKodu, category, fileId) => {
+    const key = `${subStokKodu}|${category}`;
+    setUploadingDoc(u => ({ ...u, [key]: true }));
+    setError('');
+    try {
+      const driveCategory = SUB_DOC_TO_DRIVE_CATEGORY[category];
+      const res = await importCocDriveFile({ fileId, certNo: cert.certNo, certYear: year, category: driveCategory, stokKodu: subStokKodu });
+      if (!res?.success) throw new Error(res?.message || 'Drive import başarısız');
+      const meta = res.coc || {};
+      const newDoc = {
+        url: meta.downloadUrl,
+        path: meta.storagePath,
+        name: meta.filename || 'drive-file.pdf',
+        size: meta.size || 0,
+        category,
+        subStokKodu,
+        uploadedAt: meta.uploadedAt || new Date().toISOString(),
+        source: 'drive',
+      };
+      const sub = allSubs.find(s => s.stokKodu === subStokKodu);
+      const existing = getSubDocFiles(sub, category);
+      await setSubDocs(subStokKodu, category, [...existing, newDoc]);
+      closeDriveSearch();
+    } catch (e) {
+      setError('Drive dosyası aktarılamadı: ' + e.message);
+    } finally {
+      setUploadingDoc(u => ({ ...u, [key]: false }));
+    }
+  };
+
   return (
     <div style={{ padding: '0 20px 12px' }}>
       <div style={{ marginTop: 6, padding: 12, background: '#fafaf9', border: '1px solid #e7e5e4', borderRadius: 6 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
           <div style={{ fontSize: 12, fontWeight: 600, color: '#44403c' }}>🧩 Alt Bileşen Belgeleri</div>
-          <span style={{ fontSize: 10, color: '#78716c' }}>{requiredSubs.length} alt bileşen</span>
+          <span style={{ fontSize: 10, color: '#78716c' }}>
+            {requiredSubs.length} COC gerektiren
+            {standardSubs.length > 0 && ` · ${standardSubs.length} standart`}
+          </span>
+          {standardSubs.length > 0 && (
+            <label style={{ marginLeft: 'auto', fontSize: 10, color: '#57534e', display: 'inline-flex', alignItems: 'center', gap: 4 }}>
+              <input type="checkbox" checked={showStandard} onChange={e => setShowStandard(e.target.checked)} />
+              Standart bağlantıları göster ({standardSubs.length})
+            </label>
+          )}
         </div>
 
         {error && (
@@ -5413,11 +5490,18 @@ function CocSubComponentsSection({ cert: initialCert, canEdit }) {
                       </span>
                     </td>
                     <td style={{ padding: '4px 8px' }}>
-                      <span style={{ padding: '1px 6px', fontSize: 9, fontWeight: 600, borderRadius: 3,
-                        background: st.status === 'complete' ? '#dcfce7' : st.status === 'partial' ? '#fef3c7' : '#fee2e2',
-                        color: st.status === 'complete' ? '#166534' : st.status === 'partial' ? '#92400e' : '#991b1b' }}>
-                        {st.status === 'complete' ? '✓ Tamam' : st.status === 'partial' ? `${st.have}/${st.need} Kısmi` : `0/${st.need} Eksik`}
-                      </span>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                        <span style={{ padding: '1px 6px', fontSize: 9, fontWeight: 600, borderRadius: 3,
+                          background: st.status === 'complete' ? '#dcfce7' : st.status === 'partial' ? '#fef3c7' : '#fee2e2',
+                          color: st.status === 'complete' ? '#166534' : st.status === 'partial' ? '#92400e' : '#991b1b' }}>
+                          {st.status === 'complete' ? '✓ Tamam' : st.status === 'partial' ? `${st.have}/${st.need} Kısmi` : `0/${st.need} Eksik`}
+                        </span>
+                        <button onClick={() => handleToggleRequires(s)} disabled={savingRequires[s.stokKodu] || !canEdit}
+                          title="Bu stoku standart bağlantı elemanı olarak işaretle (COC gerekmez)"
+                          style={{ padding: '1px 4px', fontSize: 8, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', opacity: savingRequires[s.stokKodu] ? 0.5 : 1 }}>
+                          {savingRequires[s.stokKodu] ? '...' : '→ STD'}
+                        </button>
+                      </div>
                     </td>
                   </tr>
                   {isExp && (
@@ -5471,6 +5555,11 @@ function CocSubComponentsSection({ cert: initialCert, canEdit }) {
                                         e.target.value = '';
                                       }} />
                                   </label>
+                                  <button onClick={() => runDriveSearch(s.stokKodu, cat, s.stokAdi)}
+                                    disabled={isUploading || !canEdit}
+                                    style={{ padding: '3px 6px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                    🔍 Drive'dan Ekle
+                                  </button>
                                   {historyCount > 0 && (
                                     <button onClick={() => openHistoryPicker(s.stokKodu, cat)}
                                       disabled={isUploading || !canEdit}
@@ -5490,12 +5579,87 @@ function CocSubComponentsSection({ cert: initialCert, canEdit }) {
                 </React.Fragment>
               );
             })}
+            {showStandard && standardSubs.map((s, i) => (
+              <tr key={`std-${i}`} style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
+                <td></td>
+                <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#a8a29e' }}>{s.stokKodu}</td>
+                <td style={{ padding: '4px 8px', color: '#78716c' }}>{s.stokAdi || '—'}</td>
+                <td style={{ padding: '4px 8px' }}>
+                  <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3, background: '#f5f5f4', color: '#78716c' }}>STD</span>
+                </td>
+                <td style={{ padding: '4px 8px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>COC gerekmez</span>
+                    <button onClick={() => handleToggleRequires(s)} disabled={savingRequires[s.stokKodu] || !canEdit}
+                      title="Bu stoku özel parça olarak işaretle (COC gerektirir)"
+                      style={{ padding: '1px 4px', fontSize: 8, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', opacity: savingRequires[s.stokKodu] ? 0.5 : 1 }}>
+                      {savingRequires[s.stokKodu] ? '...' : '→ COC gerektir'}
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
           </tbody>
         </table>
         <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
-          💡 ▶ ile alt bileşen belge panelini aç — çoklu dosya yükle veya geçmiş COC'lardan seç.
+          💡 ▶ ile alt bileşen belge panelini aç — çoklu dosya yükle, geçmiş COC'lardan seç veya Drive'dan öner. STD ile gereksiz bileşenleri ele.
         </div>
       </div>
+
+      {/* Drive öneri sub-modal */}
+      {driveSearchState && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', zIndex: 2100, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget) closeDriveSearch(); }}>
+          <div style={{ background: '#fff', borderRadius: 8, padding: 16, width: '90%', maxWidth: 720, maxHeight: '80vh', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+              🔍 Drive'dan Öneri — <span style={{ fontFamily: 'ui-monospace, monospace', color: '#1e40af' }}>{driveSearchState.stokKodu}</span>
+              <span style={{ marginLeft: 6, padding: '2px 6px', background: '#eff6ff', color: '#1e40af', borderRadius: 3, fontSize: 10, fontWeight: 500 }}>
+                {driveSearchState.category}
+              </span>
+            </div>
+            {driveSearchState.loading && <div style={{ padding: 20, textAlign: 'center', color: '#78716c', fontSize: 11 }}>Drive'da aranıyor...</div>}
+            {!driveSearchState.loading && driveSearchState.error && driveSearchState.results.length === 0 && (
+              <div style={{ padding: 12, background: '#fef3c7', border: '1px solid #fde68a', borderRadius: 4, fontSize: 11, color: '#92400e' }}>⚠ {driveSearchState.error}</div>
+            )}
+            {!driveSearchState.loading && driveSearchState.results && driveSearchState.results.length === 0 && !driveSearchState.error && (
+              <div style={{ padding: 20, textAlign: 'center', color: '#a8a29e', fontSize: 11 }}>Sonuç bulunamadı</div>
+            )}
+            {!driveSearchState.loading && driveSearchState.results && driveSearchState.results.length > 0 && (
+              <div style={{ flex: 1, overflowY: 'auto', border: '1px solid #e7e5e4', borderRadius: 4 }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+                  <thead style={{ position: 'sticky', top: 0, background: '#f5f5f4' }}>
+                    <tr style={{ textAlign: 'left', color: '#44403c' }}>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10 }}>Dosya Adı</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 120 }}>Klasör</th>
+                      <th style={{ padding: '6px 8px', fontWeight: 600, fontSize: 10, width: 90, textAlign: 'right' }}>Tarih</th>
+                      <th style={{ padding: '6px 8px', width: 90 }}></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {driveSearchState.results.map((r, i) => (
+                      <tr key={r.id || i} style={{ borderTop: '1px solid #f5f5f4' }}>
+                        <td style={{ padding: '6px 8px', fontFamily: 'ui-monospace, monospace', fontSize: 10, wordBreak: 'break-all' }}>{r.name || r.filename || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10, color: '#78716c' }}>{r.parentName || r.folder || '—'}</td>
+                        <td style={{ padding: '6px 8px', fontSize: 10, color: '#78716c', textAlign: 'right' }}>{r.modifiedTime ? String(r.modifiedTime).slice(0, 10) : '—'}</td>
+                        <td style={{ padding: '6px 8px', textAlign: 'center' }}>
+                          <button onClick={() => importFromDriveToSub(driveSearchState.stokKodu, driveSearchState.category, r.id)}
+                            disabled={!canEdit}
+                            style={{ padding: '3px 8px', fontSize: 10, background: '#1e40af', color: '#fff', border: 'none', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', fontWeight: 500 }}>
+                            📥 Aktar
+                          </button>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 10 }}>
+              <button onClick={closeDriveSearch} style={{ padding: '6px 12px', fontSize: 12, background: '#f5f5f4', border: '1px solid #d6d3d1', borderRadius: 4, cursor: 'pointer' }}>Kapat</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Geçmişten seç modal */}
       {historyState && (
