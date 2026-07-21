@@ -1280,6 +1280,8 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
   const [data, setData] = useState({ studies: {} });
   const [search, setSearch] = useState("");
   const [deleting, setDeleting] = useState({});
+  // Toplu teklif dönüştürme için seçim state'i (Faz F4)
+  const [selectedIds, setSelectedIds] = useState(new Set());
 
   useEffect(() => {
     const unsub = subscribeFeasibilityForYear(year, setData, { staging });
@@ -1297,6 +1299,40 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
     ) : arr;
     return f.sort((a, b) => (b.studyNo || "").localeCompare(a.studyNo || ""));
   }, [data, search]);
+
+  // Seçili studies (approved + henüz teklife dönmemiş olmalı — teklif dönüştürme için)
+  const selectedStudies = useMemo(() => {
+    return studies.filter(s => selectedIds.has(s.studyNo) && computeStudyStatus(s) === "approved");
+  }, [studies, selectedIds]);
+
+  const selectedCustomer = selectedStudies[0]?.customerName || selectedStudies[0]?.customerCode || null;
+  const selectedCustomersDiffer = selectedStudies.length > 1 &&
+    selectedStudies.some(s => (s.customerName || s.customerCode) !== selectedCustomer);
+
+  const toggleSelect = (studyNo) => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(studyNo)) next.delete(studyNo); else next.add(studyNo);
+      return next;
+    });
+  };
+
+  const clearSelection = () => setSelectedIds(new Set());
+
+  const handleBulkQuote = () => {
+    if (selectedStudies.length === 0) {
+      alert("Seçili onaylı yapılabilirlik yok.");
+      return;
+    }
+    if (selectedCustomersDiffer) {
+      alert("Seçili yapılabilirlikler farklı müşterilere ait. Aynı müşteri için seçim yapın.");
+      return;
+    }
+    if (!onCreateQuote) return;
+    // App.jsx callback'e array gönder — Teklifler.jsx array veya tek objeyi kabul ediyor
+    onCreateQuote(selectedStudies);
+    clearSelection();
+  };
 
   const handleDelete = async (studyNo, isConverted = false) => {
     const msg = isConverted
@@ -1328,6 +1364,38 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
         <span style={{ fontSize: 11, color: "#78716c" }}>{studies.length} kayıt</span>
       </div>
 
+      {/* Toplu teklif dönüştürme toolbar'ı (Faz F4) — sadece 1+ onaylı seçili olduğunda */}
+      {selectedStudies.length > 0 && (
+        <div style={{
+          display: "flex", alignItems: "center", gap: 10, marginBottom: 12, padding: "8px 12px",
+          background: selectedCustomersDiffer ? "#fef2f2" : "#eff6ff",
+          border: `1px solid ${selectedCustomersDiffer ? "#fecaca" : "#bfdbfe"}`,
+          borderRadius: 6, fontSize: 12,
+        }}>
+          <span style={{ color: selectedCustomersDiffer ? "#991b1b" : "#1e40af", fontWeight: 500 }}>
+            {selectedCustomersDiffer
+              ? `⚠ ${selectedStudies.length} seçili — farklı müşteriler var, aynı müşteri şart`
+              : `✅ ${selectedStudies.length} onaylı yapılabilirlik seçili — ${selectedCustomer}`}
+          </span>
+          <div style={{ flex: 1 }} />
+          <button onClick={handleBulkQuote}
+            disabled={selectedCustomersDiffer || !onCreateQuote}
+            style={{
+              padding: "5px 12px", fontSize: 12, fontWeight: 500,
+              background: selectedCustomersDiffer ? "#e7e5e4" : "#1e40af",
+              color: selectedCustomersDiffer ? "#a8a29e" : "#fff",
+              border: "none", borderRadius: 4,
+              cursor: selectedCustomersDiffer ? "not-allowed" : "pointer",
+            }}>
+            💼 Seçilenleri Teklife Dönüştür
+          </button>
+          <button onClick={clearSelection}
+            style={{ padding: "5px 10px", fontSize: 11, background: "#fff", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>
+            Seçimi Temizle
+          </button>
+        </div>
+      )}
+
       {studies.length === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
           Bu yılda yapılabilirlik yok.
@@ -1337,6 +1405,7 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
+                <th style={{ padding: "8px 10px", width: 26, textAlign: "center" }} title="Onaylı olanları seç"></th>
                 <th style={{ padding: "8px 10px" }}>Yapılabilirlik No</th>
                 <th style={{ padding: "8px 10px" }}>Müşteri</th>
                 <th style={{ padding: "8px 10px" }}>Parça</th>
@@ -1354,8 +1423,16 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
                   : status === "convertedToQuote" ? { bg: "#dbeafe", fg: "#1e40af", l: "💼 Teklife Dönüştü" }
                   : status === "evaluating" ? { bg: "#fef3c7", fg: "#92400e", l: "⏳ Değerlendirmede" }
                   : { bg: "#f5f5f4", fg: "#57534e", l: "📝 Taslak" };
+                const isSelectable = status === "approved";
+                const isSelected = selectedIds.has(s.studyNo);
                 return (
-                  <tr key={s.studyNo} style={{ borderTop: "1px solid #f5f5f4" }}>
+                  <tr key={s.studyNo} style={{ borderTop: "1px solid #f5f5f4", background: isSelected ? "#eff6ff" : "transparent" }}>
+                    <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                      {isSelectable && (
+                        <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(s.studyNo)}
+                          title="Teklife dönüştürmek için seç" />
+                      )}
+                    </td>
                     <td style={{ padding: "6px 10px", fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{s.studyNo}</td>
                     <td style={{ padding: "6px 10px" }}>{s.customerName || "—"}</td>
                     <td style={{ padding: "6px 10px" }}>

@@ -48,7 +48,8 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
   const [baseQuoteNo, setBaseQuoteNo] = useState("");
   const [parentQuoteNo, setParentQuoteNo] = useState(null);
   const [revisionReason, setRevisionReason] = useState("");
-  const [feasibilityNo, setFeasibilityNo] = useState(""); // yapılabilirlik bağlantısı (Faz Y-5)
+  const [feasibilityNo, setFeasibilityNo] = useState(""); // yapılabilirlik bağlantısı (Faz Y-5, tek study — badge için)
+  const [feasibilityNos, setFeasibilityNos] = useState([]); // birden fazla study'den geldiyse liste (Faz F4)
   const isRevision = revNo > 0;
   const isLocked = readOnly;
   const canEditForm = canEdit && !isLocked;
@@ -95,6 +96,11 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     setParentQuoteNo(initialQuote.parentQuoteNo || null);
     setRevisionReason(initialQuote.revisionReason || "");
     setFeasibilityNo(initialQuote.feasibilityNo || "");
+    setFeasibilityNos(
+      Array.isArray(initialQuote.feasibilityNos) && initialQuote.feasibilityNos.length > 0
+        ? initialQuote.feasibilityNos
+        : (initialQuote.feasibilityNo ? [initialQuote.feasibilityNo] : [])
+    );
   }, [initialQuote]);
 
   // Malzeme adları currency için USD kuru
@@ -225,8 +231,9 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         baseQuoteNo: baseQuoteNo || quoteNo,
         parentQuoteNo: parentQuoteNo || null,
         revisionReason: isRevision ? revisionReason.trim() : null,
-        // Yapılabilirlik bağlantısı (Faz Y-5)
+        // Yapılabilirlik bağlantısı (Faz Y-5 tek, Faz F4 çoklu)
         feasibilityNo: feasibilityNo || null,
+        feasibilityNos: feasibilityNos.length > 0 ? feasibilityNos : null,
         lines: lines.map((l, i) => {
           const r = calc.lineResults[i];
           return {
@@ -292,17 +299,25 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         }
       }
 
-      // Yapılabilirlik bağlantısı — teklif kaydedildikten sonra feasibility'ye linkedQuoteNo yaz
-      if (feasibilityNo) {
+      // Yapılabilirlik bağlantısı — teklif kaydedildikten sonra her feasibility'ye linkedQuoteNo yaz
+      const feasibilityLinks = feasibilityNos.length > 0 ? feasibilityNos : (feasibilityNo ? [feasibilityNo] : []);
+      if (feasibilityLinks.length > 0) {
         try {
           const { linkFeasibilityToQuote } = await import("../yapilabilirlik/firestore");
-          await linkFeasibilityToQuote(feasibilityNo, quoteNo, { canEdit, staging });
+          for (const fno of feasibilityLinks) {
+            await linkFeasibilityToQuote(fno, quoteNo, { canEdit, staging });
+          }
         } catch (e) {
-          console.warn("Yapılabilirlik'e teklif bağlanamadı:", feasibilityNo, e.message);
+          console.warn("Yapılabilirlik'e teklif bağlanamadı:", feasibilityLinks, e.message);
         }
       }
 
-      setSaveResult({ ok: true, ...out, message: `Teklif kaydedildi: ${quoteNo}${feasibilityNo ? ` (yapılabilirlik ${feasibilityNo} bağlandı)` : ""}` });
+      const linkMsg = feasibilityLinks.length === 0
+        ? ""
+        : feasibilityLinks.length === 1
+          ? ` (yapılabilirlik ${feasibilityLinks[0]} bağlandı)`
+          : ` (${feasibilityLinks.length} yapılabilirlik bağlandı)`;
+      setSaveResult({ ok: true, ...out, message: `Teklif kaydedildi: ${quoteNo}${linkMsg}` });
       onSaved && onSaved();
     } catch (e) {
       setSaveError(e.message || "Kaydetme hatası");
@@ -346,11 +361,19 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         </div>
       )}
 
-      {/* YAPILABILIRLIK BAĞLANTI BANNER (Faz Y-5) */}
-      {feasibilityNo && !isRevision && (
+      {/* YAPILABILIRLIK BAĞLANTI BANNER (Faz Y-5 tek, Faz F4 çoklu) */}
+      {(feasibilityNo || feasibilityNos.length > 0) && !isRevision && (
         <div style={{ marginBottom: 12, padding: 10, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, fontSize: 11, color: "#166534" }}>
-          🔬 <b>Yapılabilirlik'ten oluşturuldu</b> — <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{feasibilityNo}</span>
-          <br /><span style={{ fontSize: 10, color: "#15803d" }}>Kalem detayları otomatik dolduruldu. Kaydettiğinde yapılabilirlik "💼 Teklife Dönüştü" durumuna geçer.</span>
+          {feasibilityNos.length > 1 ? (
+            <>
+              🔬 <b>{feasibilityNos.length} yapılabilirlikten oluşturuldu</b> — <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{feasibilityNos.join(", ")}</span>
+            </>
+          ) : (
+            <>
+              🔬 <b>Yapılabilirlik'ten oluşturuldu</b> — <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{feasibilityNo || feasibilityNos[0]}</span>
+            </>
+          )}
+          <br /><span style={{ fontSize: 10, color: "#15803d" }}>Kalem detayları otomatik dolduruldu. Kaydettiğinde yapılabilirlik{feasibilityNos.length > 1 ? "ler" : ""} "💼 Teklife Dönüştü" durumuna geçer.</span>
         </div>
       )}
 

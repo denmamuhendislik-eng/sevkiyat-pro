@@ -1,15 +1,11 @@
 // Yapılabilirlik → Teklif dönüştürme helper'ı (Faz Y-5).
 //
 // Onaylı bir feasibility study'yi Yeni Teklif form'unun anlayacağı
-// initialQuote payload'ına çevirir. Tek kalem (line) üretilir çünkü
-// yapılabilirlik tek parça için yapılıyor. Kullanıcı istese elle ek
-// kalem ekleyebilir.
+// initialQuote payload'ına çevirir. Tek study → tek kalem, birden fazla
+// study (aynı müşteri) → çok kalemli tek teklif (Faz F4, 2026-07-21).
 
-export function feasibilityToQuotePayload(study) {
-  if (!study) return null;
-
-  // Operasyonlar → machines array (name, timeMin, ratePerMin)
-  // Detail varsa onu kullan; yoksa toplam süre + tek kutu makine
+// Bir study → tek line objesi (NewQuoteView'ın beklediği yapı)
+function studyToLine(study) {
   const opsDetails = Array.isArray(study.operations?.details) ? study.operations.details.filter(d => d.machine) : [];
   let machines = [];
   if (opsDetails.length > 0) {
@@ -19,25 +15,21 @@ export function feasibilityToQuotePayload(study) {
       ratePerMin: 0, // machineRatesData'dan otomatik dolar (NewQuoteView içinde)
     }));
   } else if (Number(study.operations?.totalMinutes) > 0) {
-    // Tek toplam süre — makine adı boş, kullanıcı elle seçer
     machines = [{ name: "", timeMin: Number(study.operations.totalMinutes), ratePerMin: 0 }];
   }
 
-  // Fason kalemleri → fasonWorks array
   const fasonWorks = (study.fasonItems || []).map(it => ({
     name: String(it.name || "").trim(),
     unitPriceTl: Number(it.unitCost) || 0,
     quantity: Number(it.qty) || 0,
   }));
 
-  // Aparat/takım/model/ölçme toplamı → specialToolCost (Karar 2: tek satır)
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
   const toolingDescription = (study.toolingItems || []).length > 0
     ? "Aparat/Takım/Model/Ölçme (yapılabilirlik toplamı — " + study.toolingItems.length + " kalem)"
     : "";
 
-  // Line (kalem) obje — NewQuoteView'in beklediği yapı
-  const line = {
+  return {
     stockCode: study.stockCode || study.partNo || "",
     musteriKodu: study.musteriKodu || "",
     stockName: study.partName || "",
@@ -53,30 +45,52 @@ export function feasibilityToQuotePayload(study) {
     machines,
     fasonWorks,
     specialToolCost: toolingTotal,
-    specialToolMode: "spread", // adete yay — default
+    specialToolMode: "spread",
     specialToolDescription: toolingDescription,
     overrides: {},
     term: "",
     technicalNote: study.recommendations || "",
     fromLibrary: false,
     fromFeasibility: true,
+    sourceFeasibilityNo: study.studyNo, // hangi study'den geldiği line üstünde kalır
   };
+}
+
+// Tek study — backward-compat wrapper
+export function feasibilityToQuotePayload(study) {
+  if (!study) return null;
+  return feasibilityStudiesToQuotePayload([study]);
+}
+
+// Çoklu study → tek teklif payload'ı. Aynı müşteri şartıdır.
+// Her study'ye ait line ayrı ayrı üretilir, hepsi tek quote lines[] içine dizilir.
+// Müşteri bilgisi ilk study'den alınır; not / feasibilityNo alanları birleştirilir.
+export function feasibilityStudiesToQuotePayload(studies) {
+  const list = Array.isArray(studies) ? studies.filter(Boolean) : [];
+  if (list.length === 0) return null;
+  const first = list[0];
+  const lines = list.map(studyToLine);
+  const noteLines = list.map(s => s.recommendations
+    ? `${s.studyNo}: ${s.recommendations}`
+    : `${s.studyNo}`
+  );
+  const notes = list.length === 1
+    ? (first.recommendations
+        ? `Yapılabilirlik (${first.studyNo}) önerileri: ${first.recommendations}`
+        : `Yapılabilirlik ${first.studyNo}'ten oluşturuldu`)
+    : `${list.length} yapılabilirlikten oluşturuldu:\n${noteLines.join("\n")}`;
 
   return {
-    // Feasibility bilgi
-    feasibilityNo: study.studyNo,
-    // Müşteri
-    customerName: study.customerName || "",
-    customerPhone: study.customerContact || "",
-    customerEmail: study.customerEmail || "",
-    // Şu an için müşteri kodu ayrı field yok teklifde, name'e yeterli
-    // Meta
+    // Bağlantı: tek study için eski davranış, çoklu için ana + hepsi
+    feasibilityNo: first.studyNo,
+    feasibilityNos: list.map(s => s.studyNo),
+    // Müşteri (aynı olmalı — çağıran taraf doğrular)
+    customerName: first.customerName || "",
+    customerPhone: first.customerContact || "",
+    customerEmail: first.customerEmail || "",
     quoteDate: new Date().toISOString().slice(0, 10),
-    lines: [line],
-    // Diğer alanlar Yeni Teklif form'unun default state'iyle doldurulur
-    notes: study.recommendations
-      ? `Yapılabilirlik (${study.studyNo}) önerileri: ${study.recommendations}`
-      : `Yapılabilirlik ${study.studyNo}'ten oluşturuldu`,
+    lines,
+    notes,
     source: "from-feasibility",
   };
 }

@@ -23,11 +23,12 @@ export default function Teklifler({ isAdmin, isUretim, isSales, pendingFromFeasi
     setActiveTab("new");
   };
 
-  // Yapılabilirlik'ten teklif oluştur — App.jsx'ten study geldiğinde payload'a çevir
+  // Yapılabilirlik'ten teklif oluştur — App.jsx'ten study (tek) veya studies (array) geldiğinde payload'a çevir
   useEffect(() => {
     if (pendingFromFeasibility) {
-      import("../yapilabilirlik/toQuote").then(({ feasibilityToQuotePayload }) => {
-        const payload = feasibilityToQuotePayload(pendingFromFeasibility);
+      import("../yapilabilirlik/toQuote").then(({ feasibilityStudiesToQuotePayload }) => {
+        const studies = Array.isArray(pendingFromFeasibility) ? pendingFromFeasibility : [pendingFromFeasibility];
+        const payload = feasibilityStudiesToQuotePayload(studies);
         if (payload) {
           setPendingOpen({ quote: payload, readOnly: false });
           setActiveTab("new");
