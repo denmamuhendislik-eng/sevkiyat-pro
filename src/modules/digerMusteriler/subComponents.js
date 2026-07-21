@@ -113,10 +113,13 @@ export function classifySubComponents(list, cocParts) {
   return { required, standard };
 }
 
-// Belge tipleri — supplyType'a göre gerekli olanlar.
-// UI checkbox / durum takibi bunları kullanır.
-export const DOC_TYPES_MAKE = ["hammaddeSertifikasi", "olcumRaporu", "fasonSertifikasi"];
-export const DOC_TYPES_BUY = ["tedarikciCoc"];
+// Belge tipleri — buy/make farkı kaldırıldı (2026-07-21).
+// Buy alt bileşenlere de MAKE ile aynı 3 belge yüklenir. Tedarikçi COC belgesi
+// (varsa) ölçüm raporu kategorisi altına yüklenir; ayrı kategori kalmadı.
+export const DOC_TYPES = ["hammaddeSertifikasi", "olcumRaporu", "fasonSertifikasi"];
+// Backward-compat için eski isimler (kod tabanında referans olursa) — hepsi aynı liste
+export const DOC_TYPES_MAKE = DOC_TYPES;
+export const DOC_TYPES_BUY = DOC_TYPES;
 
 // Aynı alt bileşen stokKodu için kütüphane geçmişi: mevcut cocCertificates'tan
 // aynı stokKodu'nun daha önce yüklenmiş belgelerini topla.
@@ -132,22 +135,25 @@ export function findHistoricalDocsForSubComponent(certificates, subStokKodu, cat
     const subs = Array.isArray(cert.subComponents) ? cert.subComponents : [];
     for (const s of subs) {
       if (s?.stokKodu !== subStokKodu) continue;
-      const doc = s?.docs?.[category];
-      if (!doc?.url || !doc?.path) continue;
-      results.push({
-        certNo: cert.certNo,
-        siraNo: cert.siraNo || "1",
-        orderNo: cert.orderNo || "",
-        controlDate: cert.controlDateIso || cert.controlDate || "",
-        parentStokKodu: cert.stokKodu || "",
-        doc: {
-          url: doc.url,
-          path: doc.path,
-          name: doc.name || "dosya.pdf",
-          size: doc.size || 0,
-          uploadedAt: doc.uploadedAt || "",
-        },
-      });
+      // Array veya tek obje — ikisini de destekle
+      const files = getSubDocFiles(s, category);
+      for (const doc of files) {
+        if (!doc?.url || !doc?.path) continue;
+        results.push({
+          certNo: cert.certNo,
+          siraNo: cert.siraNo || "1",
+          orderNo: cert.orderNo || "",
+          controlDate: cert.controlDateIso || cert.controlDate || "",
+          parentStokKodu: cert.stokKodu || "",
+          doc: {
+            url: doc.url,
+            path: doc.path,
+            name: doc.name || "dosya.pdf",
+            size: doc.size || 0,
+            uploadedAt: doc.uploadedAt || "",
+          },
+        });
+      }
     }
   }
   // En yeni önce
@@ -163,23 +169,29 @@ export const SUB_DOC_TO_DRIVE_CATEGORY = {
   hammaddeSertifikasi: "rawMaterialCert",
   olcumRaporu: "measurement",
   fasonSertifikasi: "surfaceTreatment",
-  tedarikciCoc: "fai", // yaklaşık — Aselsan'a giden tedarikçi belgesi ile benzer akış
 };
 
-export function docTypesForSupplyType(supplyType) {
-  const s = String(supplyType || "").toLowerCase();
-  if (s === "buy") return DOC_TYPES_BUY;
-  return DOC_TYPES_MAKE;
+// Buy/make farkı belge tipinde kalmadı — helper her zaman aynı listeyi döndürür.
+export function docTypesForSupplyType(_supplyType) {
+  return DOC_TYPES;
+}
+
+// Bir alt bileşen için ilgili belge kategorisindeki dosya listesini döndür.
+// Backward-compat: eski kayıtlar tek obje ({url, path, ...}); yeni yapı array.
+export function getSubDocFiles(subComponent, category) {
+  const v = subComponent?.docs?.[category];
+  if (!v) return [];
+  if (Array.isArray(v)) return v.filter(Boolean);
+  return [v];
 }
 
 // Bir alt bileşenin tamam mı eksik mi durumu — subComponent.docs objesine bakar.
-// Her doc türü için: null / boş string → eksik, herhangi bir değer → tamam.
+// Her doc türü için: hiç dosya yok → eksik, en az 1 dosya varsa o kategori tamam.
 export function subComponentStatus(subComponent) {
   const need = docTypesForSupplyType(subComponent.supplyType);
-  const docs = subComponent.docs || {};
   let have = 0;
   for (const k of need) {
-    if (docs[k]) have++;
+    if (getSubDocFiles(subComponent, k).length > 0) have++;
   }
   if (have === 0) return { status: "missing", have: 0, need: need.length };
   if (have < need.length) return { status: "partial", have, need: need.length };

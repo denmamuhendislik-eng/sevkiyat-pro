@@ -20,7 +20,7 @@ import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
-import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent } from './subComponents';
+import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent, getSubDocFiles, DOC_TYPES } from './subComponents';
 import FaiView from './fai/FaiView';
 import { subscribeFaiArchive } from './fai/firestore';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
@@ -3299,16 +3299,25 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
   // Belge yükleme durumu
   const [uploadingDoc, setUploadingDoc] = useState({}); // { "stokKodu|category": bool }
 
-  const handleUploadSubDoc = async (subStokKodu, category, file) => {
-    if (!file) return;
+  // Çoklu dosya yükleme — files: FileList veya array. Her dosya sırayla upload edilir,
+  // docs[category] array'ine push. Mevcut kayıt tek obje ise (eski format) array'e çevrilir.
+  const handleUploadSubDocs = async (subStokKodu, category, files) => {
+    const list = Array.from(files || []);
+    if (list.length === 0) return;
     if (!certNo) { alert('Önce sertifika no belirle'); return; }
     const key = `${subStokKodu}|${category}`;
     setUploadingDoc(u => ({ ...u, [key]: true }));
     try {
-      const meta = await uploadCocSubComponentAttachment(certNo, subStokKodu, category, file, { canEdit });
-      setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
-        ? { ...s, docs: { ...(s.docs || {}), [category]: meta } }
-        : s));
+      const uploaded = [];
+      for (const file of list) {
+        const meta = await uploadCocSubComponentAttachment(certNo, subStokKodu, category, file, { canEdit });
+        uploaded.push(meta);
+      }
+      setSubComponentsState(prev => prev.map(s => {
+        if (s.stokKodu !== subStokKodu) return s;
+        const existing = getSubDocFiles(s, category);
+        return { ...s, docs: { ...(s.docs || {}), [category]: [...existing, ...uploaded] } };
+      }));
     } catch (e) {
       alert('Belge yüklenemedi: ' + e.message);
     } finally {
@@ -3343,9 +3352,13 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
   const useHistoricalDoc = (subStokKodu, category, doc) => {
     // Aynı Storage path'ini yeniden kullan — dosya kopyası yok, sadece referans.
     // Silme riski: kaynak COC'un o belgesi silinirse buradaki de kırılır (küçük risk kabul).
-    setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
-      ? { ...s, docs: { ...(s.docs || {}), [category]: { ...doc, category, subStokKodu, source: 'library' } } }
-      : s));
+    // Array'e push (mevcut dosyaların üstüne).
+    const newDoc = { ...doc, category, subStokKodu, source: 'library' };
+    setSubComponentsState(prev => prev.map(s => {
+      if (s.stokKodu !== subStokKodu) return s;
+      const existing = getSubDocFiles(s, category);
+      return { ...s, docs: { ...(s.docs || {}), [category]: [...existing, newDoc] } };
+    }));
     closeHistoryPicker();
   };
 
@@ -3369,9 +3382,11 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
         uploadedAt: meta.uploadedAt || new Date().toISOString(),
         source: 'drive',
       };
-      setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
-        ? { ...s, docs: { ...(s.docs || {}), [category]: newDoc } }
-        : s));
+      setSubComponentsState(prev => prev.map(s => {
+        if (s.stokKodu !== subStokKodu) return s;
+        const existing = getSubDocFiles(s, category);
+        return { ...s, docs: { ...(s.docs || {}), [category]: [...existing, newDoc] } };
+      }));
       closeDriveSearch();
     } catch (e) {
       alert('Drive dosyası aktarılamadı: ' + e.message);
@@ -3380,18 +3395,24 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
     }
   };
 
-  const handleDeleteSubDoc = async (subStokKodu, category) => {
+  // Tek bir dosyayı array'den sil. idx belirtilmezse mevcut ilk (backward-compat) silinir.
+  const handleDeleteSubDoc = async (subStokKodu, category, idx = 0) => {
     const sub = subComponentsState.find(s => s.stokKodu === subStokKodu);
-    const meta = sub?.docs?.[category];
-    if (!meta?.path) return;
-    if (!confirm(`${category} belgesi silinsin mi?\n\n${meta.name || ''}`)) return;
+    if (!sub) return;
+    const files = getSubDocFiles(sub, category);
+    const target = files[idx];
+    if (!target?.path) return;
+    if (!confirm(`Belge silinsin mi?\n\n${target.name || ''}`)) return;
     const key = `${subStokKodu}|${category}`;
     setUploadingDoc(u => ({ ...u, [key]: true }));
     try {
-      await deleteCocSubComponentAttachment(meta.path);
-      setSubComponentsState(prev => prev.map(s => s.stokKodu === subStokKodu
-        ? { ...s, docs: { ...(s.docs || {}), [category]: null } }
-        : s));
+      await deleteCocSubComponentAttachment(target.path);
+      setSubComponentsState(prev => prev.map(s => {
+        if (s.stokKodu !== subStokKodu) return s;
+        const existing = getSubDocFiles(s, category);
+        const next = existing.filter((_, i) => i !== idx);
+        return { ...s, docs: { ...(s.docs || {}), [category]: next.length > 0 ? next : null } };
+      }));
     } catch (e) {
       alert('Belge silinemedi: ' + e.message);
     } finally {
@@ -3923,63 +3944,64 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                                 {need.map(cat => {
                                   const uploadKey = `${s.stokKodu}|${cat}`;
                                   const isUploading = !!uploadingDoc[uploadKey];
-                                  const meta = s.docs?.[cat];
+                                  const files = getSubDocFiles(s, cat);
                                   const label = cat === 'hammaddeSertifikasi' ? 'Hammadde Sertifikası'
-                                    : cat === 'olcumRaporu' ? 'Ölçüm Raporu (balonlu dahil)'
+                                    : cat === 'olcumRaporu' ? 'Ölçüm Raporu (balonlu + tedarikçi COC dahil)'
                                     : cat === 'fasonSertifikasi' ? 'Fason Sertifikası'
-                                    : cat === 'tedarikciCoc' ? 'Tedarikçi COC'
                                     : cat;
+                                  const cnt = findHistoricalDocsForSubComponent(cocCertificates?.certificates || {}, s.stokKodu, cat, { limit: 1, excludeCertNo: certNo }).length;
                                   return (
                                     <div key={cat} style={{ padding: 8, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 4 }}>
-                                      <div style={{ fontSize: 10, fontWeight: 600, color: '#44403c', marginBottom: 4 }}>{label}</div>
-                                      {meta ? (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                          <div style={{ fontSize: 9, color: '#166534', wordBreak: 'break-all' }}>
-                                            📄 {meta.name || 'dosya.pdf'}
-                                            {meta.size ? <span style={{ color: '#78716c' }}> · {(meta.size / 1024).toFixed(0)} KB</span> : null}
-                                          </div>
-                                          <div style={{ display: 'flex', gap: 4 }}>
-                                            <a href={meta.url} target="_blank" rel="noreferrer"
-                                              style={{ padding: '2px 6px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, textDecoration: 'none' }}>
-                                              📥 Aç
-                                            </a>
-                                            <button onClick={() => handleDeleteSubDoc(s.stokKodu, cat)} disabled={isUploading || !canEdit}
-                                              style={{ padding: '2px 6px', fontSize: 9, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
-                                              🗑 Sil
-                                            </button>
-                                          </div>
-                                        </div>
-                                      ) : (
-                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                                          <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', textAlign: 'center' }}>
-                                            {isUploading ? 'Yükleniyor...' : '📤 Dosya Seç'}
-                                            <input type="file" accept="application/pdf,image/*"
-                                              style={{ display: 'none' }}
-                                              disabled={isUploading || !canEdit}
-                                              onChange={e => {
-                                                const f = e.target.files?.[0];
-                                                if (f) handleUploadSubDoc(s.stokKodu, cat, f);
-                                                e.target.value = '';
-                                              }} />
-                                          </label>
-                                          <button onClick={() => runDriveSearch(s.stokKodu, cat, s.stokAdi)}
-                                            disabled={isUploading || !canEdit}
-                                            style={{ padding: '3px 6px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
-                                            🔍 Drive'dan Öner
-                                          </button>
-                                          {(() => {
-                                            const cnt = findHistoricalDocsForSubComponent(cocCertificates?.certificates || {}, s.stokKodu, cat, { limit: 1, excludeCertNo: certNo }).length;
-                                            return cnt > 0 ? (
-                                              <button onClick={() => openHistoryPicker(s.stokKodu, cat)}
-                                                disabled={isUploading || !canEdit}
-                                                title={`Aynı stok kodu için önceki COC'larda ${cnt}+ belge bulundu`}
-                                                style={{ padding: '3px 6px', fontSize: 9, background: '#f0fdf4', color: '#166534', border: '1px solid #86efac', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
-                                                📚 Geçmişten Al ({cnt}+)
+                                      <div style={{ fontSize: 10, fontWeight: 600, color: '#44403c', marginBottom: 4 }}>
+                                        {label}
+                                        {files.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, color: '#166534', fontWeight: 500 }}>· {files.length} dosya</span>}
+                                      </div>
+                                      {files.length > 0 && (
+                                        <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 6, paddingBottom: 6, borderBottom: '1px dashed #e7e5e4' }}>
+                                          {files.map((meta, fi) => (
+                                            <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                              <div style={{ flex: 1, fontSize: 9, color: '#166534', wordBreak: 'break-all' }}>
+                                                📄 {meta.name || 'dosya.pdf'}
+                                                {meta.size ? <span style={{ color: '#78716c' }}> · {(meta.size / 1024).toFixed(0)} KB</span> : null}
+                                              </div>
+                                              <a href={meta.url} target="_blank" rel="noreferrer"
+                                                style={{ padding: '1px 5px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, textDecoration: 'none' }}>
+                                                📥 Aç
+                                              </a>
+                                              <button onClick={() => handleDeleteSubDoc(s.stokKodu, cat, fi)} disabled={isUploading || !canEdit}
+                                                style={{ padding: '1px 5px', fontSize: 9, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                                🗑
                                               </button>
-                                            ) : null;
-                                          })()}
+                                            </div>
+                                          ))}
                                         </div>
                                       )}
+                                      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                        <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', textAlign: 'center' }}>
+                                          {isUploading ? 'Yükleniyor...' : (files.length > 0 ? '📤 Dosya Ekle (çoklu)' : '📤 Dosya Seç (çoklu)')}
+                                          <input type="file" accept="application/pdf,image/*" multiple
+                                            style={{ display: 'none' }}
+                                            disabled={isUploading || !canEdit}
+                                            onChange={e => {
+                                              const fs = e.target.files;
+                                              if (fs && fs.length > 0) handleUploadSubDocs(s.stokKodu, cat, fs);
+                                              e.target.value = '';
+                                            }} />
+                                        </label>
+                                        <button onClick={() => runDriveSearch(s.stokKodu, cat, s.stokAdi)}
+                                          disabled={isUploading || !canEdit}
+                                          style={{ padding: '3px 6px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                          🔍 Drive'dan Ekle
+                                        </button>
+                                        {cnt > 0 && (
+                                          <button onClick={() => openHistoryPicker(s.stokKodu, cat)}
+                                            disabled={isUploading || !canEdit}
+                                            title={`Aynı stok kodu için önceki COC'larda ${cnt}+ belge bulundu`}
+                                            style={{ padding: '3px 6px', fontSize: 9, background: '#f0fdf4', color: '#166534', border: '1px solid #86efac', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                            📚 Geçmişten Ekle ({cnt}+)
+                                          </button>
+                                        )}
+                                      </div>
                                     </div>
                                   );
                                 })}
@@ -4475,13 +4497,15 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
                         return <span title="Hiç doküman yok" style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: '#fef2f2', color: '#991b1b' }}>0/{stats.totalCats}</span>;
                       }
                       const isFull = stats.filled === stats.totalCats;
+                      const subInfo = stats.subCount > 0 ? ` · ${stats.subCount} alt bileşen dahil (${stats.subFilled}/${stats.subCats})` : '';
                       return (
-                        <span title={`${stats.filled}/${stats.totalCats} kategori dolu · toplam ${stats.totalFiles} dosya`} style={{
+                        <span title={`${stats.filled}/${stats.totalCats} kategori dolu · toplam ${stats.totalFiles} dosya${subInfo}`} style={{
                           padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600,
                           background: isFull ? '#dcfce7' : '#fef3c7',
                           color: isFull ? '#166534' : '#92400e',
                         }}>
                           {isFull ? '✓' : '⚠'} {stats.filled}/{stats.totalCats}{stats.othersCount > 0 ? `+${stats.othersCount}` : ''}
+                          {stats.subCount > 0 && <span style={{ marginLeft: 3, fontSize: 8, opacity: 0.7 }}>🧩</span>}
                         </span>
                       );
                     })()}
@@ -6079,6 +6103,14 @@ function DriveSearchModal({ driveModal, cert, cocParts, canEdit, onClose, onTogg
 // COC için doluluk hesabı (liste gösterimleri için): tüm kategorilerin file count toplamı + others
 // Uygulanmaz işaretli kategoriler hem paydadan hem dolu sayımından düşülür.
 // Otomatik kural: feragatStatus === 'YOK' ise Feragat kategorisi de uygulanmaz sayılır.
+// Alt bileşen entegrasyonu (2026-07-21): montajlı parça ise her non-standard alt bileşen
+// için 3 belge kategorisi (hammadde/ölçüm/fason) toplama dahil edilir.
+function isRequiredSub(sub) {
+  if (sub?.requiresCoc === false) return false;
+  if (sub?.requiresCoc === true) return true;
+  return !isStandardFastener(sub?.stokAdi || sub?.stokKodu || '');
+}
+
 function getCocAttachmentStats(cert) {
   const naRaw = Array.isArray(cert?.naCategories) ? cert.naCategories : [];
   const feragatYok = (cert?.feragatStatus || (cert?.feragatText ? 'VAR' : 'YOK')) === 'YOK';
@@ -6091,12 +6123,30 @@ function getCocAttachmentStats(cert) {
     totalFiles += list.length;
   }
   const others = Array.isArray(cert?.attachments?.others) ? cert.attachments.others.length : 0;
+
+  // Alt bileşen katkısı — her non-standard sub için DOC_TYPES.length kategori eklenir
+  const subs = Array.isArray(cert?.subComponents) ? cert.subComponents.filter(isRequiredSub) : [];
+  let subFilled = 0, subCats = 0, subFiles = 0;
+  for (const sub of subs) {
+    for (const cat of DOC_TYPES) {
+      subCats++;
+      const files = getSubDocFiles(sub, cat);
+      if (files.length > 0) {
+        subFilled++;
+        subFiles += files.length;
+      }
+    }
+  }
+
   return {
-    filled,
-    totalCats: applicableCats.length,
-    totalFiles: totalFiles + others,
+    filled: filled + subFilled,
+    totalCats: applicableCats.length + subCats,
+    totalFiles: totalFiles + others + subFiles,
     othersCount: others,
     naCount: naCategories.size,
+    subCount: subs.length,
+    subFilled,
+    subCats,
   };
 }
 
