@@ -44,7 +44,7 @@ function shortWeek(isoWeek) {
   return m ? `W${m[1]}` : isoWeek;
 }
 
-export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigateToMrp, pendingFaiFromFeasibility, onConsumePendingFai }) {
+export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigateToMrp }) {
   const canEdit = !!(isAdmin || isUretim || isSales);
   const role = isAdmin ? 'admin' : isSales ? 'satis' : (isUretim ? 'üretim' : 'bilinmiyor');
 
@@ -142,13 +142,6 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const toggleWeek = (w) => setWeekExpanded(prev => ({ ...prev, [w]: !prev[w] }));
   // viewMode: 'orders' (default sipariş listesi) | 'products' (stok bazlı agregasyon tablosu)
   const [viewMode, setViewMode] = useState('orders');
-
-  // Feasibility'den FAI Başlat geldiğinde otomatik FAI sekmesine yönlen
-  useEffect(() => {
-    if (pendingFaiFromFeasibility) {
-      setViewMode('fai');
-    }
-  }, [pendingFaiFromFeasibility]);
   const [productSort, setProductSort] = useState({ col: 'tutar', dir: 'desc' });
 
   // Picker: null | { orderId, anchorX, anchorY, origWeek, currentPlanWeek }
@@ -2242,7 +2235,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           )}
 
           {viewMode === 'fai' && (
-            <FaiView canEdit={canEdit} isAdmin={isAdmin} customerFilter={customerFilter} searchText={searchText} cocParts={cocParts} bomModels={bomModels} pendingFromFeasibility={pendingFaiFromFeasibility} onConsumeFeasibility={onConsumePendingFai} />
+            <FaiView canEdit={canEdit} isAdmin={isAdmin} customerFilter={customerFilter} searchText={searchText} cocParts={cocParts} bomModels={bomModels} />
           )}
 
           {viewMode === 'driveConfig' && (

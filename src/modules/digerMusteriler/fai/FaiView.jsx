@@ -25,28 +25,13 @@ import { downloadCocAttachmentBlob } from "../firestore";
 import { searchCocDrive, importCocDriveFile, listFaiArchiveFolders } from "../driveClient";
 import JSZip from "jszip";
 
-export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels, pendingFromFeasibility, onConsumeFeasibility }) {
+export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels }) {
   const [subTab, setSubTab] = useState("list");
   const [pendingOpen, setPendingOpen] = useState(null); // { record, readOnly }
   const openRecord = (record, { readOnly = false } = {}) => {
     setPendingOpen({ record, readOnly });
     setSubTab("new");
   };
-
-  // Feasibility'den FAI Başlat — payload'ı FAI initialRecord'a çevir ve Yeni FAI sekmesini aç
-  useEffect(() => {
-    if (pendingFromFeasibility) {
-      import("./fromFeasibility").then(({ feasibilityToFaiPayload }) => {
-        const payload = feasibilityToFaiPayload(pendingFromFeasibility);
-        if (payload) {
-          setPendingOpen({ record: payload, readOnly: false });
-          setSubTab("new");
-        }
-        onConsumeFeasibility && onConsumeFeasibility();
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pendingFromFeasibility]);
 
   return (
     <div>

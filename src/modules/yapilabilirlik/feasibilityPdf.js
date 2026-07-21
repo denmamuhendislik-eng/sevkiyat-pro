@@ -322,32 +322,89 @@ async function renderFeasibilityPdf(study) {
   try {
     const root = container.querySelector("#feas-pdf-root");
     const canvas = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
-    const imgData = canvas.toDataURL("image/png");
     const pdf = new jsPDF("p", "mm", "a4");
-    const pdfWidth = pdf.internal.pageSize.getWidth();
-    const pdfHeight = pdf.internal.pageSize.getHeight();
+    const pdfWidth = pdf.internal.pageSize.getWidth();   // 210
+    const pdfHeight = pdf.internal.pageSize.getHeight(); // 297
     const canvasWidth = canvas.width;
     const canvasHeight = canvas.height;
-    // Görüntüyü sayfaya tam sığdır (proportional)
-    const imgWidth = pdfWidth;
-    const imgHeight = (canvasHeight * pdfWidth) / canvasWidth;
 
-    if (imgHeight <= pdfHeight) {
-      pdf.addImage(imgData, "PNG", 0, 0, imgWidth, imgHeight);
-    } else {
-      // Sayfaya bölme — birden çok sayfaya böl
-      let heightLeft = imgHeight;
-      let position = 0;
-      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-      heightLeft -= pdfHeight;
-      while (heightLeft > 0) {
-        position -= pdfHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-        heightLeft -= pdfHeight;
-      }
+    // İçerik tek A4'e sığıyorsa direkt bas
+    const imgHeightMm = (canvasHeight * pdfWidth) / canvasWidth;
+    if (imgHeightMm <= pdfHeight) {
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pdfWidth, imgHeightMm);
+      return pdf;
     }
+
+    // Taşma var — sayfa sayfa dilimle. 2+ sayfada üstte kompakt "devam" şeridi çıkar.
+    const pxPerMm = canvasWidth / pdfWidth;
+    const CONTINUATION_STRIP_MM = 12;
+    const firstPageContentPx = pdfHeight * pxPerMm;
+    const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM) * pxPerMm;
+
+    // Sayfa dilimlerini hesapla
+    const slices = [];
+    let offset = 0;
+    let pageIdx = 0;
+    while (offset < canvasHeight) {
+      const isFirst = pageIdx === 0;
+      const contentPx = isFirst ? firstPageContentPx : continuationContentPx;
+      const sliceHeight = Math.min(contentPx, canvasHeight - offset);
+      slices.push({ offset, height: sliceHeight, isContinuation: !isFirst });
+      offset += sliceHeight;
+      pageIdx++;
+    }
+    const totalPages = slices.length;
+
+    for (let i = 0; i < totalPages; i++) {
+      const p = slices[i];
+      if (i > 0) pdf.addPage();
+
+      let yPosMm = 0;
+      if (p.isContinuation) {
+        const headerImg = await renderContinuationStrip(study, i + 1, totalPages, pdfWidth);
+        pdf.addImage(headerImg.dataUrl, "JPEG", 0, 0, pdfWidth, headerImg.heightMm);
+        yPosMm = headerImg.heightMm;
+      }
+
+      // Canvas slice (ana canvas'tan ilgili dilimi kopyala)
+      const sliceCanvas = document.createElement("canvas");
+      sliceCanvas.width = canvasWidth;
+      sliceCanvas.height = p.height;
+      sliceCanvas.getContext("2d").drawImage(canvas, 0, p.offset, canvasWidth, p.height, 0, 0, canvasWidth, p.height);
+      const sliceHeightMm = p.height / pxPerMm;
+      pdf.addImage(sliceCanvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, yPosMm, pdfWidth, sliceHeightMm);
+    }
+
     return pdf;
+  } finally {
+    document.body.removeChild(container);
+  }
+}
+
+// Devam sayfalarının üstünde çıkan kompakt şerit — studyNo · müşteri · sayfa n/N
+async function renderContinuationStrip(study, pageNo, totalPages, pdfWidthMm) {
+  const html = `
+    <div style="width:794px; padding:8px 22px; background:#f0fdf4; border-bottom:2px solid #86efac;
+      display:flex; align-items:center; gap:14px;
+      font-family:'Inter','Segoe UI',sans-serif; box-sizing:border-box;">
+      <span style="font-size:11px; font-weight:700; color:#166534;">🔬 Yapılabilirlik</span>
+      <span style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; color:#1c1917;">${esc(study.studyNo || "")}</span>
+      <span style="color:#a8a29e;">·</span>
+      <span style="font-size:10px; color:#44403c;">${esc(study.customerName || "")}</span>
+      <span style="color:#a8a29e; margin-left:auto;">·</span>
+      <span style="font-size:10px; color:#78716c;">Sayfa ${pageNo} / ${totalPages}</span>
+    </div>
+  `;
+  const container = document.createElement("div");
+  container.style.position = "absolute";
+  container.style.left = "-9999px";
+  container.style.top = "0";
+  container.innerHTML = html;
+  document.body.appendChild(container);
+  try {
+    const canvas = await html2canvas(container.firstElementChild, { scale: 2, backgroundColor: "#ffffff" });
+    const heightMm = (canvas.height * pdfWidthMm) / canvas.width;
+    return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), heightMm };
   } finally {
     document.body.removeChild(container);
   }

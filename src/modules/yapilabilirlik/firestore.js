@@ -108,14 +108,12 @@ export async function saveFeasibilityStudy(study, { canEdit, staging = false, us
 // İmza — rol bazlı, yetki devri destekli
 // ============================================================
 
-// 6 rol tanımı — masterdada değil, kod içinde sabit (Excel formuyla eşleştirdi).
+// 3 rol tanımı — 2026-07-21'de eski 6-rol yapı sadeleştirildi.
+// Eski test kayıtları (2 tane) silinecek, backward-compat mapping tutulmuyor.
 export const FEASIBILITY_ROLES = [
-  { key: "salesProjectManager", label: "Satış ve Proje Yöneticisi" },
-  { key: "purchasingPlanningManager", label: "Satınalma ve Tedarik Planlama Sorumlusu" },
-  { key: "cadCamExpert", label: "Cad / Cam Uzmanı" },
-  { key: "productionManager", label: "Üretim Yöneticisi" },
-  { key: "productionPlanning", label: "Üretim Planlama ve Veri Analizi Müh." },
-  { key: "generalManager", label: "Genel Müdür" },
+  { key: "salesManager",    label: "Satış Yöneticisi" },
+  { key: "technicalUnit",   label: "Teknik Birim" },
+  { key: "generalManager",  label: "Genel Müdür" },
 ];
 
 export const GM_ROLE_KEY = "generalManager";

@@ -17,7 +17,7 @@ import { calculateWeightKg } from "../teklifler/quoteCalc";
 import { useMachineRatesForQuote } from "../teklifler/machineRates";
 import { generateFeasibilityPdf } from "./feasibilityPdf";
 
-export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, onCreateQuoteFromFeasibility, onStartFaiFromFeasibility }) {
+export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, onCreateQuoteFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
   const [activeTab, setActiveTab] = useState("new");
   const [pendingOpen, setPendingOpen] = useState(null); // {study, readOnly}
@@ -61,7 +61,7 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, o
           onSaved={() => { setPendingOpen(null); setActiveTab("list"); }}
         />
       )}
-      {activeTab === "list" && <FeasibilityListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openStudy} onCreateQuote={onCreateQuoteFromFeasibility} onStartFai={onStartFaiFromFeasibility} />}
+      {activeTab === "list" && <FeasibilityListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openStudy} onCreateQuote={onCreateQuoteFromFeasibility} />}
     </div>
   );
 }
@@ -72,8 +72,8 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const isGM = !!isAdmin; // Şu an admin = GM; ileride ayrı role flag'i eklenebilir
   const userEmail = authUser?.email || "";
   const userDisplayRole = isAdmin ? "Genel Müdür"
-    : isSales ? "Satış ve Proje Yöneticisi"
-    : isUretim ? "Üretim Yöneticisi"
+    : isSales ? "Satış Yöneticisi"
+    : isUretim ? "Teknik Birim"
     : "Kullanıcı";
 
   const [studyNo, setStudyNo] = useState("");
@@ -1273,7 +1273,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
 
 // ==================== Liste ====================
 
-function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartFai }) {
+function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
   const [staging, setStaging] = useState(false);
@@ -1455,13 +1455,6 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
                             title="Bu yapılabilirlikten yeni teklif oluştur"
                             style={{ padding: "3px 8px", fontSize: 10, background: "#dbeafe", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer", fontWeight: 500 }}>
                             💼 Teklif Oluştur
-                          </button>
-                        )}
-                        {(status === "approved" || status === "convertedToQuote") && onStartFai && (
-                          <button onClick={() => onStartFai(s)}
-                            title="Bu yapılabilirlikten FAI başlat"
-                            style={{ padding: "3px 8px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer", fontWeight: 500 }}>
-                            🔬 FAI Başlat
                           </button>
                         )}
                         {status === "convertedToQuote" && s.linkedQuoteNo && (
