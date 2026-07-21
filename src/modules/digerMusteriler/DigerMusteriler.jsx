@@ -8,6 +8,7 @@ import {
   uploadCocSubComponentAttachment, deleteCocSubComponentAttachment,
   uploadCocAttachment, deleteCocAttachment, downloadCocAttachmentBlob,
   appendCocCertificateAttachment, setCocCertificateAttachmentList, setCocCertificateOthers,
+  setCocCertificateSubComponents,
   setCocCertificateNaCategories,
   uploadCocPartStandardAttachment, setCocPartStandardAttachmentList,
   getReusableAttachmentList, getCocAttachmentList,
@@ -4806,7 +4807,10 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
 
         {/* 📎 Dokümanlar bölümü — Firebase Storage'a yükle, master tekrar kullanım, sil/indir */}
         {!editMode && (
-          <CocAttachmentsSection cert={cert} canEdit={canEdit} />
+          <>
+            <CocAttachmentsSection cert={cert} canEdit={canEdit} />
+            <CocSubComponentsSection cert={cert} canEdit={canEdit} />
+          </>
         )}
 
         {error && (
@@ -5256,6 +5260,276 @@ function CocPartModal({ part, canEdit, onClose }) {
           }}>{saving ? 'Kaydediliyor...' : (isNew ? 'Ekle' : 'Kaydet')}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ====================================================================
+// ALT BİLEŞEN Belgeleri — CocDetailModal içinde kullanılır.
+// Cert.subComponents snapshot'ında saved required alt bileşenler için
+// belge (docs.hammaddeSertifikasi/olcumRaporu/fasonSertifikasi) yükle/sil.
+// Standart bağlantı elemanları filtre dışı.
+// ====================================================================
+function CocSubComponentsSection({ cert: initialCert, canEdit }) {
+  const year = initialCert.certNo.substring(0, 4);
+  const { cocCertificates } = useCocCertificates(year);
+  const certId = `${initialCert.certNo}_${initialCert.siraNo || '1'}`;
+  const liveCert = cocCertificates?.certificates?.[certId];
+  const cert = liveCert
+    ? { ...initialCert, ...liveCert, subComponents: liveCert.subComponents || initialCert.subComponents || [] }
+    : initialCert;
+
+  const allSubs = Array.isArray(cert.subComponents) ? cert.subComponents : [];
+  const requiredSubs = allSubs.filter(s => {
+    if (s?.requiresCoc === false) return false;
+    if (s?.requiresCoc === true) return true;
+    return !isStandardFastener(s?.stokAdi || s?.stokKodu || '');
+  });
+
+  const [uploadingDoc, setUploadingDoc] = useState({});
+  const [expandedSub, setExpandedSub] = useState({});
+  const [historyState, setHistoryState] = useState(null);
+  const [error, setError] = useState('');
+
+  if (requiredSubs.length === 0) return null;
+
+  const toggleSub = (k) => setExpandedSub(p => ({ ...p, [k]: !p[k] }));
+
+  const persistSubs = async (nextSubs) => {
+    await setCocCertificateSubComponents(cert.certNo, cert.siraNo || '1', nextSubs, { canEdit });
+  };
+
+  const setSubDocs = async (subStokKodu, category, nextFiles) => {
+    const nextSubs = allSubs.map(s => {
+      if (s.stokKodu !== subStokKodu) return s;
+      return { ...s, docs: { ...(s.docs || {}), [category]: nextFiles.length > 0 ? nextFiles : null } };
+    });
+    await persistSubs(nextSubs);
+  };
+
+  const handleUploadFiles = async (subStokKodu, category, files) => {
+    const list = Array.from(files || []);
+    if (list.length === 0) return;
+    const key = `${subStokKodu}|${category}`;
+    setUploadingDoc(u => ({ ...u, [key]: true }));
+    setError('');
+    try {
+      const uploaded = [];
+      for (const file of list) {
+        const meta = await uploadCocSubComponentAttachment(cert.certNo, subStokKodu, category, file, { canEdit });
+        uploaded.push(meta);
+      }
+      const sub = allSubs.find(s => s.stokKodu === subStokKodu);
+      const existing = getSubDocFiles(sub, category);
+      await setSubDocs(subStokKodu, category, [...existing, ...uploaded]);
+    } catch (e) {
+      setError('Belge yüklenemedi: ' + e.message);
+    } finally {
+      setUploadingDoc(u => ({ ...u, [key]: false }));
+    }
+  };
+
+  const handleDeleteFile = async (subStokKodu, category, idx) => {
+    const sub = allSubs.find(s => s.stokKodu === subStokKodu);
+    if (!sub) return;
+    const files = getSubDocFiles(sub, category);
+    const target = files[idx];
+    if (!target?.path) return;
+    if (!confirm(`Belge silinsin mi?\n\n${target.name || ''}`)) return;
+    const key = `${subStokKodu}|${category}`;
+    setUploadingDoc(u => ({ ...u, [key]: true }));
+    setError('');
+    try {
+      await deleteCocSubComponentAttachment(target.path);
+      const next = files.filter((_, i) => i !== idx);
+      await setSubDocs(subStokKodu, category, next);
+    } catch (e) {
+      setError('Belge silinemedi: ' + e.message);
+    } finally {
+      setUploadingDoc(u => ({ ...u, [key]: false }));
+    }
+  };
+
+  const openHistoryPicker = (subStokKodu, category) => {
+    const historicals = findHistoricalDocsForSubComponent(cocCertificates?.certificates || {}, subStokKodu, category, { limit: 15, excludeCertNo: cert.certNo });
+    setHistoryState({ stokKodu: subStokKodu, category, results: historicals });
+  };
+  const useHistoricalDoc = async (subStokKodu, category, doc) => {
+    const newDoc = { ...doc, category, subStokKodu, source: 'library' };
+    const sub = allSubs.find(s => s.stokKodu === subStokKodu);
+    const existing = getSubDocFiles(sub, category);
+    try {
+      await setSubDocs(subStokKodu, category, [...existing, newDoc]);
+      setHistoryState(null);
+    } catch (e) {
+      setError('Geçmiş belge eklenemedi: ' + e.message);
+    }
+  };
+
+  return (
+    <div style={{ padding: '0 20px 12px' }}>
+      <div style={{ marginTop: 6, padding: 12, background: '#fafaf9', border: '1px solid #e7e5e4', borderRadius: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, color: '#44403c' }}>🧩 Alt Bileşen Belgeleri</div>
+          <span style={{ fontSize: 10, color: '#78716c' }}>{requiredSubs.length} alt bileşen</span>
+        </div>
+
+        {error && (
+          <div style={{ padding: 8, marginBottom: 8, background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 4, fontSize: 11, color: '#991b1b' }}>
+            ⚠ {error}
+          </div>
+        )}
+
+        <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 11 }}>
+          <thead>
+            <tr style={{ background: '#f5f5f4', textAlign: 'left' }}>
+              <th style={{ padding: '5px 6px', width: 22 }}></th>
+              <th style={{ padding: '5px 8px', fontWeight: 600, fontSize: 10 }}>STOK</th>
+              <th style={{ padding: '5px 8px', fontWeight: 600, fontSize: 10 }}>AÇIKLAMA</th>
+              <th style={{ padding: '5px 8px', fontWeight: 600, fontSize: 10, width: 60 }}>TİP</th>
+              <th style={{ padding: '5px 8px', fontWeight: 600, fontSize: 10, width: 100 }}>DURUM</th>
+            </tr>
+          </thead>
+          <tbody>
+            {requiredSubs.map((s, i) => {
+              const st = subComponentStatus(s);
+              const isExp = !!expandedSub[s.stokKodu];
+              return (
+                <React.Fragment key={`sub-${i}`}>
+                  <tr style={{ borderTop: '1px solid #f5f5f4' }}>
+                    <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                      <button onClick={() => toggleSub(s.stokKodu)}
+                        style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 10 }}>
+                        {isExp ? '▼' : '▶'}
+                      </button>
+                    </td>
+                    <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', fontWeight: 500 }}>{s.stokKodu}</td>
+                    <td style={{ padding: '4px 8px' }}>{s.stokAdi || '—'}</td>
+                    <td style={{ padding: '4px 8px' }}>
+                      <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3,
+                        background: s.supplyType === 'buy' ? '#dbeafe' : '#dcfce7',
+                        color: s.supplyType === 'buy' ? '#1e40af' : '#166534' }}>
+                        {s.supplyType === 'buy' ? 'BUY' : 'MAKE'}
+                      </span>
+                    </td>
+                    <td style={{ padding: '4px 8px' }}>
+                      <span style={{ padding: '1px 6px', fontSize: 9, fontWeight: 600, borderRadius: 3,
+                        background: st.status === 'complete' ? '#dcfce7' : st.status === 'partial' ? '#fef3c7' : '#fee2e2',
+                        color: st.status === 'complete' ? '#166534' : st.status === 'partial' ? '#92400e' : '#991b1b' }}>
+                        {st.status === 'complete' ? '✓ Tamam' : st.status === 'partial' ? `${st.have}/${st.need} Kısmi` : `0/${st.need} Eksik`}
+                      </span>
+                    </td>
+                  </tr>
+                  {isExp && (
+                    <tr style={{ background: '#fff' }}>
+                      <td colSpan="5" style={{ padding: '10px 16px' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))', gap: 8 }}>
+                          {DOC_TYPES.map(cat => {
+                            const uploadKey = `${s.stokKodu}|${cat}`;
+                            const isUploading = !!uploadingDoc[uploadKey];
+                            const files = getSubDocFiles(s, cat);
+                            const label = cat === 'hammaddeSertifikasi' ? 'Hammadde Sertifikası'
+                              : cat === 'olcumRaporu' ? 'Ölçüm Raporu (balonlu + tedarikçi COC dahil)'
+                              : cat === 'fasonSertifikasi' ? 'Fason Sertifikası'
+                              : cat;
+                            const historyCount = findHistoricalDocsForSubComponent(cocCertificates?.certificates || {}, s.stokKodu, cat, { limit: 1, excludeCertNo: cert.certNo }).length;
+                            return (
+                              <div key={cat} style={{ padding: 8, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 4 }}>
+                                <div style={{ fontSize: 10, fontWeight: 600, color: '#44403c', marginBottom: 4 }}>
+                                  {label}
+                                  {files.length > 0 && <span style={{ marginLeft: 4, fontSize: 9, color: '#166534', fontWeight: 500 }}>· {files.length} dosya</span>}
+                                </div>
+                                {files.length > 0 && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 6, paddingBottom: 6, borderBottom: '1px dashed #e7e5e4' }}>
+                                    {files.map((meta, fi) => (
+                                      <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                        <div style={{ flex: 1, fontSize: 9, color: '#166534', wordBreak: 'break-all' }}>
+                                          📄 {meta.name || 'dosya.pdf'}
+                                          {meta.size ? <span style={{ color: '#78716c' }}> · {(meta.size / 1024).toFixed(0)} KB</span> : null}
+                                        </div>
+                                        <a href={meta.url} target="_blank" rel="noreferrer"
+                                          style={{ padding: '1px 5px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, textDecoration: 'none' }}>
+                                          📥 Aç
+                                        </a>
+                                        <button onClick={() => handleDeleteFile(s.stokKodu, cat, fi)} disabled={isUploading || !canEdit}
+                                          style={{ padding: '1px 5px', fontSize: 9, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                          🗑
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                                  <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', textAlign: 'center' }}>
+                                    {isUploading ? 'Yükleniyor...' : (files.length > 0 ? '📤 Dosya Ekle (çoklu)' : '📤 Dosya Seç (çoklu)')}
+                                    <input type="file" accept="application/pdf,image/*" multiple
+                                      style={{ display: 'none' }}
+                                      disabled={isUploading || !canEdit}
+                                      onChange={e => {
+                                        const fs = e.target.files;
+                                        if (fs && fs.length > 0) handleUploadFiles(s.stokKodu, cat, fs);
+                                        e.target.value = '';
+                                      }} />
+                                  </label>
+                                  {historyCount > 0 && (
+                                    <button onClick={() => openHistoryPicker(s.stokKodu, cat)}
+                                      disabled={isUploading || !canEdit}
+                                      title={`Aynı stok kodu için önceki COC'larda ${historyCount}+ belge bulundu`}
+                                      style={{ padding: '3px 6px', fontSize: 9, background: '#f0fdf4', color: '#166534', border: '1px solid #86efac', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                      📚 Geçmişten Ekle ({historyCount}+)
+                                    </button>
+                                  )}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+        <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
+          💡 ▶ ile alt bileşen belge panelini aç — çoklu dosya yükle veya geçmiş COC'lardan seç.
+        </div>
+      </div>
+
+      {/* Geçmişten seç modal */}
+      {historyState && (
+        <div style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 2000, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+          onClick={(e) => { if (e.target === e.currentTarget) setHistoryState(null); }}>
+          <div style={{ background: '#fff', borderRadius: 8, padding: 16, maxWidth: 600, width: '90%', maxHeight: '80vh', overflowY: 'auto' }}>
+            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>
+              📚 Aynı stok kodu için önceki belgeler — <span style={{ fontFamily: 'ui-monospace, monospace' }}>{historyState.stokKodu}</span>
+            </div>
+            {historyState.results.length === 0 ? (
+              <div style={{ color: '#78716c', fontSize: 12 }}>Geçmiş belge bulunamadı.</div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {historyState.results.map((h, i) => (
+                  <div key={i} style={{ padding: 8, background: '#fafaf9', border: '1px solid #e7e5e4', borderRadius: 4, fontSize: 11 }}>
+                    <div><b>{h.certNo}</b> · {h.controlDate} · {h.parentStokKodu}</div>
+                    <div style={{ color: '#57534e', margin: '4px 0' }}>{h.doc.name} {h.doc.size ? `· ${(h.doc.size / 1024).toFixed(0)} KB` : ''}</div>
+                    <div style={{ display: 'flex', gap: 4 }}>
+                      <a href={h.doc.url} target="_blank" rel="noreferrer"
+                        style={{ padding: '3px 8px', fontSize: 10, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, textDecoration: 'none' }}>Önizle</a>
+                      <button onClick={() => useHistoricalDoc(historyState.stokKodu, historyState.category, h.doc)}
+                        style={{ padding: '3px 8px', fontSize: 10, background: '#dcfce7', color: '#166534', border: '1px solid #86efac', borderRadius: 3, cursor: 'pointer' }}>Bunu Ekle</button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div style={{ marginTop: 10, textAlign: 'right' }}>
+              <button onClick={() => setHistoryState(null)}
+                style={{ padding: '6px 12px', fontSize: 12, background: '#f5f5f4', border: '1px solid #d6d3d1', borderRadius: 4, cursor: 'pointer' }}>Kapat</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

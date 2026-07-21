@@ -551,6 +551,22 @@ export async function setCocCertificateNaCategories(certNo, siraNo, naCategories
   }, { merge: true });
 }
 
+// COC'un alt bileşen listesini komple set eder (docs alanları dahil).
+// CocDetailModal'da mevcut COC'a alt bileşen belgesi eklerken/silerken kullanılır.
+export async function setCocCertificateSubComponents(certNo, siraNo, subs, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const year = certNo.substring(0, 4);
+  const id = `${certNo}_${String(siraNo || "1").trim() || "1"}`;
+  const ref = doc(db, APP_COL, `${COC_CERTIFICATES_DOC}_${year}`);
+  await setDoc(ref, {
+    certificates: {
+      [id]: {
+        subComponents: Array.isArray(subs) ? subs : [],
+      },
+    },
+  }, { merge: true });
+}
+
 // "others" listesine ekleme/silme (free-form kategori).
 export async function setCocCertificateOthers(certNo, siraNo, othersList, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok");
