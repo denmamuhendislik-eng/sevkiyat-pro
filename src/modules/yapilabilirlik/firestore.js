@@ -221,13 +221,34 @@ export async function linkFeasibilityToQuote(studyNo, quoteNo, { canEdit, stagin
   return { studyNo, quoteNo };
 }
 
-// Yapılabilirliği sil — sadece taslak veya reddedilmiş olanlar
+// Yapılabilirliği sil.
+// Kural: linkedQuoteNo dolu ise ilgili teklif hâlâ Firestore'da varsa silme
+// engellenir ("önce teklifi silin"). Teklif silinmişse yapılabilirlik silinir.
 export async function deleteFeasibilityStudy(studyNo, { canEdit, staging = false } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!studyNo) throw new Error("studyNo zorunlu");
   const year = getYearFromStudyNo(studyNo);
   const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
   const ref = doc(db, APP_COL, name);
+
+  // Linked teklif kontrolü — teklif hâlâ varsa engelle
+  const snap = await getDoc(ref);
+  const study = snap.exists() ? snap.data()?.studies?.[studyNo] : null;
+  const linkedQuoteNo = study?.linkedQuoteNo;
+  if (linkedQuoteNo) {
+    const quoteYear = "20" + String(linkedQuoteNo).slice(0, 2);
+    const quoteDocName = `quotes_${quoteYear}` + (staging ? "_staging" : "");
+    const quoteSnap = await getDoc(doc(db, APP_COL, quoteDocName));
+    if (quoteSnap.exists()) {
+      const quotes = quoteSnap.data()?.quotes || {};
+      const stillExists = Object.values(quotes).some(q => q?.quoteNo === linkedQuoteNo);
+      if (stillExists) {
+        throw new Error(`Teklif ${linkedQuoteNo} hâlâ mevcut. Önce teklifi silin, sonra bu yapılabilirliği silebilirsiniz.`);
+      }
+    }
+    // Teklif silinmiş — yapılabilirlik silinebilir
+  }
+
   await setDoc(ref, {
     studies: { [studyNo]: deleteField() },
   }, { merge: true });

@@ -1298,8 +1298,11 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
     return f.sort((a, b) => (b.studyNo || "").localeCompare(a.studyNo || ""));
   }, [data, search]);
 
-  const handleDelete = async (studyNo) => {
-    if (!confirm(`Yapılabilirlik ${studyNo} silinsin mi?`)) return;
+  const handleDelete = async (studyNo, isConverted = false) => {
+    const msg = isConverted
+      ? `Yapılabilirlik ${studyNo} teklife dönüşmüş. Sadece ilgili teklif silinmişse silinebilir. Devam edilsin mi?`
+      : `Yapılabilirlik ${studyNo} silinsin mi?`;
+    if (!confirm(msg)) return;
     setDeleting(d => ({ ...d, [studyNo]: true }));
     try {
       await deleteFeasibilityStudy(studyNo, { canEdit, staging });
@@ -1389,8 +1392,9 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote, onStartF
                             → {s.linkedQuoteNo}
                           </span>
                         )}
-                        {isAdmin && status !== "convertedToQuote" && (
-                          <button onClick={() => handleDelete(s.studyNo)} disabled={!!deleting[s.studyNo]}
+                        {isAdmin && (
+                          <button onClick={() => handleDelete(s.studyNo, status === "convertedToQuote")} disabled={!!deleting[s.studyNo]}
+                            title={status === "convertedToQuote" ? `Teklife dönüşmüş — sadece teklif silinmişse silinir` : "Sil"}
                             style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑</button>
                         )}
                       </div>
