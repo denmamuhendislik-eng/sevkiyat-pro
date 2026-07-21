@@ -3,7 +3,9 @@
 // Doküman yapısı: appData/feasibilityStudies_{YYYY}
 //   { year: "2026", studies: { [studyNo]: {...} } }
 //
-// studyNo formatı: YYAAGGXX (teklif ile aynı desen, örn. 26071901)
+// studyNo formatı: DF-YYAAGGXX (örn. DF-26072101).
+// Yasal geriye uyumluluk: prefix'siz eski YYAAGGXX kayıtlar (2 tane) da desteklenir.
+// Diğer form numaralandırmalarıyla karışmasın diye DF- prefix'i getirildi (2026-07-21).
 //
 // Bir yapılabilirlik (feasibility study) hem FR-71.1 (Proje) hem
 // FR-71.2 (Ürün) bilgilerini tek doküman olarak tutar. Onaylandıktan
@@ -14,6 +16,15 @@ import { db } from "../../firebase";
 
 const APP_COL = "appData";
 const YEAR_DOC_PREFIX = "feasibilityStudies_";
+const STUDY_NO_PREFIX = "DF-";
+
+// studyNo'dan yılı çıkar — hem "DF-26072101" hem eski "26072101" formatı destekli.
+// Dönüş: "2026" (YYYY)
+function getYearFromStudyNo(studyNo) {
+  const s = String(studyNo || "");
+  const core = s.startsWith(STUDY_NO_PREFIX) ? s.slice(STUDY_NO_PREFIX.length) : s;
+  return "20" + core.slice(0, 2);
+}
 
 // ============================================================
 // Subscribe / Read
@@ -31,19 +42,24 @@ export function subscribeFeasibilityForYear(year, callback, { staging = false } 
 }
 
 // ============================================================
-// Yeni yapılabilirlik no üret — YYAAGGXX
+// Yeni yapılabilirlik no üret — DF-YYAAGGXX
 // ============================================================
 
+// Aynı gün oluşturulmuş studyNo'ları döndürür. Hem DF-YYAAGG.. yeni format,
+// hem eski YYAAGG.. format kayıtları yakalar (aynı gün varsa sequence çakışmasın).
 async function getStudyNosForDate(yy, ay, gg, { staging = false } = {}) {
   const year = "20" + yy;
   const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
   const snap = await getDoc(doc(db, APP_COL, name));
   if (!snap.exists()) return [];
   const studies = snap.data()?.studies || {};
-  const prefix = `${yy}${ay}${gg}`;
+  const datePart = `${yy}${ay}${gg}`;
   return Object.values(studies)
     .map(s => String(s.studyNo || ""))
-    .filter(n => n.startsWith(prefix));
+    .filter(n => {
+      const core = n.startsWith(STUDY_NO_PREFIX) ? n.slice(STUDY_NO_PREFIX.length) : n;
+      return core.startsWith(datePart);
+    });
 }
 
 export async function suggestNextStudyNo(date = new Date(), { staging = false } = {}) {
@@ -51,9 +67,12 @@ export async function suggestNextStudyNo(date = new Date(), { staging = false } 
   const ay = String(date.getMonth() + 1).padStart(2, "0");
   const gg = String(date.getDate()).padStart(2, "0");
   const existing = await getStudyNosForDate(yy, ay, gg, { staging });
-  const seqs = existing.map(n => Number(n.slice(6, 8))).filter(x => Number.isFinite(x));
+  const seqs = existing.map(n => {
+    const core = n.startsWith(STUDY_NO_PREFIX) ? n.slice(STUDY_NO_PREFIX.length) : n;
+    return Number(core.slice(6, 8));
+  }).filter(x => Number.isFinite(x));
   const nextSeq = (seqs.length > 0 ? Math.max(...seqs) : 0) + 1;
-  return `${yy}${ay}${gg}${String(nextSeq).padStart(2, "0")}`;
+  return `${STUDY_NO_PREFIX}${yy}${ay}${gg}${String(nextSeq).padStart(2, "0")}`;
 }
 
 // ============================================================
@@ -66,7 +85,7 @@ export async function saveFeasibilityStudy(study, { canEdit, staging = false, us
   if (!canEdit) throw new Error("Yetki yok");
   if (!study?.studyNo) throw new Error("studyNo zorunlu");
   if (!study.customerCode && !study.customerName) throw new Error("customerCode veya customerName zorunlu");
-  const year = "20" + String(study.studyNo).slice(0, 2);
+  const year = getYearFromStudyNo(study.studyNo);
   const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
   const ref = doc(db, APP_COL, name);
   const patch = {
@@ -112,7 +131,7 @@ export async function signFeasibilityRole(studyNo, roleKey, { signerName, signer
   if (roleKey === GM_ROLE_KEY && !isGeneralManager) {
     throw new Error("Genel Müdür imzası için sadece GM yetkilidir");
   }
-  const year = "20" + String(studyNo).slice(0, 2);
+  const year = getYearFromStudyNo(studyNo);
   const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
   const ref = doc(db, APP_COL, name);
   const now = new Date().toISOString();
@@ -139,7 +158,7 @@ export async function signFeasibilityRole(studyNo, roleKey, { signerName, signer
 export async function unsignFeasibilityRole(studyNo, roleKey, { canEdit, staging = false } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!studyNo || !roleKey) throw new Error("studyNo ve roleKey zorunlu");
-  const year = "20" + String(studyNo).slice(0, 2);
+  const year = getYearFromStudyNo(studyNo);
   const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
   const ref = doc(db, APP_COL, name);
   await updateDoc(ref, {
@@ -188,7 +207,7 @@ export function countSignatures(study) {
 export async function linkFeasibilityToQuote(studyNo, quoteNo, { canEdit, staging = false } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!studyNo || !quoteNo) throw new Error("studyNo ve quoteNo zorunlu");
-  const year = "20" + String(studyNo).slice(0, 2);
+  const year = getYearFromStudyNo(studyNo);
   const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
   const ref = doc(db, APP_COL, name);
   await setDoc(ref, {
@@ -206,7 +225,7 @@ export async function linkFeasibilityToQuote(studyNo, quoteNo, { canEdit, stagin
 export async function deleteFeasibilityStudy(studyNo, { canEdit, staging = false } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!studyNo) throw new Error("studyNo zorunlu");
-  const year = "20" + String(studyNo).slice(0, 2);
+  const year = getYearFromStudyNo(studyNo);
   const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
   const ref = doc(db, APP_COL, name);
   await setDoc(ref, {
