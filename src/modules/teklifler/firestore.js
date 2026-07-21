@@ -228,6 +228,50 @@ export async function deleteRevision(quote, allQuotesForYear, { canEdit, staging
   return { docName, groupKey };
 }
 
+// Bir teklifi ve tüm revizyonlarını komple sil (R0 dahil).
+// Bağlı yapılabilirlik(ler)in linkedQuoteNo alanı temizlenir → tekrar "approved" görünürler.
+// allQuotesForYear: yıl doc'undaki tüm quotes obje (zincir bulma için)
+export async function deleteQuoteFull(quote, allQuotesForYear, { canEdit, staging = false } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!quote?.quoteNo) throw new Error("quoteNo zorunlu");
+
+  const chain = findRevisionChain(allQuotesForYear || {}, quote.baseQuoteNo || quote.quoteNo, quote.customerName);
+  if (chain.length === 0) throw new Error("Silinecek teklif zinciri bulunamadı");
+
+  const year = "20" + String(quote.quoteNo).slice(0, 2);
+  const suffix = staging ? "_staging" : "";
+  const docName = `quotes_${year}${suffix}`;
+  const ref = doc(db, APP_COL, docName);
+
+  // Tüm zincirdeki her kayıt için deleteField patch'i oluştur
+  const norm = (s) => String(s || "").replace(/\s+/g, "_").substring(0, 40);
+  const custKey = norm(quote.customerName);
+  const quotesPatch = {};
+  const linkedFeasibilities = new Set();
+  for (const q of chain) {
+    quotesPatch[`${q.quoteNo}__${custKey}`] = deleteField();
+    // Bağlı yapılabilirlikleri topla (tekli veya çoklu)
+    if (Array.isArray(q.feasibilityNos)) q.feasibilityNos.forEach(fn => fn && linkedFeasibilities.add(fn));
+    if (q.feasibilityNo) linkedFeasibilities.add(q.feasibilityNo);
+  }
+
+  await setDoc(ref, { quotes: quotesPatch }, { merge: true });
+
+  // Feasibility unlink — teklif silindi, yapılabilirlikler tekrar "approved" olur
+  if (linkedFeasibilities.size > 0) {
+    try {
+      const { unlinkFeasibilityFromQuote } = await import("../yapilabilirlik/firestore");
+      for (const fno of linkedFeasibilities) {
+        await unlinkFeasibilityFromQuote(fno, { canEdit, staging });
+      }
+    } catch (e) {
+      console.warn("Feasibility unlink hatası:", e.message);
+    }
+  }
+
+  return { docName, deleted: chain.length, unlinkedFeasibilities: linkedFeasibilities.size };
+}
+
 // Bir base teklifin tüm revizyonlarını çek (R0 dahil), revNo'ya göre sıralı
 export function findRevisionChain(allQuotesForYear, baseQuoteNo, customerName) {
   if (!allQuotesForYear || !baseQuoteNo) return [];

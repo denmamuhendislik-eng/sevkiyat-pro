@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   subscribeQuoteMaterials, subscribeQuoteFasonWorks, subscribeQuoteOptions,
   subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts, subscribeQuoteCustomers,
-  saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision,
+  saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision, deleteQuoteFull,
   saveQuoteMaterialUpdate, suggestMaterialPriceTl,
 } from "./firestore";
 import { subscribeUnitCosts, subscribeUnitConversions } from "../maliyet/firestore";
@@ -306,7 +306,14 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
     if (!deleteTarget?.quote) return;
     setDeleting(true); setDeleteError("");
     try {
-      await deleteRevision(deleteTarget.quote, data?.quotes || {}, { canEdit, staging });
+      const isR0 = Number(deleteTarget.quote.revNo) === 0;
+      if (isR0) {
+        // R0 → tüm zincir + feasibility unlink
+        await deleteQuoteFull(deleteTarget.quote, data?.quotes || {}, { canEdit, staging });
+      } else {
+        // Revizyon → sadece kendisi
+        await deleteRevision(deleteTarget.quote, data?.quotes || {}, { canEdit, staging });
+      }
       setDeleteTarget(null);
     } catch (e) {
       setDeleteError(e.message || "Silme hatası");
@@ -402,21 +409,48 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
       )}
 
       {/* SİLME ONAY MODALI (window.confirm yerine — Chrome bastırma sorununa karşı) */}
-      {deleteTarget && (
+      {deleteTarget && (() => {
+        const q = deleteTarget.quote;
+        const isR0 = Number(q.revNo) === 0;
+        const chainLen = deleteTarget.chainLen || 1;
+        // Zincirde bağlı yapılabilirlikleri say (R0 silinirken tüm zincir taranır)
+        let feasCount = 0;
+        if (isR0) {
+          const chain = findRevisionChain(data?.quotes || {}, q.baseQuoteNo || q.quoteNo, q.customerName);
+          const fset = new Set();
+          for (const qc of chain) {
+            if (Array.isArray(qc.feasibilityNos)) qc.feasibilityNos.forEach(fn => fn && fset.add(fn));
+            if (qc.feasibilityNo) fset.add(qc.feasibilityNo);
+          }
+          feasCount = fset.size;
+        }
+        return (
         <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
           onClick={(e) => { if (e.target === e.currentTarget && !deleting) setDeleteTarget(null); }}>
           <div style={{ background: "#fff", borderRadius: 8, padding: 20, maxWidth: 480, width: "90%", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
             <div style={{ fontSize: 15, fontWeight: 600, color: "#991b1b", marginBottom: 8 }}>
-              🗑 Revizyon Sil?
+              {isR0 ? "🗑 Teklifi Komple Sil?" : "🗑 Revizyon Sil?"}
             </div>
             <div style={{ fontSize: 13, color: "#1c1917", marginBottom: 12 }}>
-              <b style={{ fontFamily: "ui-monospace, monospace" }}>{deleteTarget.quote.quoteNo}</b> revizyonu silinecek.
+              <b style={{ fontFamily: "ui-monospace, monospace" }}>{q.quoteNo}</b> {isR0 ? "teklifi ve tüm revizyonları silinecek." : "revizyonu silinecek."}
             </div>
             <div style={{ fontSize: 11, color: "#57534e", padding: 10, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 4, marginBottom: 12 }}>
-              ⚠ Bu işlem <b>geri alınamaz</b>. Silince <b>R{Number(deleteTarget.quote.revNo) - 1}</b> tekrar aktif revizyon olur.
-              {deleteTarget.quote.revisionReason && (
+              ⚠ Bu işlem <b>geri alınamaz</b>.
+              {isR0 ? (
+                <>
+                  {" "}<b>{chainLen}</b> kayıt (R0 + {chainLen - 1} revizyon) tamamen silinecek.
+                  {feasCount > 0 && (
+                    <div style={{ marginTop: 6 }}>
+                      🔬 Bağlı <b>{feasCount}</b> yapılabilirlik "Onaylı" durumuna geri döner (linkedQuoteNo temizlenir).
+                    </div>
+                  )}
+                </>
+              ) : (
+                <> Silince <b>R{Number(q.revNo) - 1}</b> tekrar aktif revizyon olur.</>
+              )}
+              {q.revisionReason && !isR0 && (
                 <div style={{ marginTop: 6, fontStyle: "italic" }}>
-                  💬 Revizyon nedeni: "{deleteTarget.quote.revisionReason}"
+                  💬 Revizyon nedeni: "{q.revisionReason}"
                 </div>
               )}
             </div>
@@ -435,9 +469,20 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
+}
+
+// Kayıtlı bir teklifin görüntülenecek toplam tutarını currency + exchangeRate ile hesapla.
+// currency !== TL ise totalPriceTl / exchangeRate döner, aksi halde TL değer.
+function quoteDisplayTotal(quote) {
+  const totalTl = Number(quote?.totalPriceTl) || 0;
+  const currency = quote?.currency || "TL";
+  const rate = Number(quote?.exchangeRate) || 1;
+  if (currency !== "TL" && rate > 0) return totalTl / rate;
+  return totalTl;
 }
 
 // Bir revizyon grubunun render'ı — aktif satır + (expanded ise) geçmiş satırlar
@@ -454,11 +499,16 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
         margins: {},
         separateTool: { inLine: true, cost: 0, sale: 0, profit: 0, margin: 0, description: "" },
       }));
+      // displayFactor: currency !== TL ise 1/exchangeRate; totalSaleDisplay da runtime.
+      const cur = targetQuote.currency || "TL";
+      const rate = Number(targetQuote.exchangeRate) || 1;
+      const displayFactor = (cur !== "TL" && rate > 0) ? 1 / rate : 1;
+      const totalTl = Number(targetQuote.totalPriceTl) || 0;
       const calcForPdf = {
         lineResults: fakeLineResults, separateToolItems: [], totalCostTl: 0,
-        totalSaleTl: Number(targetQuote.totalPriceTl) || 0, totalProfitTl: 0, overallMarginPct: 0,
-        currency: targetQuote.currency || "TL", displayFactor: 1,
-        totalSaleDisplay: Number(targetQuote.totalPriceTl) || 0, totalCostDisplay: 0,
+        totalSaleTl: totalTl, totalProfitTl: 0, overallMarginPct: 0,
+        currency: cur, displayFactor,
+        totalSaleDisplay: totalTl * displayFactor, totalCostDisplay: 0,
       };
       await generateQuotePdf(targetQuote, calcForPdf);
     } catch (e) {
@@ -482,7 +532,7 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
         <td style={td}>{q.customerName}</td>
         <td style={{ ...td, textAlign: "right" }}>{q.lines?.length || 0}</td>
         <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-          {Number(q.totalPriceTl || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+          {quoteDisplayTotal(q).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
         </td>
         <td style={td}>{q.currency || "TL"}</td>
         <td style={td}>
@@ -500,18 +550,20 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
               title="Bu teklifi klonlayıp yeni R{n+1} oluştur" style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", opacity: canEdit ? 1 : 0.5 }}>🔄 Revizyon</button>
             <button onClick={() => downloadPdf(q)}
               title="Aktif revizyonu PDF olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
-            {isAdmin && Number(q.revNo) > 0 && (
+            {isAdmin && (
               <button onClick={() => onRequestDelete(q)}
-                title={`Bu revizyonu sil (R${q.revNo} → R${Number(q.revNo) - 1} tekrar aktif olur)`}
+                title={Number(q.revNo) > 0
+                  ? `Bu revizyonu sil (R${q.revNo} → R${Number(q.revNo) - 1} tekrar aktif olur)`
+                  : (hasHistory ? `Bu teklifi ve ${group.all.length} revizyonunu birlikte sil` : "Bu teklifi sil")}
                 style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#dc2626", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑 Sil</button>
             )}
           </div>
         </td>
       </tr>
       {isExpanded && group.history.map((hq, hi) => {
-        // Bir önceki revizyona göre toplam fark
+        // Bir önceki revizyona göre toplam fark — currency'e göre gösterilen değer üzerinden
         const prev = group.all[group.all.indexOf(hq) + 1] || null; // sıralı azalan → sonraki index bir alt revNo
-        const diffTotal = prev ? (Number(hq.totalPriceTl || 0) - Number(prev.totalPriceTl || 0)) : 0;
+        const diffTotal = prev ? (quoteDisplayTotal(hq) - quoteDisplayTotal(prev)) : 0;
         return (
           <tr key={hq.quoteNo} style={{ borderTop: "1px solid #f5f5f4", background: "#fafaf9", fontSize: 11 }}>
             <td style={{ ...td, paddingLeft: 28, fontFamily: "ui-monospace, monospace", color: "#78716c" }}>
@@ -524,7 +576,7 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
             </td>
             <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{hq.lines?.length || 0}</td>
             <td style={{ ...td, textAlign: "right", color: "#78716c", fontVariantNumeric: "tabular-nums" }}>
-              {Number(hq.totalPriceTl || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {quoteDisplayTotal(hq).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
               {prev && diffTotal !== 0 && (
                 <div style={{ fontSize: 9, color: diffTotal > 0 ? "#16a34a" : "#dc2626" }}>
                   {diffTotal > 0 ? "▲" : "▼"} {Math.abs(diffTotal).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}

@@ -7,6 +7,8 @@ import {
 import { calculateQuoteTotal, paymentTermToGroup } from "./quoteCalc";
 import { useMachineRatesForQuote } from "./machineRates";
 import { generateQuotePdf } from "./quotePdf";
+import { subscribeCurrencyRates } from "../maliyet/firestore";
+import { getLatestRates } from "../maliyet/currency";
 
 // Modül ana giriş: yeni teklif oluşturma formu (tek uzun sayfa).
 // Props:
@@ -22,6 +24,8 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
   const [staging, setStaging] = useState(false);
   // Sevkiyat Pro'dan güncel makine dakika ücretleri
   const machineRatesData = useMachineRatesForQuote();
+  // TCMB kur kayıtları (günlük cron doldurur)
+  const [currencyRatesDoc, setCurrencyRatesDoc] = useState({});
 
   // Form state
   const [quoteNo, setQuoteNo] = useState("");
@@ -61,7 +65,8 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     const u4 = subscribeQuotePolicy(d => setPolicy(d || {}), { staging });
     const u5 = subscribeQuoteParts(d => setPartsLib(d || { parts: {} }), { staging });
     const u6 = subscribeQuoteCustomers(d => setCustomersData(d || { customers: {} }), { staging });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); };
+    const u7 = subscribeCurrencyRates(d => setCurrencyRatesDoc(d || {}));
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); };
   }, [staging]);
 
   // İlk yüklemede quote no otomatik önerisi — feasibility'den gelirse
@@ -103,14 +108,31 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     );
   }, [initialQuote]);
 
-  // Malzeme adları currency için USD kuru
-  useEffect(() => {
-    if (currency === "DOLAR" && materials?.currencyRateUsd > 0) {
-      setExchangeRate(materials.currencyRateUsd);
-    } else if (currency === "TL") {
-      setExchangeRate(1);
+  // Kur kaynağı: TCMB (currencyRates cron doc) → fallback quoteMaterials.currencyRateUsd.
+  // Kur bilgisini toolbar'da göstermek için ayrı hesap
+  const rateSource = useMemo(() => {
+    const tcmb = getLatestRates(currencyRatesDoc);
+    if (currency === "DOLAR") {
+      if (tcmb?.usd > 0) return { rate: tcmb.usd, source: "TCMB", date: tcmb.date };
+      if (materials?.currencyRateUsd > 0) return { rate: Number(materials.currencyRateUsd), source: "Excel import (yedek)", date: null };
+      return null;
     }
-  }, [currency, materials]);
+    if (currency === "EURO") {
+      if (tcmb?.eur > 0) return { rate: tcmb.eur, source: "TCMB", date: tcmb.date };
+      return null;
+    }
+    return null;
+  }, [currency, currencyRatesDoc, materials]);
+
+  // Currency değişince exchangeRate'i otomatik güncelle (kullanıcı elle override edebilir)
+  useEffect(() => {
+    if (currency === "TL") {
+      setExchangeRate(1);
+    } else if (rateSource?.rate > 0) {
+      setExchangeRate(rateSource.rate);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currency, rateSource?.rate]);
 
   // Müşteri seçilince default alanları doldur
   const applyCustomer = (name) => {
@@ -454,6 +476,11 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
             {currency !== "TL" && (
               <div style={{ fontSize: 10, marginTop: 2 }}>
                 Kur: <input type="number" step="0.01" value={exchangeRate} onChange={e => setExchangeRate(Number(e.target.value) || 1)} style={{ width: 60, padding: "2px 4px", fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 3 }} />
+                {rateSource && (
+                  <div style={{ fontSize: 9, color: "#78716c", marginTop: 1 }}>
+                    Kaynak: <b>{rateSource.source}</b>{rateSource.date ? ` · ${rateSource.date}` : ""}
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -219,6 +219,22 @@ export async function linkFeasibilityToQuote(studyNo, quoteNo, { canEdit, stagin
   return { studyNo, quoteNo };
 }
 
+// Teklif silindiğinde çağrılır — linkedQuoteNo + convertedAt alanlarını temizle,
+// yapılabilirlik tekrar "approved" durumuna döner ve yeniden teklife dönüştürülebilir.
+export async function unlinkFeasibilityFromQuote(studyNo, { canEdit, staging = false } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!studyNo) throw new Error("studyNo zorunlu");
+  const year = getYearFromStudyNo(studyNo);
+  const name = `${YEAR_DOC_PREFIX}${year}` + (staging ? "_staging" : "");
+  const ref = doc(db, APP_COL, name);
+  await updateDoc(ref, {
+    [`studies.${studyNo}.linkedQuoteNo`]: deleteField(),
+    [`studies.${studyNo}.convertedAt`]: deleteField(),
+    [`studies.${studyNo}.updatedAt`]: new Date().toISOString(),
+  });
+  return { studyNo };
+}
+
 // Yapılabilirliği sil.
 // Kural: linkedQuoteNo dolu ise ilgili teklif hâlâ Firestore'da varsa silme
 // engellenir ("önce teklifi silin"). Teklif silinmişse yapılabilirlik silinir.
