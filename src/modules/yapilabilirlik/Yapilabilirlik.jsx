@@ -14,6 +14,7 @@ import {
   subscribeQuotesForYear, saveQuoteCustomer, saveQuotePart,
 } from "../teklifler/firestore";
 import { calculateWeightKg } from "../teklifler/quoteCalc";
+import { useMachineRatesForQuote } from "../teklifler/machineRates";
 import { generateFeasibilityPdf } from "./feasibilityPdf";
 
 export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, onCreateQuoteFromFeasibility, onStartFaiFromFeasibility }) {
@@ -83,6 +84,9 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const [staging, setStaging] = useState(false);
   const [signRolePicker, setSignRolePicker] = useState(null); // {roleKey} — delegate seçici popup
   const explicitReadOnly = readOnly;
+
+  // Tezgah listesi (maliyet modülünden) — operasyon detayında dropdown için
+  const machineRatesData = useMachineRatesForQuote();
 
   // Teklif modülünden veri subscribe'ları (Faz Y-3D)
   const [customersData, setCustomersData] = useState({ customers: {} });
@@ -879,7 +883,14 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
 
         {/* Detay tablosu (opsiyonel) — varsa manuel giriş devre dışı */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, marginBottom: 6 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c" }}>Operasyon Detayı (opsiyonel — teklife makine bazlı aktarım için)</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c" }}>
+            Operasyon Detayı (opsiyonel — teklife makine bazlı aktarım için)
+            {machineRatesData?.machines?.length > 0 && (
+              <span style={{ marginLeft: 8, fontSize: 9, fontWeight: 400, color: "#a8a29e" }}>
+                · {machineRatesData.machines.length} tezgah listelendi
+              </span>
+            )}
+          </div>
           <button onClick={addOperationDetail} disabled={readonlyForm}
             style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>
             + Operasyon Ekle
@@ -909,8 +920,16 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
                       placeholder="örn. Frezeleme" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
                   </td>
                   <td style={{ padding: "3px 4px" }}>
-                    <input value={op.machine || ""} onChange={e => updateOperationDetail(i, "machine", e.target.value)} disabled={readonlyForm}
-                      placeholder="MAZAK-5, T22..." style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                    <select value={op.machine || ""} onChange={e => updateOperationDetail(i, "machine", e.target.value)} disabled={readonlyForm}
+                      style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2, background: "#fff" }}>
+                      <option value="">— tezgah seç —</option>
+                      {(machineRatesData?.machines || []).map(mc => (
+                        <option key={mc.id} value={mc.name}>{mc.name} ({mc.wcName})</option>
+                      ))}
+                      {op.machine && !(machineRatesData?.machines || []).some(mc => mc.name === op.machine) && (
+                        <option value={op.machine}>{op.machine} (eski / listede yok)</option>
+                      )}
+                    </select>
                   </td>
                   <td style={{ padding: "3px 4px" }}>
                     <input type="number" step="0.1" min="0" value={op.minutes || 0} onChange={e => updateOperationDetail(i, "minutes", Number(e.target.value) || 0)} disabled={readonlyForm}
