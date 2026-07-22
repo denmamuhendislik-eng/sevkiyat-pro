@@ -117,7 +117,7 @@ function buildFeasibilityHtml(study) {
   const negotiationHints = getNegotiationHints(study);
 
   return `
-<div id="feas-pdf-root" style="width:794px; padding:40px 50px; background:#fff; font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:#1c1917; box-sizing:border-box;">
+<div id="feas-pdf-root" style="width:794px; padding:22px 40px; background:#fff; font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:#1c1917; box-sizing:border-box;">
   <!-- HEADER -->
   <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:14px; border-bottom:2px solid #1e40af;">
     <img src="${LOGO_DENMA}" style="height:52px; width:auto; object-fit:contain;" alt="DENMA" />
@@ -128,7 +128,7 @@ function buildFeasibilityHtml(study) {
   </div>
 
   <!-- KAPAK — YAPILABILIRLIK NO + META -->
-  <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; margin-top:16px;">
+  <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; margin-top:10px;">
     <div style="padding:10px 12px; background:#eff6ff; border-radius:6px; border:1px solid #bfdbfe;">
       <div style="font-size:8px; color:#78716c; text-transform:uppercase; letter-spacing:0.5px;">Yapılabilirlik No / Study No</div>
       <div style="font-size:14px; font-weight:800; color:#1e40af; font-family:'JetBrains Mono','Courier New',monospace; letter-spacing:1px;">
@@ -146,7 +146,7 @@ function buildFeasibilityHtml(study) {
   </div>
 
   <!-- MÜŞTERİ + PARÇA -->
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:12px;">
+  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:8px;">
     <div style="padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="font-size:8px; color:#78716c; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Müşteri / Customer</div>
       <div style="font-size:12px; font-weight:700; color:#1e40af; margin-top:3px;">${esc(study.customerName || "—")}</div>
@@ -167,7 +167,7 @@ function buildFeasibilityHtml(study) {
 
   <!-- HAMMADDE -->
   ${(study.materialType || study.materialShape || study.dimensions?.en || study.weightKg) ? `
-    <div style="margin-top:12px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+    <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">🧱 HAMMADDE / RAW MATERIAL</div>
       <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr; gap:8px; font-size:10px;">
         <div><div style="color:#78716c; font-size:8px;">Malzeme</div><div style="font-weight:600;">${esc(study.materialType || "—")}</div></div>
@@ -182,7 +182,7 @@ function buildFeasibilityHtml(study) {
 
   <!-- OPERASYONLAR -->
   ${opCount > 0 ? `
-    <div style="margin-top:12px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+    <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
         <div style="font-size:9px; color:#78716c; font-weight:600;">⚙️ OPERASYONLAR / OPERATIONS</div>
         <div style="font-size:10px; color:#1c1917;"><b>${opCount}</b> operasyon · Toplam: <b>${fmtNum(opMin, 1)}</b> dk (${fmtNum(opMin / 60, 2)} sa)</div>
@@ -217,7 +217,7 @@ function buildFeasibilityHtml(study) {
     const total = cat.key === "tooling" ? toolingTotal : fasonTotal;
     if (items.length === 0) return "";
     return `
-      <div style="margin-top:12px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+      <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
           <div style="font-size:9px; color:#78716c; font-weight:600;">${cat.icon} ${esc(cat.label).toUpperCase()}</div>
           <div style="font-size:10px; color:#1c1917;"><b>${items.length}</b> kalem · Toplam: <b style="color:#166534;">${fmtNum(total)} TL</b></div>
@@ -264,7 +264,7 @@ function buildFeasibilityHtml(study) {
 
   <!-- İSTERLER -->
   ${(study.demands || []).length > 0 ? `
-    <div style="margin-top:12px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+    <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">📋 MÜŞTERİ İSTERLERİ / CUSTOMER DEMANDS</div>
       <table style="width:100%; border-collapse:collapse; font-size:9px;">
         <thead>
@@ -291,7 +291,7 @@ function buildFeasibilityHtml(study) {
     </div>` : ""}
 
   <!-- DEĞERLENDİRME — Puanlı, iki bölüm -->
-  <div style="margin-top:12px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+  <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
       <div style="font-size:9px; color:#78716c; font-weight:600;">✅ YAPILABİLİRLİK DEĞERLENDİRMESİ / FEASIBILITY SCORING</div>
       <div style="font-size:14px; font-weight:800; color:${recommendation.color};">
@@ -332,7 +332,7 @@ function buildFeasibilityHtml(study) {
   ` : ""}
 
   <!-- KARAR + ÖNERİLER + İMZALAR (birleşik blok) -->
-  <div style="margin-top:12px; padding:12px 14px; background:${decision ? decision.bg : "#fafaf9"}; border-radius:6px; border:1px solid ${decision ? decision.color : "#e7e5e4"};">
+  <div style="margin-top:8px; padding:12px 14px; background:${decision ? decision.bg : "#fafaf9"}; border-radius:6px; border:1px solid ${decision ? decision.color : "#e7e5e4"};">
     <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
       <div style="font-size:9px; color:#78716c; font-weight:600;">🎯 ALINAN KARAR / FINAL DECISION</div>
       <div style="font-size:8px; color:#78716c; font-weight:600;">✍️ İMZALAR / SIGNATURES</div>
