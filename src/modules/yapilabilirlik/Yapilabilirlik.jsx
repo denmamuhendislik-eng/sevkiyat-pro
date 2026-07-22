@@ -45,7 +45,12 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, o
         ].map(t => (
           <button
             key={t.id}
-            onClick={() => setActiveTab(t.id)}
+            onClick={() => {
+              // "Yeni Yapılabilirlik" tıklandığında açık form varsa temizle;
+              // key prop ile NewFeasibilityView remount olur, state sıfırlanır.
+              if (t.id === "new") setPendingOpen(null);
+              setActiveTab(t.id);
+            }}
             style={{
               padding: "8px 14px", border: "none",
               background: activeTab === t.id ? "#534AB7" : "transparent",
@@ -59,6 +64,7 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, o
 
       {activeTab === "new" && (
         <NewFeasibilityView
+          key={pendingOpen?.study?.studyNo || "new"}
           canEdit={canEdit} isAdmin={isAdmin} isSales={isSales} isUretim={isUretim}
           authUser={authUser}
           initialStudy={pendingOpen?.study || null}
