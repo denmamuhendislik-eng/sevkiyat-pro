@@ -251,9 +251,12 @@ export function computeStudyStatus(study) {
   return "evaluating";
 }
 
-// Mevcut aşamada aksiyon alması beklenen rol key'i (bildirim + buton için)
+// Mevcut aşamada aksiyon alması beklenen rol key'i (bildirim + buton için).
+// draft (henüz kaydedilmemiş yeni yapılabilirlik) da satış aşaması sayılır —
+// satış rolü doldurup "Bölümümü Tamamla"ya basınca kayıt + imza tek adımda.
 export function getPendingRoleForStudy(study) {
   const status = computeStudyStatus(study);
+  if (status === "draft") return "salesManager";
   if (status === "salesPending") return "salesManager";
   if (status === "technicalPending") return "technicalUnit";
   if (status === "gmPending") return "generalManager";
