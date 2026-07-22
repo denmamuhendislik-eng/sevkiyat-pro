@@ -2408,9 +2408,12 @@ ${el.innerHTML}
   const canSeeTeklifler = isAdmin || isSales;
   const canSeeYapilabilirlik = isAdmin || isSales || isUretim;
 
-  // Üretim rolü sadece yapılabilirlik görebilir — başka sayfadaysa auto-yönlendir
+  // Üretim rolü izinli modüllere kısıtlı — default "planning" görünmüyor,
+  // izinsiz sayfadaysa auto-yönlendir (izinli sayfalardaysa dokunma).
   useEffect(() => {
-    if (isUretim && page !== "yapilabilirlik") setPage("yapilabilirlik");
+    if (isUretim && !["shipment", "montaj", "mrp", "yapilabilirlik"].includes(page)) {
+      setPage("yapilabilirlik");
+    }
   }, [isUretim, page]);
 
   // Sidebar badge — yapılabilirlik: kullanıcıya düşen aksiyon sayısı (cari yıl)
@@ -2473,7 +2476,7 @@ ${el.innerHTML}
             if (n.id === "yapilabilirlik" && !canSeeYapilabilirlik) return false;
             if (n.id === "maliyet" && !isAdmin) return false;
             if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard", "teklifler", "yapilabilirlik"].includes(n.id)) return false;
-            if (isUretim && n.id !== "yapilabilirlik") return false;
+            if (isUretim && !["shipment", "montaj", "mrp", "yapilabilirlik"].includes(n.id)) return false;
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
           }).map(n=>(
