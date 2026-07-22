@@ -25,7 +25,7 @@ import { generateFeasibilityPdf } from "./feasibilityPdf";
 
 export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, onCreateQuoteFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
-  const [activeTab, setActiveTab] = useState("new");
+  const [activeTab, setActiveTab] = useState("list");
   const [pendingOpen, setPendingOpen] = useState(null); // {study, readOnly}
   const openStudy = (study, { readOnly = false } = {}) => {
     setPendingOpen({ study, readOnly });
