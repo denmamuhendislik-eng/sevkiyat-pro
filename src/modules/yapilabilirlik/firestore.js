@@ -12,7 +12,8 @@
 // sonra doğrudan teklife dönüşür (quote.feasibilityNo bağlantısı).
 
 import { doc, onSnapshot, setDoc, getDoc, updateDoc, deleteField } from "firebase/firestore";
-import { db } from "../../firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import { db, storage } from "../../firebase";
 import { computeStudyScore } from "./schema";
 
 const APP_COL = "appData";
@@ -74,6 +75,39 @@ export async function suggestNextStudyNo(date = new Date(), { staging = false } 
   }).filter(x => Number.isFinite(x));
   const nextSeq = (seqs.length > 0 ? Math.max(...seqs) : 0) + 1;
   return `${STUDY_NO_PREFIX}${yy}${ay}${gg}${String(nextSeq).padStart(2, "0")}`;
+}
+
+// ============================================================
+// Gelen veri ekleri — Storage upload/delete (teknik resim, matematik model vb.)
+// ============================================================
+
+// Storage yolu: feasibilityAttachments/{studyNo}/{category}/{timestamp}_{filename}
+export async function uploadFeasibilityAttachment(studyNo, category, file, { canEdit } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!studyNo) throw new Error("Önce yapılabilirlik no belirle");
+  if (!file) throw new Error("Dosya yok");
+  const safeName = String(file.name || "dosya").replace(/[^\w.\-]/g, "_").substring(0, 80);
+  const path = `feasibilityAttachments/${studyNo}/${category}/${Date.now()}_${safeName}`;
+  const ref = storageRef(storage, path);
+  await uploadBytes(ref, file);
+  const url = await getDownloadURL(ref);
+  return {
+    url, path,
+    name: file.name || "dosya",
+    size: file.size || 0,
+    contentType: file.type || "",
+    uploadedAt: new Date().toISOString(),
+  };
+}
+
+export async function deleteFeasibilityAttachment(path) {
+  if (!path) return;
+  try {
+    await deleteObject(storageRef(storage, path));
+  } catch (e) {
+    // Zaten silinmiş olabilir
+    console.warn("Storage sil hatası:", e.message);
+  }
 }
 
 // ============================================================

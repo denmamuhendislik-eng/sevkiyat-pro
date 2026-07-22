@@ -4,6 +4,7 @@ import {
   signFeasibilityRole, unsignFeasibilityRole, deleteFeasibilityStudy,
   FEASIBILITY_ROLES, GM_ROLE_KEY, computeStudyStatus, countSignatures,
   getPendingRoleForStudy, isUserPendingForStudy,
+  uploadFeasibilityAttachment, deleteFeasibilityAttachment,
 } from "./firestore";
 import {
   EVALUATION_QUESTIONS, EVALUATION_DEPARTMENTS, PRODUCT_DIMENSIONS,
@@ -724,6 +725,20 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
               </label>
             ))}
           </div>
+
+          {/* Teknik resim seçildiyse dosya yükleme alanı — çoklu dosya destekli */}
+          {study.receivedData?.technicalDrawing && (
+            <TechnicalDrawingUploader
+              studyNo={studyNo}
+              files={study.receivedFiles?.technicalDrawing || []}
+              onChange={(files) => setStudy(prev => ({
+                ...prev,
+                receivedFiles: { ...(prev.receivedFiles || {}), technicalDrawing: files },
+              }))}
+              canEdit={canEdit}
+              readonly={readonlyForm}
+            />
+          )}
         </div>
 
         <div style={{ marginTop: 10, display: "flex", gap: 12, flexWrap: "wrap", fontSize: 11 }}>
@@ -1352,6 +1367,78 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
               </button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ==================== Teknik Resim Yükleme ====================
+
+function TechnicalDrawingUploader({ studyNo, files, onChange, canEdit, readonly }) {
+  const [uploading, setUploading] = useState(false);
+  const [err, setErr] = useState("");
+  const disabled = !canEdit || readonly || uploading;
+
+  const handleFiles = async (fileList) => {
+    const arr = Array.from(fileList || []);
+    if (arr.length === 0) return;
+    if (!studyNo) { setErr("Önce yapılabilirlik no belirle (ara taslak kaydet)"); return; }
+    setUploading(true); setErr("");
+    try {
+      const uploaded = [];
+      for (const f of arr) {
+        const meta = await uploadFeasibilityAttachment(studyNo, "technicalDrawing", f, { canEdit });
+        uploaded.push(meta);
+      }
+      onChange([...(files || []), ...uploaded]);
+    } catch (e) {
+      setErr(e.message || "Yükleme hatası");
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const handleDelete = async (idx) => {
+    const target = files[idx];
+    if (!target) return;
+    if (!confirm(`Silinsin mi?\n${target.name || ""}`)) return;
+    try {
+      if (target.path) await deleteFeasibilityAttachment(target.path);
+    } catch (e) { console.warn(e); }
+    onChange(files.filter((_, i) => i !== idx));
+  };
+
+  return (
+    <div style={{ marginTop: 8, padding: 8, background: "#fff", border: "1px dashed #bfdbfe", borderRadius: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+        <div style={{ fontSize: 10, fontWeight: 600, color: "#1e40af" }}>
+          📐 Teknik Resim Dosyaları {files.length > 0 && <span style={{ color: "#78716c" }}>· {files.length} dosya</span>}
+        </div>
+        <label style={{ display: "inline-block", padding: "3px 8px", fontSize: 10, background: disabled ? "#f5f5f4" : "#eff6ff", color: disabled ? "#a8a29e" : "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: disabled ? "not-allowed" : "pointer" }}>
+          {uploading ? "Yükleniyor..." : "📤 Dosya Ekle"}
+          <input type="file" multiple accept="application/pdf,image/*,.dwg,.dxf,.step,.stp,.iges,.igs" style={{ display: "none" }} disabled={disabled}
+            onChange={e => { handleFiles(e.target.files); e.target.value = ""; }} />
+        </label>
+      </div>
+      {err && <div style={{ fontSize: 9, color: "#991b1b", marginBottom: 4 }}>⚠ {err}</div>}
+      {files.length === 0 ? (
+        <div style={{ fontSize: 9, color: "#a8a29e", textAlign: "center", padding: 6 }}>Henüz dosya eklenmedi</div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+          {files.map((f, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, padding: "2px 4px", background: "#f9fafb", borderRadius: 3 }}>
+              <div style={{ flex: 1, wordBreak: "break-all", color: "#1c1917" }}>
+                📄 {f.name || "dosya"}
+                {f.size ? <span style={{ color: "#78716c", marginLeft: 4 }}>· {(f.size / 1024).toFixed(0)} KB</span> : null}
+              </div>
+              <a href={f.url} target="_blank" rel="noreferrer" style={{ padding: "1px 5px", fontSize: 9, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, textDecoration: "none" }}>📥 Aç</a>
+              {!readonly && (
+                <button onClick={() => handleDelete(i)} disabled={!canEdit}
+                  style={{ padding: "1px 5px", fontSize: 9, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
