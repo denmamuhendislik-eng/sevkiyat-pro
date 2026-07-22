@@ -328,10 +328,13 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
   const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
 
-  // Kilit mekanizması — status hesaplanıp readonlyForm türetilir. Bu satırlar
-  // aşağıdaki useMemo'lardan ÖNCE olmalı (canEditSales/canEditTechnical readonlyForm'a bağımlı).
+  // Kilit mekanizması — form açılış anındaki durum kilitleme kararı. Kullanıcı
+  // karar seçtiğinde (decision = "accepted") status runtime'da "approved"a
+  // dönerdi ve form kilitlenip Kaydet butonu kaybolurdu; onun yerine
+  // initialStudy bazlı sabit değerlendirme kullanılıyor.
   const status = computeStudyStatus(study);
-  const isLocked = status === "approved" || status === "convertedToQuote";
+  const initialStatus = useMemo(() => computeStudyStatus(initialStudy), [initialStudy]);
+  const isLocked = initialStatus === "approved" || initialStatus === "convertedToQuote";
   const readonlyForm = explicitReadOnly || isLocked;
 
   // Puanlama (canlı) — schema.js/computeStudyScore
