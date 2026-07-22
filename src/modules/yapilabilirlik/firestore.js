@@ -264,12 +264,15 @@ export function getPendingRoleForStudy(study) {
   return null;
 }
 
-// Bir kullanıcının rolü mevcut aşamayla eşleşiyor mu? (buton görünürlüğü, badge sayısı)
+// Bir kullanıcının rolü mevcut aşamayla eşleşiyor mu? (sidebar badge + "Sizden
+// Bekleyen" filtresi için). Admin (GM) tüm aşamalarda buton görebilir (canComplete
+// ayrı kontrol), ama bildirim sadece kendi aşaması gmPending için gelir — böylece
+// GM her satış/teknik pending'de bilirim seli almaz.
 export function isUserPendingForStudy(study, { isAdmin, isSales, isUretim } = {}) {
   const pending = getPendingRoleForStudy(study);
   if (!pending) return false;
-  if (pending === "salesManager") return !!isSales || !!isAdmin;
-  if (pending === "technicalUnit") return !!isUretim || !!isAdmin;
+  if (pending === "salesManager") return !!isSales;
+  if (pending === "technicalUnit") return !!isUretim;
   if (pending === "generalManager") return !!isAdmin;
   return false;
 }
