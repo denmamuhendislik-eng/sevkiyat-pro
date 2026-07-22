@@ -346,10 +346,13 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const recommendation = useMemo(() => getRecommendation(scoreInfo.percent), [scoreInfo.percent]);
   const negotiationHints = useMemo(() => getNegotiationHints(study), [study]);
 
-  // Rol bazlı bölüm kilidi
-  // Admin (GM) her iki bölümü de düzenleyebilir; sales sadece satış, uretim sadece teknik.
+  // Rol bazlı bölüm kilidi (asimetrik):
+  // - Admin (GM) her iki bölümü de düzenleyebilir.
+  // - Satış her iki bölümü de düzenleyebilir (bazı durumlarda satış teknik alanı da doldurmak zorunda kalıyor).
+  // - Üretim sadece teknik bölümü düzenleyebilir, satış bölümüne müdahale edemez.
+  // Not: doldurma yetkisi asimetrik olsa da imzalar hâlâ kendi rolüne özel (canCompleteCurrent bakar).
   const canEditSales = !readonlyForm && (isAdmin || isSales);
-  const canEditTechnical = !readonlyForm && (isAdmin || isUretim);
+  const canEditTechnical = !readonlyForm && (isAdmin || isUretim || isSales);
 
   // Progress: kaç soru cevaplandı
   const salesAnswered = SALES_QUESTIONS.filter(q => study.evaluation?.[q.key]?.answer).length;
