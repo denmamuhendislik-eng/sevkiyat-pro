@@ -15,6 +15,7 @@ import {
 import {
   subscribeQuoteCustomers, subscribeQuoteParts, subscribeQuoteMaterials,
   subscribeQuotesForYear, saveQuoteCustomer, saveQuotePart,
+  subscribeQuoteFasonWorks,
 } from "../teklifler/firestore";
 import { calculateWeightKg } from "../teklifler/quoteCalc";
 import { useMachineRatesForQuote } from "../teklifler/machineRates";
@@ -96,6 +97,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const [partsLib, setPartsLib] = useState({ parts: {} });
   const [materialsData, setMaterialsData] = useState({ materials: {} });
   const [quotesForYear, setQuotesForYear] = useState({ quotes: {} });
+  const [fasonWorksData, setFasonWorksData] = useState({ works: [] });
   const currentYear = String(new Date().getFullYear());
 
   useEffect(() => {
@@ -103,8 +105,10 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
     const u2 = subscribeQuoteParts(d => setPartsLib(d || { parts: {} }), { staging });
     const u3 = subscribeQuoteMaterials(d => setMaterialsData(d || { materials: {} }), { staging });
     const u4 = subscribeQuotesForYear(currentYear, d => setQuotesForYear(d || { quotes: {} }), { staging });
-    return () => { u1(); u2(); u3(); u4(); };
+    const u5 = subscribeQuoteFasonWorks(d => setFasonWorksData(d || { works: [] }), { staging });
+    return () => { u1(); u2(); u3(); u4(); u5(); };
   }, [staging, currentYear]);
+  const fasonList = fasonWorksData?.works || [];
 
   const customerList = useMemo(() => Object.values(customersData?.customers || {}), [customersData]);
   const materialList = useMemo(() => Object.values(materialsData?.materials || {}), [materialsData]);
@@ -1020,8 +1024,18 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
                       return (
                         <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
                           <td style={{ padding: "3px 4px" }}>
-                            <input value={it.name || ""} onChange={e => updateItem(cat.key, i, "name", e.target.value)} disabled={readonlyForm}
-                              placeholder="örn. Bağlama fikstürü" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                            {cat.key === "fason" ? (
+                              <>
+                                <input list={`fasonList_${i}`} value={it.name || ""} onChange={e => updateItem(cat.key, i, "name", e.target.value)} disabled={readonlyForm}
+                                  placeholder="Fason iş (listeden seç veya yaz)" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                                <datalist id={`fasonList_${i}`}>
+                                  {fasonList.map(w => <option key={w.id || w.name} value={w.name} />)}
+                                </datalist>
+                              </>
+                            ) : (
+                              <input value={it.name || ""} onChange={e => updateItem(cat.key, i, "name", e.target.value)} disabled={readonlyForm}
+                                placeholder="örn. Bağlama fikstürü" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                            )}
                           </td>
                           <td style={{ padding: "3px 4px" }}>
                             <input value={it.description || ""} onChange={e => updateItem(cat.key, i, "description", e.target.value)} disabled={readonlyForm}
