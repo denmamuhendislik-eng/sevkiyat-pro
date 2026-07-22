@@ -228,11 +228,12 @@ export default function App() {
   const savingLockUntilRef = useRef(0);
   const SAVE_LOCK_BUFFER_MS = 3000;
 
+  // Rol adları TR/EN karışık gelebiliyor (Firestore'da satis veya sales gibi) — her ikisini kabul et.
   const isAdmin = userRole === "admin";
   const isPacker = userRole === "packer";
-  const isUretim = userRole === "uretim";
+  const isUretim = userRole === "uretim" || userRole === "production";
   const isViewer = userRole === "viewer";
-  const isSales = userRole === "satis";
+  const isSales = userRole === "satis" || userRole === "sales";
   const canPack = isAdmin || isPacker || isSales;
 
   // Auth listener
