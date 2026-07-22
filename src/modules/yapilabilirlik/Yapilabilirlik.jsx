@@ -1478,14 +1478,14 @@ function EvaluationPanel({ title, color, bg, questions, sectionScore, evaluation
           🔒 Bu bölümü düzenleme yetkiniz yok — sadece görüntüleme.
         </div>
       )}
-      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11, tableLayout: "fixed" }}>
         <thead>
           <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
-            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 30, textAlign: "center" }}>#</th>
-            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Soru</th>
-            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 200, textAlign: "center" }}>Cevap</th>
-            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 65, textAlign: "right" }}>Puan</th>
-            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Not</th>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 28, textAlign: "center" }}>#</th>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: "36%" }}>Soru</th>
+            <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 140, textAlign: "center" }}>Cevap</th>
+            <th style={{ padding: "5px 6px", fontWeight: 600, fontSize: 10, width: 52, textAlign: "right" }}>Puan</th>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Not / Açıklama</th>
           </tr>
         </thead>
         <tbody>
@@ -1494,27 +1494,28 @@ function EvaluationPanel({ title, color, bg, questions, sectionScore, evaluation
             const answer = v.answer;
             const points = scoreForAnswer(q, answer);
             const isEmpty = answer == null || answer === "";
+            const zebra = i % 2 === 1 ? "#fafaf9" : "#ffffff";
             return (
-              <tr key={q.key} style={{ borderTop: "1px solid #f5f5f4" }}>
+              <tr key={q.key} style={{ borderTop: "1px solid #f5f5f4", background: zebra }}>
                 <td style={{ padding: "6px 8px", textAlign: "center", color: "#78716c" }}>{i + 1}</td>
-                <td style={{ padding: "6px 8px", whiteSpace: "pre-wrap" }}>{q.label}</td>
-                <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                <td style={{ padding: "6px 8px", whiteSpace: "pre-wrap", wordBreak: "break-word" }}>{q.label}</td>
+                <td style={{ padding: "6px 6px", textAlign: "center" }}>
                   {q.type === "slider" ? (
-                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
                       <input type="range" min={q.min || 0} max={q.max || 10} step="1"
                         value={Number.isFinite(Number(answer)) ? Number(answer) : 0}
                         onChange={e => onUpdate(q.key, "answer", Number(e.target.value))}
-                        disabled={!canEdit} style={{ flex: 1 }} />
-                      <span style={{ fontSize: 11, fontWeight: 600, minWidth: 24, textAlign: "right" }}>{Number.isFinite(Number(answer)) ? Number(answer) : "—"}</span>
+                        disabled={!canEdit} style={{ flex: 1, minWidth: 0 }} />
+                      <span style={{ fontSize: 11, fontWeight: 600, minWidth: 20, textAlign: "right" }}>{Number.isFinite(Number(answer)) ? Number(answer) : "—"}</span>
                     </div>
                   ) : (
-                    <div style={{ display: "inline-flex", gap: 4 }}>
+                    <div style={{ display: "inline-flex", gap: 3 }}>
                       {EVAL_CHOICES.map(c => {
                         const selected = String(answer).toUpperCase() === c.key;
                         return (
                           <button key={c.key} onClick={() => onUpdate(q.key, "answer", c.key)} disabled={!canEdit}
                             style={{
-                              padding: "3px 10px", fontSize: 10, fontWeight: 600, borderRadius: 3,
+                              padding: "2px 7px", fontSize: 10, fontWeight: 600, borderRadius: 3,
                               background: selected ? c.color : "#fff",
                               color: selected ? "#fff" : c.color,
                               border: `1px solid ${c.color}`,
@@ -1526,13 +1527,13 @@ function EvaluationPanel({ title, color, bg, questions, sectionScore, evaluation
                     </div>
                   )}
                 </td>
-                <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "ui-monospace, monospace", fontWeight: 600, color: isEmpty ? "#a8a29e" : "#1c1917" }}>
+                <td style={{ padding: "6px 6px", textAlign: "right", fontFamily: "ui-monospace, monospace", fontWeight: 600, color: isEmpty ? "#a8a29e" : "#1c1917" }}>
                   {isEmpty ? "—" : `${points}/${q.max}`}
                 </td>
                 <td style={{ padding: "3px 4px" }}>
                   <input value={v.note || ""} onChange={e => onUpdate(q.key, "note", e.target.value)} disabled={!canEdit}
                     placeholder="Açıklama / detay..."
-                    style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                    style={{ width: "100%", padding: "5px 6px", fontSize: 11, border: "1px solid #d6d3d1", borderRadius: 3, boxSizing: "border-box", background: "#fff" }} />
                 </td>
               </tr>
             );
