@@ -81,13 +81,14 @@ export async function suggestNextStudyNo(date = new Date(), { staging = false } 
 // Gelen veri ekleri — Storage upload/delete (teknik resim, matematik model vb.)
 // ============================================================
 
-// Storage yolu: feasibilityAttachments/{studyNo}/{category}/{timestamp}_{filename}
+// Storage yolu: appData/feasibilityAttachments/{studyNo}/{category}/{ts}_{filename}
+// Not: storage.rules sadece appData/** için yazma izni veriyor, o yüzden appData prefix'i şart.
 export async function uploadFeasibilityAttachment(studyNo, category, file, { canEdit } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!studyNo) throw new Error("Önce yapılabilirlik no belirle");
   if (!file) throw new Error("Dosya yok");
   const safeName = String(file.name || "dosya").replace(/[^\w.\-]/g, "_").substring(0, 80);
-  const path = `feasibilityAttachments/${studyNo}/${category}/${Date.now()}_${safeName}`;
+  const path = `appData/feasibilityAttachments/${studyNo}/${category}/${Date.now()}_${safeName}`;
   const ref = storageRef(storage, path);
   await uploadBytes(ref, file);
   const url = await getDownloadURL(ref);
