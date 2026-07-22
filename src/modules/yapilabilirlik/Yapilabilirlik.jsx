@@ -881,27 +881,13 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
           </div>
         </div>
         <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
-          Üretim / CAD-CAM sorumlusu: parça kaç operasyondan ve ne kadar sürede çıkacak? Detay eklerseniz otomatik hesaplanır, yoksa manuel toplam girebilirsiniz.
+          Üretim / CAD-CAM sorumlusu: her operasyon için tezgah ve süreyi giriniz. Toplam operasyon sayısı ve süre otomatik hesaplanır; teklife makine bazlı aktarılır.
         </div>
 
-        {/* Hızlı özet — detay yoksa manuel giriş */}
-        {opsDetailCount === 0 && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 10 }}>
-            <div>
-              <label style={labelStyle}>Operasyon Sayısı</label>
-              <input type="number" min="0" step="1" value={study.operations?.count || 0} onChange={e => updateOperations("count", Number(e.target.value) || 0)} disabled={readonlyForm} style={inputStyle} />
-            </div>
-            <div>
-              <label style={labelStyle}>Toplam Süre (dakika)</label>
-              <input type="number" min="0" step="0.1" value={study.operations?.totalMinutes || 0} onChange={e => updateOperations("totalMinutes", Number(e.target.value) || 0)} disabled={readonlyForm} style={inputStyle} />
-            </div>
-          </div>
-        )}
-
-        {/* Detay tablosu (opsiyonel) — varsa manuel giriş devre dışı */}
+        {/* Detay tablosu — tek giriş yolu (tezgah + süre) */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 6, marginBottom: 6 }}>
           <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c" }}>
-            Operasyon Detayı (opsiyonel — teklife makine bazlı aktarım için)
+            Operasyon Detayı
             {machineRatesData?.machines?.length > 0 && (
               <span style={{ marginLeft: 8, fontSize: 9, fontWeight: 400, color: "#a8a29e" }}>
                 · {machineRatesData.machines.length} tezgah listelendi
@@ -915,7 +901,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
         </div>
         {opsDetailCount === 0 ? (
           <div style={{ padding: 12, textAlign: "center", color: "#a8a29e", fontSize: 10, background: "#fafaf9", borderRadius: 4 }}>
-            Detay yok — üstteki toplam alanları kullanılıyor
+            Henüz operasyon eklenmedi — üstteki <b>+ Operasyon Ekle</b> ile başlayın.
           </div>
         ) : (
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>

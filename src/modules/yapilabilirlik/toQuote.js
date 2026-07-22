@@ -6,17 +6,15 @@
 
 // Bir study → tek line objesi (NewQuoteView'ın beklediği yapı)
 function studyToLine(study) {
+  // Sadece operations.details üzerinden makine bazlı aktarım — her satır tezgah seçimli.
+  // Tezgah seçilmemiş satır (name boş) filtrelenir; boş makine ratePerMin=0 ile teklife
+  // düşmemesi için: tezgah seçilmezse o satır aktarılmaz.
   const opsDetails = Array.isArray(study.operations?.details) ? study.operations.details.filter(d => d.machine) : [];
-  let machines = [];
-  if (opsDetails.length > 0) {
-    machines = opsDetails.map(d => ({
-      name: String(d.machine || "").trim(),
-      timeMin: Number(d.minutes) || 0,
-      ratePerMin: 0, // machineRatesData'dan otomatik dolar (NewQuoteView içinde)
-    }));
-  } else if (Number(study.operations?.totalMinutes) > 0) {
-    machines = [{ name: "", timeMin: Number(study.operations.totalMinutes), ratePerMin: 0 }];
-  }
+  const machines = opsDetails.map(d => ({
+    name: String(d.machine || "").trim(),
+    timeMin: Number(d.minutes) || 0,
+    ratePerMin: 0, // NewQuoteView machineRatesData'dan isim eşleşmesiyle otomatik doldurur
+  }));
 
   const fasonWorks = (study.fasonItems || []).map(it => ({
     name: String(it.name || "").trim(),
