@@ -129,6 +129,10 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
       if (c.code) update("customerCode", c.code);
       if (c.phone) update("customerContact", c.phone);
       if (c.email) update("customerEmail", c.email);
+      // Adres tercihi: c.address > c.defaultShipping (bazı eski kayıtlarda adres nakliye
+      // alanında yazılı olabilir — ikisi de yoksa dokunma, mevcut değeri korur)
+      const addr = c.address || c.defaultShipping || "";
+      if (addr) update("shipmentAddress", addr);
     }
   };
 
@@ -372,6 +376,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
             name: study.customerName,
             phone: study.customerContact || "",
             email: study.customerEmail || "",
+            address: study.shipmentAddress || "",
           }, { canEdit, staging });
         } catch (e) {
           console.warn("Müşteri kütüphaneye eklenemedi:", e.message);

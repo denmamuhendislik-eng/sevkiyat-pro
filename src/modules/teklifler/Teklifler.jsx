@@ -112,7 +112,7 @@ function CustomersView({ canEdit }) {
     return filtered.sort((a, b) => (b.totalQuotes || 0) - (a.totalQuotes || 0));
   }, [data, search]);
 
-  const openNew = () => setEditing({ name: "", isNew: true, phone: "", email: "", defaultPaymentTerm: "60 Gün Vade", defaultShipping: "", defaultCurrency: "TL" });
+  const openNew = () => setEditing({ name: "", isNew: true, phone: "", email: "", address: "", defaultPaymentTerm: "60 Gün Vade", defaultShipping: "", defaultCurrency: "TL" });
   const openEdit = (c) => setEditing({ ...c, isNew: false });
 
   const handleSave = async () => {
@@ -125,6 +125,7 @@ function CustomersView({ canEdit }) {
         name: key,
         phone: editing.phone || "",
         email: editing.email || "",
+        address: editing.address || "",
         defaultPaymentTerm: editing.defaultPaymentTerm || "",
         defaultShipping: editing.defaultShipping || "",
         defaultCurrency: editing.defaultCurrency || "TL",
@@ -216,6 +217,12 @@ function CustomersView({ canEdit }) {
                 <div><label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>E-mail</label>
                   <input value={editing.email || ""} onChange={e => setEditing({ ...editing, email: e.target.value })} style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
                 </div>
+              </div>
+              <div>
+                <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Adres</label>
+                <textarea value={editing.address || ""} onChange={e => setEditing({ ...editing, address: e.target.value })}
+                  placeholder="Fatura / sevkiyat adresi"
+                  style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box", minHeight: 50, resize: "vertical" }} />
               </div>
               <div>
                 <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Default Ödeme Şekli (marj hesabında kullanılır)</label>
