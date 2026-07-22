@@ -339,22 +339,20 @@ function buildFeasibilityHtml(study) {
       ${study.recommendations ? `<div style="font-size:10px; color:#1c1917; line-height:1.5;">${esc(study.recommendations)}</div>` : ""}
     </div>` : ""}
 
-  <!-- İMZALAR -->
-  <div style="margin-top:16px;">
-    <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">✍️ YAPILABİLİRLİK EKİBİ İMZALARI / SIGNATURES</div>
-    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px;">
+  <!-- İMZALAR (kompakt tek satır) -->
+  <div style="margin-top:10px; padding:6px 10px; background:#fafaf9; border:1px solid #e7e5e4; border-radius:4px;">
+    <div style="font-size:8px; color:#78716c; font-weight:600; margin-bottom:4px;">✍️ İMZALAR / SIGNATURES</div>
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;">
       ${FEASIBILITY_ROLES.map(r => {
         const sig = signatures[r.key];
-        const bg = sig ? "#f0fdf4" : "#fafaf9";
+        const bg = sig ? "#f0fdf4" : "#fff";
         const bc = sig ? "#86efac" : "#e7e5e4";
         return `
-          <div style="padding:8px 10px; background:${bg}; border-radius:4px; border:1px solid ${bc};">
-            <div style="font-size:8px; color:#44403c; font-weight:600; text-transform:uppercase; letter-spacing:0.3px;">${esc(r.label)}</div>
+          <div style="padding:4px 6px; background:${bg}; border-radius:3px; border:1px solid ${bc}; font-size:8px; line-height:1.4;">
+            <div style="font-weight:600; color:#44403c;">${esc(r.label)}</div>
             ${sig ? `
-              <div style="font-size:9px; color:#166534; font-weight:600; margin-top:3px;">✓ İmzalandı</div>
-              <div style="font-size:8px; color:#57534e; margin-top:2px;">${fmtDate(sig.signedAt)}</div>
-              ${sig.isDelegate ? `<div style="font-size:7px; color:#d97706;">(${esc(sig.actualRole)} yerine)</div>` : ""}
-            ` : `<div style="font-size:8px; color:#a8a29e; margin-top:3px;">—</div>`}
+              <div style="color:#166534; font-weight:600;">✓ ${fmtDate(sig.signedAt)}${sig.isDelegate ? ` <span style="color:#d97706; font-weight:400;">(${esc(sig.actualRole)} yerine)</span>` : ""}</div>
+            ` : `<span style="color:#a8a29e;">—</span>`}
           </div>
         `;
       }).join("")}
@@ -362,7 +360,7 @@ function buildFeasibilityHtml(study) {
   </div>
 
   <!-- FOOTER -->
-  <div style="margin-top:20px; padding-top:8px; border-top:1px solid #e7e5e4; font-size:8px; color:#a8a29e; display:flex; justify-content:space-between;">
+  <div style="margin-top:10px; padding-top:6px; border-top:1px solid #e7e5e4; font-size:8px; color:#a8a29e; display:flex; justify-content:space-between;">
     <span>DENMA Mühendislik · ${esc(study.studyNo || "")} · Üretim: ${new Date().toLocaleDateString("tr-TR")}</span>
     <span style="font-family:'JetBrains Mono','Courier New',monospace;">${FORM_NO}</span>
   </div>
@@ -400,7 +398,7 @@ async function renderFeasibilityPdf(study) {
     // Taşma var — sayfa sayfa dilimle. 2+ sayfada üstte kompakt "devam" şeridi çıkar.
     const pxPerMm = canvasWidth / pdfWidth;
     const CONTINUATION_STRIP_MM = 12;
-    const MIN_LAST_PAGE_CONTENT_MM = 25; // son sayfada bundan az içerik kalırsa öncekine birleştir
+    const MIN_LAST_PAGE_CONTENT_MM = 60; // son sayfada bundan az içerik kalırsa öncekine birleştir (imza + footer için)
     const firstPageContentPx = pdfHeight * pxPerMm;
     const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM) * pxPerMm;
 
