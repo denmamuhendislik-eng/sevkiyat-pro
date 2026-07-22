@@ -2405,8 +2405,13 @@ ${el.innerHTML}
   const nav=[{id:"planning",icon:"📋",l:"Sevkiyat Planı"},{id:"products",icon:"📦",l:"Ürünler"},{id:"import",icon:"📥",l:"VIO Import"},{id:"dashboard",icon:"📊",l:"Dashboard"},{id:"shipment",icon:"🚛",l:"Sevkiyat Detay"},{id:"montaj",icon:"🔧",l:"Montaj Planı"},{id:"mrp",icon:"⚙️",l:"MRP Planlama"},{id:"digerMusteriler",icon:"🤝",l:"Diğer Müşteriler"},{id:"musteriDashboard",icon:"📈",l:"Müşteri Dashboard"},{id:"yapilabilirlik",icon:"🔬",l:"Yapılabilirlik"},{id:"teklifler",icon:"📋",l:"Teklifler"},{id:"maliyet",icon:"💰",l:"Maliyet"}];
   const canSeeMRP = isAdmin || isUretim || isSales;
   const canSeeDigerMusteriler = isAdmin || isSales;
-  const canSeeTeklifler = isAdmin || isSales || isUretim;
+  const canSeeTeklifler = isAdmin || isSales;
   const canSeeYapilabilirlik = isAdmin || isSales || isUretim;
+
+  // Üretim rolü sadece yapılabilirlik görebilir — başka sayfadaysa auto-yönlendir
+  useEffect(() => {
+    if (isUretim && page !== "yapilabilirlik") setPage("yapilabilirlik");
+  }, [isUretim, page]);
 
   // Sidebar badge — yapılabilirlik: kullanıcıya düşen aksiyon sayısı (cari yıl)
   useEffect(() => {
@@ -2468,6 +2473,7 @@ ${el.innerHTML}
             if (n.id === "yapilabilirlik" && !canSeeYapilabilirlik) return false;
             if (n.id === "maliyet" && !isAdmin) return false;
             if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard", "teklifler", "yapilabilirlik"].includes(n.id)) return false;
+            if (isUretim && n.id !== "yapilabilirlik") return false;
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
           }).map(n=>(
