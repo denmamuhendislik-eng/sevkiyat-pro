@@ -13,6 +13,7 @@
 
 import { doc, onSnapshot, setDoc, getDoc, updateDoc, deleteField } from "firebase/firestore";
 import { db } from "../../firebase";
+import { computeStudyScore } from "./schema";
 
 const APP_COL = "appData";
 const YEAR_DOC_PREFIX = "feasibilityStudies_";
@@ -172,29 +173,43 @@ export async function unsignFeasibilityRole(studyNo, roleKey, { canEdit, staging
 
 // Bir yapılabilirliğin efektif durumu:
 //   "draft"       → henüz hiç kaydedilmemiş taslak (UI local state)
-//   "evaluating"  → kaydedildi, imza toplama sürecinde (herhangi bir imza var ama tümü değil)
-//   "approved"    → tüm 6 rol imzaladı VE karar "accepted"
+//   "evaluating"  → kaydedildi, gereken imzalar tamamlanmadı
+//   "approved"    → gereken imzalar tamam VE karar "accepted"
 //   "rejected"    → karar "rejected"
 //   "convertedToQuote" → onaylı ve teklife dönüştü (linkedQuoteNo dolu)
+//
+// İmza gereksinimi puanlamaya bağlı (2026-07-22):
+//   %≥50  → Satış + Teknik imzası yeterli, GM opsiyonel
+//   %<50  → Satış + Teknik + GM imzası tamamı zorunlu
+// Puanlamaya göre zorunlu imza setini döndürür.
+export function getRequiredRoleKeys(study) {
+  const { percent } = computeStudyScore(study);
+  return percent < 50
+    ? ["salesManager", "technicalUnit", "generalManager"]
+    : ["salesManager", "technicalUnit"];
+}
+
 export function computeStudyStatus(study) {
   if (!study) return "draft";
   if (study.decision === "rejected") return "rejected";
   const sigs = study.signatures || {};
-  const allSigned = FEASIBILITY_ROLES.every(r => sigs[r.key]?.signedAt);
+  const requiredKeys = getRequiredRoleKeys(study);
+  const allSigned = requiredKeys.every(k => sigs[k]?.signedAt);
   if (allSigned && study.decision === "accepted") {
     return study.linkedQuoteNo ? "convertedToQuote" : "approved";
   }
   return "evaluating";
 }
 
-// Kaç imza atıldı — UI progress bar için
+// Kaç imza atıldı — UI progress bar için. Zorunlu set puana göre.
 export function countSignatures(study) {
   const sigs = study?.signatures || {};
+  const requiredKeys = getRequiredRoleKeys(study);
   let signed = 0;
-  for (const r of FEASIBILITY_ROLES) {
-    if (sigs[r.key]?.signedAt) signed++;
+  for (const k of requiredKeys) {
+    if (sigs[k]?.signedAt) signed++;
   }
-  return { signed, total: FEASIBILITY_ROLES.length };
+  return { signed, total: requiredKeys.length, requiredKeys };
 }
 
 // ============================================================

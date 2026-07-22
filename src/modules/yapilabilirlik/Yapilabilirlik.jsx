@@ -8,6 +8,9 @@ import {
   EVALUATION_QUESTIONS, EVALUATION_DEPARTMENTS, PRODUCT_DIMENSIONS,
   ITEM_CATEGORIES, SOURCE_TYPES, WORK_TYPES, DECISIONS, RECEIVED_DATA_TYPES,
   makeEmptyStudy, makeEmptyItem,
+  SALES_QUESTIONS, TECHNICAL_QUESTIONS, EVAL_CHOICES,
+  computeStudyScore, getRecommendation, getNegotiationHints, scoreForAnswer,
+  SALES_MAX, TECHNICAL_MAX, TOTAL_MAX,
 } from "./schema";
 import {
   subscribeQuoteCustomers, subscribeQuoteParts, subscribeQuoteMaterials,
@@ -313,28 +316,22 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
   const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
 
-  // Accordion açık/kapalı durumları — default hepsi açık
-  const [openDepts, setOpenDepts] = useState(() => Object.fromEntries(EVALUATION_DEPARTMENTS.map(d => [d.key, true])));
-  const toggleDept = (deptKey) => setOpenDepts(prev => ({ ...prev, [deptKey]: !prev[deptKey] }));
+  // Puanlama (canlı) — schema.js/computeStudyScore
+  const scoreInfo = useMemo(() => computeStudyScore(study), [study]);
+  const recommendation = useMemo(() => getRecommendation(scoreInfo.percent), [scoreInfo.percent]);
+  const negotiationHints = useMemo(() => getNegotiationHints(study), [study]);
 
-  // Her departman için soru grubu + cevap ilerlemesi
-  const deptQuestions = useMemo(() => {
-    const map = {};
-    for (const d of EVALUATION_DEPARTMENTS) map[d.key] = [];
-    for (const q of EVALUATION_QUESTIONS) {
-      if (map[q.dept]) map[q.dept].push(q);
-    }
-    return map;
-  }, []);
-  const deptProgress = useMemo(() => {
-    const p = {};
-    for (const d of EVALUATION_DEPARTMENTS) {
-      const questions = deptQuestions[d.key] || [];
-      const answered = questions.filter(q => (study.evaluation?.[q.key]?.answer)).length;
-      p[d.key] = { total: questions.length, answered };
-    }
-    return p;
-  }, [deptQuestions, study.evaluation]);
+  // Rol bazlı bölüm kilidi (readonly form değilse)
+  // Admin (GM) her iki bölümü de düzenleyebilir; sales sadece satış, uretim sadece teknik.
+  const canEditSales = !readonlyForm && (isAdmin || isSales);
+  const canEditTechnical = !readonlyForm && (isAdmin || isUretim);
+
+  // Progress: kaç soru cevaplandı
+  const salesAnswered = SALES_QUESTIONS.filter(q => study.evaluation?.[q.key]?.answer).length;
+  const technicalAnswered = TECHNICAL_QUESTIONS.filter(q => {
+    const v = study.evaluation?.[q.key]?.answer;
+    return v != null && v !== "";
+  }).length;
 
   const handleSave = async () => {
     if (readonlyForm) return;
@@ -709,69 +706,83 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
         )}
       </div>
 
-      {/* DEĞERLENDİRME — Departman accordion (Faz Y-3B) */}
+      {/* DEĞERLENDİRME — 2 panel (Satış + Teknik), puanlı */}
       <div style={cardStyle}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>3️⃣ Yapılabilirlik Değerlendirmesi</div>
           <div style={{ fontSize: 11, color: "#78716c" }}>
-            Toplam: <b>{Object.values(deptProgress).reduce((s, p) => s + p.answered, 0)}</b>/{EVALUATION_QUESTIONS.length} soru cevaplandı
+            {salesAnswered + technicalAnswered}/{SALES_QUESTIONS.length + TECHNICAL_QUESTIONS.length} soru cevaplandı
           </div>
         </div>
-        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
-          💡 Her departman kendi bölümünde ilgili soruları cevaplar. Bir başka departman adına da cevap verilebilir (yetki devri gibi).
-        </div>
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {EVALUATION_DEPARTMENTS.map(dept => {
-            const questions = deptQuestions[dept.key] || [];
-            const prog = deptProgress[dept.key];
-            const isOpen = !!openDepts[dept.key];
-            const complete = prog.answered === prog.total && prog.total > 0;
-            return (
-              <div key={dept.key} style={{ border: "1px solid " + (complete ? "#86efac" : "#e7e5e4"), borderRadius: 6, overflow: "hidden" }}>
-                <button onClick={() => toggleDept(dept.key)}
-                  style={{ width: "100%", padding: "10px 12px", background: complete ? "#f0fdf4" : dept.bg, border: "none", cursor: "pointer", display: "flex", justifyContent: "space-between", alignItems: "center", textAlign: "left" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 10, color: "#78716c" }}>{isOpen ? "▼" : "▶"}</span>
-                    <span style={{ fontSize: 14 }}>{dept.icon}</span>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: dept.color }}>{dept.label}</span>
-                    <span style={{ fontSize: 10, color: "#78716c" }}>({prog.total} soru)</span>
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                    <span style={{ padding: "2px 8px", background: complete ? "#dcfce7" : "#f5f5f4", color: complete ? "#166534" : "#57534e", borderRadius: 3, fontSize: 10, fontWeight: 600 }}>
-                      {complete ? "✓ Tamamlandı" : `${prog.answered}/${prog.total}`}
-                    </span>
-                  </div>
-                </button>
-                {isOpen && (
-                  <div style={{ padding: "8px 12px", background: "#fff" }}>
-                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-                      <thead>
-                        <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
-                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Soru</th>
-                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 60, textAlign: "center" }}>EVET</th>
-                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 60, textAlign: "center" }}>HAYIR</th>
-                          <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>AÇIKLAMA</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {questions.map(q => {
-                          const v = study.evaluation?.[q.key] || {};
-                          return (
-                            <tr key={q.key} style={{ borderTop: "1px solid #f5f5f4" }}>
-                              <td style={{ padding: "4px 8px" }}>{q.label}</td>
-                              <td style={{ padding: "4px 8px", textAlign: "center" }}><input type="radio" name={`eval_${q.key}`} checked={v.answer === "yes"} onChange={() => updateEvaluation(q.key, "answer", "yes")} disabled={readonlyForm} /></td>
-                              <td style={{ padding: "4px 8px", textAlign: "center" }}><input type="radio" name={`eval_${q.key}`} checked={v.answer === "no"} onChange={() => updateEvaluation(q.key, "answer", "no")} disabled={readonlyForm} /></td>
-                              <td style={{ padding: "3px 4px" }}><input value={v.note || ""} onChange={e => updateEvaluation(q.key, "note", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
+
+        {/* Canlı skor + öneri kutucuğu */}
+        <div style={{ padding: 12, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 6, marginBottom: 12 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#44403c" }}>Toplam Puan</div>
+            <div style={{ fontSize: 18, fontWeight: 700, color: recommendation.color, fontVariantNumeric: "tabular-nums" }}>
+              {scoreInfo.totalScore} / {scoreInfo.totalMax} <span style={{ fontSize: 12, color: "#78716c", fontWeight: 500 }}>({scoreInfo.percent}%)</span>
+            </div>
+          </div>
+          {/* Progress bar */}
+          <div style={{ width: "100%", height: 10, background: "#e7e5e4", borderRadius: 5, overflow: "hidden", marginBottom: 8 }}>
+            <div style={{ width: `${scoreInfo.percent}%`, height: "100%", background: recommendation.color, transition: "width 0.3s" }} />
+          </div>
+          {/* Bölüm bazlı */}
+          <div style={{ display: "flex", gap: 12, fontSize: 10, color: "#57534e", marginBottom: 8 }}>
+            <div>💼 Satış: <b>{scoreInfo.sales.score}/{scoreInfo.sales.max}</b> ({scoreInfo.sales.percent}%)</div>
+            <div>⚙️ Teknik: <b>{scoreInfo.technical.score}/{scoreInfo.technical.max}</b> ({scoreInfo.technical.percent}%)</div>
+          </div>
+          {/* Öneri */}
+          <div style={{ padding: 8, background: recommendation.bg, borderRadius: 4, borderLeft: `4px solid ${recommendation.color}` }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: recommendation.color }}>
+              Sistem Önerisi: {recommendation.label}
+            </div>
+            <div style={{ fontSize: 10, color: "#57534e", marginTop: 2 }}>{recommendation.description}</div>
+            {scoreInfo.percent < 50 && (
+              <div style={{ fontSize: 10, color: "#991b1b", marginTop: 4, fontWeight: 500 }}>
+                ⚠ Teklife dönüşüm için Genel Müdür imzası zorunlu.
               </div>
-            );
-          })}
+            )}
+          </div>
+        </div>
+
+        {/* Müzakere ipuçları — 50-74 aralığında en yararlı */}
+        {negotiationHints.length > 0 && scoreInfo.percent < 75 && (
+          <div style={{ padding: 10, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 6, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#92400e", marginBottom: 6 }}>
+              💬 Müzakere / İyileştirme İpuçları ({negotiationHints.length})
+            </div>
+            <ul style={{ margin: 0, paddingLeft: 18, fontSize: 10, color: "#78716c" }}>
+              {negotiationHints.map((h, i) => (
+                <li key={i} style={{ marginBottom: 3 }}>
+                  <span style={{ color: "#44403c" }}>{h.hint}</span>
+                  <span style={{ marginLeft: 4, color: "#a8a29e" }}>(puan {h.score}/{h.max})</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* İki panel: Satış + Teknik */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+          <EvaluationPanel
+            title="💼 Satış ve Proje" color="#1e40af" bg="#eff6ff"
+            questions={SALES_QUESTIONS}
+            sectionScore={scoreInfo.sales}
+            evaluation={study.evaluation || {}}
+            onUpdate={updateEvaluation}
+            canEdit={canEditSales}
+            answered={salesAnswered}
+          />
+          <EvaluationPanel
+            title="⚙️ Teknik" color="#0f766e" bg="#f0fdfa"
+            questions={TECHNICAL_QUESTIONS}
+            sectionScore={scoreInfo.technical}
+            evaluation={study.evaluation || {}}
+            onUpdate={updateEvaluation}
+            canEdit={canEditTechnical}
+            answered={technicalAnswered}
+          />
         </div>
       </div>
 
@@ -1267,6 +1278,93 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// ==================== Değerlendirme Paneli (bölüm) ====================
+
+function EvaluationPanel({ title, color, bg, questions, sectionScore, evaluation, onUpdate, canEdit, answered }) {
+  const complete = answered === questions.length;
+  return (
+    <div style={{ border: `1px solid ${complete ? "#86efac" : "#e7e5e4"}`, borderRadius: 6, overflow: "hidden" }}>
+      <div style={{ padding: "10px 12px", background: bg, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <div style={{ fontSize: 12, fontWeight: 600, color }}>{title}</div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 10 }}>
+          <span style={{ color: "#57534e" }}>
+            <b>{sectionScore.score}/{sectionScore.max}</b> puan ({sectionScore.percent}%)
+          </span>
+          <span style={{ padding: "2px 8px", background: complete ? "#dcfce7" : "#fff", color: complete ? "#166534" : "#57534e", borderRadius: 3, fontWeight: 600 }}>
+            {complete ? "✓ Tamam" : `${answered}/${questions.length}`}
+          </span>
+        </div>
+      </div>
+      {!canEdit && (
+        <div style={{ padding: "6px 12px", background: "#fef2f2", fontSize: 10, color: "#991b1b", borderBottom: "1px solid #fecaca" }}>
+          🔒 Bu bölümü düzenleme yetkiniz yok — sadece görüntüleme.
+        </div>
+      )}
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+        <thead>
+          <tr style={{ background: "#f5f5f4", textAlign: "left", color: "#44403c" }}>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 30, textAlign: "center" }}>#</th>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Soru</th>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 200, textAlign: "center" }}>Cevap</th>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10, width: 65, textAlign: "right" }}>Puan</th>
+            <th style={{ padding: "5px 8px", fontWeight: 600, fontSize: 10 }}>Not</th>
+          </tr>
+        </thead>
+        <tbody>
+          {questions.map((q, i) => {
+            const v = evaluation?.[q.key] || {};
+            const answer = v.answer;
+            const points = scoreForAnswer(q, answer);
+            const isEmpty = answer == null || answer === "";
+            return (
+              <tr key={q.key} style={{ borderTop: "1px solid #f5f5f4" }}>
+                <td style={{ padding: "6px 8px", textAlign: "center", color: "#78716c" }}>{i + 1}</td>
+                <td style={{ padding: "6px 8px", whiteSpace: "pre-wrap" }}>{q.label}</td>
+                <td style={{ padding: "6px 8px", textAlign: "center" }}>
+                  {q.type === "slider" ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <input type="range" min={q.min || 0} max={q.max || 10} step="1"
+                        value={Number.isFinite(Number(answer)) ? Number(answer) : 0}
+                        onChange={e => onUpdate(q.key, "answer", Number(e.target.value))}
+                        disabled={!canEdit} style={{ flex: 1 }} />
+                      <span style={{ fontSize: 11, fontWeight: 600, minWidth: 24, textAlign: "right" }}>{Number.isFinite(Number(answer)) ? Number(answer) : "—"}</span>
+                    </div>
+                  ) : (
+                    <div style={{ display: "inline-flex", gap: 4 }}>
+                      {EVAL_CHOICES.map(c => {
+                        const selected = String(answer).toUpperCase() === c.key;
+                        return (
+                          <button key={c.key} onClick={() => onUpdate(q.key, "answer", c.key)} disabled={!canEdit}
+                            style={{
+                              padding: "3px 10px", fontSize: 10, fontWeight: 600, borderRadius: 3,
+                              background: selected ? c.color : "#fff",
+                              color: selected ? "#fff" : c.color,
+                              border: `1px solid ${c.color}`,
+                              cursor: canEdit ? "pointer" : "not-allowed",
+                              opacity: canEdit ? 1 : 0.7,
+                            }}>{c.label}</button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </td>
+                <td style={{ padding: "6px 8px", textAlign: "right", fontFamily: "ui-monospace, monospace", fontWeight: 600, color: isEmpty ? "#a8a29e" : "#1c1917" }}>
+                  {isEmpty ? "—" : `${points}/${q.max}`}
+                </td>
+                <td style={{ padding: "3px 4px" }}>
+                  <input value={v.note || ""} onChange={e => onUpdate(q.key, "note", e.target.value)} disabled={!canEdit}
+                    placeholder="Açıklama / detay..."
+                    style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }

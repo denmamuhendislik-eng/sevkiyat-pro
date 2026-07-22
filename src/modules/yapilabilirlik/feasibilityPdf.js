@@ -8,6 +8,8 @@ import { LOGO_DENMA } from "../digerMusteriler/cocLogo";
 import {
   EVALUATION_QUESTIONS, EVALUATION_DEPARTMENTS, WORK_TYPES, DECISIONS,
   RECEIVED_DATA_TYPES, ITEM_CATEGORIES,
+  SALES_QUESTIONS, TECHNICAL_QUESTIONS,
+  computeStudyScore, getRecommendation, getNegotiationHints, scoreForAnswer,
 } from "./schema";
 import { FEASIBILITY_ROLES } from "./firestore";
 
@@ -26,6 +28,67 @@ function esc(s) {
   return String(s || "")
     .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
+// Bir soru bölümü için puan tablosu (Satış / Teknik). PDF'te iki kez çağrılır.
+function renderScoringSection(title, color, bg, questions, evalMap, sectionScore) {
+  return `
+    <div style="margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">
+        <div style="font-size:9px; font-weight:600; color:${color}; padding:3px 6px; background:${bg}; border-radius:3px; display:inline-block;">
+          ${esc(title)}
+        </div>
+        <div style="font-size:9px; color:#44403c;">
+          Toplam: <b>${sectionScore.score}/${sectionScore.max}</b> (${sectionScore.percent}%)
+        </div>
+      </div>
+      <table style="width:100%; border-collapse:collapse; font-size:9px;">
+        <thead>
+          <tr style="background:#f5f5f4; color:#44403c; text-align:left;">
+            <th style="padding:4px 6px; font-weight:600; font-size:8px; width:22px; text-align:center;">#</th>
+            <th style="padding:4px 6px; font-weight:600; font-size:8px;">Soru</th>
+            <th style="padding:4px 6px; font-weight:600; font-size:8px; width:60px; text-align:center;">Cevap</th>
+            <th style="padding:4px 6px; font-weight:600; font-size:8px; width:55px; text-align:right;">Puan</th>
+            <th style="padding:4px 6px; font-weight:600; font-size:8px;">Not</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${questions.map((q, i) => {
+            const v = evalMap[q.key] || {};
+            const ans = v.answer;
+            const points = scoreForAnswer(q, ans);
+            const isEmpty = ans == null || ans === "";
+            let ansDisplay = "—";
+            let ansBg = "#f5f5f4", ansColor = "#a8a29e";
+            if (!isEmpty) {
+              if (q.type === "slider") { ansDisplay = String(ans); ansBg = "#dbeafe"; ansColor = "#1e40af"; }
+              else {
+                const key = String(ans).toUpperCase();
+                if (key === "EVET") { ansDisplay = "EVET"; ansBg = "#dcfce7"; ansColor = "#166534"; }
+                else if (key === "HAYIR") { ansDisplay = "HAYIR"; ansBg = "#fee2e2"; ansColor = "#991b1b"; }
+                else if (key === "KISMEN") { ansDisplay = "KISMEN"; ansBg = "#fef3c7"; ansColor = "#92400e"; }
+              }
+            }
+            return `
+              <tr style="background:#fff; border-bottom:1px solid #f5f5f4;">
+                <td style="padding:4px 6px; text-align:center; color:#78716c;">${i + 1}</td>
+                <td style="padding:4px 6px; white-space:pre-wrap;">${esc(q.label)}</td>
+                <td style="padding:4px 6px; text-align:center;">
+                  <span style="display:inline-block; padding:1px 6px; border-radius:2px; font-weight:600; font-size:8px; background:${ansBg}; color:${ansColor};">
+                    ${esc(ansDisplay)}
+                  </span>
+                </td>
+                <td style="padding:4px 6px; text-align:right; font-family:'JetBrains Mono','Courier New',monospace; font-weight:600; color:${isEmpty ? '#a8a29e' : '#1c1917'};">
+                  ${isEmpty ? "—" : `${points}/${q.max}`}
+                </td>
+                <td style="padding:4px 6px; color:#57534e; font-style:italic;">${esc(v.note || "")}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    </div>
+  `;
 }
 
 function buildFeasibilityHtml(study) {
@@ -48,12 +111,10 @@ function buildFeasibilityHtml(study) {
     ? opsDetails.reduce((s, d) => s + (Number(d.minutes) || 0), 0)
     : (Number(study.operations?.totalMinutes) || 0);
 
-  // Değerlendirme — departman bazlı grupla
-  const questionsByDept = {};
-  for (const q of EVALUATION_QUESTIONS) {
-    if (!questionsByDept[q.dept]) questionsByDept[q.dept] = [];
-    questionsByDept[q.dept].push(q);
-  }
+  // Puanlama + öneri
+  const scoreInfo = computeStudyScore(study);
+  const recommendation = getRecommendation(scoreInfo.percent);
+  const negotiationHints = getNegotiationHints(study);
 
   return `
 <div id="feas-pdf-root" style="width:794px; padding:40px 50px; background:#fff; font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:#1c1917; box-sizing:border-box;">
@@ -229,48 +290,46 @@ function buildFeasibilityHtml(study) {
       </table>
     </div>` : ""}
 
-  <!-- DEĞERLENDİRME — Departman gruplu -->
+  <!-- DEĞERLENDİRME — Puanlı, iki bölüm -->
   <div style="margin-top:12px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
-    <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">✅ YAPILABİLİRLİK DEĞERLENDİRMESİ / FEASIBILITY EVALUATION</div>
-    ${EVALUATION_DEPARTMENTS.map(dept => {
-      const qs = questionsByDept[dept.key] || [];
-      if (qs.length === 0) return "";
-      return `
-        <div style="margin-bottom:10px;">
-          <div style="font-size:9px; font-weight:600; color:${dept.color}; padding:3px 6px; background:${dept.bg}; border-radius:3px; margin-bottom:4px; display:inline-block;">
-            ${dept.icon} ${esc(dept.label)}
-          </div>
-          <table style="width:100%; border-collapse:collapse; font-size:9px;">
-            <tbody>
-              ${qs.map(q => {
-                const v = evalMap[q.key] || {};
-                const yesChecked = v.answer === "yes";
-                const noChecked = v.answer === "no";
-                return `
-                  <tr style="background:#fff; border-bottom:1px solid #f5f5f4;">
-                    <td style="padding:4px 6px;">${esc(q.label)}</td>
-                    <td style="padding:4px 6px; text-align:center; width:60px;">
-                      <span style="display:inline-block; padding:1px 8px; border-radius:2px; font-weight:600; font-size:8px;
-                        background:${yesChecked ? "#dcfce7" : "#f5f5f4"}; color:${yesChecked ? "#166534" : "#a8a29e"};">
-                        ${yesChecked ? "✓ EVET" : "EVET"}
-                      </span>
-                    </td>
-                    <td style="padding:4px 6px; text-align:center; width:60px;">
-                      <span style="display:inline-block; padding:1px 8px; border-radius:2px; font-weight:600; font-size:8px;
-                        background:${noChecked ? "#fee2e2" : "#f5f5f4"}; color:${noChecked ? "#991b1b" : "#a8a29e"};">
-                        ${noChecked ? "✓ HAYIR" : "HAYIR"}
-                      </span>
-                    </td>
-                    <td style="padding:4px 6px; color:#57534e; font-style:italic;">${esc(v.note || "")}</td>
-                  </tr>
-                `;
-              }).join("")}
-            </tbody>
-          </table>
-        </div>
-      `;
-    }).join("")}
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+      <div style="font-size:9px; color:#78716c; font-weight:600;">✅ YAPILABİLİRLİK DEĞERLENDİRMESİ / FEASIBILITY SCORING</div>
+      <div style="font-size:14px; font-weight:800; color:${recommendation.color};">
+        ${scoreInfo.totalScore} / ${scoreInfo.totalMax}
+        <span style="font-size:10px; color:#78716c; font-weight:500;">(${scoreInfo.percent}%)</span>
+      </div>
+    </div>
+
+    <!-- Skor progress bar -->
+    <div style="height:8px; background:#e7e5e4; border-radius:4px; overflow:hidden; margin-bottom:8px;">
+      <div style="width:${scoreInfo.percent}%; height:100%; background:${recommendation.color};"></div>
+    </div>
+
+    <!-- Öneri kutucuğu -->
+    <div style="padding:8px 10px; background:${recommendation.bg}; border-left:3px solid ${recommendation.color}; border-radius:3px; margin-bottom:10px;">
+      <div style="font-size:10px; font-weight:700; color:${recommendation.color};">Sistem Önerisi: ${esc(recommendation.label)}</div>
+      <div style="font-size:9px; color:#57534e; margin-top:2px;">${esc(recommendation.description)}</div>
+      ${scoreInfo.percent < 50 ? `<div style="font-size:9px; color:#991b1b; margin-top:3px; font-weight:600;">⚠ Teklife dönüşüm için Genel Müdür imzası zorunlu.</div>` : ""}
+    </div>
+
+    <!-- Bölüm 1: Satış -->
+    ${renderScoringSection("💼 Satış ve Proje", "#1e40af", "#eff6ff", SALES_QUESTIONS, evalMap, scoreInfo.sales)}
+
+    <!-- Bölüm 2: Teknik -->
+    ${renderScoringSection("⚙️ Teknik", "#0f766e", "#f0fdfa", TECHNICAL_QUESTIONS, evalMap, scoreInfo.technical)}
   </div>
+
+  <!-- Müzakere ipuçları -->
+  ${(negotiationHints.length > 0 && scoreInfo.percent < 75) ? `
+    <div style="margin-top:10px; padding:10px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:6px;">
+      <div style="font-size:9px; color:#92400e; font-weight:600; margin-bottom:4px;">
+        💬 MÜZAKERE / İYİLEŞTİRME İPUÇLARI (${negotiationHints.length})
+      </div>
+      <ul style="margin:0; padding-left:16px; font-size:9px; color:#57534e; line-height:1.5;">
+        ${negotiationHints.map(h => `<li><span style="color:#44403c;">${esc(h.hint)}</span> <span style="color:#a8a29e;">(puan ${h.score}/${h.max})</span></li>`).join("")}
+      </ul>
+    </div>
+  ` : ""}
 
   <!-- KARAR + ÖNERİLER -->
   ${(decision || study.recommendations) ? `
