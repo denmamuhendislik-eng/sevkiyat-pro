@@ -331,18 +331,15 @@ function buildFeasibilityHtml(study) {
     </div>
   ` : ""}
 
-  <!-- KARAR + ÖNERİLER -->
-  ${(decision || study.recommendations) ? `
-    <div style="margin-top:12px; padding:12px 14px; background:${decision ? decision.bg : "#fafaf9"}; border-radius:6px; border:1px solid ${decision ? decision.color : "#e7e5e4"};">
-      <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">🎯 ALINAN KARAR / FINAL DECISION</div>
-      ${decision ? `<div style="font-size:14px; font-weight:700; color:${decision.color}; margin-bottom:6px;">${esc(decision.label)}</div>` : ""}
-      ${study.recommendations ? `<div style="font-size:10px; color:#1c1917; line-height:1.5;">${esc(study.recommendations)}</div>` : ""}
-    </div>` : ""}
-
-  <!-- İMZALAR (kompakt tek satır) -->
-  <div style="margin-top:10px; padding:6px 10px; background:#fafaf9; border:1px solid #e7e5e4; border-radius:4px;">
-    <div style="font-size:8px; color:#78716c; font-weight:600; margin-bottom:4px;">✍️ İMZALAR / SIGNATURES</div>
-    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px;">
+  <!-- KARAR + ÖNERİLER + İMZALAR (birleşik blok) -->
+  <div style="margin-top:12px; padding:12px 14px; background:${decision ? decision.bg : "#fafaf9"}; border-radius:6px; border:1px solid ${decision ? decision.color : "#e7e5e4"};">
+    <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
+      <div style="font-size:9px; color:#78716c; font-weight:600;">🎯 ALINAN KARAR / FINAL DECISION</div>
+      <div style="font-size:8px; color:#78716c; font-weight:600;">✍️ İMZALAR / SIGNATURES</div>
+    </div>
+    ${decision ? `<div style="font-size:14px; font-weight:700; color:${decision.color}; margin-bottom:6px;">${esc(decision.label)}</div>` : ""}
+    ${study.recommendations ? `<div style="font-size:10px; color:#1c1917; line-height:1.5; margin-bottom:8px;">${esc(study.recommendations)}</div>` : ""}
+    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:6px; margin-top:8px; padding-top:8px; border-top:1px dashed ${decision ? decision.color : "#e7e5e4"};">
       ${FEASIBILITY_ROLES.map(r => {
         const sig = signatures[r.key];
         const bg = sig ? "#f0fdf4" : "#fff";
