@@ -10,6 +10,7 @@ import html2canvas from "html2canvas";
 import DigerMusteriler, { MusteriDashboard } from "./modules/digerMusteriler";
 import Teklifler from "./modules/teklifler";
 import Yapilabilirlik from "./modules/yapilabilirlik";
+import { subscribeFeasibilityForYear, isUserPendingForStudy } from "./modules/yapilabilirlik/firestore";
 import Maliyet from "./modules/maliyet/Maliyet";
 import { parseBomExcel as parseBomExcelModule, isFasonOp, getDefaultWC } from "./shared/bomParser";
 import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
@@ -156,6 +157,7 @@ export default function App() {
   const [page, setPage] = useState("planning");
   const [pendingMrpTab, setPendingMrpTab] = useState(null);
   const [pendingQuoteFromFeasibility, setPendingQuoteFromFeasibility] = useState(null); // yapılabilirlik → teklif
+  const [feasibilityDoc, setFeasibilityDoc] = useState({ studies: {} }); // sidebar badge için
   const [selYear, setSelYear] = useState(2026);
   const [products, setProducts] = useState(PARSED.products);
   const [yearsData, setYearsData] = useState(PARSED.yearsData);
@@ -2406,6 +2408,19 @@ ${el.innerHTML}
   const canSeeTeklifler = isAdmin || isSales || isUretim;
   const canSeeYapilabilirlik = isAdmin || isSales || isUretim;
 
+  // Sidebar badge — yapılabilirlik: kullanıcıya düşen aksiyon sayısı (cari yıl)
+  useEffect(() => {
+    if (!canSeeYapilabilirlik) return;
+    const currentYear = String(new Date().getFullYear());
+    const u = subscribeFeasibilityForYear(currentYear, d => setFeasibilityDoc(d || { studies: {} }));
+    return u;
+  }, [canSeeYapilabilirlik]);
+  const yapilabilirlikBadge = useMemo(() => {
+    if (!canSeeYapilabilirlik) return 0;
+    const arr = Object.values(feasibilityDoc?.studies || {});
+    return arr.filter(s => isUserPendingForStudy(s, { isAdmin, isSales, isUretim })).length;
+  }, [feasibilityDoc, canSeeYapilabilirlik, isAdmin, isSales, isUretim]);
+
   const iS={width:"100%",padding:"8px 12px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"var(--color-background-secondary)",color:"var(--color-text-primary)",fontSize:13,outline:"none",boxSizing:"border-box"};
   const bP={padding:"8px 18px",borderRadius:8,border:"none",background:"#534AB7",color:"#fff",fontSize:13,fontWeight:500,cursor:"pointer"};
   const bS={padding:"8px 18px",borderRadius:8,border:"1px solid var(--color-border-secondary)",background:"transparent",color:"var(--color-text-primary)",fontSize:13,cursor:"pointer"};
@@ -2456,9 +2471,17 @@ ${el.innerHTML}
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
           }).map(n=>(
-            <div key={n.id} onClick={()=>setPage(n.id)} style={{display:"flex",alignItems:"center",gap:10,padding:sidebar?"9px 14px":"9px 14px",cursor:"pointer",background:page===n.id?"var(--color-background-info)":"transparent",fontSize:13,fontWeight:page===n.id?500:400,color:page===n.id?"var(--color-text-info)":"var(--color-text-secondary)",transition:"all 0.15s"}}>
-              <span style={{fontSize:15,flexShrink:0}}>{n.icon}</span>
-              {sidebar&&<span style={{whiteSpace:"nowrap"}}>{n.l}</span>}
+            <div key={n.id} onClick={()=>setPage(n.id)} style={{display:"flex",alignItems:"center",gap:10,padding:sidebar?"9px 14px":"9px 14px",cursor:"pointer",background:page===n.id?"var(--color-background-info)":"transparent",fontSize:13,fontWeight:page===n.id?500:400,color:page===n.id?"var(--color-text-info)":"var(--color-text-secondary)",transition:"all 0.15s",position:"relative"}}>
+              <span style={{fontSize:15,flexShrink:0,position:"relative"}}>
+                {n.icon}
+                {n.id==="yapilabilirlik"&&yapilabilirlikBadge>0&&!sidebar&&(
+                  <span style={{position:"absolute",top:-4,right:-6,minWidth:14,height:14,padding:"0 3px",borderRadius:7,background:"#dc2626",color:"#fff",fontSize:9,fontWeight:700,display:"flex",alignItems:"center",justifyContent:"center",lineHeight:1}}>{yapilabilirlikBadge>9?"9+":yapilabilirlikBadge}</span>
+                )}
+              </span>
+              {sidebar&&<span style={{whiteSpace:"nowrap",flex:1}}>{n.l}</span>}
+              {sidebar&&n.id==="yapilabilirlik"&&yapilabilirlikBadge>0&&(
+                <span style={{minWidth:18,height:16,padding:"0 5px",borderRadius:8,background:"#dc2626",color:"#fff",fontSize:10,fontWeight:700,display:"inline-flex",alignItems:"center",justifyContent:"center"}}>{yapilabilirlikBadge>9?"9+":yapilabilirlikBadge}</span>
+              )}
             </div>
           ))}
         </div>

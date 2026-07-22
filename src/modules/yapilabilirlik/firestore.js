@@ -189,8 +189,19 @@ export function getRequiredRoleKeys(study) {
     : ["salesManager", "technicalUnit"];
 }
 
+// Aşama bazlı durum akışı (2026-07-22):
+//   draft            → hiç kaydedilmedi
+//   salesPending     → satış imzası eksik
+//   technicalPending → satış tamam, teknik imzası eksik
+//   gmPending        → %<50 ve GM imzası eksik
+//   evaluating       → imzalar tamam ama karar yok (nadir)
+//   approved         → tüm gerekli imzalar + decision "accepted"
+//   rejected         → decision "rejected"
+//   convertedToQuote → approved + linkedQuoteNo
+// Sıra kısıtı gevşek: paralel imza atılabilir, sadece "sıradaki iş kimin?" bilgisi taşınır.
 export function computeStudyStatus(study) {
   if (!study) return "draft";
+  if (!study.createdAt && !study.updatedAt) return "draft";
   if (study.decision === "rejected") return "rejected";
   const sigs = study.signatures || {};
   const requiredKeys = getRequiredRoleKeys(study);
@@ -198,7 +209,30 @@ export function computeStudyStatus(study) {
   if (allSigned && study.decision === "accepted") {
     return study.linkedQuoteNo ? "convertedToQuote" : "approved";
   }
+  // Hangi aşamada beklediğini belirle — imza sırası: satış → teknik → gm
+  if (!sigs.salesManager?.signedAt) return "salesPending";
+  if (!sigs.technicalUnit?.signedAt) return "technicalPending";
+  if (requiredKeys.includes("generalManager") && !sigs.generalManager?.signedAt) return "gmPending";
   return "evaluating";
+}
+
+// Mevcut aşamada aksiyon alması beklenen rol key'i (bildirim + buton için)
+export function getPendingRoleForStudy(study) {
+  const status = computeStudyStatus(study);
+  if (status === "salesPending") return "salesManager";
+  if (status === "technicalPending") return "technicalUnit";
+  if (status === "gmPending") return "generalManager";
+  return null;
+}
+
+// Bir kullanıcının rolü mevcut aşamayla eşleşiyor mu? (buton görünürlüğü, badge sayısı)
+export function isUserPendingForStudy(study, { isAdmin, isSales, isUretim } = {}) {
+  const pending = getPendingRoleForStudy(study);
+  if (!pending) return false;
+  if (pending === "salesManager") return !!isSales || !!isAdmin;
+  if (pending === "technicalUnit") return !!isUretim || !!isAdmin;
+  if (pending === "generalManager") return !!isAdmin;
+  return false;
 }
 
 // Kaç imza atıldı — UI progress bar için. Zorunlu set puana göre.

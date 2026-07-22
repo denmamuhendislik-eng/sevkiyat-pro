@@ -3,6 +3,7 @@ import {
   subscribeFeasibilityForYear, suggestNextStudyNo, saveFeasibilityStudy,
   signFeasibilityRole, unsignFeasibilityRole, deleteFeasibilityStudy,
   FEASIBILITY_ROLES, GM_ROLE_KEY, computeStudyStatus, countSignatures,
+  getPendingRoleForStudy, isUserPendingForStudy,
 } from "./firestore";
 import {
   EVALUATION_QUESTIONS, EVALUATION_DEPARTMENTS, PRODUCT_DIMENSIONS,
@@ -65,7 +66,7 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, o
           onSaved={() => { setPendingOpen(null); setActiveTab("list"); }}
         />
       )}
-      {activeTab === "list" && <FeasibilityListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openStudy} onCreateQuote={onCreateQuoteFromFeasibility} />}
+      {activeTab === "list" && <FeasibilityListView canEdit={canEdit} isAdmin={isAdmin} isSales={isSales} isUretim={isUretim} onOpen={openStudy} onCreateQuote={onCreateQuoteFromFeasibility} />}
     </div>
   );
 }
@@ -405,6 +406,66 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
       setError(e.message || "Kaydetme hatası");
     } finally {
       setSaving(false);
+    }
+  };
+
+  // "Bölümümü Tamamla ve İmzala" — kullanıcı aşamasındaki rol için tek tıkla
+  // kaydeder + imza atar. Aşama sıradaki role otomatik geçer.
+  const [completing, setCompleting] = useState(false);
+  const currentPendingRole = getPendingRoleForStudy(study);
+  const isPendingOnMe = isUserPendingForStudy(study, { isAdmin, isSales, isUretim });
+  // Admin (GM) her rol için imzalayabilir; diğerleri sadece kendi rolüne karşılık gelen aşamada.
+  const myRoleKey = isAdmin ? currentPendingRole
+    : isSales ? "salesManager"
+    : isUretim ? "technicalUnit"
+    : null;
+  const canCompleteCurrent = !readonlyForm && canEdit && !!currentPendingRole && (
+    isAdmin || (isSales && currentPendingRole === "salesManager") || (isUretim && currentPendingRole === "technicalUnit")
+  );
+
+  const handleCompleteSection = async () => {
+    if (readonlyForm || !canEdit || !currentPendingRole) return;
+    if (!studyNo) { setError("Yapılabilirlik no boş"); return; }
+    if (!study.customerName) { setError("Müşteri adı zorunlu"); return; }
+    if (!study.partName && !study.partNo) { setError("Parça adı veya no zorunlu"); return; }
+    // Kullanıcının kendi rolünün soruları eksik mi uyar
+    if (currentPendingRole === "salesManager" && salesAnswered < SALES_QUESTIONS.length) {
+      if (!confirm(`Satış tarafında ${SALES_QUESTIONS.length - salesAnswered} soru cevapsız. Yine de tamamlanıp gönderilsin mi?`)) return;
+    }
+    if (currentPendingRole === "technicalUnit" && technicalAnswered < TECHNICAL_QUESTIONS.length) {
+      if (!confirm(`Teknik tarafta ${TECHNICAL_QUESTIONS.length - technicalAnswered} soru cevapsız. Yine de tamamlanıp gönderilsin mi?`)) return;
+    }
+    setCompleting(true); setError("");
+    try {
+      // 1) Kaydet
+      const payload = { ...study, studyNo };
+      await saveFeasibilityStudy(payload, { canEdit, staging, userEmail: "" });
+      // 2) İmza at
+      await signFeasibilityRole(studyNo, currentPendingRole, {
+        signerName: userEmail || userDisplayRole,
+        signerRoleLabel: userDisplayRole,
+        isGeneralManager: isAdmin,
+        canEdit, staging,
+      });
+      // 3) Local state'e imza kaydını da işle → status derhal ilerlesin
+      const now = new Date().toISOString();
+      setStudy(prev => ({
+        ...prev,
+        signatures: {
+          ...(prev.signatures || {}),
+          [currentPendingRole]: {
+            signedAt: now,
+            signedBy: userEmail || userDisplayRole,
+            signedForRole: currentPendingRole,
+            actualRole: userDisplayRole,
+          },
+        },
+      }));
+      setSaveResult({ ok: true, message: `Bölümünüz tamamlandı, imza atıldı — sıradaki aşamaya geçildi.` });
+    } catch (e) {
+      setError(e.message || "Tamamlama hatası");
+    } finally {
+      setCompleting(false);
     }
   };
 
@@ -1168,9 +1229,16 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
           📄 PDF Önizle
         </button>
         {!readonlyForm && (
-          <button onClick={handleSave} disabled={saving || !canEdit}
-            style={{ padding: "8px 20px", fontSize: 13, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: saving ? "wait" : (canEdit ? "pointer" : "not-allowed"), fontWeight: 500 }}>
-            {saving ? "Kaydediliyor..." : "💾 Kaydet"}
+          <button onClick={handleSave} disabled={saving || completing || !canEdit}
+            style={{ padding: "8px 20px", fontSize: 13, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: (saving || completing) ? "wait" : (canEdit ? "pointer" : "not-allowed"), fontWeight: 500 }}>
+            {saving ? "Kaydediliyor..." : "💾 Ara Taslak Kaydet"}
+          </button>
+        )}
+        {!readonlyForm && canCompleteCurrent && (
+          <button onClick={handleCompleteSection} disabled={completing || saving}
+            title={`${currentPendingRole === "salesManager" ? "Satış" : currentPendingRole === "technicalUnit" ? "Teknik" : "GM"} bölümünü tamamla ve imzala`}
+            style={{ padding: "8px 20px", fontSize: 13, background: "#16a34a", color: "#fff", border: "none", borderRadius: 4, cursor: completing ? "wait" : "pointer", fontWeight: 600 }}>
+            {completing ? "Gönderiliyor..." : "✅ Bölümümü Tamamla ve İmzala"}
           </button>
         )}
       </div>
@@ -1373,7 +1441,7 @@ function EvaluationPanel({ title, color, bg, questions, sectionScore, evaluation
 
 // ==================== Liste ====================
 
-function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
+function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCreateQuote }) {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
   const [staging, setStaging] = useState(false);
@@ -1382,6 +1450,7 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
   const [deleting, setDeleting] = useState({});
   // Toplu teklif dönüştürme için seçim state'i (Faz F4)
   const [selectedIds, setSelectedIds] = useState(new Set());
+  const [onlyMine, setOnlyMine] = useState(false);
 
   useEffect(() => {
     const unsub = subscribeFeasibilityForYear(year, setData, { staging });
@@ -1391,14 +1460,23 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
   const studies = useMemo(() => {
     const arr = Object.values(data?.studies || {});
     const q = search.trim().toLocaleLowerCase("tr-TR");
-    const f = q ? arr.filter(s =>
+    let f = q ? arr.filter(s =>
       (s.customerName || "").toLocaleLowerCase("tr-TR").includes(q) ||
       (s.partName || "").toLocaleLowerCase("tr-TR").includes(q) ||
       (s.partNo || "").toLocaleLowerCase("tr-TR").includes(q) ||
       (s.studyNo || "").includes(q)
     ) : arr;
+    if (onlyMine) {
+      f = f.filter(s => isUserPendingForStudy(s, { isAdmin, isSales, isUretim }));
+    }
     return f.sort((a, b) => (b.studyNo || "").localeCompare(a.studyNo || ""));
-  }, [data, search]);
+  }, [data, search, onlyMine, isAdmin, isSales, isUretim]);
+
+  // "Sizden Bekleyen" toplamı — badge için filtrelenmemiş listede sayı
+  const myPendingCount = useMemo(() => {
+    const arr = Object.values(data?.studies || {});
+    return arr.filter(s => isUserPendingForStudy(s, { isAdmin, isSales, isUretim })).length;
+  }, [data, isAdmin, isSales, isUretim]);
 
   // Seçili studies (approved + henüz teklife dönmemiş olmalı — teklif dönüştürme için)
   const selectedStudies = useMemo(() => {
@@ -1459,6 +1537,17 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
         <label style={{ fontSize: 11 }}>
           <input type="checkbox" checked={staging} onChange={e => setStaging(e.target.checked)} /> Staging
         </label>
+        <button onClick={() => setOnlyMine(v => !v)}
+          title="Sadece sizden aksiyon bekleyen yapılabilirlikleri göster"
+          style={{
+            padding: "5px 10px", fontSize: 11, fontWeight: 600, borderRadius: 4,
+            border: `1px solid ${onlyMine ? "#991b1b" : "#d6d3d1"}`,
+            background: onlyMine ? "#fef2f2" : "#fff",
+            color: onlyMine ? "#991b1b" : "#57534e",
+            cursor: "pointer",
+          }}>
+          🔔 Sizden Bekleyen{myPendingCount > 0 && ` (${myPendingCount})`}
+        </button>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔎 no / müşteri / parça"
           style={{ flex: 1, minWidth: 200, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }} />
         <span style={{ fontSize: 11, color: "#78716c" }}>{studies.length} kayıt</span>
@@ -1521,7 +1610,10 @@ function FeasibilityListView({ canEdit, isAdmin, onOpen, onCreateQuote }) {
                 const badge = status === "approved" ? { bg: "#dcfce7", fg: "#166534", l: "✅ Onaylı" }
                   : status === "rejected" ? { bg: "#fee2e2", fg: "#991b1b", l: "❌ Reddedildi" }
                   : status === "convertedToQuote" ? { bg: "#dbeafe", fg: "#1e40af", l: "💼 Teklife Dönüştü" }
-                  : status === "evaluating" ? { bg: "#fef3c7", fg: "#92400e", l: "⏳ Değerlendirmede" }
+                  : status === "salesPending" ? { bg: "#eff6ff", fg: "#1e40af", l: "💼 Satışta" }
+                  : status === "technicalPending" ? { bg: "#f0fdfa", fg: "#0f766e", l: "⚙️ Teknikte" }
+                  : status === "gmPending" ? { bg: "#fef2f2", fg: "#991b1b", l: "⭐ GM Onayı" }
+                  : status === "evaluating" ? { bg: "#fef3c7", fg: "#92400e", l: "⏳ Karar Bekliyor" }
                   : { bg: "#f5f5f4", fg: "#57534e", l: "📝 Taslak" };
                 const isSelectable = status === "approved";
                 const isSelected = selectedIds.has(s.studyNo);
