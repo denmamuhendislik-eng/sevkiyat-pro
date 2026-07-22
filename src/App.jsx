@@ -267,9 +267,9 @@ export default function App() {
     }
   }, [userRole, page]);
 
-  // Satış rolü: izinli sayfalar dışına çıkarsa planning'e yönlendir (import & montaj hariç, packing dahil)
+  // Satış rolü: izinli sayfalar dışına çıkarsa planning'e yönlendir
   useEffect(() => {
-    if (userRole === "satis" && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "packing"].includes(page)) {
+    if (userRole === "satis" && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard", "teklifler", "yapilabilirlik", "packing"].includes(page)) {
       setPage("planning");
     }
   }, [userRole, page]);
