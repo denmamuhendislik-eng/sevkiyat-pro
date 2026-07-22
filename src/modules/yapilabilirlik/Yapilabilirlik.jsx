@@ -316,12 +316,18 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
   const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
 
+  // Kilit mekanizması — status hesaplanıp readonlyForm türetilir. Bu satırlar
+  // aşağıdaki useMemo'lardan ÖNCE olmalı (canEditSales/canEditTechnical readonlyForm'a bağımlı).
+  const status = computeStudyStatus(study);
+  const isLocked = status === "approved" || status === "convertedToQuote";
+  const readonlyForm = explicitReadOnly || isLocked;
+
   // Puanlama (canlı) — schema.js/computeStudyScore
   const scoreInfo = useMemo(() => computeStudyScore(study), [study]);
   const recommendation = useMemo(() => getRecommendation(scoreInfo.percent), [scoreInfo.percent]);
   const negotiationHints = useMemo(() => getNegotiationHints(study), [study]);
 
-  // Rol bazlı bölüm kilidi (readonly form değilse)
+  // Rol bazlı bölüm kilidi
   // Admin (GM) her iki bölümü de düzenleyebilir; sales sadece satış, uretim sadece teknik.
   const canEditSales = !readonlyForm && (isAdmin || isSales);
   const canEditTechnical = !readonlyForm && (isAdmin || isUretim);
@@ -455,12 +461,8 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
     }
   };
 
-  const status = computeStudyStatus(study);
   const sigCount = countSignatures(study);
-  // Kilit mekanizması (Y-4): approved veya converted olan yapılabilirlik form alanları readOnly.
-  // İmza kartları hâlâ tıklanabilir (iptal edilebilir) — kilit sadece form alanlarına.
-  const isLocked = status === "approved" || status === "convertedToQuote";
-  const readonlyForm = explicitReadOnly || isLocked;
+  // status + readonlyForm tanımları yukarıda (scoreInfo useMemo'larından önce) yapıldı.
 
   const cardStyle = { padding: 14, border: "1px solid #e7e5e4", borderRadius: 6, background: "#fff", marginBottom: 12 };
   const labelStyle = { display: "block", fontSize: 11, color: "#57534e", marginBottom: 3, fontWeight: 500 };
