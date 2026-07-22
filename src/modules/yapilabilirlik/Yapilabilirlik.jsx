@@ -1717,7 +1717,7 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
                   : status === "salesPending" ? { bg: "#eff6ff", fg: "#1e40af", l: "💼 Satışta" }
                   : status === "technicalPending" ? { bg: "#f0fdfa", fg: "#0f766e", l: "⚙️ Teknikte" }
                   : status === "gmPending" ? { bg: "#fef2f2", fg: "#991b1b", l: "⭐ GM Onayı" }
-                  : status === "evaluating" ? { bg: "#fef3c7", fg: "#92400e", l: "⏳ Karar Bekliyor" }
+                  : status === "evaluating" ? { bg: "#eff6ff", fg: "#1e40af", l: "💼 Karar Bekliyor (Satış)" }
                   : { bg: "#f5f5f4", fg: "#57534e", l: "📝 Taslak" };
                 const isSelectable = status === "approved";
                 const isSelected = selectedIds.has(s.studyNo);
