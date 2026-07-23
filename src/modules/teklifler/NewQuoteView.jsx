@@ -95,6 +95,8 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     setTerm(initialQuote.term || "");
     setNotes(initialQuote.notes || "");
     setLines(normalizeIncomingLines(initialQuote.lines));
+    // Note: machineRatesData henüz async yüklenmemiş olabilir; alt useEffect
+    // ratesByName geldiğinde eksik ratePerMin'leri auto-fill eder.
     setStatus(initialQuote.status || "draft");
     setRevNo(Number(initialQuote.revNo) || 0);
     setBaseQuoteNo(initialQuote.baseQuoteNo || initialQuote.quoteNo || "");
@@ -107,6 +109,30 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         : (initialQuote.feasibilityNo ? [initialQuote.feasibilityNo] : [])
     );
   }, [initialQuote]);
+
+  // Tezgah ratePerMin auto-fill — machineRatesData async geldiği için initialQuote
+  // load'undan sonra çalışır. Yapılabilirlikten dönüşen tekliflerde ratePerMin=0
+  // olarak gelen tezgahlar isim eşleşmesiyle otomatik doldurulur.
+  useEffect(() => {
+    const rates = machineRatesData?.ratesByName;
+    if (!rates || Object.keys(rates).length === 0) return;
+    setLines(prev => {
+      let changed = false;
+      const next = prev.map(line => {
+        const machines = (line.machines || []).map(m => {
+          if (!m.name) return m;
+          const current = Number(m.ratePerMin) || 0;
+          if (current > 0) return m;
+          const auto = rates[m.name];
+          if (auto == null || auto <= 0) return m;
+          changed = true;
+          return { ...m, ratePerMin: auto };
+        });
+        return { ...line, machines };
+      });
+      return changed ? next : prev;
+    });
+  }, [machineRatesData?.ratesByName]);
 
   // Kur kaynağı: TCMB (currencyRates cron doc) → fallback quoteMaterials.currencyRateUsd.
   // Kur bilgisini toolbar'da göstermek için ayrı hesap
@@ -826,9 +852,19 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
               </div>
             )}
           </div>
-          <div><label style={miniLabel}>EN (mm)</label><input type="number" value={line.dimensions?.en || 0} onChange={e => updateDim(idx, "en", e.target.value)} style={miniInput} /></div>
-          <div><label style={miniLabel}>BOY (mm)</label><input type="number" value={line.dimensions?.boy || 0} onChange={e => updateDim(idx, "boy", e.target.value)} style={miniInput} /></div>
-          <div><label style={miniLabel}>UZUNLUK (mm)</label><input type="number" value={line.dimensions?.uzunluk || 0} onChange={e => updateDim(idx, "uzunluk", e.target.value)} style={miniInput} /></div>
+          {(() => {
+            const shapeUp = String(selectedMat?.shape || "").toUpperCase();
+            const isCylinder = shapeUp === "SİLİNDİR";
+            return (
+              <>
+                <div><label style={miniLabel}>{isCylinder ? "Ø ÇAP (mm)" : "EN (mm)"}</label><input type="number" value={line.dimensions?.en || 0} onChange={e => updateDim(idx, "en", e.target.value)} style={miniInput} /></div>
+                {!isCylinder && (
+                  <div><label style={miniLabel}>BOY (mm)</label><input type="number" value={line.dimensions?.boy || 0} onChange={e => updateDim(idx, "boy", e.target.value)} style={miniInput} /></div>
+                )}
+                <div><label style={miniLabel}>{isCylinder ? "BOY (mm)" : "UZUNLUK (mm)"}</label><input type="number" value={line.dimensions?.uzunluk || 0} onChange={e => updateDim(idx, "uzunluk", e.target.value)} style={miniInput} /></div>
+              </>
+            );
+          })()}
           <div><label style={miniLabel}>Ağırlık kg</label>
             <div style={{ padding: "6px 4px", fontSize: 11, background: "#f5f5f4", borderRadius: 3, textAlign: "right", fontWeight: 500 }}>
               {calcResult?.weightKg?.toFixed(3) || 0}

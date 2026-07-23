@@ -916,18 +916,28 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
               <option value="EBATSIZ">EBATSIZ</option>
             </select>
           </div>
-          <div>
-            <label style={labelStyle}>EN (mm)</label>
-            <input type="number" value={study.dimensions?.en || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), en: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>BOY (mm)</label>
-            <input type="number" value={study.dimensions?.boy || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), boy: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
-          </div>
-          <div>
-            <label style={labelStyle}>UZUNLUK (mm)</label>
-            <input type="number" value={study.dimensions?.uzunluk || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), uzunluk: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
-          </div>
+          {(() => {
+            const shapeUp = String(study.materialShape || selectedMaterialMaster?.shape || "").toUpperCase();
+            const isCylinder = shapeUp === "SİLİNDİR";
+            return (
+              <>
+                <div>
+                  <label style={labelStyle}>{isCylinder ? "Ø ÇAP (mm)" : "EN (mm)"}</label>
+                  <input type="number" value={study.dimensions?.en || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), en: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+                </div>
+                {!isCylinder && (
+                  <div>
+                    <label style={labelStyle}>BOY (mm)</label>
+                    <input type="number" value={study.dimensions?.boy || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), boy: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+                  </div>
+                )}
+                <div>
+                  <label style={labelStyle}>{isCylinder ? "BOY (mm)" : "UZUNLUK (mm)"}</label>
+                  <input type="number" value={study.dimensions?.uzunluk || 0} onChange={e => update("dimensions", { ...(study.dimensions || {}), uzunluk: Number(e.target.value) || 0 })} disabled={readonlyForm} style={inputStyle} />
+                </div>
+              </>
+            );
+          })()}
           <div>
             <label style={labelStyle}>Ağırlık kg <span style={{ fontSize: 9, color: "#78716c" }}>(auto)</span></label>
             <input type="number" step="0.001"
@@ -946,8 +956,10 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 3fr", gap: 8, marginTop: 8 }}>
           <div>
-            <label style={labelStyle}>Sipariş Miktarı</label>
-            <input type="number" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm} style={inputStyle} />
+            <label style={{ ...labelStyle, color: "#1e40af", fontWeight: 600 }}>📦 Sipariş Miktarı (Adet)</label>
+            <input type="number" min="1" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm}
+              style={{ ...inputStyle, borderColor: "#bfdbfe", background: "#eff6ff", fontWeight: 600 }} />
+            <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Teklife bu adet olarak aktarılır.</div>
           </div>
           <div>
             <label style={labelStyle}>Malzeme Notu (eski alan)</label>
