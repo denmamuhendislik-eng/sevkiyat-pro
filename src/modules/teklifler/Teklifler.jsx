@@ -511,9 +511,26 @@ const STATUS_META = {
 function StatusBadge({ status, onChange, open, setOpen }) {
   const meta = STATUS_META[status] || STATUS_META.draft;
   const canChange = !!onChange;
+  const btnRef = useRef(null);
+  const [menuPos, setMenuPos] = useState(null);
+  const MENU_HEIGHT = 4 * 30 + 4; // 4 seçenek × yaklaşık yükseklik
+  const MENU_WIDTH = 140;
+
+  useEffect(() => {
+    if (!open || !btnRef.current) { setMenuPos(null); return; }
+    const rect = btnRef.current.getBoundingClientRect();
+    const spaceBelow = window.innerHeight - rect.bottom;
+    const openUp = spaceBelow < MENU_HEIGHT + 10;
+    setMenuPos({
+      top: openUp ? rect.top - MENU_HEIGHT - 2 : rect.bottom + 2,
+      left: Math.min(rect.left, window.innerWidth - MENU_WIDTH - 8),
+    });
+  }, [open]);
+
   return (
-    <span style={{ position: "relative", display: "inline-block" }}>
+    <span style={{ display: "inline-block" }}>
       <button
+        ref={btnRef}
         onClick={(e) => { e.stopPropagation(); if (canChange) setOpen(!open); }}
         disabled={!canChange}
         title={canChange ? "Durumu değiştir" : ""}
@@ -524,12 +541,15 @@ function StatusBadge({ status, onChange, open, setOpen }) {
         }}>
         {meta.l}{canChange && " ▾"}
       </button>
-      {open && canChange && (
+      {open && canChange && menuPos && (
         <>
           <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
-          <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 2, background: "#fff",
-            border: "1px solid #e7e5e4", borderRadius: 4, boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
-            zIndex: 51, minWidth: 130, overflow: "hidden" }}>
+          <div style={{
+            position: "fixed", top: menuPos.top, left: menuPos.left,
+            width: MENU_WIDTH, background: "#fff",
+            border: "1px solid #e7e5e4", borderRadius: 4, boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+            zIndex: 51, overflow: "hidden",
+          }}>
             {Object.entries(STATUS_META).map(([k, m]) => (
               <button key={k}
                 onClick={(e) => { e.stopPropagation(); onChange(k); }}
