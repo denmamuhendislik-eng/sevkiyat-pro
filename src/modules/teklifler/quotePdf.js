@@ -46,6 +46,25 @@ function esc(s) {
     .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
 }
 
+// Eski tekliflerde notes'a otomatik "Yapılabilirlik ...ten oluşturuldu" satırları
+// yazılmıştı — PDF'te göstermemek için satır bazında süz. Firestore'daki veri kalır.
+function cleanNotesForPdf(notes) {
+  if (!notes) return "";
+  const skipPatterns = [
+    /^Yapılabilirlik\s*\(/i,                      // "Yapılabilirlik (DF-...) önerileri: ..."
+    /^Yapılabilirlik\s+DF-/i,                     // "Yapılabilirlik DF-...'ten oluşturuldu"
+    /^\d+\s+yapılabilirlikten\s+oluşturuldu/i,    // "3 yapılabilirlikten oluşturuldu:"
+    /^DF-\d+\s*:/i,                                // "DF-26072201: ..."
+    /^DF-\d+\s*$/i,                                // "DF-26072201"
+  ];
+  const kept = notes.split("\n").filter(l => {
+    const t = l.trim();
+    if (!t) return true;
+    return !skipPatterns.some(rx => rx.test(t));
+  });
+  return kept.join("\n").trim();
+}
+
 /**
  * HTML template oluştur — quote + calc verisi ile.
  * quote: kaydedilen teklif objesi (customerName, quoteNo, quoteDate, lines, paymentTerm, shipping, term, currency vb.)
@@ -249,12 +268,15 @@ function buildQuoteHtml(quote, calc) {
     </div>
   </div>
 
-  ${quote.notes ? `
-    <div style="margin-top:18px;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;">
-      <div style="font-size:9px;color:#92400e;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Notlar / Notes</div>
-      <div style="font-size:10px;color:#1c1917;line-height:1.5;white-space:pre-wrap;">${esc(quote.notes)}</div>
-    </div>
-  ` : ""}
+  ${(() => {
+    const cleanNotes = cleanNotesForPdf(quote.notes);
+    return cleanNotes ? `
+      <div style="margin-top:18px;padding:10px 14px;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;">
+        <div style="font-size:9px;color:#92400e;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;margin-bottom:4px;">Notlar / Notes</div>
+        <div style="font-size:10px;color:#1c1917;line-height:1.5;white-space:pre-wrap;">${esc(cleanNotes)}</div>
+      </div>
+    ` : "";
+  })()}
 
   <!-- ŞARTLAR -->
   <div style="margin-top:20px;padding:12px 14px;background:#f9fafb;border-radius:6px;border-left:3px solid #1e40af;">

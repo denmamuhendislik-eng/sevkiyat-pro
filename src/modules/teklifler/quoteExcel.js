@@ -26,6 +26,25 @@ function fmtTerm(t) {
   return s;
 }
 
+// Eski tekliflerde notes'a otomatik yazılmış "Yapılabilirlik ...ten oluşturuldu"
+// satırlarını süz — Excel çıktıda görünmesin.
+function cleanNotesForExport(notes) {
+  if (!notes) return "";
+  const skipPatterns = [
+    /^Yapılabilirlik\s*\(/i,
+    /^Yapılabilirlik\s+DF-/i,
+    /^\d+\s+yapılabilirlikten\s+oluşturuldu/i,
+    /^DF-\d+\s*:/i,
+    /^DF-\d+\s*$/i,
+  ];
+  const kept = notes.split("\n").filter(l => {
+    const t = l.trim();
+    if (!t) return true;
+    return !skipPatterns.some(rx => rx.test(t));
+  });
+  return kept.join("\n").trim();
+}
+
 export function generateQuoteExcel(quote, calc) {
   const currency = quote.currency || "TL";
   const symbol = CURRENCY_SYMBOL[currency] || currency;
@@ -100,10 +119,11 @@ export function generateQuoteExcel(quote, calc) {
   }
   rows.push(["", "", "", "", "", "", `TOPLAM (${symbol})`, Number(show(grandTotal).toFixed(2))]);
 
-  // Notlar
-  if (quote.notes && quote.notes.trim()) {
+  // Notlar — otomatik "Yapılabilirlikten oluşturuldu" satırlarını süz (eski tekliflerdeki artık)
+  const cleanNotes = cleanNotesForExport(quote.notes);
+  if (cleanNotes) {
     rows.push([]);
-    rows.push(["Notlar", quote.notes]);
+    rows.push(["Notlar", cleanNotes]);
   }
 
   // Worksheet oluştur
