@@ -27,8 +27,32 @@ function median(arr) {
 
 const isArchive = (q) => q?.source === "excel-archive-import";
 
-export function computeQuoteStats(quotes) {
-  const list = Array.isArray(quotes) ? quotes.filter(q => q?.quoteNo) : [];
+// Arşiv tekliflerinde totalPriceTl aslında teklifin döviz cinsinde tutar
+// (yanlış adlandırılmış). Sistem içi tekliflerde ise gerçekten TL karşılığı.
+// KPI'da doğru toplam için arşiv tekliflerini güncel TCMB kuruyla TL'ye normalize et.
+function normalizeQuoteToTl(quote, rates) {
+  if (!isArchive(quote)) return quote; // sistem içi zaten TL
+  const cur = String(quote.currency || "TL").toUpperCase();
+  let rate = 1;
+  if (cur === "DOLAR" || cur === "USD") rate = Number(rates?.usd) || 1;
+  else if (cur === "EURO" || cur === "EUR") rate = Number(rates?.eur) || 1;
+  if (rate === 1) return quote;
+  return {
+    ...quote,
+    totalPriceTl: (Number(quote.totalPriceTl) || 0) * rate,
+    lines: (quote.lines || []).map(l => ({
+      ...l,
+      linePrice: (Number(l.linePrice) || 0) * rate,
+    })),
+    _normalizedRate: rate, // debug
+    _originalCurrency: cur,
+  };
+}
+
+export function computeQuoteStats(quotes, rates = null) {
+  const rawList = Array.isArray(quotes) ? quotes.filter(q => q?.quoteNo) : [];
+  // Tüm teklifler TL bazına normalize edilir (arşiv döviz → güncel kur ile TL)
+  const list = rawList.map(q => normalizeQuoteToTl(q, rates));
 
   // Revizyon zincirlerini grupla — her (baseNo + müşteri) tek teklif sayılır
   const groups = new Map();

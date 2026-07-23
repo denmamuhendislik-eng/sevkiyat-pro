@@ -12,6 +12,8 @@ import NewQuoteView from "./NewQuoteView";
 import { generateQuotePdf } from "./quotePdf";
 import { generateQuoteExcel } from "./quoteExcel";
 import { computeQuoteStats } from "./quoteStats";
+import { subscribeCurrencyRates } from "../maliyet/firestore";
+import { getLatestRates } from "../maliyet/currency";
 import { calculateQuoteTotal } from "./quoteCalc";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
@@ -1622,14 +1624,22 @@ function QuoteKpiView() {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
   const [data, setData] = useState({ quotes: {} });
+  const [currencyRatesDoc, setCurrencyRatesDoc] = useState({});
 
   useEffect(() => {
     const unsub = subscribeQuotesForYear(year, setData, { staging: false });
     return unsub;
   }, [year]);
 
+  useEffect(() => {
+    const unsub = subscribeCurrencyRates(d => setCurrencyRatesDoc(d || {}));
+    return unsub;
+  }, []);
+
+  const latestRates = useMemo(() => getLatestRates(currencyRatesDoc), [currencyRatesDoc]);
+
   const quotes = useMemo(() => Object.values(data?.quotes || {}), [data]);
-  const stats = useMemo(() => computeQuoteStats(quotes), [quotes]);
+  const stats = useMemo(() => computeQuoteStats(quotes, latestRates), [quotes, latestRates]);
 
   const fmtTl = (n) => n == null || !Number.isFinite(n) ? "—" : `${Number(n).toLocaleString("tr-TR", { maximumFractionDigits: 0 })} ₺`;
   const fmtDay = (d) => d == null ? "—" : `${d.toFixed(1)} gün`;
@@ -1800,7 +1810,9 @@ function QuoteKpiView() {
 
           <div style={{ fontSize: 10, color: "#a8a29e", textAlign: "center", padding: 10 }}>
             Ciro/adet/müşteri sıralaması tüm teklifleri (arşiv dahil) kapsar. Dönüşüm oranı ve teklif→sipariş süresi yalnızca sistem içi tekliflerden.
-            Tutarlar TL bazında (kaydedilen totalPriceTl).
+            {latestRates && (
+              <span> Arşivdeki döviz teklifleri güncel TCMB kuruyla TL'ye normalize edildi (1$={latestRates.usd?.toFixed(2)} · 1€={latestRates.eur?.toFixed(2)} · {latestRates.date}).</span>
+            )}
           </div>
         </>
       )}
