@@ -2033,6 +2033,7 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
   // Toplu teklif dönüştürme için seçim state'i (Faz F4)
   const [selectedIds, setSelectedIds] = useState(new Set());
   const [onlyMine, setOnlyMine] = useState(false);
+  const [statusFilter, setStatusFilter] = useState(""); // "" = tümü
 
   useEffect(() => {
     const unsub = subscribeFeasibilityForYear(year, setData, { staging });
@@ -2051,8 +2052,11 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
     if (onlyMine) {
       f = f.filter(s => isUserPendingForStudy(s, { isAdmin, isSales, isUretim }));
     }
+    if (statusFilter) {
+      f = f.filter(s => computeStudyStatus(s) === statusFilter);
+    }
     return f.sort((a, b) => (b.studyNo || "").localeCompare(a.studyNo || ""));
-  }, [data, search, onlyMine, isAdmin, isSales, isUretim]);
+  }, [data, search, onlyMine, statusFilter, isAdmin, isSales, isUretim]);
 
   // "Sizden Bekleyen" toplamı — badge için filtrelenmemiş listede sayı
   const myPendingCount = useMemo(() => {
@@ -2078,6 +2082,26 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
   };
 
   const clearSelection = () => setSelectedIds(new Set());
+
+  // Header checkbox — geçerli görünümdeki onaylı yapılabilirlikleri toplu seç/kaldır.
+  // Farklı müşteri karışırsa aşağıdaki toolbar zaten uyarı verir.
+  const approvedInView = useMemo(
+    () => studies.filter(s => computeStudyStatus(s) === "approved"),
+    [studies]
+  );
+  const allApprovedSelected = approvedInView.length > 0 && approvedInView.every(s => selectedIds.has(s.studyNo));
+  const someApprovedSelected = approvedInView.some(s => selectedIds.has(s.studyNo));
+  const toggleSelectAllApproved = () => {
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (allApprovedSelected) {
+        approvedInView.forEach(s => next.delete(s.studyNo));
+      } else {
+        approvedInView.forEach(s => next.add(s.studyNo));
+      }
+      return next;
+    });
+  };
 
   const handleBulkQuote = () => {
     if (selectedStudies.length === 0) {
@@ -2130,6 +2154,19 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
           }}>
           🔔 Sizden Bekleyen{myPendingCount > 0 && ` (${myPendingCount})`}
         </button>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          title="Duruma göre filtrele"
+          style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, background: statusFilter ? "#eff6ff" : "#fff", fontWeight: statusFilter ? 600 : 400 }}>
+          <option value="">Tüm Durumlar</option>
+          <option value="draft">📝 Taslak</option>
+          <option value="salesPending">💼 Satışta</option>
+          <option value="technicalPending">⚙️ Teknikte</option>
+          <option value="evaluating">💼 Karar Bekliyor (Satış)</option>
+          <option value="gmPending">⭐ GM Onayı</option>
+          <option value="approved">✅ Onaylı</option>
+          <option value="rejected">❌ Reddedildi</option>
+          <option value="convertedToQuote">💼 Teklife Dönüştü</option>
+        </select>
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="🔎 no / müşteri / parça"
           style={{ flex: 1, minWidth: 200, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }} />
         <span style={{ fontSize: 11, color: "#78716c" }}>{studies.length} kayıt</span>
@@ -2176,7 +2213,13 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
             <thead>
               <tr style={{ background: "#f5f5f4", fontSize: 10, color: "#57534e", textAlign: "left" }}>
-                <th style={{ padding: "8px 10px", width: 26, textAlign: "center" }} title="Onaylı olanları seç"></th>
+                <th style={{ padding: "8px 10px", width: 26, textAlign: "center" }} title={approvedInView.length > 0 ? `Görünümdeki ${approvedInView.length} onaylı yapılabilirliği seç/kaldır` : "Onaylı yapılabilirlik yok"}>
+                  <input type="checkbox"
+                    disabled={approvedInView.length === 0}
+                    checked={allApprovedSelected}
+                    ref={el => { if (el) el.indeterminate = !allApprovedSelected && someApprovedSelected; }}
+                    onChange={toggleSelectAllApproved} />
+                </th>
                 <th style={{ padding: "8px 10px" }}>Yapılabilirlik No</th>
                 <th style={{ padding: "8px 10px" }}>Müşteri</th>
                 <th style={{ padding: "8px 10px" }}>Parça</th>
