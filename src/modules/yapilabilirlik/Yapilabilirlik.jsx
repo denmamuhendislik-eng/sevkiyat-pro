@@ -2090,6 +2090,7 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
                 <th style={{ padding: "8px 10px" }}>Yapılabilirlik No</th>
                 <th style={{ padding: "8px 10px" }}>Müşteri</th>
                 <th style={{ padding: "8px 10px" }}>Parça</th>
+                <th style={{ padding: "8px 10px", width: 90, textAlign: "center" }}>Puan</th>
                 <th style={{ padding: "8px 10px" }}>Durum</th>
                 <th style={{ padding: "8px 10px" }}>İmza</th>
                 <th style={{ padding: "8px 10px" }}>İşlem</th>
@@ -2109,8 +2110,14 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
                   : { bg: "#f5f5f4", fg: "#57534e", l: "📝 Taslak" };
                 const isSelectable = status === "approved";
                 const isSelected = selectedIds.has(s.studyNo);
+                const scoreInfo = computeStudyScore(s);
+                const recommendation = getRecommendation(scoreInfo.percent);
+                // Satır arka planı puan rengiyle — sadece satış aşamasında değilse (form
+                // daha yeni doldurulmaya başlandığı için puan yanıltıcı olabilir).
+                const applyScoreColor = status !== "salesPending" && status !== "draft";
+                const rowBg = isSelected ? "#eff6ff" : (applyScoreColor ? recommendation.bg : "transparent");
                 return (
-                  <tr key={s.studyNo} style={{ borderTop: "1px solid #f5f5f4", background: isSelected ? "#eff6ff" : "transparent" }}>
+                  <tr key={s.studyNo} style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
                     <td style={{ padding: "6px 10px", textAlign: "center" }}>
                       {isSelectable && (
                         <input type="checkbox" checked={isSelected} onChange={() => toggleSelect(s.studyNo)}
@@ -2122,6 +2129,14 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
                     <td style={{ padding: "6px 10px" }}>
                       <div>{s.partName || "—"}</div>
                       {s.partNo && <div style={{ fontSize: 9, color: "#78716c", fontFamily: "ui-monospace, monospace" }}>{s.partNo}</div>}
+                    </td>
+                    <td style={{ padding: "6px 10px", textAlign: "center" }}>
+                      <span title={`Satış ${scoreInfo.sales.percent}% · Teknik ${scoreInfo.technical.percent}%`}
+                        style={{ padding: "2px 8px", background: recommendation.color, color: "#fff",
+                          borderRadius: 3, fontSize: 10, fontWeight: 700, fontFamily: "ui-monospace, monospace" }}>
+                        {scoreInfo.totalScore}/{scoreInfo.totalMax}
+                      </span>
+                      <div style={{ fontSize: 9, color: "#78716c", marginTop: 1 }}>%{scoreInfo.percent}</div>
                     </td>
                     <td style={{ padding: "6px 10px" }}>
                       <span style={{ padding: "1px 6px", background: badge.bg, color: badge.fg, borderRadius: 3, fontSize: 9, fontWeight: 600 }}>{badge.l}</span>
