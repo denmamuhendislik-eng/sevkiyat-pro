@@ -81,6 +81,76 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, o
   );
 }
 
+// İmza öncesi rol bazlı eksiklik kontrolü. Blockers (HARD) → imza atılmaz.
+// Warnings (SOFT) → confirm ile devam edilebilir.
+function validateBeforeSign(role, study, status) {
+  const blockers = [];
+  const warnings = [];
+
+  if (role === "salesManager") {
+    // Zorunlu bilgi
+    if (!study?.customerName?.trim()) blockers.push("Müşteri adı");
+    if (!study?.partName?.trim() && !study?.partNo?.trim()) blockers.push("Parça adı veya numarası");
+    if (!study?.quantity || Number(study.quantity) <= 0) blockers.push("Sipariş miktarı (>0)");
+    // Satış-Proje soruları
+    const unanswered = SALES_QUESTIONS.filter(q => {
+      const v = study?.evaluation?.[q.key]?.answer;
+      return v == null || v === "";
+    });
+    if (unanswered.length > 0) blockers.push(`Satış ve Proje bölümünde ${unanswered.length} cevapsız soru`);
+    // Karar aşaması — evaluating iken karar zorunlu
+    if (status === "evaluating" && !study?.decision) {
+      blockers.push("Karar (Talep Karşılanır / Reddedilir / Değişiklik) seçilmemiş");
+    }
+    // Soft uyarılar
+    if (!study?.customerContact?.trim() && !study?.customerEmail?.trim()) warnings.push("Müşteri iletişim (telefon veya e-mail) boş");
+    if (!study?.shipmentAddress?.trim()) warnings.push("Sevkiyat adresi girilmemiş");
+    const anyReceived = Object.values(study?.receivedData || {}).some(v => !!v);
+    if (!anyReceived) warnings.push("Gelen veri türü işaretlenmemiş");
+  }
+
+  if (role === "technicalUnit") {
+    // Teknik soruları
+    const unanswered = TECHNICAL_QUESTIONS.filter(q => {
+      const v = study?.evaluation?.[q.key]?.answer;
+      return v == null || v === "";
+    });
+    if (unanswered.length > 0) blockers.push(`Teknik bölümde ${unanswered.length} cevapsız soru`);
+    // Operasyon: tezgah seçili ama süre 0/boş
+    const opDetails = Array.isArray(study?.operations?.details) ? study.operations.details : [];
+    opDetails.forEach((op, i) => {
+      if (op?.machine && (!op?.minutes || Number(op.minutes) <= 0)) {
+        blockers.push(`Operasyon #${i + 1}: tezgah seçili ama süre girilmemiş`);
+      }
+    });
+    // Aparat/Takım kalemi: ad var ama adet/fiyat eksik
+    const toolingItems = Array.isArray(study?.toolingItems) ? study.toolingItems : [];
+    toolingItems.forEach((it, i) => {
+      if (it?.name?.trim() && (!Number(it?.qty) || !Number(it?.unitCost))) {
+        blockers.push(`Aparat/Takım #${i + 1} (${it.name}): adet veya birim fiyat eksik`);
+      }
+    });
+    // Fason kalemi: ad var ama adet/fiyat eksik
+    const fasonItems = Array.isArray(study?.fasonItems) ? study.fasonItems : [];
+    fasonItems.forEach((it, i) => {
+      if (it?.name?.trim() && (!Number(it?.qty) || !Number(it?.unitCost))) {
+        blockers.push(`Fason #${i + 1} (${it.name}): adet veya birim fiyat eksik`);
+      }
+    });
+    // Soft uyarılar (hammadde detayları)
+    if (!study?.materialType?.trim() && !study?.material?.trim()) warnings.push("Malzeme türü / notu girilmemiş");
+    const dim = study?.dimensions || {};
+    if (!Number(dim.en) && !Number(dim.boy) && !Number(dim.uzunluk)) warnings.push("Hammadde ölçüleri boş");
+    if (!Number(study?.weightKg)) warnings.push("Hammadde ağırlığı girilmemiş");
+  }
+
+  if (role === "generalManager") {
+    if (!study?.decision) blockers.push("Karar (Talep Karşılanır / Reddedilir / Değişiklik) seçilmemiş");
+  }
+
+  return { blockers, warnings };
+}
+
 // ==================== Yeni Yapılabilirlik Form ====================
 
 function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, initialStudy, readOnly, onSaved }) {
@@ -447,14 +517,14 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
   const handleCompleteSection = async () => {
     if (readonlyForm || !canEdit || !currentPendingRole) return;
     if (!studyNo) { setError("Yapılabilirlik no boş"); return; }
-    if (!study.customerName) { setError("Müşteri adı zorunlu"); return; }
-    if (!study.partName && !study.partNo) { setError("Parça adı veya no zorunlu"); return; }
-    // Kullanıcının kendi rolünün soruları eksik mi uyar
-    if (currentPendingRole === "salesManager" && salesAnswered < SALES_QUESTIONS.length) {
-      if (!confirm(`Satış tarafında ${SALES_QUESTIONS.length - salesAnswered} soru cevapsız. Yine de tamamlanıp gönderilsin mi?`)) return;
+    // Rol bazlı eksiklik kontrolü — blockers (HARD) + warnings (SOFT)
+    const { blockers, warnings } = validateBeforeSign(currentPendingRole, study, status);
+    if (blockers.length > 0) {
+      alert("Aşağıdaki eksiklikler tamamlanmadan imza atılamaz:\n\n• " + blockers.join("\n• "));
+      return;
     }
-    if (currentPendingRole === "technicalUnit" && technicalAnswered < TECHNICAL_QUESTIONS.length) {
-      if (!confirm(`Teknik tarafta ${TECHNICAL_QUESTIONS.length - technicalAnswered} soru cevapsız. Yine de tamamlanıp gönderilsin mi?`)) return;
+    if (warnings.length > 0) {
+      if (!confirm("Aşağıdaki alanlar eksik. Yine de imza atılsın mı?\n\n• " + warnings.join("\n• "))) return;
     }
     setCompleting(true); setError("");
     try {
@@ -702,6 +772,11 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
           <div>
             <label style={labelStyle}>Parça No / Stok Kodu</label>
             <input value={study.partNo || ""} onChange={e => update("partNo", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} />
+          </div>
+          <div>
+            <label style={{ ...labelStyle, color: "#1e40af", fontWeight: 600 }}>📦 Sipariş Miktarı (Adet)</label>
+            <input type="number" min="1" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm}
+              style={{ ...inputStyle, borderColor: "#bfdbfe", background: "#eff6ff", fontWeight: 600 }} />
           </div>
           <div>
             <label style={labelStyle}>Müşteri Parça Kodu</label>
@@ -957,13 +1032,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
             )}
           </div>
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 3fr", gap: 8, marginTop: 8 }}>
-          <div>
-            <label style={{ ...labelStyle, color: "#1e40af", fontWeight: 600 }}>📦 Sipariş Miktarı (Adet)</label>
-            <input type="number" min="1" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm}
-              style={{ ...inputStyle, borderColor: "#bfdbfe", background: "#eff6ff", fontWeight: 600 }} />
-            <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Teklife bu adet olarak aktarılır.</div>
-          </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 8 }}>
           <div>
             <label style={labelStyle}>Malzeme Notu (eski alan)</label>
             <input value={study.material || ""} onChange={e => update("material", e.target.value)} disabled={readonlyForm} placeholder="opsiyonel" style={inputStyle} />
