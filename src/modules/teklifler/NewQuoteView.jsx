@@ -8,7 +8,7 @@ import { calculateQuoteTotal, paymentTermToGroup } from "./quoteCalc";
 import { useMachineRatesForQuote } from "./machineRates";
 import { generateQuotePdf } from "./quotePdf";
 import { subscribeCurrencyRates } from "../maliyet/firestore";
-import { getLatestRates } from "../maliyet/currency";
+import { getRatesForDate } from "../maliyet/currency";
 
 // Modül ana giriş: yeni teklif oluşturma formu (tek uzun sayfa).
 // Props:
@@ -134,10 +134,10 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     });
   }, [machineRatesData?.ratesByName]);
 
-  // Kur kaynağı: TCMB (currencyRates cron doc) → fallback quoteMaterials.currencyRateUsd.
-  // Kur bilgisini toolbar'da göstermek için ayrı hesap
+  // Kur kaynağı: TCMB (currencyRates cron doc) — quoteDate'e ait kur (geçmiş tarih
+  // seçilirse o günün kayıtlı kuru), yoksa en yakın (≤) tarih. Fallback quoteMaterials.
   const rateSource = useMemo(() => {
-    const tcmb = getLatestRates(currencyRatesDoc);
+    const tcmb = getRatesForDate(currencyRatesDoc, quoteDate);
     if (currency === "DOLAR") {
       if (tcmb?.usd > 0) return { rate: tcmb.usd, source: "TCMB", date: tcmb.date };
       if (materials?.currencyRateUsd > 0) return { rate: Number(materials.currencyRateUsd), source: "Excel import (yedek)", date: null };
@@ -148,17 +148,20 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
       return null;
     }
     return null;
-  }, [currency, currencyRatesDoc, materials]);
+  }, [currency, currencyRatesDoc, quoteDate, materials]);
 
-  // Currency değişince exchangeRate'i otomatik güncelle (kullanıcı elle override edebilir)
+  // Var olan bir teklif düzenleniyorsa initialQuote.exchangeRate KORUNUR — auto-fill ezmez.
+  // Yeni teklif akışında (feasibility'den gelen dahil, henüz quoteNo yok) currency veya
+  // quoteDate değişince kur otomatik yenilenir. Kullanıcı input'a manuel değer yazarsa
+  // sonraki değişimlerde de doğal olarak override kalır (auto-fill yalnız currency/quoteDate
+  // değişiminde tetiklenir — kullanıcı ne yaparsa yapsın manuel değer korunur).
+  const isEditingExisting = !!initialQuote?.quoteNo;
   useEffect(() => {
-    if (currency === "TL") {
-      setExchangeRate(1);
-    } else if (rateSource?.rate > 0) {
-      setExchangeRate(rateSource.rate);
-    }
+    if (isEditingExisting) return;
+    if (currency === "TL") { setExchangeRate(1); return; }
+    if (rateSource?.rate > 0) setExchangeRate(rateSource.rate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currency, rateSource?.rate]);
+  }, [currency, quoteDate, isEditingExisting]);
 
   // Müşteri seçilince default alanları doldur
   const applyCustomer = (name) => {
