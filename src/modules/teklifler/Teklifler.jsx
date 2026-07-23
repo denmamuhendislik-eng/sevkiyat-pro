@@ -5,6 +5,7 @@ import {
   saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision, deleteQuoteFull,
   saveQuoteMaterialUpdate, suggestMaterialPriceTl,
   addQuoteFasonWork, deleteQuoteFasonWork,
+  updateQuoteStatus,
 } from "./firestore";
 import { subscribeUnitCosts, subscribeUnitConversions } from "../maliyet/firestore";
 import NewQuoteView from "./NewQuoteView";
@@ -498,9 +499,79 @@ function quoteDisplayTotal(quote) {
 }
 
 // Bir revizyon grubunun render'ı — aktif satır + (expanded ise) geçmiş satırlar
+// Tıklanabilir durum rozeti — draft/sent/accepted/rejected geçişleri.
+const STATUS_META = {
+  draft:    { l: "📝 Taslak",     bg: "#f5f5f4", fg: "#57534e" },
+  sent:     { l: "📤 Gönderildi", bg: "#dbeafe", fg: "#1e40af" },
+  accepted: { l: "✓ Kabul",       bg: "#dcfce7", fg: "#166534" },
+  rejected: { l: "✗ Red",         bg: "#fee2e2", fg: "#991b1b" },
+};
+function StatusBadge({ status, onChange, open, setOpen }) {
+  const meta = STATUS_META[status] || STATUS_META.draft;
+  const canChange = !!onChange;
+  return (
+    <span style={{ position: "relative", display: "inline-block" }}>
+      <button
+        onClick={(e) => { e.stopPropagation(); if (canChange) setOpen(!open); }}
+        disabled={!canChange}
+        title={canChange ? "Durumu değiştir" : ""}
+        style={{
+          padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600,
+          background: meta.bg, color: meta.fg, border: "none",
+          cursor: canChange ? "pointer" : "default", whiteSpace: "nowrap",
+        }}>
+        {meta.l}{canChange && " ▾"}
+      </button>
+      {open && canChange && (
+        <>
+          <div onClick={() => setOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 50 }} />
+          <div style={{ position: "absolute", top: "100%", left: 0, marginTop: 2, background: "#fff",
+            border: "1px solid #e7e5e4", borderRadius: 4, boxShadow: "0 4px 12px rgba(0,0,0,0.1)",
+            zIndex: 51, minWidth: 130, overflow: "hidden" }}>
+            {Object.entries(STATUS_META).map(([k, m]) => (
+              <button key={k}
+                onClick={(e) => { e.stopPropagation(); onChange(k); }}
+                style={{
+                  display: "block", width: "100%", textAlign: "left",
+                  padding: "6px 10px", fontSize: 10, background: k === status ? m.bg : "#fff",
+                  color: m.fg, border: "none", cursor: "pointer", fontWeight: k === status ? 700 : 500,
+                }}>
+                {m.l}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </span>
+  );
+}
+
 function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand, onOpen, onCreateRevision, onRequestDelete, creatingRev, canEdit, isAdmin }) {
   const q = active;
   const revBadgeColor = q.revNo > 0 ? { bg: "#fef3c7", fg: "#92400e" } : { bg: "#dbeafe", fg: "#1e40af" };
+  const [statusMenu, setStatusMenu] = useState(false);
+
+  // Draft → Sent otomatik geçiş: PDF/Excel indirdiğinde tetiklenir. Firestore live
+  // subscribe olduğu için rozet otomatik güncellenir (toast gereksiz).
+  const maybeAutoMarkAsSent = async (targetQuote) => {
+    if (!canEdit || targetQuote?.status !== "draft") return;
+    try {
+      await updateQuoteStatus(targetQuote, "sent", { canEdit, staging: false });
+    } catch (e) {
+      console.warn("Auto-sent hatası:", e.message);
+    }
+  };
+
+  const handleStatusChange = async (newStatus) => {
+    setStatusMenu(false);
+    if (newStatus === q.status) return;
+    try {
+      await updateQuoteStatus(q, newStatus, { canEdit, staging: false });
+    } catch (e) {
+      alert("Durum güncellenemedi: " + e.message);
+    }
+  };
+
   const downloadPdf = async (targetQuote) => {
     try {
       const fakeLineResults = (targetQuote.lines || []).map(l => ({
@@ -523,6 +594,8 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
         totalSaleDisplay: totalTl * displayFactor, totalCostDisplay: 0,
       };
       await generateQuotePdf(targetQuote, calcForPdf);
+      // PDF indirdiyse büyük ihtimalle müşteriye gidiyor → draft ise sent'e otomatik geç
+      maybeAutoMarkAsSent(targetQuote);
     } catch (e) {
       alert("PDF hatası: " + e.message);
     }
@@ -544,6 +617,8 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
         lineResults: fakeLineResults, separateToolItems: [],
         totalSaleTl: totalTl, currency: cur, displayFactor,
       });
+      // Excel indirdiyse büyük ihtimalle müşteriye gidiyor → draft ise sent'e otomatik geç
+      maybeAutoMarkAsSent(targetQuote);
     } catch (e) {
       alert("Excel hatası: " + e.message);
     }
@@ -569,11 +644,7 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
         </td>
         <td style={td}>{q.currency || "TL"}</td>
         <td style={td}>
-          <span style={{ padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600,
-            background: q.status === "accepted" ? "#dcfce7" : "#fef3c7",
-            color: q.status === "accepted" ? "#166534" : "#92400e" }}>
-            {q.status === "accepted" ? "✓ KABUL" : "⏳ TEKLİF"}
-          </span>
+          <StatusBadge status={q.status || "draft"} onChange={canEdit ? handleStatusChange : null} open={statusMenu} setOpen={setStatusMenu} />
         </td>
         <td style={td}>
           <div style={{ display: "flex", gap: 4 }}>
