@@ -22,6 +22,7 @@ import {
 import { calculateWeightKg } from "../teklifler/quoteCalc";
 import { useMachineRatesForQuote } from "../teklifler/machineRates";
 import { generateFeasibilityPdf } from "./feasibilityPdf";
+import { computeFeasibilityStats } from "./stats";
 
 export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, onCreateQuoteFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
@@ -43,6 +44,7 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, o
         {[
           { id: "new", label: "➕ Yeni Yapılabilirlik" },
           { id: "list", label: "📋 Liste" },
+          { id: "kpi", label: "📊 KPI" },
         ].map(t => (
           <button
             key={t.id}
@@ -74,6 +76,7 @@ export default function Yapilabilirlik({ isAdmin, isUretim, isSales, authUser, o
         />
       )}
       {activeTab === "list" && <FeasibilityListView canEdit={canEdit} isAdmin={isAdmin} isSales={isSales} isUretim={isUretim} onOpen={openStudy} onCreateQuote={onCreateQuoteFromFeasibility} />}
+      {activeTab === "kpi" && <KpiView />}
     </div>
   );
 }
@@ -1464,6 +1467,378 @@ function TechnicalDrawingUploader({ studyNo, files, onChange, canEdit, readonly 
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// ==================== KPI Görünümü ====================
+
+function KpiView() {
+  const currentYear = new Date().getFullYear();
+  const [year, setYear] = useState(String(currentYear));
+  const [data, setData] = useState({ studies: {} });
+  const [staging] = useState(false);
+
+  useEffect(() => {
+    const unsub = subscribeFeasibilityForYear(year, setData, { staging });
+    return unsub;
+  }, [year, staging]);
+
+  const studies = useMemo(() => Object.values(data?.studies || {}), [data]);
+  const stats = useMemo(() => computeFeasibilityStats(studies), [studies]);
+
+  const fmtDay = (d) => d == null ? "—" : `${d.toFixed(1)} gün`;
+  const fmtPct = (p) => p == null ? "—" : `%${p.toFixed(0)}`;
+
+  if (stats.total === 0) {
+    return (
+      <div>
+        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
+          <label style={{ fontSize: 12, color: "#57534e" }}>Yıl:</label>
+          <select value={year} onChange={e => setYear(e.target.value)}
+            style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
+            {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
+          </select>
+        </div>
+        <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
+          {year} yılında yapılabilirlik yok. KPI'lar veri biriktikçe anlam kazanır.
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Toolbar */}
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
+        <label style={{ fontSize: 12, color: "#57534e" }}>Yıl:</label>
+        <select value={year} onChange={e => setYear(e.target.value)}
+          style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
+          {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <span style={{ fontSize: 11, color: "#78716c" }}>{stats.total} yapılabilirlik</span>
+      </div>
+
+      {/* Üst 4 kart */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+        <KpiCard label="Teklife Dönüşüm" value={fmtPct(stats.conversionRate)}
+          subtitle={`${stats.byStatus.convertedToQuote}/${stats.decidedCount} karar verilen`} color="#16a34a" />
+        <KpiCard label="Ort. Dönüşüm Süresi" value={fmtDay(stats.avgConversionDays)}
+          subtitle="onay → teklif" color="#1e40af" />
+        <KpiCard label="Aktif Bekleyen" value={stats.activePending}
+          subtitle={`${stats.byStatus.salesPending} satış · ${stats.byStatus.technicalPending} teknik · ${stats.byStatus.gmPending} GM`} color="#d97706" />
+        <KpiCard label="Ort. Puan" value={stats.avgScorePercent != null ? `${stats.avgScorePercent.toFixed(0)}/100` : "—"}
+          subtitle={`satış ${(stats.avgSalesPercent || 0).toFixed(0)}% · teknik ${(stats.avgTechnicalPercent || 0).toFixed(0)}%`} color="#7c3aed" />
+      </div>
+
+      {/* İkinci sıra: Donut + Süre kart */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <KpiPanel title="🎯 Durum Dağılımı">
+          <StatusDonut byStatus={stats.byStatus} />
+        </KpiPanel>
+        <KpiPanel title="⏱ Aşama Süreleri (medyan)">
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 4px" }}>
+            <StageRow icon="💼" label="Satış aşaması" days={stats.avgSalesDays} color="#1e40af" />
+            <StageRow icon="⚙️" label="Teknik aşaması" days={stats.avgTechnicalDays} color="#0f766e" />
+            <StageRow icon="⭐" label="GM aşaması" days={stats.avgGmDays} color="#991b1b" />
+            <div style={{ borderTop: "1px solid #e7e5e4", paddingTop: 8, marginTop: 4 }}>
+              <StageRow icon="🏁" label="Toplam (create→onay)" days={stats.avgTotalDays} color="#44403c" bold />
+            </div>
+            <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
+              💡 Medyan kullanılır; birkaç outlier ortalama'yı çarpıtmaz.
+            </div>
+          </div>
+        </KpiPanel>
+      </div>
+
+      {/* Üçüncü sıra: Puan histogramı + Yavaş bekleyenler */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <KpiPanel title="📊 Puan Dağılımı">
+          <ScoreHistogram histogram={stats.scoreHistogram} total={stats.total} />
+        </KpiPanel>
+        <KpiPanel title="🐢 En Yavaş Bekleyen (top 5)">
+          {stats.slowestPending.length === 0 ? (
+            <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Aktif bekleyen yok.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: "#f5f5f4", textAlign: "left" }}>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Yapılabilirlik</th>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Müşteri</th>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Aşama</th>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Bekleme</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.slowestPending.map(s => (
+                  <tr key={s.studyNo} style={{ borderTop: "1px solid #f5f5f4" }}>
+                    <td style={{ padding: "5px 8px", fontFamily: "ui-monospace, monospace", fontSize: 10 }}>{s.studyNo}</td>
+                    <td style={{ padding: "5px 8px", fontSize: 10 }}>{s.customerName}</td>
+                    <td style={{ padding: "5px 8px", fontSize: 10 }}>
+                      <StageBadge status={s.status} />
+                    </td>
+                    <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 600, color: s.waitDays > 7 ? "#991b1b" : "#44403c" }}>
+                      {s.waitDays.toFixed(1)} gün
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </KpiPanel>
+      </div>
+
+      {/* Dördüncü sıra: En düşük 3 soru + Müşteri top 5 */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <KpiPanel title="❗ En Düşük Puanlı Sorular (top 3)">
+          <QuestionRanking questions={stats.questionRanking.slice(0, 3)} />
+        </KpiPanel>
+        <KpiPanel title="🏢 Müşteri Sıralaması (top 5)">
+          {stats.customerRanking.length === 0 ? (
+            <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Müşteri yok.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead>
+                <tr style={{ background: "#f5f5f4", textAlign: "left" }}>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Müşteri</th>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Toplam</th>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Dönüşüm</th>
+                  <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Ort. Puan</th>
+                </tr>
+              </thead>
+              <tbody>
+                {stats.customerRanking.slice(0, 5).map(c => (
+                  <tr key={c.name} style={{ borderTop: "1px solid #f5f5f4" }}>
+                    <td style={{ padding: "5px 8px", fontSize: 10 }}>{c.name}</td>
+                    <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 600 }}>{c.total}</td>
+                    <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", color: c.conversionRate >= 50 ? "#166534" : c.conversionRate >= 25 ? "#92400e" : "#991b1b" }}>
+                      {c.converted}/{c.total} <span style={{ opacity: 0.7 }}>({c.conversionRate.toFixed(0)}%)</span>
+                    </td>
+                    <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 500 }}>{c.avgScore.toFixed(0)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </KpiPanel>
+      </div>
+
+      {/* Beşinci sıra: Sistem-Karar tutarlılığı + En sık müzakere ipucu */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+        <KpiPanel title="🤖 Sistem Önerisi vs Alınan Karar">
+          {(stats.systemAgreeCount + stats.systemDisagreeCount) === 0 ? (
+            <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Henüz karar verilen yapılabilirlik yok.</div>
+          ) : (
+            <div style={{ padding: "10px 4px" }}>
+              <div style={{ display: "flex", height: 24, borderRadius: 4, overflow: "hidden", marginBottom: 8 }}>
+                <div style={{ flex: stats.systemAgreeCount, background: "#16a34a", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 600 }}>
+                  {stats.systemAgreeCount > 0 && `✓ ${stats.systemAgreeCount}`}
+                </div>
+                <div style={{ flex: stats.systemDisagreeCount, background: "#dc2626", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 11, fontWeight: 600 }}>
+                  {stats.systemDisagreeCount > 0 && `✗ ${stats.systemDisagreeCount}`}
+                </div>
+              </div>
+              <div style={{ fontSize: 10, color: "#57534e", display: "flex", justifyContent: "space-between" }}>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, background: "#16a34a", borderRadius: 2, marginRight: 4 }} />Uyumlu ({fmtPct(100 * stats.systemAgreeCount / (stats.systemAgreeCount + stats.systemDisagreeCount))})</span>
+                <span><span style={{ display: "inline-block", width: 8, height: 8, background: "#dc2626", borderRadius: 2, marginRight: 4 }} />Çelişkili ({fmtPct(100 * stats.systemDisagreeCount / (stats.systemAgreeCount + stats.systemDisagreeCount))})</span>
+              </div>
+              <div style={{ fontSize: 10, color: "#78716c", marginTop: 8 }}>
+                💡 Uyumsuzluk yüksekse eşik değeri (75/50) revize edilebilir.
+              </div>
+            </div>
+          )}
+        </KpiPanel>
+        <KpiPanel title="💬 En Sık Tetiklenen Müzakere İpucu (top 5)">
+          {stats.hintRanking.length === 0 ? (
+            <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Henüz düşük puanlı cevap yok.</div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {stats.hintRanking.slice(0, 5).map((h, i) => (
+                <div key={h.key} style={{ padding: 6, background: "#fef3c7", borderRadius: 4, fontSize: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                    <span style={{ fontWeight: 600, color: "#44403c" }}>{i + 1}. {h.label}</span>
+                    <span style={{ fontSize: 9, padding: "1px 6px", background: "#92400e", color: "#fff", borderRadius: 3, fontWeight: 600 }}>{h.count}×</span>
+                  </div>
+                  {h.hint && <div style={{ fontSize: 9, color: "#78716c" }}>💡 {h.hint}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </KpiPanel>
+      </div>
+
+      {/* Alt bilgi */}
+      <div style={{ fontSize: 10, color: "#a8a29e", textAlign: "center", padding: 10 }}>
+        {stats.lostOpportunity > 0 && (
+          <div style={{ display: "inline-block", padding: 8, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 4, color: "#991b1b", marginBottom: 4 }}>
+            ⚠ <b>{stats.lostOpportunity}</b> onaylı yapılabilirlik teklife dönmemiş — kayıp fırsat izlenmeli.
+          </div>
+        )}
+        <div>KPI'lar cari yıl verisi üzerinden canlı hesaplanır. Yeni study kaydedildikçe otomatik güncellenir.</div>
+      </div>
+    </div>
+  );
+}
+
+// KPI kart (üst özet)
+function KpiCard({ label, value, subtitle, color }) {
+  return (
+    <div style={{ padding: 14, background: "#fff", border: "1px solid #e7e5e4", borderTop: `3px solid ${color}`, borderRadius: 6 }}>
+      <div style={{ fontSize: 10, color: "#78716c", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color, marginTop: 4 }}>{value}</div>
+      <div style={{ fontSize: 10, color: "#78716c", marginTop: 2 }}>{subtitle}</div>
+    </div>
+  );
+}
+
+// KPI panel (grafik/tablo etrafı)
+function KpiPanel({ title, children }) {
+  return (
+    <div style={{ padding: 12, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#44403c", marginBottom: 8 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+// Durum donut chart (SVG)
+function StatusDonut({ byStatus }) {
+  const items = [
+    { key: "convertedToQuote", label: "Teklife Dönüştü", color: "#1e40af", count: byStatus.convertedToQuote },
+    { key: "approved", label: "Onaylı", color: "#16a34a", count: byStatus.approved },
+    { key: "rejected", label: "Reddedildi", color: "#dc2626", count: byStatus.rejected },
+    { key: "salesPending", label: "Satışta", color: "#3b82f6", count: byStatus.salesPending },
+    { key: "technicalPending", label: "Teknikte", color: "#14b8a6", count: byStatus.technicalPending },
+    { key: "gmPending", label: "GM Onayı", color: "#f59e0b", count: byStatus.gmPending },
+    { key: "evaluating", label: "Karar Bekliyor", color: "#a855f7", count: byStatus.evaluating },
+    { key: "draft", label: "Taslak", color: "#a8a29e", count: byStatus.draft },
+  ].filter(it => it.count > 0);
+  const total = items.reduce((s, it) => s + it.count, 0);
+  if (total === 0) return <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Veri yok</div>;
+
+  const size = 140;
+  const cx = size / 2, cy = size / 2;
+  const r = 55, strokeW = 22;
+  const circumference = 2 * Math.PI * r;
+  let offset = 0;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "4px 0" }}>
+      <svg width={size} height={size}>
+        {items.map((it) => {
+          const frac = it.count / total;
+          const len = frac * circumference;
+          const seg = (
+            <circle key={it.key} cx={cx} cy={cy} r={r} fill="none" stroke={it.color}
+              strokeWidth={strokeW}
+              strokeDasharray={`${len} ${circumference - len}`}
+              strokeDashoffset={-offset}
+              transform={`rotate(-90 ${cx} ${cy})`} />
+          );
+          offset += len;
+          return seg;
+        })}
+        <text x={cx} y={cy - 4} textAnchor="middle" fontSize="18" fontWeight="700" fill="#1c1917">{total}</text>
+        <text x={cx} y={cy + 12} textAnchor="middle" fontSize="8" fill="#78716c">TOPLAM</text>
+      </svg>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3, fontSize: 10 }}>
+        {items.map(it => (
+          <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ display: "inline-block", width: 10, height: 10, background: it.color, borderRadius: 2 }} />
+            <span style={{ flex: 1, color: "#44403c" }}>{it.label}</span>
+            <span style={{ fontWeight: 600, color: "#1c1917" }}>{it.count}</span>
+            <span style={{ color: "#78716c", minWidth: 32, textAlign: "right" }}>({Math.round((it.count / total) * 100)}%)</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Aşama süre satırı
+function StageRow({ icon, label, days, color, bold }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <span style={{ fontSize: 14 }}>{icon}</span>
+      <span style={{ flex: 1, fontSize: 11, color: "#44403c", fontWeight: bold ? 600 : 400 }}>{label}</span>
+      <span style={{ fontSize: 12, fontWeight: 600, color: days == null ? "#a8a29e" : color, fontVariantNumeric: "tabular-nums" }}>
+        {days == null ? "—" : `${days.toFixed(1)} gün`}
+      </span>
+    </div>
+  );
+}
+
+// Puan histogramı (3 aralık: <50, 50-74, ≥75)
+function ScoreHistogram({ histogram, total }) {
+  const items = [
+    { label: "< %50 (RED / GM)", count: histogram.low, color: "#dc2626", bg: "#fee2e2" },
+    { label: "%50-74 (DEĞİŞİKLİK)", count: histogram.mid, color: "#d97706", bg: "#fef3c7" },
+    { label: "≥ %75 (KABUL)", count: histogram.high, color: "#16a34a", bg: "#dcfce7" },
+  ];
+  const max = Math.max(...items.map(i => i.count), 1);
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 6, padding: "6px 4px" }}>
+      {items.map(it => {
+        const widthPct = (it.count / max) * 100;
+        const pct = total > 0 ? Math.round((it.count / total) * 100) : 0;
+        return (
+          <div key={it.label}>
+            <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 }}>
+              <span style={{ color: "#44403c", fontWeight: 500 }}>{it.label}</span>
+              <span style={{ color: it.color, fontWeight: 600 }}>{it.count} ({pct}%)</span>
+            </div>
+            <div style={{ height: 12, background: "#f5f5f4", borderRadius: 3, overflow: "hidden" }}>
+              <div style={{ width: `${widthPct}%`, height: "100%", background: it.color, transition: "width 0.3s" }} />
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Aşama badge (yavaş bekleyenler tablosunda)
+function StageBadge({ status }) {
+  const map = {
+    salesPending: { l: "💼 Satış", c: "#1e40af", bg: "#eff6ff" },
+    technicalPending: { l: "⚙️ Teknik", c: "#0f766e", bg: "#f0fdfa" },
+    gmPending: { l: "⭐ GM", c: "#991b1b", bg: "#fef2f2" },
+    evaluating: { l: "⏳ Karar", c: "#92400e", bg: "#fef3c7" },
+  };
+  const b = map[status] || { l: status, c: "#57534e", bg: "#f5f5f4" };
+  return (
+    <span style={{ padding: "1px 6px", background: b.bg, color: b.c, borderRadius: 3, fontSize: 9, fontWeight: 600 }}>
+      {b.l}
+    </span>
+  );
+}
+
+// Soru rankingi (en düşük puanlılar)
+function QuestionRanking({ questions }) {
+  if (questions.length === 0) {
+    return <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Henüz cevaplanmış soru yok.</div>;
+  }
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+      {questions.map((q, i) => (
+        <div key={q.key} style={{ padding: 8, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <span style={{ fontSize: 10, fontWeight: 600, color: "#44403c" }}>{i + 1}. {q.label}</span>
+            <span style={{ fontSize: 10, fontWeight: 700, color: q.avgScorePct < 50 ? "#991b1b" : q.avgScorePct < 75 ? "#92400e" : "#166534" }}>
+              {q.avgScorePct}%
+            </span>
+          </div>
+          <div style={{ height: 6, background: "#f5f5f4", borderRadius: 2, overflow: "hidden", marginBottom: 4 }}>
+            <div style={{ width: `${q.avgScorePct}%`, height: "100%", background: q.avgScorePct < 50 ? "#dc2626" : q.avgScorePct < 75 ? "#d97706" : "#16a34a" }} />
+          </div>
+          <div style={{ fontSize: 9, color: "#78716c", display: "flex", gap: 8, flexWrap: "wrap" }}>
+            <span>{q.count} cevap</span>
+            {Object.entries(q.answersCount).map(([k, n]) => (
+              <span key={k} style={{ opacity: 0.85 }}>{k}: <b>{n}</b></span>
+            ))}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
