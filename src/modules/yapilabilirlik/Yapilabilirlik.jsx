@@ -2249,7 +2249,7 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
                 // (draft/salesPending/technicalPending) toplam puan henüz eksik olduğu
                 // için renklendirme yanıltıcı. Sadece değerlendirme sonrası göster.
                 const applyScoreColor = status !== "salesPending" && status !== "draft" && status !== "technicalPending";
-                const rowBg = isSelected ? "#eff6ff" : (applyScoreColor ? recommendation.bg : "transparent");
+                const rowBg = isSelected ? "#eff6ff" : (applyScoreColor ? recommendation.bg : "#fff");
                 return (
                   <tr key={s.studyNo} style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
                     <td style={{ padding: "6px 10px", textAlign: "center" }}>
