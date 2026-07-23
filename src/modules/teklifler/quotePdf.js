@@ -276,6 +276,35 @@ function buildQuoteHtml(quote, calc) {
   `;
 }
 
+// Devam sayfası kompakt üst şeridi (quoteNo · müşteri · sayfa n/N)
+async function renderQuoteContinuationStrip(quote, pageNo, totalPages, pdfWidthMm) {
+  const html = `
+    <div style="width:794px; padding:8px 22px; background:#eff6ff; border-bottom:2px solid #bfdbfe;
+      display:flex; align-items:center; gap:14px;
+      font-family:'Inter','Segoe UI',sans-serif; box-sizing:border-box;">
+      <span style="font-size:11px; font-weight:700; color:#1e40af;">📋 Teklif</span>
+      <span style="font-family:'JetBrains Mono',monospace; font-size:11px; font-weight:700; color:#1c1917;">${esc(quote.quoteNo || "")}</span>
+      <span style="color:#a8a29e;">·</span>
+      <span style="font-size:10px; color:#44403c;">${esc(quote.customerName || "")}</span>
+      <span style="color:#a8a29e; margin-left:auto;">·</span>
+      <span style="font-size:10px; color:#78716c;">Sayfa ${pageNo} / ${totalPages}</span>
+    </div>
+  `;
+  const container = document.createElement("div");
+  container.style.position = "absolute";
+  container.style.left = "-9999px";
+  container.style.top = "0";
+  container.innerHTML = html;
+  document.body.appendChild(container);
+  try {
+    const canvas = await html2canvas(container.firstElementChild, { scale: 2, backgroundColor: "#ffffff" });
+    const heightMm = (canvas.height * pdfWidthMm) / canvas.width;
+    return { dataUrl: canvas.toDataURL("image/jpeg", 0.92), heightMm };
+  } finally {
+    document.body.removeChild(container);
+  }
+}
+
 async function renderQuotePdf(quote, calc) {
   const html = buildQuoteHtml(quote, calc);
   const container = document.createElement("div");
@@ -294,9 +323,65 @@ async function renderQuotePdf(quote, calc) {
     }));
     const canvas = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
     const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-    const imgW = 210;
-    const imgH = (canvas.height * imgW) / canvas.width;
-    pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, imgW, Math.min(imgH, 297));
+    const pdfWidth = pdf.internal.pageSize.getWidth();   // 210
+    const pdfHeight = pdf.internal.pageSize.getHeight(); // 297
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+
+    // Tek A4'e sığar (küçük taşma toleranslı)
+    const SINGLE_PAGE_TOLERANCE_MM = 8;
+    const imgHeightMm = (canvasHeight * pdfWidth) / canvasWidth;
+    if (imgHeightMm <= pdfHeight + SINGLE_PAGE_TOLERANCE_MM) {
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, pdfWidth, imgHeightMm);
+      return pdf;
+    }
+
+    // Multi-page: canvas'ı A4 dilimlere böl, devam sayfalarında kompakt şerit ekle
+    const pxPerMm = canvasWidth / pdfWidth;
+    const CONTINUATION_STRIP_MM = 12;
+    const MIN_LAST_PAGE_CONTENT_MM = 40;
+    const firstPageContentPx = pdfHeight * pxPerMm;
+    const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM) * pxPerMm;
+
+    const slices = [];
+    let offset = 0;
+    let pageIdx = 0;
+    while (offset < canvasHeight) {
+      const isFirst = pageIdx === 0;
+      const contentPx = isFirst ? firstPageContentPx : continuationContentPx;
+      const sliceHeight = Math.min(contentPx, canvasHeight - offset);
+      slices.push({ offset, height: sliceHeight, isContinuation: !isFirst });
+      offset += sliceHeight;
+      pageIdx++;
+    }
+    // Son slice çok küçükse (< 40mm) önceki sayfaya birleştir
+    if (slices.length >= 2) {
+      const last = slices[slices.length - 1];
+      const lastHeightMm = last.height / pxPerMm;
+      if (lastHeightMm < MIN_LAST_PAGE_CONTENT_MM) {
+        slices[slices.length - 2].height += last.height;
+        slices.pop();
+      }
+    }
+    const totalPages = slices.length;
+
+    for (let i = 0; i < totalPages; i++) {
+      const p = slices[i];
+      if (i > 0) pdf.addPage();
+      let yPosMm = 0;
+      if (p.isContinuation) {
+        const strip = await renderQuoteContinuationStrip(quote, i + 1, totalPages, pdfWidth);
+        pdf.addImage(strip.dataUrl, "JPEG", 0, 0, pdfWidth, strip.heightMm);
+        yPosMm = strip.heightMm;
+      }
+      const sliceCanvas = document.createElement("canvas");
+      sliceCanvas.width = canvasWidth;
+      sliceCanvas.height = p.height;
+      sliceCanvas.getContext("2d").drawImage(canvas, 0, p.offset, canvasWidth, p.height, 0, 0, canvasWidth, p.height);
+      const sliceHeightMm = p.height / pxPerMm;
+      pdf.addImage(sliceCanvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, yPosMm, pdfWidth, sliceHeightMm);
+    }
+
     return pdf;
   } finally {
     document.body.removeChild(container);

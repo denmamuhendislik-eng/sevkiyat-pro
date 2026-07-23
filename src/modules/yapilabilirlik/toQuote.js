@@ -68,18 +68,10 @@ export function feasibilityStudiesToQuotePayload(studies) {
   if (list.length === 0) return null;
   const first = list[0];
   const lines = list.map(studyToLine);
-  const noteLines = list.map(s => s.recommendations
-    ? `${s.studyNo}: ${s.recommendations}`
-    : `${s.studyNo}`
-  );
-  const notes = list.length === 1
-    ? (first.recommendations
-        ? `Yapılabilirlik (${first.studyNo}) önerileri: ${first.recommendations}`
-        : `Yapılabilirlik ${first.studyNo}'ten oluşturuldu`)
-    : `${list.length} yapılabilirlikten oluşturuldu:\n${noteLines.join("\n")}`;
-
+  // Not: Yapılabilirlik bağlantı bilgisi feasibilityNo/feasibilityNos alanlarında
+  // takip ediliyor (UI'da yeşil banner + list badge). notes'a otomatik metin
+  // basmayız — PDF çıktısı temiz kalsın; kullanıcı isterse elle yazar.
   return {
-    // Bağlantı: tek study için eski davranış, çoklu için ana + hepsi
     feasibilityNo: first.studyNo,
     feasibilityNos: list.map(s => s.studyNo),
     // Müşteri (aynı olmalı — çağıran taraf doğrular)
@@ -88,7 +80,7 @@ export function feasibilityStudiesToQuotePayload(studies) {
     customerEmail: first.customerEmail || "",
     quoteDate: new Date().toISOString().slice(0, 10),
     lines,
-    notes,
+    notes: "",
     source: "from-feasibility",
   };
 }

@@ -8,6 +8,7 @@ import {
 import { subscribeUnitCosts, subscribeUnitConversions } from "../maliyet/firestore";
 import NewQuoteView from "./NewQuoteView";
 import { generateQuotePdf } from "./quotePdf";
+import { generateQuoteExcel } from "./quoteExcel";
 import { calculateQuoteTotal } from "./quoteCalc";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
@@ -522,6 +523,27 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
       alert("PDF hatası: " + e.message);
     }
   };
+  // Excel export — aynı calc yapısını (fakeLineResults + displayFactor) kullanır
+  const downloadExcel = (targetQuote) => {
+    try {
+      const fakeLineResults = (targetQuote.lines || []).map(l => ({
+        weightKg: Number(l.weightKg) || 0,
+        quantity: Number(l.quantity) || 1,
+        perUnit: { salePrice: Number(l.salePricePerUnit || (l.linePrice / (l.quantity || 1))) || 0 },
+        total: { salePrice: Number(l.linePrice) || 0 },
+      }));
+      const cur = targetQuote.currency || "TL";
+      const rate = Number(targetQuote.exchangeRate) || 1;
+      const displayFactor = (cur !== "TL" && rate > 0) ? 1 / rate : 1;
+      const totalTl = Number(targetQuote.totalPriceTl) || 0;
+      generateQuoteExcel(targetQuote, {
+        lineResults: fakeLineResults, separateToolItems: [],
+        totalSaleTl: totalTl, currency: cur, displayFactor,
+      });
+    } catch (e) {
+      alert("Excel hatası: " + e.message);
+    }
+  };
   return (
     <>
       <tr style={{ borderTop: "1px solid #f5f5f4", background: hasHistory ? "#fefce8" : undefined }}>
@@ -557,6 +579,8 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
               title="Bu teklifi klonlayıp yeni R{n+1} oluştur" style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", opacity: canEdit ? 1 : 0.5 }}>🔄 Revizyon</button>
             <button onClick={() => downloadPdf(q)}
               title="Aktif revizyonu PDF olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
+            <button onClick={() => downloadExcel(q)}
+              title="Aktif revizyonu Excel olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>📊 Excel</button>
             {isAdmin && (
               <button onClick={() => onRequestDelete(q)}
                 title={Number(q.revNo) > 0
@@ -598,6 +622,8 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
                   title="Sadece görüntüle (kilitli)" style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>👁 Görüntüle</button>
                 <button onClick={() => downloadPdf(hq)}
                   title="Bu revizyonu PDF olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄 PDF</button>
+                <button onClick={() => downloadExcel(hq)}
+                  title="Bu revizyonu Excel olarak indir" style={{ padding: "3px 8px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>📊 Excel</button>
               </div>
             </td>
           </tr>
