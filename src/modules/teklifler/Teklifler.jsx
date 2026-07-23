@@ -10,6 +10,7 @@ import { subscribeUnitCosts, subscribeUnitConversions } from "../maliyet/firesto
 import NewQuoteView from "./NewQuoteView";
 import { generateQuotePdf } from "./quotePdf";
 import { generateQuoteExcel } from "./quoteExcel";
+import { computeQuoteStats } from "./quoteStats";
 import { calculateQuoteTotal } from "./quoteCalc";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
@@ -52,6 +53,7 @@ export default function Teklifler({ isAdmin, isUretim, isSales, pendingFromFeasi
         {[
           { id: "new", label: "➕ Yeni Teklif" },
           { id: "list", label: "📋 Teklif Listesi" },
+          { id: "kpi", label: "📊 KPI" },
           { id: "parts", label: "🔩 Parça Kütüphanesi" },
           { id: "customers", label: "👥 Müşteriler" },
           { id: "master", label: "🎯 Master Data" },
@@ -83,6 +85,7 @@ export default function Teklifler({ isAdmin, isUretim, isSales, pendingFromFeasi
         />
       )}
       {activeTab === "list" && <QuoteListView canEdit={canEdit} isAdmin={isAdmin} onOpen={openQuote} />}
+      {activeTab === "kpi" && <QuoteKpiView />}
       {activeTab === "parts" && <PartsLibraryView />}
       {activeTab === "customers" && <CustomersView canEdit={canEdit} />}
       {activeTab === "master" && <MasterDataView canEdit={canEdit} />}
@@ -1533,6 +1536,329 @@ function ImportView() {
 }
 
 // ==================== ortak stiller ====================
+
+// ==================== KPI Görünümü ====================
+
+function QuoteKpiView() {
+  const currentYear = new Date().getFullYear();
+  const [year, setYear] = useState(String(currentYear));
+  const [data, setData] = useState({ quotes: {} });
+
+  useEffect(() => {
+    const unsub = subscribeQuotesForYear(year, setData, { staging: false });
+    return unsub;
+  }, [year]);
+
+  const quotes = useMemo(() => Object.values(data?.quotes || {}), [data]);
+  const stats = useMemo(() => computeQuoteStats(quotes), [quotes]);
+
+  const fmtTl = (n) => n == null || !Number.isFinite(n) ? "—" : `${Number(n).toLocaleString("tr-TR", { maximumFractionDigits: 0 })} ₺`;
+  const fmtDay = (d) => d == null ? "—" : `${d.toFixed(1)} gün`;
+  const fmtPct = (p) => p == null ? "—" : `%${p.toFixed(0)}`;
+
+  return (
+    <div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
+        <label style={{ fontSize: 12, color: "#57534e" }}>Yıl:</label>
+        <select value={year} onChange={e => setYear(e.target.value)}
+          style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
+          {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <span style={{ fontSize: 11, color: "#78716c" }}>
+          {stats.nonArchiveCount} sistem içi teklif
+          {stats.archiveCount > 0 && <span style={{ color: "#a8a29e" }}> · {stats.archiveCount} arşiv (dönüşüm hesabı dışında)</span>}
+        </span>
+      </div>
+
+      {stats.archiveCount > 0 && (
+        <div style={{ padding: "8px 12px", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e", marginBottom: 14 }}>
+          ⚠ Arşivden içe aktarılan {stats.archiveCount} teklifin durum bilgisi güvenilmez olduğundan dönüşüm/kabul KPI'larına dahil edilmedi.
+          Sistem üzerinden oluşturulan teklifler baz alınır.
+        </div>
+      )}
+
+      {stats.nonArchiveCount === 0 ? (
+        <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
+          {year} yılında sistem içi teklif yok. KPI'lar yeni teklifler oluştukça anlam kazanır.
+        </div>
+      ) : (
+        <>
+          {/* Üst 4 kart */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
+            <QKpiCard label="Aktif Portföy" value={fmtTl(stats.activeTotalTl)}
+              subtitle={`${stats.activeCount} açık teklif`} color="#1e40af" />
+            <QKpiCard label="Dönüşüm Oranı" value={fmtPct(stats.conversionRate)}
+              subtitle={`${stats.byStatus.accepted}/${stats.decidedCount} kabul / karar verilen`} color="#16a34a" />
+            <QKpiCard label="Ort. Sipariş Süresi" value={fmtDay(stats.avgConversionDays)}
+              subtitle="teklif → sipariş" color="#7c3aed" />
+            <QKpiCard label="Toplam Ciro (yıl)" value={fmtTl(stats.totalTl)}
+              subtitle={`ort ${fmtTl(stats.avgQuoteTl)} / teklif`} color="#d97706" />
+          </div>
+
+          {/* İkinci sıra: Durum donut + Feasibility huni */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            <QKpiPanel title="🎯 Durum Dağılımı">
+              <QStatusDonut byStatus={stats.byStatus} />
+            </QKpiPanel>
+            <QKpiPanel title="🔬 Yapılabilirlik → Teklif Zinciri">
+              <FeasibilityFunnel
+                totalActive={stats.totalCount}
+                fromFeasibility={stats.fromFeasibilityCount}
+                fromFeasibilityAccepted={stats.fromFeasibilityAccepted}
+                feasibilityRate={stats.feasibilityRate}
+                fmtTl={fmtTl}
+                fmtPct={fmtPct}
+              />
+            </QKpiPanel>
+          </div>
+
+          {/* Üçüncü sıra: Müşteri top 5 + Revizyon istatistikleri */}
+          <div style={{ display: "grid", gridTemplateColumns: "1.5fr 1fr", gap: 10, marginBottom: 14 }}>
+            <QKpiPanel title="🏢 Müşteri Sıralaması (top 5, ciro desc)">
+              {stats.customerRanking.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Müşteri yok.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: "#f5f5f4", textAlign: "left" }}>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Müşteri</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Teklif</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Ciro (₺)</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Dönüşüm</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.customerRanking.slice(0, 5).map(c => (
+                      <tr key={c.name} style={{ borderTop: "1px solid #f5f5f4" }}>
+                        <td style={{ padding: "5px 8px", fontSize: 10 }}>{c.name}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 500 }}>{c.count}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 600 }}>{fmtTl(c.tl)}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", color: c.conversionRate == null ? "#a8a29e" : c.conversionRate >= 50 ? "#166534" : c.conversionRate >= 25 ? "#92400e" : "#991b1b" }}>
+                          {c.conversionRate == null ? "—" : `${c.accepted}/${c.decided} (${c.conversionRate.toFixed(0)}%)`}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </QKpiPanel>
+            <QKpiPanel title="🔄 Revizyon İstatistikleri">
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 4px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                  <span style={{ color: "#44403c" }}>Revizyona giren teklif</span>
+                  <span style={{ fontWeight: 600, color: "#1c1917" }}>{stats.withRevisions}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                  <span style={{ color: "#44403c" }}>Revizyon oranı</span>
+                  <span style={{ fontWeight: 600, color: stats.revisionRate > 30 ? "#d97706" : "#166534" }}>{fmtPct(stats.revisionRate)}</span>
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}>
+                  <span style={{ color: "#44403c" }}>Ort. revizyon no</span>
+                  <span style={{ fontWeight: 600, color: "#1c1917" }}>{stats.avgRevNo == null ? "—" : stats.avgRevNo.toFixed(2)}</span>
+                </div>
+                <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
+                  💡 Revizyon oranı yüksekse fiyatlama/kapsam netliği eksik olabilir.
+                </div>
+              </div>
+            </QKpiPanel>
+          </div>
+
+          {/* Dördüncü sıra: Parça — top ciro + top adet */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            <QKpiPanel title="💰 En Yüksek Cirolu Parça (adet × birim fiyat, top 5)">
+              <PartTable parts={stats.topByTotalTl} kind="tl" fmtTl={fmtTl} fmtPct={fmtPct} />
+            </QKpiPanel>
+            <QKpiPanel title="📦 En Çok Tekliflenen Parça (top 5)">
+              <PartTable parts={stats.topByQuoteCount} kind="count" fmtTl={fmtTl} fmtPct={fmtPct} />
+            </QKpiPanel>
+          </div>
+
+          {/* Beşinci sıra: Parça — en yüksek adet + düşük dönüşüm */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+            <QKpiPanel title="🔢 En Yüksek Adetli Parça (top 5)">
+              <PartTable parts={stats.topByQty} kind="qty" fmtTl={fmtTl} fmtPct={fmtPct} />
+            </QKpiPanel>
+            <QKpiPanel title="📉 Düşük Dönüşümlü Parça (≥2 karar, <%50)">
+              {stats.lowConversionParts.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Karar verilen parça yok veya tümü ≥%50 dönüşüm.</div>
+              ) : (
+                <PartTable parts={stats.lowConversionParts} kind="conv" fmtTl={fmtTl} fmtPct={fmtPct} />
+              )}
+            </QKpiPanel>
+          </div>
+
+          {/* Altıncı sıra: Aging tablosu */}
+          <div style={{ marginBottom: 14 }}>
+            <QKpiPanel title={`🕒 En Eski Aktif Teklifler${stats.lostOpportunity.length > 0 ? ` (⚠ ${stats.lostOpportunity.length} adet 60+ gün)` : ""}`}>
+              {stats.activeAging.length === 0 ? (
+                <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Aktif teklif yok.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: "#f5f5f4", textAlign: "left" }}>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Teklif No</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Müşteri</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Tutar (₺)</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Yaş</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.activeAging.map(q => (
+                      <tr key={q.quoteNo} style={{ borderTop: "1px solid #f5f5f4" }}>
+                        <td style={{ padding: "5px 8px", fontSize: 10, fontFamily: "ui-monospace, monospace" }}>{q.quoteNo}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10 }}>{q.customerName}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 600 }}>{fmtTl(q.totalTl)}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 600, color: q.days > 60 ? "#991b1b" : q.days > 30 ? "#d97706" : "#44403c" }}>
+                          {q.days.toFixed(0)} gün
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </QKpiPanel>
+          </div>
+
+          <div style={{ fontSize: 10, color: "#a8a29e", textAlign: "center", padding: 10 }}>
+            KPI'lar sistem içi teklifler (arşiv hariç) üzerinden canlı hesaplanır. Ciro değerleri TL bazında (kaydedilen totalPriceTl).
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function QKpiCard({ label, value, subtitle, color }) {
+  return (
+    <div style={{ padding: 14, background: "#fff", border: "1px solid #e7e5e4", borderTop: `3px solid ${color}`, borderRadius: 6 }}>
+      <div style={{ fontSize: 10, color: "#78716c", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color, marginTop: 4 }}>{value}</div>
+      <div style={{ fontSize: 10, color: "#78716c", marginTop: 2 }}>{subtitle}</div>
+    </div>
+  );
+}
+
+function QKpiPanel({ title, children }) {
+  return (
+    <div style={{ padding: 12, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, color: "#44403c", marginBottom: 8 }}>{title}</div>
+      {children}
+    </div>
+  );
+}
+
+function QStatusDonut({ byStatus }) {
+  const items = [
+    { key: "accepted", label: "Kabul", color: "#16a34a", count: byStatus.accepted },
+    { key: "sent", label: "Gönderildi", color: "#3b82f6", count: byStatus.sent },
+    { key: "rejected", label: "Reddedildi", color: "#dc2626", count: byStatus.rejected },
+    { key: "draft", label: "Taslak", color: "#a8a29e", count: byStatus.draft },
+  ].filter(it => it.count > 0);
+  const total = items.reduce((s, it) => s + it.count, 0);
+  if (total === 0) return <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Veri yok</div>;
+
+  const size = 140, cx = size / 2, cy = size / 2, r = 55, strokeW = 22;
+  const circumference = 2 * Math.PI * r;
+  let offset = 0;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "4px 0" }}>
+      <svg width={size} height={size}>
+        {items.map(it => {
+          const len = (it.count / total) * circumference;
+          const seg = (
+            <circle key={it.key} cx={cx} cy={cy} r={r} fill="none" stroke={it.color} strokeWidth={strokeW}
+              strokeDasharray={`${len} ${circumference - len}`} strokeDashoffset={-offset}
+              transform={`rotate(-90 ${cx} ${cy})`} />
+          );
+          offset += len;
+          return seg;
+        })}
+        <text x={cx} y={cy - 4} textAnchor="middle" fontSize="18" fontWeight="700" fill="#1c1917">{total}</text>
+        <text x={cx} y={cy + 12} textAnchor="middle" fontSize="8" fill="#78716c">TOPLAM</text>
+      </svg>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", gap: 3, fontSize: 10 }}>
+        {items.map(it => (
+          <div key={it.key} style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ display: "inline-block", width: 10, height: 10, background: it.color, borderRadius: 2 }} />
+            <span style={{ flex: 1, color: "#44403c" }}>{it.label}</span>
+            <span style={{ fontWeight: 600, color: "#1c1917" }}>{it.count}</span>
+            <span style={{ color: "#78716c", minWidth: 32, textAlign: "right" }}>({Math.round((it.count / total) * 100)}%)</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+// Yapılabilirlik → teklif huni gösterim
+function FeasibilityFunnel({ totalActive, fromFeasibility, fromFeasibilityAccepted, feasibilityRate, fmtTl, fmtPct }) {
+  const noFeasibility = totalActive - fromFeasibility;
+  if (totalActive === 0) return <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Veri yok</div>;
+  const feasConversionRate = fromFeasibility > 0 ? (fromFeasibilityAccepted / fromFeasibility) * 100 : null;
+  return (
+    <div style={{ padding: "6px 4px" }}>
+      <FunnelRow label="Tüm teklifler" count={totalActive} pct={100} color="#1e40af" bg="#eff6ff" />
+      <FunnelRow label="Yapılabilirlikten gelen" count={fromFeasibility} pct={feasibilityRate} color="#7c3aed" bg="#f5f3ff" />
+      <FunnelRow label="↳ kabul edilenler" count={fromFeasibilityAccepted}
+        pct={totalActive > 0 ? (fromFeasibilityAccepted / totalActive) * 100 : 0} color="#16a34a" bg="#dcfce7" />
+      <div style={{ fontSize: 10, color: "#78716c", marginTop: 8, paddingTop: 8, borderTop: "1px dashed #e7e5e4" }}>
+        📊 Yapılabilirlikten gelen tekliflerin dönüşüm oranı: <b>{fmtPct(feasConversionRate)}</b>
+      </div>
+    </div>
+  );
+}
+
+function FunnelRow({ label, count, pct, color, bg }) {
+  return (
+    <div style={{ marginBottom: 6 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, marginBottom: 2 }}>
+        <span style={{ color: "#44403c", fontWeight: 500 }}>{label}</span>
+        <span style={{ color, fontWeight: 700 }}>{count}</span>
+      </div>
+      <div style={{ height: 18, background: "#f5f5f4", borderRadius: 3, overflow: "hidden", position: "relative" }}>
+        <div style={{ width: `${Math.max(pct, 2)}%`, height: "100%", background: bg, borderLeft: `3px solid ${color}` }} />
+        <span style={{ position: "absolute", right: 6, top: 2, fontSize: 9, fontWeight: 600, color: "#57534e" }}>%{pct.toFixed(0)}</span>
+      </div>
+    </div>
+  );
+}
+
+// Parça tablosu (top 5)
+function PartTable({ parts, kind, fmtTl, fmtPct }) {
+  if (!parts || parts.length === 0) {
+    return <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Veri yok</div>;
+  }
+  return (
+    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+      <thead>
+        <tr style={{ background: "#f5f5f4", textAlign: "left" }}>
+          <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Stok / Ad</th>
+          <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Teklif</th>
+          <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Adet</th>
+          <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Ciro (₺)</th>
+          <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Dönüşüm</th>
+        </tr>
+      </thead>
+      <tbody>
+        {parts.map(p => (
+          <tr key={p.code} style={{ borderTop: "1px solid #f5f5f4" }}>
+            <td style={{ padding: "5px 8px", fontSize: 10 }}>
+              <div style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{p.code}</div>
+              {p.name && <div style={{ fontSize: 9, color: "#78716c" }}>{p.name}</div>}
+            </td>
+            <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 500 }}>{p.quoteCount}</td>
+            <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right" }}>{p.totalQty.toLocaleString("tr-TR")}</td>
+            <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", fontWeight: 600, color: kind === "tl" ? "#166534" : "#1c1917" }}>{fmtTl(p.totalTl)}</td>
+            <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", color: p.conversionRate == null ? "#a8a29e" : p.conversionRate >= 50 ? "#166534" : p.conversionRate >= 25 ? "#92400e" : "#991b1b" }}>
+              {p.conversionRate == null ? "—" : `${p.accepted}/${p.decided} (${p.conversionRate.toFixed(0)}%)`}
+            </td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
 
 function Card({ title, children, headerAction }) {
   return (
