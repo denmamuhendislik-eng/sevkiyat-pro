@@ -1148,19 +1148,35 @@ async function saveQuoteMasterData(db, parserResult, { staging = false } = {}) {
 async function saveQuoteArchive(db, parserResult, { staging = false } = {}) {
   const suffix = staging ? "_staging" : "";
   const out = [];
-  const batch = db.batch();
+  // Her yıl doc'unu tek tek işle: mevcut sistem içi teklifleri (source !==
+  // "excel-archive-import") koru, sadece arşiv teklifleri güncelle.
   for (const [year, doc] of Object.entries(parserResult.quotesByYear)) {
     const docName = QUOTES_YEAR_DOC_PREFIX + year + suffix;
     const ref = db.collection(APP_COL).doc(docName);
-    batch.set(ref, {
+    // Mevcut doc'u oku
+    const snap = await ref.get();
+    const existingQuotes = snap.exists ? (snap.data().quotes || {}) : {};
+    // Sistem içi tekliflerini ayır
+    const systemQuotes = {};
+    for (const [key, q] of Object.entries(existingQuotes)) {
+      if (q && q.source !== "excel-archive-import") {
+        systemQuotes[key] = q;
+      }
+    }
+    // Yeni doc: arşiv teklifleri (parser'dan) + korunan sistem içi teklifler
+    const mergedQuotes = { ...doc.quotes, ...systemQuotes };
+    await ref.set({
       year,
-      quotes: doc.quotes,
+      quotes: mergedQuotes,
       importedAt: new Date().toISOString(),
       source: "excel-archive-import",
     });
-    out.push({ docName, quoteCount: Object.keys(doc.quotes).length });
+    out.push({
+      docName,
+      archiveCount: Object.keys(doc.quotes).length,
+      systemPreservedCount: Object.keys(systemQuotes).length,
+    });
   }
-  await batch.commit();
   return { staging, docsWritten: out, summary: parserResult.summary };
 }
 

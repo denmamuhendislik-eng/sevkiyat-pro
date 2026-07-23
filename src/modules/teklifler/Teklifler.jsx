@@ -648,8 +648,16 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
         </td>
         <td style={td}>
           <div style={{ display: "flex", gap: 4 }}>
-            <button onClick={() => onOpen && onOpen(q, { readOnly: false })}
-              title="Düzenle" style={{ padding: "3px 8px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer" }}>✏ Aç</button>
+            {q.source === "excel-archive-import" ? (
+              <button onClick={() => onOpen && onOpen(q, { readOnly: true })}
+                title="Arşiv teklif — sadece görüntüleme. Değişiklik için 🔄 Revizyon ile R1 aç."
+                style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: "pointer" }}>
+                👁 Arşiv
+              </button>
+            ) : (
+              <button onClick={() => onOpen && onOpen(q, { readOnly: false })}
+                title="Düzenle" style={{ padding: "3px 8px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer" }}>✏ Aç</button>
+            )}
             <button onClick={() => onCreateRevision(q)} disabled={!canEdit || creatingRev}
               title="Bu teklifi klonlayıp yeni R{n+1} oluştur" style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", opacity: canEdit ? 1 : 0.5 }}>🔄 Revizyon</button>
             <button onClick={() => downloadPdf(q)}

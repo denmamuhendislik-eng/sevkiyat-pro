@@ -310,7 +310,9 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         totalCostTl: calc.totalCostTl,
         totalPriceTl: calc.totalSaleTl,
         totalProfitTl: calc.totalProfitTl,
-        source: "ui",
+        // Orijinal source korunur — arşiv bir teklif düzenlense bile arşiv etiketi
+        // kaybolmaz. Yeni oluşturulanlarda default "ui".
+        source: initialQuote?.source || "ui",
       };
       const out = await saveNewQuote(quotePayload, { canEdit, staging });
 
