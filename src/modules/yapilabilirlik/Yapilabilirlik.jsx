@@ -442,7 +442,11 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
     if (!study.partName && !study.partNo) { setError("Parça adı veya no zorunlu"); return; }
     setSaving(true); setError("");
     try {
-      const payload = { ...study, studyNo };
+      // Ağırlık autofill — kullanıcı manuel yazmadıysa ↺ butonuna basmasa da
+      // hesaplanmış değer (dimensions × density) persist edilir. PDF ve parça
+      // kütüphanesi boyle "0.000 kg" yerine gerçek değeri görür.
+      const effectiveWeightKg = (Number(study.weightKg) > 0) ? Number(study.weightKg) : (autoWeightKg > 0 ? Number(autoWeightKg.toFixed(4)) : 0);
+      const payload = { ...study, studyNo, weightKg: effectiveWeightKg };
       const out = await saveFeasibilityStudy(payload, { canEdit, staging, userEmail: "" });
 
       // Yeni müşteri ise quoteCustomers'a otomatik ekle (Karar 4)
@@ -476,7 +480,7 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
             hammadde: {
               tur: study.materialType || study.material || "",
               ebat: (enV || boyV || uzV) ? `EN:${enV} × BOY:${boyV} × UZ:${uzV}` : "",
-              agirlikKg: Number(study.weightKg) || 0,
+              agirlikKg: effectiveWeightKg,
             },
             operasyonlar: { makineler: machineNames, toplamSureDk: totalMin },
             fason: { isler: fasonNames, tahminiToplam: fasonToplam },
@@ -491,6 +495,10 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
         }
       }
 
+      // Autofill ile yazılan ağırlığı local state'e de yansıt → PDF preview / sonraki edit tutarlı
+      if (effectiveWeightKg > 0 && effectiveWeightKg !== Number(study.weightKg)) {
+        setStudy(prev => ({ ...prev, weightKg: effectiveWeightKg }));
+      }
       setSaveResult({ ok: true, ...out, message: `Yapılabilirlik kaydedildi: ${studyNo}` });
       onSaved && onSaved();
     } catch (e) {
@@ -528,8 +536,9 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
     }
     setCompleting(true); setError("");
     try {
-      // 1) Kaydet
-      const payload = { ...study, studyNo };
+      // 1) Kaydet — ağırlık autofill (handleSave ile aynı davranış)
+      const effectiveWeightKg = (Number(study.weightKg) > 0) ? Number(study.weightKg) : (autoWeightKg > 0 ? Number(autoWeightKg.toFixed(4)) : 0);
+      const payload = { ...study, studyNo, weightKg: effectiveWeightKg };
       await saveFeasibilityStudy(payload, { canEdit, staging, userEmail: "" });
       // 2) İmza at
       await signFeasibilityRole(studyNo, currentPendingRole, {
@@ -539,9 +548,11 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
         canEdit, staging,
       });
       // 3) Local state'e imza kaydını da işle → status derhal ilerlesin
+      //    Ağırlık autofill'i de yansıt (kullanıcı sonradan form'da görsün).
       const now = new Date().toISOString();
       setStudy(prev => ({
         ...prev,
+        weightKg: effectiveWeightKg > 0 ? effectiveWeightKg : (prev.weightKg || 0),
         signatures: {
           ...(prev.signatures || {}),
           [currentPendingRole]: {
