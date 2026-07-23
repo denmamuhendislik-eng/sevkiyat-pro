@@ -2245,9 +2245,10 @@ function FeasibilityListView({ canEdit, isAdmin, isSales, isUretim, onOpen, onCr
                 const isSelected = selectedIds.has(s.studyNo);
                 const scoreInfo = computeStudyScore(s);
                 const recommendation = getRecommendation(scoreInfo.percent);
-                // Satır arka planı puan rengiyle — sadece satış aşamasında değilse (form
-                // daha yeni doldurulmaya başlandığı için puan yanıltıcı olabilir).
-                const applyScoreColor = status !== "salesPending" && status !== "draft";
+                // Satır arka planı puan rengiyle — form doldurulma aşamalarında
+                // (draft/salesPending/technicalPending) toplam puan henüz eksik olduğu
+                // için renklendirme yanıltıcı. Sadece değerlendirme sonrası göster.
+                const applyScoreColor = status !== "salesPending" && status !== "draft" && status !== "technicalPending";
                 const rowBg = isSelected ? "#eff6ff" : (applyScoreColor ? recommendation.bg : "transparent");
                 return (
                   <tr key={s.studyNo} style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
