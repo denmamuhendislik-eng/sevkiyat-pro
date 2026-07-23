@@ -568,6 +568,16 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
       setError("Genel Müdür imzası için sadece GM yetkilidir");
       return;
     }
+    // Eksiklik kontrolü — imzalanacak rolün sorumluluklarına göre.
+    // handleCompleteSection ile aynı validate helper'ı kullanır → tutarlı davranış.
+    const { blockers, warnings } = validateBeforeSign(roleKey, study, status);
+    if (blockers.length > 0) {
+      alert("Aşağıdaki eksiklikler tamamlanmadan imza atılamaz:\n\n• " + blockers.join("\n• "));
+      return;
+    }
+    if (warnings.length > 0) {
+      if (!confirm("Aşağıdaki alanlar eksik. Yine de imzaya devam edilsin mi?\n\n• " + warnings.join("\n• "))) return;
+    }
     setSignRolePicker({ roleKey });
   };
 
