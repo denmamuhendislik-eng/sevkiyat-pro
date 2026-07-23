@@ -50,10 +50,25 @@ const HISTORICAL_YEAR_AVG_RATES = {
 // Belirli bir yıl için tüm kayıtlı TCMB kurlarının aritmetik ortalaması.
 // Yıl arşiv teklifleri dönemsel değerlendirmek için (o yılın ortalama kuru = teklifin
 // verildiği dönemin gerçek TL karşılığı).
-// Firestore'da yoksa HISTORICAL_YEAR_AVG_RATES fallback'e düşer.
+//
+// Öncelik:
+//   - Geçmiş yıllar (year < cari yıl): HISTORICAL_YEAR_AVG_RATES varsa onu kullan
+//     (Firestore'da o yıla ait kısmi kayıt olsa bile — kısmi ortalama yanıltıcı).
+//   - Cari yıl: Firestore'daki tüm günlerin ortalaması (cron doldurur).
+//   - Fallback: hiçbiri yoksa null.
 export function getAverageRatesForYear(currencyRates, year) {
+  const y = String(year);
+  const currentYear = String(new Date().getFullYear());
+  const isPastYear = Number(y) < Number(currentYear);
+  const historical = HISTORICAL_YEAR_AVG_RATES[y];
+
+  // Geçmiş yıl için tarihsel değer var → o kullanılır (Firestore'daki kısmi kayıt görmezden gelinir)
+  if (isPastYear && historical) {
+    return { year: y, usd: historical.usd, eur: historical.eur, days: 0, source: "historical" };
+  }
+
   const map = currencyRates?.rates || {};
-  const prefix = String(year) + "-";
+  const prefix = y + "-";
   const keys = Object.keys(map).filter(k => k.startsWith(prefix));
   if (keys.length > 0) {
     let usdSum = 0, usdCount = 0, eurSum = 0, eurCount = 0;
@@ -65,17 +80,16 @@ export function getAverageRatesForYear(currencyRates, year) {
       if (e > 0) { eurSum += e; eurCount++; }
     }
     return {
-      year: String(year),
+      year: y,
       usd: usdCount > 0 ? usdSum / usdCount : 0,
       eur: eurCount > 0 ? eurSum / eurCount : 0,
       days: keys.length,
       source: "firestore",
     };
   }
-  // Firestore'da veri yok → tarihsel fallback
-  const fb = HISTORICAL_YEAR_AVG_RATES[String(year)];
-  if (fb) {
-    return { year: String(year), usd: fb.usd, eur: fb.eur, days: 0, source: "historical" };
+  // Firestore'da hiç kayıt yok + geçmiş yıl değil ama tarihsel varsa → tarihsel
+  if (historical) {
+    return { year: y, usd: historical.usd, eur: historical.eur, days: 0, source: "historical" };
   }
   return null;
 }
