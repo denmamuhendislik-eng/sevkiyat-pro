@@ -1258,13 +1258,34 @@ async function promoteQuoteStaging(db) {
     promoted.push(docName);
   }
   // Yıl doc'ları + parça bucket doc'ları — quotes_YYYY_staging + quoteParts_N_staging
+  // KRITIK: quotes_YYYY promote'unda prod'daki sistem içi tekliflerini (source !==
+  // "excel-archive-import") koruyup üzerine yazmıyoruz. Aksi halde arşiv yeniden
+  // yüklendiğinde sistem içi teklifler kaybolur.
   const allDocs = await db.collection(APP_COL).listDocuments();
   for (const d of allDocs) {
     if (d.id.match(/^(quotes_\d{4}|quoteParts_\d)_staging$/)) {
       const stagingSnap = await d.get();
-      const data = stagingSnap.data();
+      const stagingData = stagingSnap.data();
       const prodName = d.id.replace("_staging", "");
-      await db.collection(APP_COL).doc(prodName).set(data);
+      const prodRef = db.collection(APP_COL).doc(prodName);
+      // Sadece quotes_YYYY doc'larında koruma yap
+      if (d.id.match(/^quotes_\d{4}_staging$/)) {
+        const prodSnap = await prodRef.get();
+        const prodQuotes = prodSnap.exists ? (prodSnap.data().quotes || {}) : {};
+        const stagingQuotes = stagingData.quotes || {};
+        // Prod'daki sistem içi teklifleri ayır
+        const systemQuotes = {};
+        for (const [key, q] of Object.entries(prodQuotes)) {
+          if (q && q.source !== "excel-archive-import") {
+            systemQuotes[key] = q;
+          }
+        }
+        // Merge: staging (arşiv) + korunan sistem içi
+        const mergedQuotes = { ...stagingQuotes, ...systemQuotes };
+        await prodRef.set({ ...stagingData, quotes: mergedQuotes });
+      } else {
+        await prodRef.set(stagingData);
+      }
       await d.delete();
       promoted.push(prodName);
     }
