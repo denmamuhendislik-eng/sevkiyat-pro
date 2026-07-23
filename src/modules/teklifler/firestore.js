@@ -285,8 +285,44 @@ export function findRevisionChain(allQuotesForYear, baseQuoteNo, customerName) {
     .sort((a, b) => (Number(a.revNo) || 0) - (Number(b.revNo) || 0));
 }
 
+// Fason iş listesine yeni eleman ekle. Aynı isim varsa hata verir.
+export async function addQuoteFasonWork(work, { canEdit, staging = false } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const name = String(work?.name || "").trim();
+  if (!name) throw new Error("Fason iş adı zorunlu");
+  const docName = "quoteFasonWorks" + (staging ? "_staging" : "");
+  const ref = doc(db, APP_COL, docName);
+  const snap = await getDoc(ref);
+  const existing = snap.exists() ? (snap.data().works || []) : [];
+  const lower = name.toLocaleLowerCase("tr-TR");
+  if (existing.some(w => String(w?.name || "").trim().toLocaleLowerCase("tr-TR") === lower)) {
+    throw new Error(`"${name}" zaten var`);
+  }
+  const id = work.id || `fason_${Date.now()}`;
+  const next = [...existing, { id, name, ...work, id, name }];
+  await setDoc(ref, { works: next }, { merge: true });
+  return { id, name };
+}
+
+// Fason iş sil (id veya name ile). Kullanımda olan bir işi kaldırınca uyarı yok —
+// eski tekliflerde metin olarak kalır, sadece dropdown'da görünmez.
+export async function deleteQuoteFasonWork(idOrName, { canEdit, staging = false } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const docName = "quoteFasonWorks" + (staging ? "_staging" : "");
+  const ref = doc(db, APP_COL, docName);
+  const snap = await getDoc(ref);
+  const existing = snap.exists() ? (snap.data().works || []) : [];
+  const target = String(idOrName || "").trim().toLocaleLowerCase("tr-TR");
+  const next = existing.filter(w =>
+    String(w?.id || "").toLocaleLowerCase("tr-TR") !== target &&
+    String(w?.name || "").trim().toLocaleLowerCase("tr-TR") !== target
+  );
+  if (next.length === existing.length) throw new Error("Fason iş bulunamadı");
+  await setDoc(ref, { works: next }, { merge: true });
+}
+
 // Malzeme master'ında bir satırı güncelle (stok kodu eşlemesi, fiyat, tarihçe).
-// updates: { stokKodlari?: [], priceTlPerKg?, priceUsdPerKg?, note? }
+// updates: { stokKodlari?: [], priceTlPerKg?, priceUsdPerKg?, note?, shape?, density? }
 // pushHistory: fiyat güncellendiyse priceHistory array'ine kayıt eklenir
 // TL fiyat güncellenip USD verilmediyse: currencyRateUsd üzerinden otomatik hesap
 export async function saveQuoteMaterialUpdate(materialName, updates, { canEdit, staging = false, userEmail = "", source = "manual" } = {}) {
@@ -319,6 +355,14 @@ export async function saveQuoteMaterialUpdate(materialName, updates, { canEdit, 
   if (updates.priceUsdPerKg != null && !isNaN(Number(updates.priceUsdPerKg))) {
     patch.priceUsdPerKg = Number(updates.priceUsdPerKg);
   }
+  // Yeni malzeme oluştururken şekil ve özgül ağırlık gelir; mevcut malzemede
+  // de override edilebilir.
+  if (updates.shape != null) patch.shape = String(updates.shape);
+  if (updates.density != null && !isNaN(Number(updates.density))) {
+    patch.density = Number(updates.density);
+  }
+  // İlk kayıt ise name alanını da yaz
+  if (!existingMat.name) patch.name = materialName;
   // TL güncelleniyor ama USD verilmedi → kur bilgisiyle otomatik
   if (patch.priceTlPerKg != null && patch.priceUsdPerKg == null && currencyRateUsd > 0) {
     patch.priceUsdPerKg = Number((patch.priceTlPerKg / currencyRateUsd).toFixed(4));

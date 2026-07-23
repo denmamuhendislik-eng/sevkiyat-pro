@@ -4,6 +4,7 @@ import {
   subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts, subscribeQuoteCustomers,
   saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision, deleteQuoteFull,
   saveQuoteMaterialUpdate, suggestMaterialPriceTl,
+  addQuoteFasonWork, deleteQuoteFasonWork,
 } from "./firestore";
 import { subscribeUnitCosts, subscribeUnitConversions } from "../maliyet/firestore";
 import NewQuoteView from "./NewQuoteView";
@@ -642,6 +643,9 @@ function MasterDataView({ canEdit }) {
   const [options, setOptions] = useState(null);
   const [policy, setPolicy] = useState(null);
   const [savingMat, setSavingMat] = useState({});
+  // Yeni malzeme / yeni fason modal state
+  const [newMaterialModal, setNewMaterialModal] = useState(false);
+  const [newFasonModal, setNewFasonModal] = useState(false);
 
   useEffect(() => {
     const u1 = subscribeQuoteMaterials(setMaterials, { staging });
@@ -677,7 +681,13 @@ function MasterDataView({ canEdit }) {
         </label>
       </div>
 
-      <Card title={`Malzemeler (${Object.keys(materials?.materials || {}).length})`}>
+      <Card title={`Malzemeler (${Object.keys(materials?.materials || {}).length})`}
+        headerAction={canEdit && (
+          <button onClick={() => setNewMaterialModal(true)}
+            style={{ padding: "3px 10px", fontSize: 11, background: "#1e40af", color: "#fff", border: "none", borderRadius: 3, cursor: "pointer", fontWeight: 500 }}>
+            ➕ Yeni Malzeme
+          </button>
+        )}>
         {kurUsd > 0 && (
           <div style={{ fontSize: 11, color: "#78716c", marginBottom: 8 }}>
             Döviz kuru: <b>1 $ = {kurUsd} TL</b> · TL değişirse USD otomatik güncellenir (aynı yönde tersine de)
@@ -722,10 +732,29 @@ function MasterDataView({ canEdit }) {
         </div>
       </Card>
 
-      <Card title={`Fason İşleri (${(fasonWorks?.works || []).length})`}>
+      <Card title={`Fason İşleri (${(fasonWorks?.works || []).length})`}
+        headerAction={canEdit && (
+          <button onClick={() => setNewFasonModal(true)}
+            style={{ padding: "3px 10px", fontSize: 11, background: "#1e40af", color: "#fff", border: "none", borderRadius: 3, cursor: "pointer", fontWeight: 500 }}>
+            ➕ Yeni Fason İş
+          </button>
+        )}>
         <div style={{ display: "flex", flexWrap: "wrap", gap: 6, fontSize: 11 }}>
           {(fasonWorks?.works || []).map(w => (
-            <span key={w.id} style={{ padding: "3px 8px", background: "#f5f5f4", borderRadius: 3 }}>{w.name}</span>
+            <span key={w.id || w.name} style={{ padding: "3px 8px", background: "#f5f5f4", borderRadius: 3, display: "inline-flex", alignItems: "center", gap: 4 }}>
+              {w.name}
+              {canEdit && (
+                <button onClick={async () => {
+                  if (!confirm(`"${w.name}" silinsin mi?`)) return;
+                  try {
+                    await deleteQuoteFasonWork(w.id || w.name, { canEdit, staging });
+                  } catch (e) {
+                    alert("Silinemedi: " + e.message);
+                  }
+                }}
+                  title="Sil" style={{ background: "transparent", border: "none", color: "#991b1b", cursor: "pointer", padding: 0, fontSize: 10 }}>✕</button>
+              )}
+            </span>
           ))}
         </div>
       </Card>
@@ -777,6 +806,157 @@ function MasterDataView({ canEdit }) {
           ))}
         </div>
       </Card>
+
+      {newMaterialModal && (
+        <NewMaterialModal canEdit={canEdit} staging={staging}
+          onClose={() => setNewMaterialModal(false)}
+          existingNames={Object.keys(materials?.materials || {})} />
+      )}
+      {newFasonModal && (
+        <NewFasonModal canEdit={canEdit} staging={staging}
+          onClose={() => setNewFasonModal(false)}
+          existing={fasonWorks?.works || []} />
+      )}
+    </div>
+  );
+}
+
+// Yeni malzeme ekleme modal — ad, şekil, özgül, $/kg zorunlu
+function NewMaterialModal({ canEdit, staging, onClose, existingNames }) {
+  const [name, setName] = useState("");
+  const [shape, setShape] = useState("DİKDÖRTGEN");
+  const [density, setDensity] = useState("");
+  const [priceUsd, setPriceUsd] = useState("");
+  const [priceTl, setPriceTl] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handleSave = async () => {
+    setErr("");
+    const nm = name.trim();
+    if (!nm) { setErr("Ad zorunlu"); return; }
+    if (existingNames.some(n => n.toLocaleLowerCase("tr-TR") === nm.toLocaleLowerCase("tr-TR"))) {
+      setErr(`"${nm}" zaten var`); return;
+    }
+    if (!density || Number(density) <= 0) { setErr("Özgül ağırlık > 0 olmalı"); return; }
+    setSaving(true);
+    try {
+      await saveQuoteMaterialUpdate(nm, {
+        shape, density: Number(density),
+        priceUsdPerKg: priceUsd ? Number(priceUsd) : null,
+        priceTlPerKg: priceTl ? Number(priceTl) : null,
+      }, { canEdit, staging, source: "manual" });
+      onClose();
+    } catch (e) {
+      setErr(e.message || "Kayıt hatası");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+      <div style={{ background: "#fff", borderRadius: 8, width: "min(440px, 92vw)", padding: 20 }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>➕ Yeni Malzeme</h3>
+        <div style={{ marginTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
+          <div>
+            <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Ad *</label>
+            <input value={name} onChange={e => setName(e.target.value)}
+              placeholder="Örn. AL-6061-T6"
+              style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Şekil</label>
+              <select value={shape} onChange={e => setShape(e.target.value)}
+                style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
+                <option value="DİKDÖRTGEN">DİKDÖRTGEN</option>
+                <option value="SİLİNDİR">SİLİNDİR</option>
+                <option value="ALTIGEN">ALTIGEN</option>
+                <option value="EBATSIZ">EBATSIZ</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Özgül (g/cm³) *</label>
+              <input type="number" step="0.01" value={density} onChange={e => setDensity(e.target.value)}
+                placeholder="örn. 2.70"
+                style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+            </div>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+            <div>
+              <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>$/kg</label>
+              <input type="number" step="0.01" value={priceUsd} onChange={e => setPriceUsd(e.target.value)}
+                placeholder="opsiyonel"
+                style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+            </div>
+            <div>
+              <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>TL/kg</label>
+              <input type="number" step="0.01" value={priceTl} onChange={e => setPriceTl(e.target.value)}
+                placeholder="opsiyonel"
+                style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+            </div>
+          </div>
+          <div style={{ fontSize: 10, color: "#78716c" }}>
+            💡 Biri girildiyse diğeri güncel kur üzerinden otomatik hesaplanır.
+          </div>
+        </div>
+        {err && <div style={{ marginTop: 8, fontSize: 11, color: "#991b1b" }}>⚠ {err}</div>}
+        <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onClose} disabled={saving} style={{ padding: "7px 14px", fontSize: 12, border: "1px solid #d6d3d1", background: "#fff", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+          <button onClick={handleSave} disabled={saving}
+            style={{ padding: "7px 14px", fontSize: 12, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: saving ? "wait" : "pointer", fontWeight: 500 }}>
+            {saving ? "Kaydediliyor..." : "💾 Kaydet"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Yeni fason iş ekleme modal — sadece ad
+function NewFasonModal({ canEdit, staging, onClose, existing }) {
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState("");
+
+  const handleSave = async () => {
+    setErr("");
+    const nm = name.trim();
+    if (!nm) { setErr("Ad zorunlu"); return; }
+    setSaving(true);
+    try {
+      await addQuoteFasonWork({ name: nm }, { canEdit, staging });
+      onClose();
+    } catch (e) {
+      setErr(e.message || "Kayıt hatası");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div onClick={(e) => { if (e.target === e.currentTarget && !saving) onClose(); }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 100 }}>
+      <div style={{ background: "#fff", borderRadius: 8, width: "min(380px, 92vw)", padding: 20 }}>
+        <h3 style={{ margin: 0, fontSize: 15, fontWeight: 600 }}>➕ Yeni Fason İş</h3>
+        <div style={{ marginTop: 14 }}>
+          <label style={{ fontSize: 11, color: "#57534e", display: "block", marginBottom: 4 }}>Ad *</label>
+          <input value={name} onChange={e => setName(e.target.value)}
+            placeholder="Örn. Anodize, Sertleştirme..."
+            onKeyDown={e => e.key === "Enter" && handleSave()}
+            style={{ width: "100%", padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12, boxSizing: "border-box" }} />
+        </div>
+        {err && <div style={{ marginTop: 8, fontSize: 11, color: "#991b1b" }}>⚠ {err}</div>}
+        <div style={{ marginTop: 16, display: "flex", gap: 8, justifyContent: "flex-end" }}>
+          <button onClick={onClose} disabled={saving} style={{ padding: "7px 14px", fontSize: 12, border: "1px solid #d6d3d1", background: "#fff", borderRadius: 4, cursor: "pointer" }}>İptal</button>
+          <button onClick={handleSave} disabled={saving}
+            style={{ padding: "7px 14px", fontSize: 12, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: saving ? "wait" : "pointer", fontWeight: 500 }}>
+            {saving ? "Kaydediliyor..." : "💾 Kaydet"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -1354,10 +1534,13 @@ function ImportView() {
 
 // ==================== ortak stiller ====================
 
-function Card({ title, children }) {
+function Card({ title, children, headerAction }) {
   return (
     <div style={{ padding: 14, border: "1px solid #e7e5e4", borderRadius: 6, background: "#fff", marginBottom: 12 }}>
-      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10, color: "#1c1917" }}>{title}</div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#1c1917" }}>{title}</div>
+        {headerAction}
+      </div>
       {children}
     </div>
   );
