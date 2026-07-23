@@ -39,6 +39,30 @@ export function getRatesForDate(currencyRates, isoDate) {
   return { date: lastKey, usd: Number(r?.usd) || 0, eur: Number(r?.eur) || 0, source: r?.source || "tcmb" };
 }
 
+// Belirli bir yıl için tüm kayıtlı TCMB kurlarının aritmetik ortalaması.
+// Yıl arşiv teklifleri dönemsel değerlendirmek için (o yılın ortalama kuru = teklifin
+// verildiği dönemin gerçek TL karşılığı). Kayıt yoksa null döner (çağıran fallback yapar).
+export function getAverageRatesForYear(currencyRates, year) {
+  const map = currencyRates?.rates || {};
+  const prefix = String(year) + "-";
+  const keys = Object.keys(map).filter(k => k.startsWith(prefix));
+  if (keys.length === 0) return null;
+  let usdSum = 0, usdCount = 0, eurSum = 0, eurCount = 0;
+  for (const k of keys) {
+    const r = map[k];
+    const u = Number(r?.usd);
+    const e = Number(r?.eur);
+    if (u > 0) { usdSum += u; usdCount++; }
+    if (e > 0) { eurSum += e; eurCount++; }
+  }
+  return {
+    year: String(year),
+    usd: usdCount > 0 ? usdSum / usdCount : 0,
+    eur: eurCount > 0 ? eurSum / eurCount : 0,
+    days: keys.length,
+  };
+}
+
 // TL → seçili para birimine çevir. rates objesi { usd, eur } içermeli.
 export function convertFromTl(tlValue, targetCurrency, rates) {
   const v = Number(tlValue) || 0;

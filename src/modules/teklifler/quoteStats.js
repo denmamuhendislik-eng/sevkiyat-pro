@@ -29,14 +29,21 @@ const isArchive = (q) => q?.source === "excel-archive-import";
 
 // Arşiv tekliflerinde totalPriceTl aslında teklifin döviz cinsinde tutar
 // (yanlış adlandırılmış). Sistem içi tekliflerde ise gerçekten TL karşılığı.
-// KPI'da doğru toplam için arşiv tekliflerini güncel TCMB kuruyla TL'ye normalize et.
-function normalizeQuoteToTl(quote, rates) {
-  if (!isArchive(quote)) return quote; // sistem içi zaten TL
+// Arşiv tekliflerini teklif verildiği yılın ortalama TCMB kuruyla TL'ye normalize
+// et. Yıl kuru yoksa fallback güncel kur.
+//   ratesByYear: { "2024": { usd, eur, days }, "2025": {...}, ..., _fallback: {usd, eur} }
+function normalizeQuoteToTl(quote, ratesByYear) {
+  if (!isArchive(quote)) return quote;
   const cur = String(quote.currency || "TL").toUpperCase();
-  let rate = 1;
-  if (cur === "DOLAR" || cur === "USD") rate = Number(rates?.usd) || 1;
-  else if (cur === "EURO" || cur === "EUR") rate = Number(rates?.eur) || 1;
-  if (rate === 1) return quote;
+  if (cur === "TL") return quote;
+  const year = quote.quoteDate ? String(quote.quoteDate).slice(0, 4) : null;
+  const yearRates = (year && ratesByYear?.[year]) || ratesByYear?._fallback || null;
+  let rate = 0;
+  if (yearRates) {
+    if (cur === "DOLAR" || cur === "USD") rate = Number(yearRates.usd) || 0;
+    else if (cur === "EURO" || cur === "EUR") rate = Number(yearRates.eur) || 0;
+  }
+  if (rate <= 0) return quote; // kur bulunamadıysa orijinal (yanlış toplam ama en azından bozuk hesap yok)
   return {
     ...quote,
     totalPriceTl: (Number(quote.totalPriceTl) || 0) * rate,
@@ -44,15 +51,14 @@ function normalizeQuoteToTl(quote, rates) {
       ...l,
       linePrice: (Number(l.linePrice) || 0) * rate,
     })),
-    _normalizedRate: rate, // debug
-    _originalCurrency: cur,
+    _normalizedRate: rate,
+    _normalizedYear: year,
   };
 }
 
-export function computeQuoteStats(quotes, rates = null) {
+export function computeQuoteStats(quotes, ratesByYear = null) {
   const rawList = Array.isArray(quotes) ? quotes.filter(q => q?.quoteNo) : [];
-  // Tüm teklifler TL bazına normalize edilir (arşiv döviz → güncel kur ile TL)
-  const list = rawList.map(q => normalizeQuoteToTl(q, rates));
+  const list = rawList.map(q => normalizeQuoteToTl(q, ratesByYear));
 
   // Revizyon zincirlerini grupla — her (baseNo + müşteri) tek teklif sayılır
   const groups = new Map();

@@ -13,7 +13,7 @@ import { generateQuotePdf } from "./quotePdf";
 import { generateQuoteExcel } from "./quoteExcel";
 import { computeQuoteStats } from "./quoteStats";
 import { subscribeCurrencyRates } from "../maliyet/firestore";
-import { getLatestRates } from "../maliyet/currency";
+import { getLatestRates, getAverageRatesForYear } from "../maliyet/currency";
 import { calculateQuoteTotal } from "./quoteCalc";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
@@ -1637,9 +1637,20 @@ function QuoteKpiView() {
   }, []);
 
   const latestRates = useMemo(() => getLatestRates(currencyRatesDoc), [currencyRatesDoc]);
+  // Yıl bazlı ortalama kur — arşiv teklifleri o yılın gerçek dönem değeriyle TL'ye çevirir.
+  // Kayıt yoksa fallback güncel kur (_fallback anahtarında).
+  const ratesByYear = useMemo(() => {
+    const out = {};
+    for (const y of ["2022", "2023", "2024", "2025", "2026"]) {
+      const avg = getAverageRatesForYear(currencyRatesDoc, y);
+      if (avg) out[y] = avg;
+    }
+    if (latestRates) out._fallback = { usd: latestRates.usd, eur: latestRates.eur };
+    return out;
+  }, [currencyRatesDoc, latestRates]);
 
   const quotes = useMemo(() => Object.values(data?.quotes || {}), [data]);
-  const stats = useMemo(() => computeQuoteStats(quotes, latestRates), [quotes, latestRates]);
+  const stats = useMemo(() => computeQuoteStats(quotes, ratesByYear), [quotes, ratesByYear]);
 
   const fmtTl = (n) => n == null || !Number.isFinite(n) ? "—" : `${Number(n).toLocaleString("tr-TR", { maximumFractionDigits: 0 })} ₺`;
   const fmtDay = (d) => d == null ? "—" : `${d.toFixed(1)} gün`;
@@ -1810,9 +1821,18 @@ function QuoteKpiView() {
 
           <div style={{ fontSize: 10, color: "#a8a29e", textAlign: "center", padding: 10 }}>
             Ciro/adet/müşteri sıralaması tüm teklifleri (arşiv dahil) kapsar. Dönüşüm oranı ve teklif→sipariş süresi yalnızca sistem içi tekliflerden.
-            {latestRates && (
-              <span> Arşivdeki döviz teklifleri güncel TCMB kuruyla TL'ye normalize edildi (1$={latestRates.usd?.toFixed(2)} · 1€={latestRates.eur?.toFixed(2)} · {latestRates.date}).</span>
-            )}
+            <div style={{ marginTop: 4 }}>
+              Arşivdeki döviz teklifleri o yılın ortalama TCMB kuruyla TL'ye normalize edildi:{" "}
+              {["2024", "2025", "2026"].map(y => ratesByYear[y] ? (
+                <span key={y} style={{ marginRight: 8 }}>
+                  <b>{y}</b>: 1$={ratesByYear[y].usd.toFixed(2)} · 1€={ratesByYear[y].eur.toFixed(2)} ({ratesByYear[y].days} gün)
+                </span>
+              ) : (
+                <span key={y} style={{ marginRight: 8, color: "#d97706" }}>
+                  <b>{y}</b>: veri yok (güncel kur fallback)
+                </span>
+              ))}
+            </div>
           </div>
         </>
       )}
