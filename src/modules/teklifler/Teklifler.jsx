@@ -1598,7 +1598,7 @@ function QuoteKpiView() {
           {/* İkinci sıra: Durum donut + Feasibility huni */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
             <QKpiPanel title="🎯 Durum Dağılımı">
-              <QStatusDonut byStatus={stats.byStatus} />
+              <QStatusDonut byStatus={stats.byStatus} archiveCount={stats.archiveCount} />
             </QKpiPanel>
             <QKpiPanel title="🔬 Yapılabilirlik → Teklif Zinciri">
               <FeasibilityFunnel
@@ -1748,12 +1748,13 @@ function QKpiPanel({ title, children }) {
   );
 }
 
-function QStatusDonut({ byStatus }) {
+function QStatusDonut({ byStatus, archiveCount = 0 }) {
   const items = [
-    { key: "accepted", label: "Kabul", color: "#16a34a", count: byStatus.accepted },
-    { key: "sent", label: "Gönderildi", color: "#3b82f6", count: byStatus.sent },
-    { key: "rejected", label: "Reddedildi", color: "#dc2626", count: byStatus.rejected },
-    { key: "draft", label: "Taslak", color: "#a8a29e", count: byStatus.draft },
+    { key: "accepted", label: "Kabul (sistem)", color: "#16a34a", count: byStatus.accepted },
+    { key: "sent", label: "Gönderildi (sistem)", color: "#3b82f6", count: byStatus.sent },
+    { key: "rejected", label: "Reddedildi (sistem)", color: "#dc2626", count: byStatus.rejected },
+    { key: "draft", label: "Taslak (sistem)", color: "#f59e0b", count: byStatus.draft },
+    { key: "archive", label: "Arşiv (durum belirsiz)", color: "#a8a29e", count: archiveCount },
   ].filter(it => it.count > 0);
   const total = items.reduce((s, it) => s + it.count, 0);
   if (total === 0) return <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Veri yok</div>;
