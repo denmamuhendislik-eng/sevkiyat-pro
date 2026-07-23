@@ -1823,15 +1823,21 @@ function QuoteKpiView() {
             Ciro/adet/müşteri sıralaması tüm teklifleri (arşiv dahil) kapsar. Dönüşüm oranı ve teklif→sipariş süresi yalnızca sistem içi tekliflerden.
             <div style={{ marginTop: 4 }}>
               Arşivdeki döviz teklifleri o yılın ortalama TCMB kuruyla TL'ye normalize edildi:{" "}
-              {["2024", "2025", "2026"].map(y => ratesByYear[y] ? (
-                <span key={y} style={{ marginRight: 8 }}>
-                  <b>{y}</b>: 1$={ratesByYear[y].usd.toFixed(2)} · 1€={ratesByYear[y].eur.toFixed(2)} ({ratesByYear[y].days} gün)
-                </span>
-              ) : (
-                <span key={y} style={{ marginRight: 8, color: "#d97706" }}>
-                  <b>{y}</b>: veri yok (güncel kur fallback)
-                </span>
-              ))}
+              {["2024", "2025", "2026"].map(y => {
+                const r = ratesByYear[y];
+                if (!r) return (
+                  <span key={y} style={{ marginRight: 8, color: "#d97706" }}>
+                    <b>{y}</b>: veri yok (güncel kur fallback)
+                  </span>
+                );
+                const label = r.source === "historical" ? "tarihsel ort."
+                  : r.days > 0 ? `${r.days} gün TCMB` : "TCMB";
+                return (
+                  <span key={y} style={{ marginRight: 8 }}>
+                    <b>{y}</b>: 1$={r.usd.toFixed(2)} · 1€={r.eur.toFixed(2)} ({label})
+                  </span>
+                );
+              })}
             </div>
           </div>
         </>

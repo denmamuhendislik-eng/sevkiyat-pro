@@ -39,28 +39,45 @@ export function getRatesForDate(currencyRates, isoDate) {
   return { date: lastKey, usd: Number(r?.usd) || 0, eur: Number(r?.eur) || 0, source: r?.source || "tcmb" };
 }
 
+// Tarihsel yıllık ortalama kurlar — Firestore'da TCMB kaydı yoksa fallback.
+// Kaynaklar: paracevirici.com (TCMB arşiv) + haberturk + exchange-rates.org.
+// 2026 için değer koymuyoruz — cari yılın kısmi ortalaması Firestore'dan gerçek zamanlı gelir.
+const HISTORICAL_YEAR_AVG_RATES = {
+  "2024": { usd: 32.90, eur: 35.57 },
+  "2025": { usd: 39.57, eur: 44.85 },
+};
+
 // Belirli bir yıl için tüm kayıtlı TCMB kurlarının aritmetik ortalaması.
 // Yıl arşiv teklifleri dönemsel değerlendirmek için (o yılın ortalama kuru = teklifin
-// verildiği dönemin gerçek TL karşılığı). Kayıt yoksa null döner (çağıran fallback yapar).
+// verildiği dönemin gerçek TL karşılığı).
+// Firestore'da yoksa HISTORICAL_YEAR_AVG_RATES fallback'e düşer.
 export function getAverageRatesForYear(currencyRates, year) {
   const map = currencyRates?.rates || {};
   const prefix = String(year) + "-";
   const keys = Object.keys(map).filter(k => k.startsWith(prefix));
-  if (keys.length === 0) return null;
-  let usdSum = 0, usdCount = 0, eurSum = 0, eurCount = 0;
-  for (const k of keys) {
-    const r = map[k];
-    const u = Number(r?.usd);
-    const e = Number(r?.eur);
-    if (u > 0) { usdSum += u; usdCount++; }
-    if (e > 0) { eurSum += e; eurCount++; }
+  if (keys.length > 0) {
+    let usdSum = 0, usdCount = 0, eurSum = 0, eurCount = 0;
+    for (const k of keys) {
+      const r = map[k];
+      const u = Number(r?.usd);
+      const e = Number(r?.eur);
+      if (u > 0) { usdSum += u; usdCount++; }
+      if (e > 0) { eurSum += e; eurCount++; }
+    }
+    return {
+      year: String(year),
+      usd: usdCount > 0 ? usdSum / usdCount : 0,
+      eur: eurCount > 0 ? eurSum / eurCount : 0,
+      days: keys.length,
+      source: "firestore",
+    };
   }
-  return {
-    year: String(year),
-    usd: usdCount > 0 ? usdSum / usdCount : 0,
-    eur: eurCount > 0 ? eurSum / eurCount : 0,
-    days: keys.length,
-  };
+  // Firestore'da veri yok → tarihsel fallback
+  const fb = HISTORICAL_YEAR_AVG_RATES[String(year)];
+  if (fb) {
+    return { year: String(year), usd: fb.usd, eur: fb.eur, days: 0, source: "historical" };
+  }
+  return null;
 }
 
 // TL → seçili para birimine çevir. rates objesi { usd, eur } içermeli.
