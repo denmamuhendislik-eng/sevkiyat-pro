@@ -1565,34 +1565,34 @@ function QuoteKpiView() {
           {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
         </select>
         <span style={{ fontSize: 11, color: "#78716c" }}>
-          {stats.nonArchiveCount} sistem içi teklif
-          {stats.archiveCount > 0 && <span style={{ color: "#a8a29e" }}> · {stats.archiveCount} arşiv (dönüşüm hesabı dışında)</span>}
+          {stats.totalCount} teklif
+          {stats.archiveCount > 0 && <span style={{ color: "#a8a29e" }}> ({stats.archiveCount} arşiv + {stats.nonArchiveCount} sistem içi)</span>}
         </span>
       </div>
 
       {stats.archiveCount > 0 && (
         <div style={{ padding: "8px 12px", background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e", marginBottom: 14 }}>
-          ⚠ Arşivden içe aktarılan {stats.archiveCount} teklifin durum bilgisi güvenilmez olduğundan dönüşüm/kabul KPI'larına dahil edilmedi.
-          Sistem üzerinden oluşturulan teklifler baz alınır.
+          ⚠ Arşivden içe aktarılan {stats.archiveCount} teklifin tutar/adet bilgisi ciro ve müşteri sıralamasına <b>dahildir</b>;
+          ancak status alanı güvenilmez olduğu için <b>dönüşüm oranı, kabul/red hesabı ve teklif→sipariş süresi</b> yalnızca sistem üzerinden oluşturulan {stats.nonArchiveCount} teklif üzerinden hesaplanır.
         </div>
       )}
 
-      {stats.nonArchiveCount === 0 ? (
+      {stats.totalCount === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
-          {year} yılında sistem içi teklif yok. KPI'lar yeni teklifler oluştukça anlam kazanır.
+          {year} yılında teklif yok.
         </div>
       ) : (
         <>
           {/* Üst 4 kart */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
-            <QKpiCard label="Aktif Portföy" value={fmtTl(stats.activeTotalTl)}
-              subtitle={`${stats.activeCount} açık teklif`} color="#1e40af" />
-            <QKpiCard label="Dönüşüm Oranı" value={fmtPct(stats.conversionRate)}
-              subtitle={`${stats.byStatus.accepted}/${stats.decidedCount} kabul / karar verilen`} color="#16a34a" />
-            <QKpiCard label="Ort. Sipariş Süresi" value={fmtDay(stats.avgConversionDays)}
-              subtitle="teklif → sipariş" color="#7c3aed" />
             <QKpiCard label="Toplam Ciro (yıl)" value={fmtTl(stats.totalTl)}
-              subtitle={`ort ${fmtTl(stats.avgQuoteTl)} / teklif`} color="#d97706" />
+              subtitle={`${stats.totalCount} teklif · ort ${fmtTl(stats.avgQuoteTl)}`} color="#d97706" />
+            <QKpiCard label="Aktif Portföy" value={fmtTl(stats.activeTotalTl)}
+              subtitle={`${stats.activeCount} açık teklif (arşiv hariç)`} color="#1e40af" />
+            <QKpiCard label="Dönüşüm Oranı" value={fmtPct(stats.conversionRate)}
+              subtitle={stats.decidedCount > 0 ? `${stats.byStatus.accepted}/${stats.decidedCount} kabul (arşiv hariç)` : "karar verilen yok"} color="#16a34a" />
+            <QKpiCard label="Ort. Sipariş Süresi" value={fmtDay(stats.avgConversionDays)}
+              subtitle="teklif → sipariş (arşiv hariç)" color="#7c3aed" />
           </div>
 
           {/* İkinci sıra: Durum donut + Feasibility huni */}
@@ -1720,7 +1720,8 @@ function QuoteKpiView() {
           </div>
 
           <div style={{ fontSize: 10, color: "#a8a29e", textAlign: "center", padding: 10 }}>
-            KPI'lar sistem içi teklifler (arşiv hariç) üzerinden canlı hesaplanır. Ciro değerleri TL bazında (kaydedilen totalPriceTl).
+            Ciro/adet/müşteri sıralaması tüm teklifleri (arşiv dahil) kapsar. Dönüşüm oranı ve teklif→sipariş süresi yalnızca sistem içi tekliflerden.
+            Tutarlar TL bazında (kaydedilen totalPriceTl).
           </div>
         </>
       )}

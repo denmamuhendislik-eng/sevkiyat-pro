@@ -49,7 +49,13 @@ export function computeQuoteStats(quotes) {
   const nonArchive = activeQuotes.filter(q => !isArchive(q));
   const archive = activeQuotes.filter(isArchive);
 
-  // Durum sayaçları — SADECE arşiv olmayan tekliflerde
+  // Portfolio — TÜM tekliflerin tutar ve adedi (arşiv dahil).
+  // Kullanıcı ciro/portföy metriklerinde arşivdeki geçmiş tutarları da görmek ister.
+  const totalCount = activeQuotes.length;
+  const totalTl = activeQuotes.reduce((s, q) => s + (Number(q.totalPriceTl) || 0), 0);
+  const avgQuoteTl = totalCount > 0 ? totalTl / totalCount : 0;
+
+  // Durum sayaçları — SADECE arşiv olmayan tekliflerde (arşiv status'ü güvenilmez)
   const byStatus = { draft: 0, sent: 0, accepted: 0, rejected: 0 };
   for (const q of nonArchive) {
     const st = q.status || "sent";
@@ -60,17 +66,13 @@ export function computeQuoteStats(quotes) {
   const decidedCount = byStatus.accepted + byStatus.rejected;
   const conversionRate = decidedCount > 0 ? (byStatus.accepted / decidedCount) * 100 : null;
 
-  // Portfolio
-  const totalCount = nonArchive.length;
-  const totalTl = nonArchive.reduce((s, q) => s + (Number(q.totalPriceTl) || 0), 0);
-  const avgQuoteTl = totalCount > 0 ? totalTl / totalCount : 0;
-
+  // Aktif teklifler (bekleyen) — arşiv hariç (arşivdekiler zaten kabul/red olmuş varsayılır)
   const activeStatuses = ["draft", "sent"];
   const activeQuotesOnly = nonArchive.filter(q => activeStatuses.includes(q.status || "sent"));
   const activeCount = activeQuotesOnly.length;
   const activeTotalTl = activeQuotesOnly.reduce((s, q) => s + (Number(q.totalPriceTl) || 0), 0);
 
-  // Ortalama teklif → sipariş süresi (kabul olanlar)
+  // Ortalama teklif → sipariş süresi (kabul olanlar) — arşiv hariç
   const conversionDays = [];
   for (const q of nonArchive) {
     if (q.status === "accepted" && q.quoteDate && q.orderDate) {
@@ -95,9 +97,10 @@ export function computeQuoteStats(quotes) {
   const revCounts = nonArchiveGroups.map(g => Number(g.active.revNo) || 0);
   const avgRevNo = mean(revCounts);
 
-  // Müşteri sıralaması — TL cirosuna göre
+  // Müşteri sıralaması — teklif sayısı ve ciro TÜM tekliflerden (arşiv dahil).
+  // Dönüşüm oranı sadece arşiv olmayan tekliflerin kararlarından hesaplanır.
   const customerStats = {};
-  for (const q of nonArchive) {
+  for (const q of activeQuotes) {
     const cName = q.customerName || "—";
     if (!customerStats[cName]) customerStats[cName] = {
       name: cName, count: 0, tl: 0,
@@ -106,9 +109,12 @@ export function computeQuoteStats(quotes) {
     const cs = customerStats[cName];
     cs.count++;
     cs.tl += Number(q.totalPriceTl) || 0;
-    if (q.status === "accepted") { cs.accepted++; cs.decided++; }
-    else if (q.status === "rejected") cs.decided++;
-    else if (q.status === "sent" || q.status === "draft") cs.sent++;
+    // Dönüşüm hesabına sadece arşiv olmayan teklifler girer
+    if (!isArchive(q)) {
+      if (q.status === "accepted") { cs.accepted++; cs.decided++; }
+      else if (q.status === "rejected") cs.decided++;
+      else if (q.status === "sent" || q.status === "draft") cs.sent++;
+    }
   }
   const customerRanking = Object.values(customerStats)
     .map(c => ({
@@ -117,9 +123,10 @@ export function computeQuoteStats(quotes) {
     }))
     .sort((a, b) => b.tl - a.tl);
 
-  // Parça bazlı KPI
+  // Parça bazlı KPI — ciro/adet/teklif sayısı TÜM tekliflerden (arşiv dahil).
+  // Dönüşüm oranı sadece arşiv olmayan tekliflerden.
   const partStats = {};
-  for (const q of nonArchive) {
+  for (const q of activeQuotes) {
     for (const line of (q.lines || [])) {
       const code = String(line.stockCode || "").trim();
       if (!code) continue;
@@ -146,8 +153,11 @@ export function computeQuoteStats(quotes) {
       p.unitTlCount++;
       if (unitPrice > p.maxUnitTl) p.maxUnitTl = unitPrice;
       if (line.stockName && !p.name) p.name = line.stockName;
-      if (q.status === "accepted") { p.accepted++; p.decided++; }
-      else if (q.status === "rejected") p.decided++;
+      // Dönüşüm hesabına sadece arşiv olmayan teklifler girer
+      if (!isArchive(q)) {
+        if (q.status === "accepted") { p.accepted++; p.decided++; }
+        else if (q.status === "rejected") p.decided++;
+      }
     }
   }
   const parts = Object.values(partStats).map(p => ({
