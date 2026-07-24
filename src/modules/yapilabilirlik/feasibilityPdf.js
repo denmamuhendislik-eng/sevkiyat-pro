@@ -103,7 +103,9 @@ function buildFeasibilityHtml(study) {
   const toolingItems = study.toolingItems || [];
   const fasonItems = study.fasonItems || [];
   const toolingTotal = toolingItems.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
-  const fasonTotal = fasonItems.reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
+  // Fason: parça başına × sipariş miktarı (kalem qty UI'dan kaldırıldı)
+  const partQty = Number(study.quantity) || 1;
+  const fasonTotal = fasonItems.reduce((s, it) => s + (Number(it.unitCost) || 0), 0) * partQty;
 
   const opsDetails = study.operations?.details || [];
   const opCount = opsDetails.length > 0 ? opsDetails.length : (Number(study.operations?.count) || 0);
@@ -236,12 +238,14 @@ function buildFeasibilityHtml(study) {
           </thead>
           <tbody>
             ${items.map(it => {
-              const line = (Number(it.qty) || 0) * (Number(it.unitCost) || 0);
+              // Fason: parça başına × sipariş miktarı. Tooling: kalem qty × birim.
+              const effectiveQty = cat.key === "fason" ? partQty : (Number(it.qty) || 0);
+              const line = effectiveQty * (Number(it.unitCost) || 0);
               return `
                 <tr style="background:#fff; border-bottom:1px solid #f5f5f4;">
                   <td style="padding:4px 6px; font-weight:500;">${esc(it.name || "—")}</td>
                   <td style="padding:4px 6px; color:#57534e;">${esc(it.description || "")}</td>
-                  <td style="padding:4px 6px; text-align:right;">${it.qty || 0}</td>
+                  <td style="padding:4px 6px; text-align:right;">${effectiveQty}</td>
                   <td style="padding:4px 6px; text-align:right;">${fmtNum(it.unitCost)}</td>
                   <td style="padding:4px 6px; text-align:right; font-weight:600; color:#166534;">${fmtNum(line)}</td>
                   <td style="padding:4px 6px; color:#57534e;">${esc(it.supplier || "—")}</td>

@@ -130,11 +130,11 @@ function validateBeforeSign(role, study, status) {
         blockers.push(`Aparat/Takım #${i + 1} (${it.name}): adet veya birim fiyat eksik`);
       }
     });
-    // Fason kalemi: ad var ama adet/fiyat eksik
+    // Fason kalemi: ad var ama birim fiyat eksik (qty artık sipariş miktarından türetiliyor)
     const fasonItems = Array.isArray(study?.fasonItems) ? study.fasonItems : [];
     fasonItems.forEach((it, i) => {
-      if (it?.name?.trim() && (!Number(it?.qty) || !Number(it?.unitCost))) {
-        blockers.push(`Fason #${i + 1} (${it.name}): adet veya birim fiyat eksik`);
+      if (it?.name?.trim() && !Number(it?.unitCost)) {
+        blockers.push(`Fason #${i + 1} (${it.name}): birim fiyat eksik`);
       }
     });
     // Soft uyarılar (hammadde detayları)
@@ -403,7 +403,11 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
 
   // Kalem toplamları (UI özet için)
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
-  const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
+  // Fason: parça başına varsayımı — birim maliyet × sipariş miktarı. Kalem qty
+  // alanı UI'dan kaldırıldı; toQuote da quantity=0 gönderip quoteCalc'ın
+  // parça qty fallback'ini tetikliyor. Batch-based nadir fason gerekirse
+  // teklif ekranında override edilebilir.
+  const fasonTotal = (study.fasonItems || []).reduce((s, it) => s + (Number(it.unitCost) || 0), 0) * (Number(study.quantity) || 1);
 
   // Kilit mekanizması — form açılış anındaki durum kilitleme kararı. Kullanıcı
   // karar seçtiğinde (decision = "accepted") status runtime'da "approved"a
@@ -470,7 +474,8 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
           const machineNames = (study.operations?.details || []).map(d => d.machine).filter(Boolean).join(",");
           const totalMin = (study.operations?.details || []).reduce((s, d) => s + (Number(d.minutes) || 0), 0) || Number(study.operations?.totalMinutes) || 0;
           const fasonNames = (study.fasonItems || []).map(f => f.name).filter(Boolean).join(",");
-          const fasonToplam = (study.fasonItems || []).reduce((s, f) => s + (Number(f.qty) || 0) * (Number(f.unitCost) || 0), 0);
+          // Fason toplam: parça başına × sipariş miktarı (qty alanı UI'dan kaldırıldı)
+          const fasonToplam = (study.fasonItems || []).reduce((s, f) => s + (Number(f.unitCost) || 0), 0) * (Number(study.quantity) || 1);
           const aparatToplam = (study.toolingItems || []).reduce((s, t) => s + (Number(t.qty) || 0) * (Number(t.unitCost) || 0), 0);
           const enV = Number(study.dimensions?.en) || 0, boyV = Number(study.dimensions?.boy) || 0, uzV = Number(study.dimensions?.uzunluk) || 0;
           await saveQuotePart(partCode, {
@@ -1204,7 +1209,10 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
                   </thead>
                   <tbody>
                     {items.map((it, i) => {
-                      const lineTotal = (Number(it.qty) || 0) * (Number(it.unitCost) || 0);
+                      // Fason: her kalem parça başına — sipariş miktarı ile çarpılır.
+                      // Tooling: kalem qty'si kullanılır (bir kalıp = flat maliyet).
+                      const effectiveQty = cat.key === "fason" ? (Number(study.quantity) || 1) : (Number(it.qty) || 0);
+                      const lineTotal = effectiveQty * (Number(it.unitCost) || 0);
                       return (
                         <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
                           <td style={{ padding: "3px 4px" }}>
@@ -1226,8 +1234,15 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
                               placeholder="ebat/özellik" style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} />
                           </td>
                           <td style={{ padding: "3px 4px" }}>
-                            <input type="number" step="1" value={it.qty || 0} onChange={e => updateItem(cat.key, i, "qty", Number(e.target.value) || 0)} disabled={readonlyForm}
-                              style={{ width: "100%", padding: 3, fontSize: 10, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                            {cat.key === "fason" ? (
+                              <div title={`Sipariş miktarı × birim (parça başına fason varsayımı)`}
+                                style={{ padding: 3, fontSize: 10, textAlign: "right", color: "#78716c", fontStyle: "italic" }}>
+                                ×{Number(study.quantity) || 1}
+                              </div>
+                            ) : (
+                              <input type="number" step="1" value={it.qty || 0} onChange={e => updateItem(cat.key, i, "qty", Number(e.target.value) || 0)} disabled={readonlyForm}
+                                style={{ width: "100%", padding: 3, fontSize: 10, textAlign: "right", border: "1px solid #d6d3d1", borderRadius: 2 }} />
+                            )}
                           </td>
                           <td style={{ padding: "3px 4px" }}>
                             <input type="number" step="0.01" value={it.unitCost || 0} onChange={e => updateItem(cat.key, i, "unitCost", Number(e.target.value) || 0)} disabled={readonlyForm}

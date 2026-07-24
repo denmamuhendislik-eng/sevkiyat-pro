@@ -16,10 +16,14 @@ function studyToLine(study) {
     ratePerMin: 0, // NewQuoteView machineRatesData'dan isim eşleşmesiyle otomatik doldurur
   }));
 
+  // Fason: parça başına varsayımı — quantity=0 → quoteCalc.js:110 parça qty
+  // fallback'i devreye girer. Yapılabilirlik UI'sinde artık kalem qty
+  // sorulmuyor (her fason parça-başı). Batch-based nadir istisna teklif
+  // ekranında (NewQuoteView fason satırı) qty override edilebilir.
   const fasonWorks = (study.fasonItems || []).map(it => ({
     name: String(it.name || "").trim(),
     unitPriceTl: Number(it.unitCost) || 0,
-    quantity: Number(it.qty) || 0,
+    quantity: 0,
   }));
 
   const toolingTotal = (study.toolingItems || []).reduce((s, it) => s + (Number(it.qty) || 0) * (Number(it.unitCost) || 0), 0);
