@@ -128,6 +128,9 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     }
     if (c.defaultPaymentTerm && !initialQuote.paymentTerm) setPaymentTerm(c.defaultPaymentTerm);
     if (c.defaultShipping && !initialQuote.shipping) setShipping(c.defaultShipping);
+    // Telefon/e-posta: feasibility'de girilmediyse müşteri kütüphanesinden düşür
+    if (c.phone && !initialQuote.customerPhone) setCustomerPhone(c.phone);
+    if (c.email && !initialQuote.customerEmail) setCustomerEmail(c.email);
   }, [initialQuote, customersData]);
 
   // Tezgah ratePerMin auto-fill — machineRatesData async geldiği için initialQuote
