@@ -832,7 +832,21 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
         </div>
         <div>
           <label style={miniLabel}>Miktar</label>
-          <input type="number" value={line.quantity || 1} onChange={e => update(idx, "quantity", Number(e.target.value) || 1)} style={miniInput} />
+          <input type="number" value={line.quantity || 1}
+            onChange={e => {
+              const q = Number(e.target.value) || 1;
+              const oldQ = Number(line.quantity) || 1;
+              const oldB = Number(line.batchSize) || 0;
+              update(idx, "quantity", q);
+              // Parti büyüklüğünü miktarla otomatik senkron (feasibility ile aynı davranış):
+              //   - Parti 0 (hiç doldurulmadı) → miktarla eşitle
+              //   - Parti eski miktarla aynı (kullanıcı özelleştirmemiş) → yeni miktarla eşitle
+              //   - Parti farklı (kullanıcı bilinçle değer girmiş) → dokunma
+              if (oldB === 0 || oldB === oldQ) {
+                update(idx, "batchSize", q);
+              }
+            }}
+            style={miniInput} />
         </div>
         <div>
           <label style={miniLabel} title="Marj bracket'i bu adet üzerinden bakılır. Boş bırakırsan miktar kullanılır. Uzun vadeli partili teslimatlar için doldur (örn. 500 sipariş, 50'lik partiler → 50 yaz).">
