@@ -292,6 +292,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
             musteriKodu: l.musteriKodu,
             stockName: l.stockName,
             quantity: l.quantity,
+            batchSize: Number(l.batchSize) || 0,
             unit: l.unit,
             materialType: l.materialType,
             dimensions: l.dimensions,
@@ -834,6 +835,16 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
           <input type="number" value={line.quantity || 1} onChange={e => update(idx, "quantity", Number(e.target.value) || 1)} style={miniInput} />
         </div>
         <div>
+          <label style={miniLabel} title="Marj bracket'i bu adet üzerinden bakılır. Boş bırakırsan miktar kullanılır. Uzun vadeli partili teslimatlar için doldur (örn. 500 sipariş, 50'lik partiler → 50 yaz).">
+            🎯 Parti <span style={{ fontSize: 8, color: "#9a3412" }}>(marj)</span>
+          </label>
+          <input type="number" min="0" value={line.batchSize || 0}
+            onChange={e => update(idx, "batchSize", Number(e.target.value) || 0)}
+            placeholder={`boş = ${line.quantity || 1}`}
+            title="Parti büyüklüğü — marj bracket'i buradan bakılır"
+            style={{ ...miniInput, background: "#fff7ed", borderColor: "#fed7aa" }} />
+        </div>
+        <div>
           <label style={miniLabel}>Birim</label>
           <select value={line.unit || "ADET"} onChange={e => update(idx, "unit", e.target.value)} style={miniInput}>
             {(optionsData?.birim || ["ADET", "KG", "METRE"]).map(b => <option key={b} value={b}>{b}</option>)}
@@ -1006,7 +1017,14 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
           <b>Bu Kalem:</b> Adet Maliyet: {fmt(calcResult.perUnit.totalCost)} · Adet Satış: <b>{fmt(calcResult.perUnit.salePrice)}</b>
           {" · "}Toplam: <b>{fmt(calcResult.total.salePrice)}</b>
           {" · "}Marj: <b>%{calcResult.margins.profitPct.toFixed(1)}</b>
-          {" · "}Aralık: {calcResult.margins.quantityBracket} · Grup: {calcResult.margins.paymentGroup}
+          {" · "}Aralık: {calcResult.margins.quantityBracket}
+          {calcResult.margins.batchApplied && (
+            <span title={`Parti büyüklüğü verildiği için marj bracket'i ${calcResult.margins.marginQty} adet üzerinden bulundu (üretim maliyeti hâlâ ${line.quantity} adet üzerinden hesaplanıyor).`}
+              style={{ marginLeft: 4, padding: "0 5px", background: "#fff7ed", color: "#9a3412", border: "1px solid #fed7aa", borderRadius: 3, fontSize: 9, fontWeight: 600 }}>
+              🎯 parti {calcResult.margins.marginQty}
+            </span>
+          )}
+          {" · Grup: "}{calcResult.margins.paymentGroup}
         </div>
       )}
         </div>
@@ -1347,6 +1365,7 @@ function makeBlankLine() {
     musteriKodu: "",
     stockName: "",
     quantity: 1,
+    batchSize: 0, // 0 = quantity ile aynı sayılır (marj bracket için)
     unit: "ADET",
     materialType: "",
     dimensions: { en: 0, boy: 0, uzunluk: 0 },
@@ -1422,6 +1441,7 @@ function normalizeIncomingLines(rawLines) {
       musteriKodu: l.musteriKodu || "",
       stockName: l.stockName || "",
       quantity: Number(l.quantity) || 1,
+      batchSize: Number(l.batchSize) || 0,
       unit: l.unit || "ADET",
       materialType: l.materialType || "",
       dimensions,

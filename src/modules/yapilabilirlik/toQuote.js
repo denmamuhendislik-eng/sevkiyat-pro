@@ -36,6 +36,9 @@ function studyToLine(study) {
     musteriKodu: study.musteriKodu || "",
     stockName: study.partName || "",
     quantity: Number(study.quantity) || 1,
+    // Parti büyüklüğü (opsiyonel) — marj bracket'i bu değerden bakılır.
+    // 0/boş ise quoteCalc quantity'ye fallback eder.
+    batchSize: Number(study.batchSize) || 0,
     unit: "ADET",
     materialType: study.materialType || "",
     dimensions: {

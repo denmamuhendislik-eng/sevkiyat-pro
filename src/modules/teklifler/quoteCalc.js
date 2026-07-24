@@ -125,8 +125,13 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
   const totalCostPerUnit = materialCostPerUnit + laborCostPerUnit + fasonCostPerUnit + specialToolPerUnit;
   const totalCostTotal = totalCostPerUnit * qty;
 
-  // 7. Marj hesabı
-  const qMargin = findQuantityMargin(policy?.quantityMargins, qty);
+  // 7. Marj hesabı — parti büyüklüğü verilmişse marj bracket'i ONA göre bakılır.
+  //    Amaç: Uzun vadeli yüksek adet siparişlerde parti bazlı fiyatlama (örn. 500
+  //    adet 10×50 parti halinde teslim → 50 adet marj bracket'i alınır → gerçekçi
+  //    birim fiyat). Üretim/malzeme maliyeti yine qty (500) üzerinden hesaplanır.
+  //    line.batchSize yoksa/0 ise mevcut davranış (qty üzerinden) korunur → backward-compat.
+  const marginQty = Number(line.batchSize) > 0 ? Number(line.batchSize) : qty;
+  const qMargin = findQuantityMargin(policy?.quantityMargins, marginQty);
   const group = paymentTermToGroup(paymentTerm);
   const groupMargin = policy?.customerGroupMargins?.[group] || 0;
 
@@ -212,6 +217,10 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
     // Marj bilgisi (UI'da göstermek için)
     margins: {
       quantityBracket: `${qMargin.min || 1}${qMargin.max && qMargin.max !== qMargin.min ? "-" + qMargin.max : ""}`,
+      // Marj bracket'inin hangi adet üzerinden bulunduğu — parti kullanıldıysa şeffaflık
+      marginQty,
+      batchSize: Number(line.batchSize) || 0,
+      batchApplied: Number(line.batchSize) > 0 && Number(line.batchSize) < qty,
       material: materialMargin,
       labor: laborMargin,
       fason: fasonMargin,

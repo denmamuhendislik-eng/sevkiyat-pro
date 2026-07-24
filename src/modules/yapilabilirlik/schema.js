@@ -301,7 +301,10 @@ export function makeEmptyStudy(studyNo) {
     materialShape: "",   // DİKDÖRTGEN | SİLİNDİR | ALTIGEN | EBATSIZ
     dimensions: { en: 0, boy: 0, uzunluk: 0 },
     weightKg: 0,         // otomatik hesap veya manuel override
-    quantity: 1,         // sipariş adedi
+    quantity: 1,         // sipariş adedi (müşterinin toplam talebi)
+    batchSize: 0,        // parti büyüklüğü — 0 ise quantity'ye eşit sayılır.
+                         // Marj bracket'i bu değer üzerinden bulunur (fiyatlama).
+                         // Üretim/malzeme maliyeti yine quantity üzerinden hesaplanır.
     customerQuoteNo: "",
     otherMaterials: "",
     otherQualityRequirements: "",

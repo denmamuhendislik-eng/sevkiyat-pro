@@ -805,6 +805,26 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
               style={{ ...inputStyle, borderColor: "#bfdbfe", background: "#eff6ff", fontWeight: 600 }} />
           </div>
           <div>
+            <label style={{ ...labelStyle, color: "#7c2d12", fontWeight: 600 }} title="Miktar bazlı marj tablosunda hangi dilime bakılacağını belirler. Boş bırakılırsa sipariş miktarı ile aynı sayılır. Uzun vadeli / parti halinde teslimatlarda gerçekçi marj için kullanılır.">
+              🎯 Parti Büyüklüğü <span style={{ fontSize: 9, color: "#9a3412", fontWeight: 500 }}>(marj için)</span>
+            </label>
+            <input type="number" min="0"
+              value={study.batchSize || 0}
+              onChange={e => update("batchSize", Number(e.target.value) || 0)}
+              placeholder={`boş = ${study.quantity || 1}`}
+              disabled={readonlyForm}
+              style={{ ...inputStyle, borderColor: "#fed7aa", background: "#fff7ed" }} />
+            {Number(study.batchSize) > 0 && Number(study.batchSize) > Number(study.quantity || 1) && (
+              <div style={{ fontSize: 9, color: "#dc2626", marginTop: 2 }}>⚠ Parti sipariş miktarından büyük</div>
+            )}
+            {(!study.batchSize || Number(study.batchSize) === Number(study.quantity || 1)) && (
+              <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Marj bracket'i sipariş miktarından bakılır</div>
+            )}
+            {Number(study.batchSize) > 0 && Number(study.batchSize) < Number(study.quantity || 1) && (
+              <div style={{ fontSize: 9, color: "#166534", marginTop: 2, fontWeight: 500 }}>✓ Marj bracket'i {study.batchSize} adet üzerinden bakılır</div>
+            )}
+          </div>
+          <div>
             <label style={labelStyle}>Müşteri Parça Kodu</label>
             <input value={study.musteriKodu || ""} onChange={e => update("musteriKodu", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} />
           </div>
