@@ -110,6 +110,26 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     );
   }, [initialQuote]);
 
+  // Feasibility→teklif dönüşünde müşteri default'ları (currency, paymentTerm, shipping)
+  // otomatik uygulansın. Sadece YENİ akış için (kayıtlı teklifi açarken eski değeri ezmez).
+  // customersData async yüklendiği için initialQuote'la aynı effect'te yapamıyoruz.
+  useEffect(() => {
+    if (!initialQuote) return;
+    if (initialQuote.quoteNo) return; // kayıtlı teklif düzenlemesi — dokunma
+    if (!initialQuote.customerName) return;
+    const c = customersData?.customers?.[initialQuote.customerName];
+    if (!c) return;
+    // Feasibility payload TL default gönderir — müşteri default'u varsa uygula.
+    if (c.defaultCurrency && c.defaultCurrency !== "TL" && (!initialQuote.currency || initialQuote.currency === "TL")) {
+      setCurrency(c.defaultCurrency);
+      // Yeni tekliflerde zaten isEditingExisting=false → auto-fill çalışır. Yine de flag'i işaretle
+      // ki bu currency değişimi hidrasyondan gelmediği net olsun (ileride mantık değişirse güvenli).
+      setUserChangedCurrency(true);
+    }
+    if (c.defaultPaymentTerm && !initialQuote.paymentTerm) setPaymentTerm(c.defaultPaymentTerm);
+    if (c.defaultShipping && !initialQuote.shipping) setShipping(c.defaultShipping);
+  }, [initialQuote, customersData]);
+
   // Tezgah ratePerMin auto-fill — machineRatesData async geldiği için initialQuote
   // load'undan sonra çalışır. Yapılabilirlikten dönüşen tekliflerde ratePerMin=0
   // olarak gelen tezgahlar isim eşleşmesiyle otomatik doldurulur.
@@ -150,18 +170,20 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     return null;
   }, [currency, currencyRatesDoc, quoteDate, materials]);
 
-  // Var olan bir teklif düzenleniyorsa initialQuote.exchangeRate KORUNUR — auto-fill ezmez.
-  // Yeni teklif akışında (feasibility'den gelen dahil, henüz quoteNo yok) currency veya
-  // quoteDate değişince kur otomatik yenilenir. Kullanıcı input'a manuel değer yazarsa
-  // sonraki değişimlerde de doğal olarak override kalır (auto-fill yalnız currency/quoteDate
-  // değişiminde tetiklenir — kullanıcı ne yaparsa yapsın manuel değer korunur).
+  // Var olan bir teklif düzenleniyorsa initialQuote.exchangeRate hidrasyonda KORUNUR.
+  // Ama kullanıcı mid-edit currency'yi değiştirirse (örn. TL → DOLAR) o zaman auto-fill
+  // devreye girer → yeni currency için o günün kuru gelir, kullanıcı manuel yazmak
+  // zorunda kalmaz. userChangedCurrency bayrağı ile ayırt ediyoruz.
   const isEditingExisting = !!initialQuote?.quoteNo;
+  const [userChangedCurrency, setUserChangedCurrency] = useState(false);
   useEffect(() => {
-    if (isEditingExisting) return;
+    // Var olan tekliflerde: yalnız kullanıcı bilerek currency değiştirdiyse auto-fill çalışsın.
+    // Yeni tekliflerde (quoteNo yok — feasibility'den gelen dahil): her zaman çalışsın.
+    if (isEditingExisting && !userChangedCurrency) return;
     if (currency === "TL") { setExchangeRate(1); return; }
     if (rateSource?.rate > 0) setExchangeRate(rateSource.rate);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currency, quoteDate, isEditingExisting]);
+  }, [currency, quoteDate, isEditingExisting, userChangedCurrency]);
 
   // Müşteri seçilince default alanları doldur
   const applyCustomer = (name) => {
@@ -172,7 +194,10 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
       setCustomerEmail(c.email || "");
       if (c.defaultPaymentTerm) setPaymentTerm(c.defaultPaymentTerm);
       if (c.defaultShipping) setShipping(c.defaultShipping);
-      if (c.defaultCurrency) setCurrency(c.defaultCurrency);
+      if (c.defaultCurrency && c.defaultCurrency !== currency) {
+        setCurrency(c.defaultCurrency);
+        setUserChangedCurrency(true); // Kur auto-fill'in mid-edit'te de çalışması için
+      }
     }
   };
 
@@ -500,7 +525,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
           </div>
           <div>
             <label style={labelStyle}>Döviz</label>
-            <select value={currency} onChange={e => setCurrency(e.target.value)} style={inputStyle}>
+            <select value={currency} onChange={e => { setCurrency(e.target.value); setUserChangedCurrency(true); }} style={inputStyle}>
               <option value="TL">TL</option>
               <option value="DOLAR">DOLAR</option>
               <option value="EURO">EURO</option>
