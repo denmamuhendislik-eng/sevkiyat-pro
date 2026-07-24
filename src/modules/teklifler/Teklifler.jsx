@@ -107,18 +107,87 @@ function CustomersView({ canEdit }) {
   const [search, setSearch] = useState("");
   const [editing, setEditing] = useState(null); // { name, isNew, phone, email, ... }
   const [saving, setSaving] = useState(false);
+  // Canlı aggregate için son 3 yılın teklif docları
+  const currentYear = new Date().getFullYear();
+  const aggregateYears = useMemo(() => [String(currentYear - 2), String(currentYear - 1), String(currentYear)], [currentYear]);
+  const [quotesByYear, setQuotesByYear] = useState({});
+  const [currencyRatesDoc, setCurrencyRatesDoc] = useState({});
 
   useEffect(() => {
     const unsub = subscribeQuoteCustomers(setData, { staging });
     return unsub;
   }, [staging]);
 
+  useEffect(() => {
+    const unsubs = aggregateYears.map(y =>
+      subscribeQuotesForYear(y, d => setQuotesByYear(prev => ({ ...prev, [y]: d?.quotes || {} })), { staging })
+    );
+    return () => unsubs.forEach(u => u && u());
+  }, [aggregateYears, staging]);
+
+  useEffect(() => {
+    const unsub = subscribeCurrencyRates(d => setCurrencyRatesDoc(d || {}));
+    return unsub;
+  }, []);
+
+  // Canlı müşteri agregasyonu: tüm quotes'lardan hesaplanır. Currency normalize (arşiv
+  // teklifleri yıllık ortalama TCMB kuruyla TL'ye çevrilir). Silinen teklifler otomatik düşer.
+  // computeQuoteStats.customerRanking mantığını genişletiyoruz — son teklif tarihi de lazım.
+  const latestRates = useMemo(() => getLatestRates(currencyRatesDoc), [currencyRatesDoc]);
+  const ratesByYear = useMemo(() => {
+    const out = {};
+    for (const y of ["2022", "2023", "2024", "2025", "2026", "2027"]) {
+      const avg = getAverageRatesForYear(currencyRatesDoc, y);
+      if (avg) out[y] = avg;
+    }
+    if (latestRates) out._fallback = { usd: latestRates.usd, eur: latestRates.eur };
+    return out;
+  }, [currencyRatesDoc, latestRates]);
+
+  const liveAggregates = useMemo(() => {
+    // Tüm yılların tekliflerini tek listede topla
+    const all = [];
+    for (const y of aggregateYears) {
+      for (const q of Object.values(quotesByYear[y] || {})) all.push(q);
+    }
+    const stats = computeQuoteStats(all, ratesByYear);
+    // customerRanking → name → { count, tl } map
+    const byName = {};
+    for (const cr of (stats.customerRanking || [])) byName[cr.name] = cr;
+    // Son teklif tarihi ayrı hesap (customerRanking dönmüyor)
+    const lastDateByName = {};
+    for (const q of all) {
+      const name = q.customerName || "—";
+      const d = q.quoteDate || "";
+      if (!d) continue;
+      if (!lastDateByName[name] || d > lastDateByName[name]) lastDateByName[name] = d;
+    }
+    return { byName, lastDateByName };
+  }, [quotesByYear, ratesByYear, aggregateYears]);
+
   const customers = useMemo(() => {
-    const arr = Object.values(data?.customers || {});
+    // Kütüphanedeki müşteriler + son 3 yılda teklifi olup kütüphanede olmayanları da göster
+    const libArr = Object.values(data?.customers || {});
+    const libNames = new Set(libArr.map(c => c.name));
+    const extras = [];
+    for (const name of Object.keys(liveAggregates.byName)) {
+      if (!libNames.has(name) && name !== "—") extras.push({ name, phone: "", email: "", _fromQuotesOnly: true });
+    }
+    const merged = [...libArr, ...extras];
+    // Live aggregate değerlerini yaz
+    const withStats = merged.map(c => {
+      const agg = liveAggregates.byName[c.name];
+      return {
+        ...c,
+        liveTotalQuotes: agg?.count || 0,
+        liveTotalTl: agg?.tl || 0,
+        liveLastQuoteDate: liveAggregates.lastDateByName[c.name] || null,
+      };
+    });
     const s = search.trim().toLocaleLowerCase("tr-TR");
-    const filtered = s ? arr.filter(c => (c.name || "").toLocaleLowerCase("tr-TR").includes(s)) : arr;
-    return filtered.sort((a, b) => (b.totalQuotes || 0) - (a.totalQuotes || 0));
-  }, [data, search]);
+    const filtered = s ? withStats.filter(c => (c.name || "").toLocaleLowerCase("tr-TR").includes(s)) : withStats;
+    return filtered.sort((a, b) => b.liveTotalTl - a.liveTotalTl);
+  }, [data, search, liveAggregates]);
 
   const openNew = () => setEditing({ name: "", isNew: true, phone: "", email: "", address: "", defaultPaymentTerm: "60 Gün Vade", defaultShipping: "", defaultCurrency: "TL" });
   const openEdit = (c) => setEditing({ ...c, isNew: false });
@@ -172,8 +241,8 @@ function CustomersView({ canEdit }) {
                 <th style={th}>Tel / E-mail</th>
                 <th style={th}>Default Ödeme</th>
                 <th style={th}>Default Nakliye</th>
-                <th style={{ ...th, textAlign: "right" }}>Teklif</th>
-                <th style={{ ...th, textAlign: "right" }}>Toplam TL</th>
+                <th style={{ ...th, textAlign: "right" }} title={`${aggregateYears[0]}-${aggregateYears[aggregateYears.length - 1]} son 3 yıl teklif sayısı (canlı)`}>Teklif ({aggregateYears[0]}-{aggregateYears[aggregateYears.length - 1]})</th>
+                <th style={{ ...th, textAlign: "right" }} title="Son 3 yıl toplam ciro — arşiv teklifleri yıllık ortalama TCMB kuru ile TL'ye normalize edilmiştir. Canlı: silinen teklifler düşer.">Toplam TL (canlı)</th>
                 <th style={th}>Son Teklif</th>
                 <th style={th}></th>
               </tr>
@@ -181,21 +250,33 @@ function CustomersView({ canEdit }) {
             <tbody>
               {customers.map(c => (
                 <tr key={c.name} style={{ borderTop: "1px solid #f5f5f4" }}>
-                  <td style={{ ...td, fontWeight: 500 }}>{c.name}</td>
+                  <td style={{ ...td, fontWeight: 500 }}>
+                    {c.name}
+                    {c._fromQuotesOnly && (
+                      <span title="Kütüphaneye eklenmemiş — sadece teklif kayıtlarından tespit edildi"
+                        style={{ marginLeft: 6, padding: "1px 5px", background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, fontSize: 9, fontWeight: 600 }}>
+                        kütüphanede yok
+                      </span>
+                    )}
+                  </td>
                   <td style={{ ...td, fontSize: 10 }}>
                     {c.phone || "—"}
                     {c.email && <div style={{ color: "#a8a29e" }}>{c.email}</div>}
                   </td>
                   <td style={{ ...td, fontSize: 10 }}>{c.defaultPaymentTerm || "—"}</td>
                   <td style={{ ...td, fontSize: 10 }}>{c.defaultShipping || "—"}</td>
-                  <td style={{ ...td, textAlign: "right" }}>{c.totalQuotes || 0}</td>
-                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>
-                    {Number(c.totalPriceTl || 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 })}
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{c.liveTotalQuotes}</td>
+                  <td style={{ ...td, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>
+                    {Number(c.liveTotalTl).toLocaleString("tr-TR", { maximumFractionDigits: 0 })}
                   </td>
-                  <td style={{ ...td, fontSize: 10 }}>{c.lastQuoteDate || "—"}</td>
+                  <td style={{ ...td, fontSize: 10 }}>{c.liveLastQuoteDate || "—"}</td>
                   <td style={td}>
-                    {canEdit && (
+                    {canEdit && !c._fromQuotesOnly && (
                       <button onClick={() => openEdit(c)} style={{ padding: "3px 8px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>✏️</button>
+                    )}
+                    {canEdit && c._fromQuotesOnly && (
+                      <button onClick={() => openNew()} title="Kütüphaneye ekle"
+                        style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: "pointer" }}>➕</button>
                     )}
                   </td>
                 </tr>
