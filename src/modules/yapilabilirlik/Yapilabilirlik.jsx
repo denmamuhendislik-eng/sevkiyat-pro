@@ -801,7 +801,21 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
           </div>
           <div>
             <label style={{ ...labelStyle, color: "#1e40af", fontWeight: 600 }}>📦 Sipariş Miktarı (Adet)</label>
-            <input type="number" min="1" value={study.quantity || 1} onChange={e => update("quantity", Number(e.target.value) || 1)} disabled={readonlyForm}
+            <input type="number" min="1" value={study.quantity || 1}
+              onChange={e => {
+                const q = Number(e.target.value) || 1;
+                const oldQ = Number(study.quantity) || 1;
+                const oldB = Number(study.batchSize) || 0;
+                update("quantity", q);
+                // Parti büyüklüğünü sipariş miktarıyla otomatik senkron:
+                //   - Parti hiç doldurulmadıysa (0) → miktarla eşitle
+                //   - Parti eski miktara eşitse (kullanıcı özelleştirmemiş) → yeni miktarla eşitle
+                //   - Parti farklıysa → kullanıcı bilinçli tercih yapmış, dokunma
+                if (oldB === 0 || oldB === oldQ) {
+                  update("batchSize", q);
+                }
+              }}
+              disabled={readonlyForm}
               style={{ ...inputStyle, borderColor: "#bfdbfe", background: "#eff6ff", fontWeight: 600 }} />
           </div>
           <div>
