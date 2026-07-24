@@ -587,6 +587,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
                 key={idx} idx={idx} line={line} calcResult={calc.lineResults[idx]}
                 materialList={materialList} fasonList={fasonList} optionsData={options}
                 machineRatesData={machineRatesData} partsLib={partsLib} paymentTerm={paymentTerm}
+                currency={currency} exchangeRate={exchangeRate}
                 update={updateLine} updateDim={updateLineDim} onRemove={() => removeLine(idx)}
               />
             ))}
@@ -792,7 +793,7 @@ function PartsSearchBox({ partsLib, onSelect }) {
 
 // ==================== Alt component: Kalem Editörü ====================
 
-function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsData, machineRatesData, partsLib, paymentTerm, update, updateDim, onRemove }) {
+function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsData, machineRatesData, partsLib, paymentTerm, currency, exchangeRate, update, updateDim, onRemove }) {
 
   const addMachine = () => update(idx, "machines", [...(line.machines || []), { name: "", timeMin: 0, ratePerMin: 0 }]);
   const updateMachine = (mi, field, value) => {
@@ -1074,7 +1075,7 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
         {/* SAĞ SÜTUN: DETAY PANEL — her zaman açık, uzun kalemlerde takip için sticky */}
         <div style={{ position: "sticky", top: 10, alignSelf: "start", maxHeight: "calc(100vh - 40px)", overflow: "auto" }}>
           {calcResult
-            ? <LineDetailPanel idx={idx} line={line} calcResult={calcResult} selectedMat={selectedMat} paymentTerm={paymentTerm} update={update} />
+            ? <LineDetailPanel idx={idx} line={line} calcResult={calcResult} selectedMat={selectedMat} paymentTerm={paymentTerm} currency={currency} exchangeRate={exchangeRate} update={update} />
             : <div style={{ padding: 10, background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 6, color: "#94a3b8", fontSize: 11 }}>Hesap için hammadde/makine/fason bilgisi girin</div>}
         </div>
       </div>
@@ -1117,7 +1118,12 @@ function MarginRow({ label, defaultPct, effectivePct, active, currentValue, onCh
   );
 }
 
-function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, update }) {
+function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, currency, exchangeRate, update }) {
+  // GENEL ÖZET'te döviz karşılığı gösterimi (currency !== TL ise)
+  const showFx = currency && currency !== "TL" && Number(exchangeRate) > 0;
+  const fxSymbol = currency === "DOLAR" ? "$" : currency === "EURO" ? "€" : "";
+  const toFx = (tl) => Number(tl) / Number(exchangeRate);
+  const fmtFx = (tl) => `${fxSymbol}${toFx(tl).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (!calcResult || !calcResult.margins || !calcResult.perUnit) {
     return <div style={{ padding: 10, color: "#a8a29e", fontSize: 11 }}>Hesap için hammadde/makine/fason bilgisi girin</div>;
   }
@@ -1362,18 +1368,48 @@ function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, upda
 
       {/* GENEL ÖZET */}
       <div style={{ padding: 10, background: "#dcfce7", border: "1px solid #86efac", borderRadius: 4, marginTop: 8 }}>
+        {showFx && (
+          <div style={{ fontSize: 9, color: "#166534", marginBottom: 4, fontWeight: 500 }}>
+            Döviz karşılığı ({currency} · kur {Number(exchangeRate).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 4 })}) parantez içinde
+          </div>
+        )}
         <table style={detailTable}>
           <tbody>
-            <tr><td style={detailLabel}><b>1 Adet Toplam Maliyet</b></td><td style={detailValueBold}>{fmt(totalCostPerUnit)} TL</td></tr>
-            <tr><td style={detailLabel}><b>1 Adet Satış</b></td><td style={{ ...detailValueBold, fontSize: 13, color: "#166534" }}>{fmt(totalSalePerUnit)} TL</td></tr>
-            <tr><td style={detailLabel}><b>1 Adet Kâr</b></td><td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(totalProfitPerUnit)} TL (%{calcResult.margins.profitPct.toFixed(2)})</td></tr>
+            <tr>
+              <td style={detailLabel}><b>1 Adet Toplam Maliyet</b></td>
+              <td style={detailValueBold}>
+                {fmt(totalCostPerUnit)} TL
+                {showFx && <span style={{ marginLeft: 6, color: "#166534", fontWeight: 500 }}>≈ {fmtFx(totalCostPerUnit)}</span>}
+              </td>
+            </tr>
+            <tr>
+              <td style={detailLabel}><b>1 Adet Satış</b></td>
+              <td style={{ ...detailValueBold, fontSize: 13, color: "#166534" }}>
+                {fmt(totalSalePerUnit)} TL
+                {showFx && <span style={{ marginLeft: 6, fontSize: 11, color: "#166534", fontWeight: 500 }}>≈ {fmtFx(totalSalePerUnit)}</span>}
+              </td>
+            </tr>
+            <tr>
+              <td style={detailLabel}><b>1 Adet Kâr</b></td>
+              <td style={{ ...detailValueBold, color: "#16a34a" }}>
+                +{fmt(totalProfitPerUnit)} TL
+                {showFx && <span style={{ marginLeft: 6, color: "#16a34a", fontWeight: 500 }}>≈ +{fmtFx(totalProfitPerUnit)}</span>}
+                {" "}(%{calcResult.margins.profitPct.toFixed(2)})
+              </td>
+            </tr>
             <tr style={{ borderTop: "1px solid #86efac" }}>
               <td style={detailLabel}>{qty} adet için toplam satış</td>
-              <td style={detailValueBold}>{fmt(calcResult.total.salePrice)} TL</td>
+              <td style={detailValueBold}>
+                {fmt(calcResult.total.salePrice)} TL
+                {showFx && <span style={{ marginLeft: 6, color: "#166534", fontWeight: 500 }}>≈ {fmtFx(calcResult.total.salePrice)}</span>}
+              </td>
             </tr>
             <tr>
               <td style={detailLabel}>{qty} adet için toplam kâr</td>
-              <td style={{ ...detailValueBold, color: "#16a34a" }}>+{fmt(calcResult.total.profit)} TL</td>
+              <td style={{ ...detailValueBold, color: "#16a34a" }}>
+                +{fmt(calcResult.total.profit)} TL
+                {showFx && <span style={{ marginLeft: 6, color: "#16a34a", fontWeight: 500 }}>≈ +{fmtFx(calcResult.total.profit)}</span>}
+              </td>
             </tr>
           </tbody>
         </table>
