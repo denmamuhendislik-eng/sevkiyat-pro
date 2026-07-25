@@ -222,7 +222,7 @@ function buildFeasibilityHtml(study) {
       <div data-pdf-section="kalemler-${cat.key}" style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
           <div style="font-size:9px; color:#78716c; font-weight:600;">${cat.icon} ${esc(cat.label).toUpperCase()}</div>
-          <div style="font-size:10px; color:#1c1917;"><b>${items.length}</b> kalem · Toplam: <b style="color:#166534;">${fmtNum(total)} TL</b></div>
+          <div style="font-size:10px; color:#1c1917;"><b>${items.length}</b> kalem</div>
         </div>
         <table style="width:100%; border-collapse:collapse; font-size:9px;">
           <thead>
@@ -230,37 +230,28 @@ function buildFeasibilityHtml(study) {
               <th style="padding:4px 6px; font-weight:600; font-size:8px;">Ad</th>
               <th style="padding:4px 6px; font-weight:600; font-size:8px;">Açıklama</th>
               <th style="padding:4px 6px; font-weight:600; font-size:8px; width:40px; text-align:right;">Adet</th>
-              <th style="padding:4px 6px; font-weight:600; font-size:8px; width:70px; text-align:right;">Birim TL</th>
-              <th style="padding:4px 6px; font-weight:600; font-size:8px; width:80px; text-align:right;">Tutar TL</th>
               <th style="padding:4px 6px; font-weight:600; font-size:8px;">Tedarikçi</th>
-              <th style="padding:4px 6px; font-weight:600; font-size:8px; width:50px; text-align:right;">Termin</th>
+              <th style="padding:4px 6px; font-weight:600; font-size:8px; width:60px; text-align:right;">Termin</th>
             </tr>
           </thead>
           <tbody>
             ${items.map(it => {
               // Fason: parça başına × sipariş miktarı. Tooling: kalem qty × birim.
+              // NOT: PDF çıktısında fiyat bilgisi (Birim TL / Tutar TL / Toplam) yer
+              // ALMAZ — feasibility form müşteriyle paylaşılabilir. Sadece adet, tedarikçi,
+              // termin bilgileri müşteriye görünür.
               const effectiveQty = cat.key === "fason" ? partQty : (Number(it.qty) || 0);
-              const line = effectiveQty * (Number(it.unitCost) || 0);
               return `
                 <tr style="background:#fff; border-bottom:1px solid #f5f5f4;">
                   <td style="padding:4px 6px; font-weight:500;">${esc(it.name || "—")}</td>
                   <td style="padding:4px 6px; color:#57534e;">${esc(it.description || "")}</td>
                   <td style="padding:4px 6px; text-align:right;">${effectiveQty}</td>
-                  <td style="padding:4px 6px; text-align:right;">${fmtNum(it.unitCost)}</td>
-                  <td style="padding:4px 6px; text-align:right; font-weight:600; color:#166534;">${fmtNum(line)}</td>
                   <td style="padding:4px 6px; color:#57534e;">${esc(it.supplier || "—")}</td>
                   <td style="padding:4px 6px; text-align:right; color:#57534e;">${it.deliveryDays ? `${it.deliveryDays}g` : "—"}</td>
                 </tr>
               `;
             }).join("")}
           </tbody>
-          <tfoot>
-            <tr style="background:#f9fafb; border-top:2px solid #e7e5e4;">
-              <td colspan="4" style="padding:5px 6px; text-align:right; font-weight:600; color:#57534e; font-size:9px;">Toplam:</td>
-              <td style="padding:5px 6px; text-align:right; font-weight:700; color:#166534; font-size:10px;">${fmtNum(total)} TL</td>
-              <td colspan="2"></td>
-            </tr>
-          </tfoot>
         </table>
       </div>
     `;
@@ -444,7 +435,10 @@ async function renderFeasibilityPdf(study) {
       // Section marker yok — fallback: eski davranış (tek slice, tümü)
       slices.push({ offset: 0, height: canvasHeight, isContinuation: false });
     } else {
-      let currentStart = sectionsPx[0].startPx;
+      // İlk sayfa: root'un top padding'i (logo üstündeki nefes payı) dahil olsun
+      // diye currentStart = 0 (sectionsPx[0].startPx yerine). Aksi halde ilk
+      // section'ın başlangıç Y'sinden başlıyor → padding-top:22px canvas'a girmiyor.
+      let currentStart = 0;
       let currentEnd = currentStart;
       let isFirstPage = true;
       const flushPage = () => {
