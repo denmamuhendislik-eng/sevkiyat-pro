@@ -162,11 +162,11 @@ export const FAI_ATTACHMENT_CATEGORIES = [
   { key: "productionDocs",         label: "Üretim İş Emri Formu / Rota", icon: "📋", multi: true,  driveCategory: null,              form: 1 },
   // FORM 2 — Hammadde ve fason sertifikaları (ayrı ayrı)
   { key: "materialCertificates",   label: "Hammadde (HM) Uygunluk Sertifikası", icon: "🧪", multi: true, driveCategory: "rawMaterialCert", form: 2 },
-  { key: "fasonCertificates",      label: "Fason Uygunluk Sertifikası",  icon: "🏭", multi: true,  driveCategory: null,              form: 2 },
+  { key: "fasonCertificates",      label: "Fason Uygunluk Sertifikası",  icon: "🏭", multi: true,  driveCategory: "rawMaterialCert", form: 2 },
   // FORM 3 — Ölçüm raporu + balonlu resim (tek klasör, ayrılmaz), uygunsuzluk, müşteri onayı, diğer
   { key: "measurementAndDrawing",  label: "Ölçüm Raporu ve Balonlu Resim", icon: "📏🎈", multi: true, driveCategory: "measurement",  form: 3 },
   { key: "nonconformanceDocs",     label: "Uygunsuzluk Belgeleri",       icon: "⚠️", multi: true,  driveCategory: null,              form: 3 },
-  { key: "customerApprovalLetter", label: "Müşteri Onay Yazısı",         icon: "🎉", multi: false, driveCategory: null,              form: 3 },
+  { key: "customerApprovalLetter", label: "Müşteri Onay Yazısı / Feragat Formu", icon: "🎉", multi: false, driveCategory: null,      form: 3 },
   { key: "other",                  label: "Diğer",                       icon: "📎", multi: true,  driveCategory: "fai",             form: 3 },
 ];
 
