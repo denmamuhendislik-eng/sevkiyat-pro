@@ -413,54 +413,76 @@ async function renderFeasibilityPdf(study) {
     const firstPageContentPx = pdfHeight * pxPerMm;
     const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM - CONTINUATION_TOP_GAP_MM) * pxPerMm;
 
-    // Akıllı kesim: canvas'ta beyaz yatay boşlukları bul (tablo/kart arası).
-    // Bir satır ≥98% beyaz pikselse "boşluk" olarak işaretlenir. Aynı boşluk
-    // içindeki ardışık satırlar tek gap'e birleştirilir; ortası kesim adayı.
-    // Böylece uzun tablo satırı ortasından kesilmez, önceki tam satırın sonu
-    // (satır ayracı beyaz çizgisi) hedef alınır.
-    const _findWhiteGaps = () => {
-      const ctx = canvas.getContext("2d");
-      const w = canvas.width;
-      const h = canvas.height;
-      const gaps = [];
-      let gapStart = -1;
-      const sampleStep = 2; // her 2 pikselde bir örnekle (perf)
-      const brightThreshold = 245;
-      const whiteRatioThreshold = 0.98;
-      const minGapPx = Math.max(3 * pxPerMm, 6); // en az 3mm beyaz aralık
-      for (let y = 0; y < h; y += sampleStep) {
-        const row = ctx.getImageData(0, y, w, 1).data;
-        let whitePixels = 0;
-        for (let i = 0; i < row.length; i += 4) {
-          const brightness = (row[i] + row[i + 1] + row[i + 2]) / 3;
-          if (brightness > brightThreshold) whitePixels++;
-        }
-        const isWhite = whitePixels / w > whiteRatioThreshold;
-        if (isWhite) {
-          if (gapStart < 0) gapStart = y;
-        } else {
-          if (gapStart >= 0 && (y - gapStart) >= minGapPx) {
-            gaps.push((gapStart + y) / 2); // gap ortası
-          }
-          gapStart = -1;
-        }
+    // Akıllı kesim: canvas'ı yukarıdan aşağıya tarayıp her satırın "yoğunluk"
+    // skorunu hesapla (düşük yoğunluk = az/hiç metin var = kesim adayı).
+    // İki metrik: (a) düşük yoğunluklu satır kümesi (beyaz veya hafif gri
+    // border/padding), (b) fallback için en düşük yoğunluklu satır.
+    // Parametreler gevşetildi çünkü html2canvas antialiasing tam beyaz üretmiyor,
+    // tablo border-bottom hafif gri, %98 beyaz filtresi hiç match etmiyordu.
+    const ctx = canvas.getContext("2d");
+    const sampleStep = 2;
+    const brightThreshold = 225; // "açık" piksel — border-bottom + padding tolere edilir
+    const whiteRatioThreshold = 0.85; // satırın %85+ pikseli açık → boşluk sayılır
+    const minGapPx = Math.max(Math.round(1.5 * pxPerMm), 4); // en az 1.5mm boşluk
+
+    // Yatay şerit yoğunluk skoru — 0 = tam beyaz, 1 = çok yoğun. Az meşgul satır
+    // = daha iyi kesim adayı. Şu an fallback için de kullanılacak.
+    const _rowDensity = (y) => {
+      const row = ctx.getImageData(0, y, canvas.width, 1).data;
+      let darkSum = 0;
+      let count = 0;
+      for (let i = 0; i < row.length; i += 4) {
+        const b = (row[i] + row[i + 1] + row[i + 2]) / 3;
+        if (b < brightThreshold) darkSum++;
+        count++;
       }
-      if (gapStart >= 0) gaps.push((gapStart + h) / 2);
-      return gaps;
+      return darkSum / count; // 0..1
     };
-    const whiteGaps = _findWhiteGaps();
-    const SNAP_MAX_MM = 40;
+
+    // Tarama tek geçişte gap listesi + tüm satır yoğunlukları
+    const densities = new Array(Math.ceil(canvas.height / sampleStep));
+    const gaps = [];
+    let gapStart = -1;
+    for (let y = 0, idx = 0; y < canvas.height; y += sampleStep, idx++) {
+      const density = _rowDensity(y);
+      densities[idx] = density;
+      const isGap = density < (1 - whiteRatioThreshold); // ≥85% açık → gap
+      if (isGap) {
+        if (gapStart < 0) gapStart = y;
+      } else {
+        if (gapStart >= 0 && (y - gapStart) >= minGapPx) {
+          gaps.push((gapStart + y) / 2);
+        }
+        gapStart = -1;
+      }
+    }
+    if (gapStart >= 0) gaps.push((gapStart + canvas.height) / 2);
+
+    const SNAP_MAX_MM = 70; // uzun tablo satırları için geniş arama
     const snapMaxPx = SNAP_MAX_MM * pxPerMm;
     const snapToGap = (targetY) => {
-      // Hedef Y'den geriye doğru en yakın beyaz boşluk (kesim öncesi tam satır kalır)
-      let best = null;
-      for (const g of whiteGaps) {
-        if (g > targetY) break; // sıralı; hedefi geçtiysek dur
+      // 1) Range içinde geriye doğru en yakın açık gap
+      let bestGap = null;
+      for (const g of gaps) {
+        if (g > targetY) break;
         if (targetY - g <= snapMaxPx) {
-          if (best === null || g > best) best = g;
+          if (bestGap === null || g > bestGap) bestGap = g;
         }
       }
-      return best !== null ? best : targetY; // gap bulunamazsa fallback: hedef
+      if (bestGap !== null) return bestGap;
+      // 2) Fallback: range içinde en düşük yoğunluklu satır (metin ortası değil,
+      //    en azından en boş yer). Range içinde her densities örneğine bak.
+      const startIdx = Math.max(0, Math.floor((targetY - snapMaxPx) / sampleStep));
+      const endIdx = Math.min(densities.length - 1, Math.floor(targetY / sampleStep));
+      let bestIdx = endIdx;
+      let bestDens = Infinity;
+      for (let i = startIdx; i <= endIdx; i++) {
+        if (densities[i] < bestDens) {
+          bestDens = densities[i];
+          bestIdx = i;
+        }
+      }
+      return bestIdx * sampleStep;
     };
 
     // Sayfa dilimlerini hesapla — kesim noktalarını beyaz boşluklara snap et
