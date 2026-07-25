@@ -405,23 +405,83 @@ async function renderFeasibilityPdf(study) {
       return pdf;
     }
     // Case 3 — Gerçek overflow (>15mm): sayfa sayfa dilimle. 2+ sayfada üstte
-    // kompakt "devam" şeridi çıkar.
+    // kompakt "devam" şeridi + üst boşluk.
     const pxPerMm = canvasWidth / pdfWidth;
     const CONTINUATION_STRIP_MM = 12;
+    const CONTINUATION_TOP_GAP_MM = 8;   // devam şeridinden sonra nefes payı
     const MIN_LAST_PAGE_CONTENT_MM = 60;
     const firstPageContentPx = pdfHeight * pxPerMm;
-    const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM) * pxPerMm;
+    const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM - CONTINUATION_TOP_GAP_MM) * pxPerMm;
 
-    // Sayfa dilimlerini hesapla
+    // Akıllı kesim: canvas'ta beyaz yatay boşlukları bul (tablo/kart arası).
+    // Bir satır ≥98% beyaz pikselse "boşluk" olarak işaretlenir. Aynı boşluk
+    // içindeki ardışık satırlar tek gap'e birleştirilir; ortası kesim adayı.
+    // Böylece uzun tablo satırı ortasından kesilmez, önceki tam satırın sonu
+    // (satır ayracı beyaz çizgisi) hedef alınır.
+    const _findWhiteGaps = () => {
+      const ctx = canvas.getContext("2d");
+      const w = canvas.width;
+      const h = canvas.height;
+      const gaps = [];
+      let gapStart = -1;
+      const sampleStep = 2; // her 2 pikselde bir örnekle (perf)
+      const brightThreshold = 245;
+      const whiteRatioThreshold = 0.98;
+      const minGapPx = Math.max(3 * pxPerMm, 6); // en az 3mm beyaz aralık
+      for (let y = 0; y < h; y += sampleStep) {
+        const row = ctx.getImageData(0, y, w, 1).data;
+        let whitePixels = 0;
+        for (let i = 0; i < row.length; i += 4) {
+          const brightness = (row[i] + row[i + 1] + row[i + 2]) / 3;
+          if (brightness > brightThreshold) whitePixels++;
+        }
+        const isWhite = whitePixels / w > whiteRatioThreshold;
+        if (isWhite) {
+          if (gapStart < 0) gapStart = y;
+        } else {
+          if (gapStart >= 0 && (y - gapStart) >= minGapPx) {
+            gaps.push((gapStart + y) / 2); // gap ortası
+          }
+          gapStart = -1;
+        }
+      }
+      if (gapStart >= 0) gaps.push((gapStart + h) / 2);
+      return gaps;
+    };
+    const whiteGaps = _findWhiteGaps();
+    const SNAP_MAX_MM = 40;
+    const snapMaxPx = SNAP_MAX_MM * pxPerMm;
+    const snapToGap = (targetY) => {
+      // Hedef Y'den geriye doğru en yakın beyaz boşluk (kesim öncesi tam satır kalır)
+      let best = null;
+      for (const g of whiteGaps) {
+        if (g > targetY) break; // sıralı; hedefi geçtiysek dur
+        if (targetY - g <= snapMaxPx) {
+          if (best === null || g > best) best = g;
+        }
+      }
+      return best !== null ? best : targetY; // gap bulunamazsa fallback: hedef
+    };
+
+    // Sayfa dilimlerini hesapla — kesim noktalarını beyaz boşluklara snap et
     const slices = [];
     let offset = 0;
     let pageIdx = 0;
     while (offset < canvasHeight) {
       const isFirst = pageIdx === 0;
       const contentPx = isFirst ? firstPageContentPx : continuationContentPx;
-      const sliceHeight = Math.min(contentPx, canvasHeight - offset);
+      const targetEnd = offset + contentPx;
+      let sliceEnd;
+      if (targetEnd >= canvasHeight) {
+        sliceEnd = canvasHeight; // son sayfa — snap yok, kalan her şey
+      } else {
+        // Snap yalnız yeterince content varsa (aksi halde sonsuz döngü)
+        const snapped = snapToGap(targetEnd);
+        sliceEnd = snapped > offset + 20 * pxPerMm ? snapped : targetEnd;
+      }
+      const sliceHeight = sliceEnd - offset;
       slices.push({ offset, height: sliceHeight, isContinuation: !isFirst });
-      offset += sliceHeight;
+      offset = sliceEnd;
       pageIdx++;
     }
     // Son sayfa çok az içerik kaldıysa (< MIN_LAST_PAGE_CONTENT_MM):
@@ -454,7 +514,8 @@ async function renderFeasibilityPdf(study) {
       if (p.isContinuation) {
         const headerImg = await renderContinuationStrip(study, i + 1, totalPages, pdfWidth);
         pdf.addImage(headerImg.dataUrl, "JPEG", 0, 0, pdfWidth, headerImg.heightMm, undefined, "FAST");
-        yPosMm = headerImg.heightMm;
+        // Devam şeridinden sonra ekstra üst boşluk — içerik hemen yapışmasın
+        yPosMm = headerImg.heightMm + CONTINUATION_TOP_GAP_MM;
       }
 
       // Canvas slice (ana canvas'tan ilgili dilimi kopyala)
