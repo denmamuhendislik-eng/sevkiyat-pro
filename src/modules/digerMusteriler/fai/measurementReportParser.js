@@ -260,7 +260,7 @@ export function characteristicToFaiRow(c) {
     characteristicType: "",
     requirement,
     results,
-    specialToolId: "",
+    specialToolId: "CMM",
     nonconformanceNumber: "",
     // Yapılandırılmış alanlar (Faz 2 şeması)
     elementName: c.elementName,
