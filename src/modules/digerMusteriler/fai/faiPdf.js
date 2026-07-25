@@ -398,7 +398,9 @@ function form3Html(record) {
 // Ana render — 3 sayfalık PDF
 // ============================================================
 async function renderFaiPdf(record) {
-  const pdf = new jsPDF("p", "mm", "a4");
+  // compress: true → jsPDF stream deflate; PNG yerine JPEG kullanınca dosya boyutu
+  // ~30MB'tan ~3-5MB'a düşer. Kalite kaybı gözle görülmez (JPEG q=0.92, scale=2).
+  const pdf = new jsPDF({ orientation: "p", unit: "mm", format: "a4", compress: true });
   const pdfWidth = pdf.internal.pageSize.getWidth();
   const pdfHeight = pdf.internal.pageSize.getHeight();
 
@@ -414,16 +416,17 @@ async function renderFaiPdf(record) {
     try {
       const root = container.querySelector("#fai-pdf-root");
       const canvas = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
-      const imgData = canvas.toDataURL("image/png");
+      // JPEG %92 kalite — PNG'ye göre ~6-8x daha küçük, gözle fark edilmez
+      const imgData = canvas.toDataURL("image/jpeg", 0.92);
       const imgWidth = pdfWidth;
       const imgHeight = (canvas.height * pdfWidth) / canvas.width;
       if (i > 0) pdf.addPage();
       if (imgHeight <= pdfHeight) {
-        pdf.addImage(imgData, "PNG", 0, 0, imgWidth, imgHeight);
+        pdf.addImage(imgData, "JPEG", 0, 0, imgWidth, imgHeight, undefined, "FAST");
       } else {
         // sayfa boyunu aşarsa scale et
         const scale = pdfHeight / imgHeight;
-        pdf.addImage(imgData, "PNG", 0, 0, imgWidth * scale, pdfHeight);
+        pdf.addImage(imgData, "JPEG", 0, 0, imgWidth * scale, pdfHeight, undefined, "FAST");
       }
     } finally {
       document.body.removeChild(container);
