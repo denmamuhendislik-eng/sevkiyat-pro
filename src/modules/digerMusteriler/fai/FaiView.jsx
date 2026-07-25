@@ -451,28 +451,38 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
   // Belge yükleme (F-4)
   const [uploadingCat, setUploadingCat] = useState({}); // { catKey: bool }
 
-  const handleUpload = async (categoryKey, file) => {
-    if (!file) return;
+  // Tek veya çoklu dosya yükleme. Çoklu kategorilerde (multi:true) tüm dosyalar
+  // sırayla yüklenir; single kategoride sadece ilk dosya alınır.
+  const handleUpload = async (categoryKey, filesInput) => {
+    const files = Array.isArray(filesInput) ? filesInput : (filesInput ? [filesInput] : []);
+    if (files.length === 0) return;
     if (!faiNo) { alert("Önce FAI No belirle"); return; }
+    const cat = FAI_ATTACHMENT_CATEGORIES.find(c => c.key === categoryKey);
+    const toUpload = cat?.multi ? files : files.slice(0, 1);
     setUploadingCat(u => ({ ...u, [categoryKey]: true }));
+    const errors = [];
     try {
-      const meta = await uploadFaiAttachment(faiNo, categoryKey, file, { canEdit });
-      const cat = FAI_ATTACHMENT_CATEGORIES.find(c => c.key === categoryKey);
-      setRecord(prev => {
-        const attach = { ...(prev.attachments || {}) };
-        if (cat?.multi) {
-          const list = Array.isArray(attach[categoryKey]) ? attach[categoryKey] : [];
-          attach[categoryKey] = [...list, meta];
-        } else {
-          attach[categoryKey] = meta;
+      for (const file of toUpload) {
+        try {
+          const meta = await uploadFaiAttachment(faiNo, categoryKey, file, { canEdit });
+          setRecord(prev => {
+            const attach = { ...(prev.attachments || {}) };
+            if (cat?.multi) {
+              const list = Array.isArray(attach[categoryKey]) ? attach[categoryKey] : [];
+              attach[categoryKey] = [...list, meta];
+            } else {
+              attach[categoryKey] = meta;
+            }
+            return { ...prev, attachments: attach };
+          });
+        } catch (e) {
+          errors.push(`${file.name}: ${e.message || e}`);
         }
-        return { ...prev, attachments: attach };
-      });
-    } catch (e) {
-      alert("Yükleme hatası: " + e.message);
+      }
     } finally {
       setUploadingCat(u => ({ ...u, [categoryKey]: false }));
     }
+    if (errors.length > 0) alert(`Yükleme hataları:\n\n• ${errors.join("\n• ")}`);
   };
 
   // Drive önerisi state + handler (F-9A)
@@ -677,13 +687,14 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
                 {(!items.length || cat.multi) && !readonlyForm && (
                   <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                     <label style={{ display: "inline-block", padding: "5px 10px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px dashed #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
-                      {isUploading ? "Yükleniyor..." : (cat.multi ? "📤 Dosya Ekle" : "📤 Dosya Seç")}
+                      {isUploading ? "Yükleniyor..." : (cat.multi ? "📤 Dosya(lar) Ekle" : "📤 Dosya Seç")}
                       <input type="file" accept="application/pdf,image/*"
+                        multiple={!!cat.multi}
                         style={{ display: "none" }}
                         disabled={isUploading || !canEdit}
                         onChange={e => {
-                          const f = e.target.files?.[0];
-                          if (f) handleUpload(cat.key, f);
+                          const fs = Array.from(e.target.files || []);
+                          if (fs.length > 0) handleUpload(cat.key, fs);
                           e.target.value = "";
                         }} />
                     </label>
