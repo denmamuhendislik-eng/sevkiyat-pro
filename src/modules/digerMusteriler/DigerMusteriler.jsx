@@ -24,6 +24,7 @@ import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_COD
 import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent, getSubDocFiles, DOC_TYPES } from './subComponents';
 import FaiView from './fai/FaiView';
 import { subscribeFaiArchive, subscribeFaiForYear } from './fai/firestore';
+import { buildFaiPdfBlob } from './fai/faiPdf';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -5815,6 +5816,34 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const [driveModal, setDriveModal] = useState(null); // { category, results, loading, error, selected: Set<fileId>, strategy }
   const fileInputs = useRef({});
 
+  // FAI kayıtları (sistem içi + arşiv) — bu parça için "🎯 Ekle" önerisi göstermek için
+  const currentYear = new Date().getFullYear();
+  const [faiByYear, setFaiByYear] = useState({});
+  const [faiArchiveData, setFaiArchiveData] = useState({ records: {} });
+  useEffect(() => {
+    const years = [String(currentYear - 2), String(currentYear - 1), String(currentYear)];
+    const unsubs = years.map(y =>
+      subscribeFaiForYear(y, d => setFaiByYear(prev => ({ ...prev, [y]: d?.records || {} })))
+    );
+    const uArch = subscribeFaiArchive(setFaiArchiveData);
+    return () => { unsubs.forEach(u => u && u()); uArch && uArch(); };
+  }, [currentYear]);
+  const faiSuggestions = useMemo(() => {
+    const stok = cert.stokKodu;
+    if (!stok) return { system: [], archive: [] };
+    const system = [];
+    for (const y of Object.keys(faiByYear)) {
+      for (const r of Object.values(faiByYear[y] || {})) {
+        if (String(r.stockCode || r.partNumber || '').trim() === stok) system.push(r);
+      }
+    }
+    const archive = [];
+    for (const r of Object.values(faiArchiveData?.records || {})) {
+      if (String(r.stockCode || r.partNumber || '').trim() === stok) archive.push(r);
+    }
+    return { system, archive };
+  }, [cert.stokKodu, faiByYear, faiArchiveData]);
+
   const fmtSize = (bytes) => {
     if (!bytes) return '';
     if (bytes < 1024) return `${bytes} B`;
@@ -5826,6 +5855,60 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
   const getReusable = (cat) => {
     if (!cat.reuseScope) return [];
     return getReusableAttachmentList(cocParts, cert.stokKodu, cat.key, cert.revisionCode, cat.reuseScope);
+  };
+
+  // Sistem içi FAI'yi PDF üret + COC storage'a yükle + fai kategorisine attach.
+  // Aynı zamanda master'a da eklenir (reuseScope:"stok") — bu parçanın sonraki
+  // COC'larında otomatik olarak önerilir.
+  const handleAttachSystemFai = async (faiRecord) => {
+    if (!canEdit) return;
+    const faiCat = COC_ATTACHMENT_CATEGORIES.find(c => c.key === 'fai');
+    if (!faiCat) return;
+    setBusy('fai');
+    setError('');
+    try {
+      const blob = await buildFaiPdfBlob(faiRecord);
+      const safeName = String(faiRecord.faiNo || 'fai').replace(/[^\w.\-]/g, '_');
+      const file = new File([blob], `FAI_${safeName}.pdf`, { type: 'application/pdf' });
+      // Aynı upload path'i — mevcut handleUpload cinsinden ilerlet (master reuse ile)
+      await handleUpload(faiCat, file);
+    } catch (e) {
+      setError('FAI PDF ekleme hatası: ' + (e.message || e));
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  // Arşiv FAI'yi Drive linki olarak fai kategori altında sakla (isDriveLink meta).
+  // Storage'a upload etmez — sadece kayıt referansı. Master'a düşmez (link her
+  // durum için farklı olabilir, master üzerinden reuse mantıklı değil).
+  const handleAttachArchiveFai = async (archiveRecord) => {
+    if (!canEdit) return;
+    const driveLink = (archiveRecord.attachments?.other || []).find(x => x?.isDriveLink);
+    if (!driveLink?.driveUrl) {
+      alert('Bu arşiv FAI kaydında Drive linki yok.');
+      return;
+    }
+    setBusy('fai');
+    setError('');
+    try {
+      const meta = {
+        filename: `FAİ-${archiveRecord.faiNo} (Arşiv Drive linki)`,
+        downloadUrl: driveLink.driveUrl,
+        size: 0,
+        contentType: 'application/vnd.google-apps.folder',
+        uploadedAt: new Date().toISOString(),
+        isDriveLink: true,
+        source: 'fai-archive',
+        archiveFaiNo: archiveRecord.faiNo,
+      };
+      const currentList = getCocAttachmentList(cert, 'fai');
+      await appendCocCertificateAttachment(cert.certNo, cert.siraNo || '1', 'fai', meta, currentList, { canEdit });
+    } catch (e) {
+      setError('Arşiv FAI link ekleme hatası: ' + (e.message || e));
+    } finally {
+      setBusy(null);
+    }
   };
 
   // Master listesine yeni dosya ekle (her upload sonrası master güncellenir)
@@ -6354,6 +6437,52 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                   )}
                 </div>
               </div>
+              {/* FAI kategorisi için: sistemde/arşivde FAI varsa öneri banner'ı (slot boşsa) */}
+              {cat.key === 'fai' && !isNa && list.length === 0 && canEdit && (faiSuggestions.system.length > 0 || faiSuggestions.archive.length > 0) && (
+                <div style={{ marginTop: 6, marginLeft: 24, padding: 8, background: '#f0f9ff', border: '1px solid #bae6fd', borderRadius: 4, fontSize: 11 }}>
+                  <div style={{ fontWeight: 600, color: '#0369a1', marginBottom: 6 }}>
+                    🎯 Bu parça için FAI kayıt(lar)ı var — tek tıkla ekleyebilirsin:
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                    {faiSuggestions.system.slice(0, 3).map(r => (
+                      <div key={r.faiNo} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <span style={{ padding: '1px 5px', background: '#dcfce7', color: '#166534', borderRadius: 3, fontSize: 9, fontWeight: 600 }}>SİSTEM</span>
+                        <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>#{r.faiNo}</span>
+                        <span style={{ fontSize: 10, color: '#57534e' }}>
+                          {r.faiType === 'partial' ? 'Kısmi' : 'Tam'}
+                          {r.updatedAt ? ` · ${String(r.updatedAt).slice(0, 10)}` : ''}
+                        </span>
+                        <button onClick={() => handleAttachSystemFai(r)} disabled={busy === 'fai'}
+                          style={{ marginLeft: 'auto', padding: '3px 10px', fontSize: 10, background: '#1e40af', color: '#fff', border: 'none', borderRadius: 3, cursor: busy === 'fai' ? 'wait' : 'pointer', fontWeight: 600 }}>
+                          📄 PDF Üret ve Ekle
+                        </button>
+                      </div>
+                    ))}
+                    {faiSuggestions.archive.slice(0, 3).map(r => {
+                      const driveLink = (r.attachments?.other || []).find(x => x?.isDriveLink);
+                      return (
+                        <div key={r.faiNo + '_arch'} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <span style={{ padding: '1px 5px', background: '#dbeafe', color: '#1e40af', borderRadius: 3, fontSize: 9, fontWeight: 600 }}>ARŞİV</span>
+                          <span style={{ fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>FAİ-{r.faiNo}</span>
+                          {driveLink?.driveUrl && (
+                            <a href={driveLink.driveUrl} target="_blank" rel="noreferrer" style={{ fontSize: 10, color: '#0369a1', textDecoration: 'none' }}>📂 Drive'da aç</a>
+                          )}
+                          <button onClick={() => handleAttachArchiveFai(r)} disabled={busy === 'fai' || !driveLink?.driveUrl}
+                            title={driveLink?.driveUrl ? "Drive klasör linkini attachment olarak ekle (indirmez, sadece referans)" : "Bu arşiv kaydında Drive linki yok"}
+                            style={{ marginLeft: 'auto', padding: '3px 10px', fontSize: 10, background: '#0369a1', color: '#fff', border: 'none', borderRadius: 3, cursor: (busy === 'fai' || !driveLink?.driveUrl) ? 'not-allowed' : 'pointer', fontWeight: 600, opacity: driveLink?.driveUrl ? 1 : 0.5 }}>
+                            🔗 Link Olarak Ekle
+                          </button>
+                        </div>
+                      );
+                    })}
+                    {(faiSuggestions.system.length + faiSuggestions.archive.length) > 6 && (
+                      <div style={{ fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>
+                        +{faiSuggestions.system.length + faiSuggestions.archive.length - 6} daha (kısaltıldı)
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
               {list.length === 0 ? (
                 <div style={{ fontSize: 11, color: '#a8a29e', fontStyle: 'italic', paddingLeft: 24 }}>— henüz dosya yok</div>
               ) : (
