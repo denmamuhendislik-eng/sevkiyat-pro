@@ -386,8 +386,10 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
   // CMM Ölçüm Raporu (FR-92.1 PDF) import — Form 3 karakteristikleri otomatik doldurur
   const [importState, setImportState] = useState(null); // { header, characteristics, fileName } | { error } | null
   const [importParsing, setImportParsing] = useState(false);
+  const [importMenuOpen, setImportMenuOpen] = useState(false);
   const importReport = async (file) => {
     setImportParsing(true);
+    setImportMenuOpen(false);
     try {
       const parsed = await parseMeasurementReport(file);
       setImportState({ ...parsed, fileName: file.name });
@@ -397,6 +399,41 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
       setImportParsing(false);
     }
   };
+  // Storage'daki yüklü PDF'i çek → File'a çevir → parser'a ver
+  const importFromAttachment = async (meta) => {
+    setImportParsing(true);
+    setImportMenuOpen(false);
+    try {
+      const url = meta?.url;
+      if (!url) throw new Error("Dosya URL'i yok");
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`Dosya indirme hatası (${res.status})`);
+      const blob = await res.blob();
+      const file = new File([blob], meta.name || "measurement.pdf", { type: "application/pdf" });
+      const parsed = await parseMeasurementReport(file);
+      setImportState({ ...parsed, fileName: file.name });
+    } catch (e) {
+      setImportState({ error: e.message || "Yüklenen dosya parse edilemedi" });
+    } finally {
+      setImportParsing(false);
+    }
+  };
+  // Form 3 attachment slot'undan PDF listesi (measurementAndDrawing + eski testReports fallback)
+  const uploadedMeasurementPdfs = useMemo(() => {
+    const att = record.attachments || {};
+    const list = [];
+    for (const key of ["measurementAndDrawing", "testReports"]) {
+      const items = Array.isArray(att[key]) ? att[key] : [];
+      for (const it of items) {
+        if (!it?.url) continue;
+        // Sadece PDF'ler — balonlu resim JPG/PNG olabilir, parser ile çalışmaz
+        const isPdf = String(it.name || "").toLowerCase().endsWith(".pdf")
+          || String(it.contentType || "").includes("pdf");
+        if (isPdf) list.push(it);
+      }
+    }
+    return list;
+  }, [record.attachments]);
   const applyImport = ({ replace }) => {
     if (!importState || !importState.characteristics) return;
     const newRows = importState.characteristics.map(characteristicToFaiRow);
@@ -1177,17 +1214,63 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           <div style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>📏 Karakteristik Ölçümler</div>
-              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                <label style={{ padding: "4px 10px", fontSize: 11, background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: readonlyForm || importParsing ? "not-allowed" : "pointer", opacity: readonlyForm || importParsing ? 0.5 : 1 }}
-                  title="Denma FR-92.1 CMM ölçüm raporu PDF'i yükle — karakteristikler otomatik doldurulur">
-                  {importParsing ? "⏳ Okunuyor..." : "📥 CMM Raporundan Aktar"}
-                  <input type="file" accept="application/pdf" style={{ display: "none" }} disabled={readonlyForm || importParsing}
-                    onChange={e => {
-                      const f = e.target.files?.[0];
-                      if (f) importReport(f);
-                      e.target.value = "";
-                    }} />
-                </label>
+              <div style={{ display: "flex", gap: 6, alignItems: "center", position: "relative" }}>
+                {uploadedMeasurementPdfs.length > 0 ? (
+                  // Split button: attachment'lerden veya yerelden aktar
+                  <>
+                    <button onClick={() => setImportMenuOpen(v => !v)} disabled={readonlyForm || importParsing}
+                      title={`${uploadedMeasurementPdfs.length} yüklü ölçüm PDF'i var — birinden seç veya yerelden yükle`}
+                      style={{ padding: "4px 10px", fontSize: 11, background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: readonlyForm || importParsing ? "not-allowed" : "pointer", opacity: readonlyForm || importParsing ? 0.5 : 1 }}>
+                      {importParsing ? "⏳ Okunuyor..." : "📥 CMM Raporundan Aktar ▾"}
+                    </button>
+                    {importMenuOpen && (
+                      <>
+                        {/* Menu overlay — dışarı tıklayınca kapansın */}
+                        <div onClick={() => setImportMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 90 }} />
+                        <div style={{ position: "absolute", top: "calc(100% + 4px)", right: 76, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 4, boxShadow: "0 4px 12px rgba(0,0,0,0.15)", zIndex: 100, minWidth: 260, padding: 4 }}>
+                          <div style={{ fontSize: 9, color: "#78716c", padding: "6px 10px 4px", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 }}>
+                            Yüklü Ölçüm PDF'leri ({uploadedMeasurementPdfs.length})
+                          </div>
+                          {uploadedMeasurementPdfs.map((meta, i) => (
+                            <button key={i} onClick={() => importFromAttachment(meta)} disabled={importParsing}
+                              style={{ display: "flex", alignItems: "center", gap: 8, width: "100%", padding: "6px 10px", fontSize: 11, background: "transparent", border: "none", borderRadius: 3, cursor: importParsing ? "not-allowed" : "pointer", textAlign: "left" }}
+                              onMouseEnter={e => e.currentTarget.style.background = "#f0fdf4"}
+                              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                              <span>📄</span>
+                              <span style={{ flex: 1, color: "#166534", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{meta.name || "dosya"}</span>
+                              {meta.size ? <span style={{ fontSize: 9, color: "#78716c" }}>{(meta.size / 1024).toFixed(0)} KB</span> : null}
+                            </button>
+                          ))}
+                          <div style={{ borderTop: "1px solid #f5f5f4", margin: "4px 0" }} />
+                          <label style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", fontSize: 11, cursor: importParsing ? "not-allowed" : "pointer", borderRadius: 3 }}
+                            onMouseEnter={e => e.currentTarget.style.background = "#eff6ff"}
+                            onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+                            <span>💾</span>
+                            <span style={{ color: "#1e40af" }}>Yerel dosyadan seç...</span>
+                            <input type="file" accept="application/pdf" style={{ display: "none" }} disabled={readonlyForm || importParsing}
+                              onChange={e => {
+                                const f = e.target.files?.[0];
+                                if (f) importReport(f);
+                                e.target.value = "";
+                              }} />
+                          </label>
+                        </div>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  // Attachment yok — direkt yerel dosya seçici (eski davranış)
+                  <label style={{ padding: "4px 10px", fontSize: 11, background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: readonlyForm || importParsing ? "not-allowed" : "pointer", opacity: readonlyForm || importParsing ? 0.5 : 1 }}
+                    title="Denma FR-92.1 CMM ölçüm raporu PDF'i yükle — karakteristikler otomatik doldurulur">
+                    {importParsing ? "⏳ Okunuyor..." : "📥 CMM Raporundan Aktar"}
+                    <input type="file" accept="application/pdf" style={{ display: "none" }} disabled={readonlyForm || importParsing}
+                      onChange={e => {
+                        const f = e.target.files?.[0];
+                        if (f) importReport(f);
+                        e.target.value = "";
+                      }} />
+                  </label>
+                )}
                 <button onClick={addCharacteristic} disabled={readonlyForm} style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>+ Karakteristik</button>
               </div>
             </div>
