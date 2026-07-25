@@ -155,14 +155,19 @@ export const FAI_ROLES = [
 //  balonlu resim, uygunsuzluk belgeleri, üretim rota vb.)
 // ============================================================
 
+// Her kategori hangi Form altında görünecek (1 | 2 | 3) — dosyalar ilgili form
+// sekmesinin altında yüklenir ki kullanıcı ilgili PDF'i açıp form doldurabilsin.
 export const FAI_ATTACHMENT_CATEGORIES = [
-  { key: "balloonedDrawing",       label: "Balonlu Resim",              icon: "🎈", multi: false, driveCategory: "bubbleDrawing" },
-  { key: "materialCertificates",   label: "Malzeme Uygunluk Sertifikaları", icon: "🧪", multi: true, driveCategory: "rawMaterialCert" },
-  { key: "testReports",            label: "Kabul Test Raporu",          icon: "📊", multi: true, driveCategory: "measurement" },
-  { key: "productionDocs",         label: "Üretim Rotası / İş Talimatı", icon: "📋", multi: true, driveCategory: null },
-  { key: "nonconformanceDocs",     label: "Uygunsuzluk Belgeleri",       icon: "⚠️", multi: true, driveCategory: null },
-  { key: "customerApprovalLetter", label: "Müşteri Onay Yazısı",         icon: "🎉", multi: false, driveCategory: null },
-  { key: "other",                  label: "Diğer",                       icon: "📎", multi: true, driveCategory: "fai" },
+  // FORM 1 — Üretim iş emri formu
+  { key: "productionDocs",         label: "Üretim İş Emri Formu / Rota", icon: "📋", multi: true,  driveCategory: null,              form: 1 },
+  // FORM 2 — Hammadde ve fason sertifikaları (ayrı ayrı)
+  { key: "materialCertificates",   label: "Hammadde (HM) Uygunluk Sertifikası", icon: "🧪", multi: true, driveCategory: "rawMaterialCert", form: 2 },
+  { key: "fasonCertificates",      label: "Fason Uygunluk Sertifikası",  icon: "🏭", multi: true,  driveCategory: null,              form: 2 },
+  // FORM 3 — Ölçüm raporu + balonlu resim (tek klasör, ayrılmaz), uygunsuzluk, müşteri onayı, diğer
+  { key: "measurementAndDrawing",  label: "Ölçüm Raporu ve Balonlu Resim", icon: "📏🎈", multi: true, driveCategory: "measurement",  form: 3 },
+  { key: "nonconformanceDocs",     label: "Uygunsuzluk Belgeleri",       icon: "⚠️", multi: true,  driveCategory: null,              form: 3 },
+  { key: "customerApprovalLetter", label: "Müşteri Onay Yazısı",         icon: "🎉", multi: false, driveCategory: null,              form: 3 },
+  { key: "other",                  label: "Diğer",                       icon: "📎", multi: true,  driveCategory: "fai",             form: 3 },
 ];
 
 // ============================================================
@@ -205,15 +210,17 @@ export function makeEmptyFai(faiNo) {
     characteristics: [],        // [{ characteristicNo, referenceLocation, characteristicType, requirement, results, specialToolId, nonconformanceNumber }]
     form3Comments: "",
 
-    // Ekler / Belgeler (Storage path'leri)
+    // Ekler / Belgeler (Storage path'leri) — form bazlı gruplandı
     attachments: {
-      balloonedDrawing: null,   // Balonlu resim (Form 3 için)
-      materialCertificates: [], // [{ path, name, size, uploadedAt }]
-      testReports: [],
-      productionDocs: [],       // rota, iş talimatı vb.
-      nonconformanceDocs: [],
-      customerApprovalLetter: null, // Müşteri onay yazısı (portal ekran görüntüsü/PDF)
-      other: [],
+      productionDocs: [],                // Form 1: Üretim iş emri formu / rota
+      materialCertificates: [],          // Form 2: HM uygunluk sertifikaları
+      fasonCertificates: [],             // Form 2: Fason uygunluk sertifikaları
+      measurementAndDrawing: [],         // Form 3: Ölçüm raporu + balonlu resim (birleşik — Drive'da da tek klasör)
+      nonconformanceDocs: [],            // Form 3
+      customerApprovalLetter: null,      // Form 3 (single)
+      other: [],                         // Form 3
+      // Eski alanlar (backward-compat, hidrasyonda measurementAndDrawing'e taşınır):
+      //   balloonedDrawing (single), testReports (array)
     },
 
     // === İMZALAR ===

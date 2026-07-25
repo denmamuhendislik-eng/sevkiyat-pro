@@ -250,7 +250,22 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
 
   useEffect(() => {
     if (initialRecord) {
-      setRecord({ ...makeEmptyFai(initialRecord.faiNo || ""), ...initialRecord });
+      // Backward-compat: eski attachments key'lerini yeni yapıya taşı.
+      // balloonedDrawing (single) + testReports (array) → measurementAndDrawing (array)
+      const src = initialRecord.attachments || {};
+      const migrated = { ...src };
+      const measurementAndDrawing = Array.isArray(src.measurementAndDrawing) ? [...src.measurementAndDrawing] : [];
+      if (Array.isArray(src.testReports) && src.testReports.length > 0) {
+        measurementAndDrawing.push(...src.testReports);
+        delete migrated.testReports;
+      }
+      if (src.balloonedDrawing) {
+        measurementAndDrawing.push(src.balloonedDrawing);
+        delete migrated.balloonedDrawing;
+      }
+      if (measurementAndDrawing.length > 0) migrated.measurementAndDrawing = measurementAndDrawing;
+      const merged = { ...makeEmptyFai(initialRecord.faiNo || ""), ...initialRecord, attachments: migrated };
+      setRecord(merged);
       setFaiNo(initialRecord.faiNo || "");
     }
   }, [initialRecord]);
@@ -599,6 +614,77 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
   // Zorunlu alanlar için hafif sarı bg (talimatta belirtilen)
   const yellowBg = { background: "#fef3c7" };
   const blueBg = { background: "#dbeafe" };
+
+  // Attachment kartı — ilgili form'a ait kategorileri render eder.
+  // Form üstünde yüklenen belgeye tıklayıp önce açıp bakıp sonra formu doldurabilesin diye
+  // ekler ilgili form sekmesi altına yerleşiyor.
+  const renderAttachmentsForForm = (formNo) => {
+    const cats = FAI_ATTACHMENT_CATEGORIES.filter(c => c.form === formNo);
+    if (cats.length === 0) return null;
+    return (
+      <div style={cardStyle}>
+        <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>📎 Bu Bölüm için Ek Belgeler</div>
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
+          Belgeleri şimdi yükleyip açarak formu doldurabilirsin. FAI paketinin (ZIP) içine dahil edilir.
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 10 }}>
+          {cats.map(cat => {
+            const items = cat.multi
+              ? (Array.isArray(record.attachments?.[cat.key]) ? record.attachments[cat.key] : [])
+              : (record.attachments?.[cat.key] ? [record.attachments[cat.key]] : []);
+            const isUploading = !!uploadingCat[cat.key];
+            return (
+              <div key={cat.key} style={{ padding: 10, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c", marginBottom: 6 }}>
+                  {cat.icon} {cat.label}
+                  {items.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: "#166534" }}>({items.length})</span>}
+                </div>
+                {items.length > 0 && (
+                  <div style={{ marginBottom: 6, display: "flex", flexDirection: "column", gap: 3 }}>
+                    {items.map((meta, idx) => (
+                      <div key={idx} style={{ padding: 4, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 3, display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
+                        <span style={{ flex: 1, color: "#166534", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={meta?.name}>
+                          📄 {meta?.name || "dosya"}
+                          {meta?.size ? <span style={{ marginLeft: 4, color: "#78716c" }}>· {(meta.size / 1024).toFixed(0)} KB</span> : null}
+                        </span>
+                        <a href={meta?.url} target="_blank" rel="noreferrer"
+                          style={{ padding: "1px 5px", fontSize: 9, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, textDecoration: "none" }}>Aç</a>
+                        {!readonlyForm && (
+                          <button onClick={() => handleDeleteAttachment(cat.key, cat.multi ? idx : null)}
+                            style={{ padding: "1px 5px", fontSize: 9, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 2, cursor: "pointer" }}>🗑</button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {(!items.length || cat.multi) && !readonlyForm && (
+                  <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                    <label style={{ display: "inline-block", padding: "5px 10px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px dashed #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                      {isUploading ? "Yükleniyor..." : (cat.multi ? "📤 Dosya Ekle" : "📤 Dosya Seç")}
+                      <input type="file" accept="application/pdf,image/*"
+                        style={{ display: "none" }}
+                        disabled={isUploading || !canEdit}
+                        onChange={e => {
+                          const f = e.target.files?.[0];
+                          if (f) handleUpload(cat.key, f);
+                          e.target.value = "";
+                        }} />
+                    </label>
+                    {cat.driveCategory && (
+                      <button onClick={() => runDriveSearch(cat.key)} disabled={isUploading || !canEdit}
+                        style={{ padding: "5px 10px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                        🔍 Drive'dan
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div>
@@ -963,6 +1049,7 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
               )}
             </div>
           )}
+          {renderAttachmentsForForm(1)}
         </>
       )}
 
@@ -1052,6 +1139,7 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
             <label style={labelStyle}>13. Yorumlar</label>
             <textarea value={record.form2Comments || ""} onChange={e => update("form2Comments", e.target.value)} disabled={readonlyForm} rows={3} style={inputStyle} />
           </div>
+          {renderAttachmentsForForm(2)}
         </>
       )}
 
@@ -1237,68 +1325,7 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
             <textarea value={record.form3Comments || ""} onChange={e => update("form3Comments", e.target.value)} disabled={readonlyForm} rows={3} style={inputStyle} />
           </div>
 
-          {/* EK BELGELER (F-4) — Form 3 altında konsolide */}
-          <div style={cardStyle}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>📎 Ek Belgeler</div>
-            <div style={{ fontSize: 10, color: "#78716c", marginBottom: 10 }}>
-              Bu belgeler FAI paketinin (ZIP) içine dahil edilir. Balonlu resim Form 3 karakteristik referansları için, malzeme sertifikaları Form 2 için gereklidir.
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 10 }}>
-              {FAI_ATTACHMENT_CATEGORIES.map(cat => {
-                const items = cat.multi
-                  ? (Array.isArray(record.attachments?.[cat.key]) ? record.attachments[cat.key] : [])
-                  : (record.attachments?.[cat.key] ? [record.attachments[cat.key]] : []);
-                const isUploading = !!uploadingCat[cat.key];
-                return (
-                  <div key={cat.key} style={{ padding: 10, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 4 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c", marginBottom: 6 }}>
-                      {cat.icon} {cat.label}
-                      {items.length > 0 && <span style={{ marginLeft: 6, fontSize: 10, color: "#166534" }}>({items.length})</span>}
-                    </div>
-                    {items.length > 0 && (
-                      <div style={{ marginBottom: 6, display: "flex", flexDirection: "column", gap: 3 }}>
-                        {items.map((meta, idx) => (
-                          <div key={idx} style={{ padding: 4, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 3, display: "flex", alignItems: "center", gap: 4, fontSize: 10 }}>
-                            <span style={{ flex: 1, color: "#166534", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={meta?.name}>
-                              📄 {meta?.name || "dosya"}
-                              {meta?.size ? <span style={{ marginLeft: 4, color: "#78716c" }}>· {(meta.size / 1024).toFixed(0)} KB</span> : null}
-                            </span>
-                            <a href={meta?.url} target="_blank" rel="noreferrer"
-                              style={{ padding: "1px 5px", fontSize: 9, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, textDecoration: "none" }}>Aç</a>
-                            {!readonlyForm && (
-                              <button onClick={() => handleDeleteAttachment(cat.key, cat.multi ? idx : null)}
-                                style={{ padding: "1px 5px", fontSize: 9, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 2, cursor: "pointer" }}>🗑</button>
-                            )}
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                    {(!items.length || cat.multi) && !readonlyForm && (
-                      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
-                        <label style={{ display: "inline-block", padding: "5px 10px", fontSize: 10, background: "#f5f5f4", color: "#57534e", border: "1px dashed #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
-                          {isUploading ? "Yükleniyor..." : (cat.multi ? "📤 Dosya Ekle" : "📤 Dosya Seç")}
-                          <input type="file" accept="application/pdf,image/*"
-                            style={{ display: "none" }}
-                            disabled={isUploading || !canEdit}
-                            onChange={e => {
-                              const f = e.target.files?.[0];
-                              if (f) handleUpload(cat.key, f);
-                              e.target.value = "";
-                            }} />
-                        </label>
-                        {cat.driveCategory && (
-                          <button onClick={() => runDriveSearch(cat.key)} disabled={isUploading || !canEdit}
-                            style={{ padding: "5px 10px", fontSize: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
-                            🔍 Drive'dan
-                          </button>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+          {renderAttachmentsForForm(3)}
         </>
       )}
 
@@ -1409,13 +1436,19 @@ async function downloadFaiZip(record) {
     zip.file(`FAI_${safe(record.faiNo)}.pdf`, pdfBlob);
     // 2) Ekler kategori bazlı klasörler
     const CAT_LABELS = {
-      balloonedDrawing:       "Balonlu Resim",
-      materialCertificates:   "Malzeme Sertifikalari",
-      testReports:            "Kabul Test Raporlari",
-      productionDocs:         "Uretim Dokumanlari",
-      nonconformanceDocs:     "Uygunsuzluk Belgeleri",
-      customerApprovalLetter: "Musteri Onay Yazisi",
+      // Form 1
+      productionDocs:         "Form1_Uretim_Is_Emri",
+      // Form 2
+      materialCertificates:   "Form2_HM_Uygunluk_Sertifikasi",
+      fasonCertificates:      "Form2_Fason_Uygunluk_Sertifikasi",
+      // Form 3
+      measurementAndDrawing:  "Form3_Olcum_Raporu_ve_Balonlu_Resim",
+      nonconformanceDocs:     "Form3_Uygunsuzluk_Belgeleri",
+      customerApprovalLetter: "Musteri_Onay_Yazisi",
       other:                  "Diger",
+      // Eski keyler backward-compat (arşiv/geriye dönük FAI'ler için)
+      balloonedDrawing:       "Form3_Olcum_Raporu_ve_Balonlu_Resim",
+      testReports:            "Form3_Olcum_Raporu_ve_Balonlu_Resim",
     };
     const attach = record.attachments || {};
     const fetchAll = [];

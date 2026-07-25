@@ -355,10 +355,16 @@ function form3Html(record) {
     ${(() => {
       const attach = record.attachments || {};
       const has = [];
-      if (attach.balloonedDrawing) has.push("Balonlu Resim");
-      if (Array.isArray(attach.materialCertificates) && attach.materialCertificates.length) has.push(`Malzeme Sertifikaları (${attach.materialCertificates.length})`);
-      if (Array.isArray(attach.testReports) && attach.testReports.length) has.push(`Test Raporu (${attach.testReports.length})`);
-      if (Array.isArray(attach.productionDocs) && attach.productionDocs.length) has.push(`Üretim Dokümanı (${attach.productionDocs.length})`);
+      // Form 1
+      if (Array.isArray(attach.productionDocs) && attach.productionDocs.length) has.push(`Üretim İş Emri (${attach.productionDocs.length})`);
+      // Form 2
+      if (Array.isArray(attach.materialCertificates) && attach.materialCertificates.length) has.push(`HM Sertifikası (${attach.materialCertificates.length})`);
+      if (Array.isArray(attach.fasonCertificates) && attach.fasonCertificates.length) has.push(`Fason Sertifikası (${attach.fasonCertificates.length})`);
+      // Form 3
+      const madCount = (Array.isArray(attach.measurementAndDrawing) ? attach.measurementAndDrawing.length : 0)
+        + (Array.isArray(attach.testReports) ? attach.testReports.length : 0)
+        + (attach.balloonedDrawing ? 1 : 0);
+      if (madCount > 0) has.push(`Ölçüm Raporu + Balonlu Resim (${madCount})`);
       if (Array.isArray(attach.nonconformanceDocs) && attach.nonconformanceDocs.length) has.push(`Uygunsuzluk Belgesi (${attach.nonconformanceDocs.length})`);
       if (attach.customerApprovalLetter) has.push("Müşteri Onay Yazısı");
       if (Array.isArray(attach.other) && attach.other.length) has.push(`Diğer (${attach.other.length})`);
