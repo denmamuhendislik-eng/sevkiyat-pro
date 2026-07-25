@@ -121,7 +121,7 @@ function buildFeasibilityHtml(study) {
   return `
 <div id="feas-pdf-root" style="width:794px; padding:22px 40px 40px; background:#fff; font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:#1c1917; box-sizing:border-box;">
   <!-- HEADER -->
-  <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:14px; border-bottom:2px solid #1e40af;">
+  <div data-pdf-section="header" style="display:flex; justify-content:space-between; align-items:center; padding-bottom:14px; border-bottom:2px solid #1e40af;">
     <img src="${LOGO_DENMA}" style="height:52px; width:auto; object-fit:contain;" alt="DENMA" />
     <div style="text-align:right;">
       <div style="font-size:16px; font-weight:700; color:#1e40af; letter-spacing:0.5px;">YAPILABİLİRLİK FORMU</div>
@@ -130,7 +130,7 @@ function buildFeasibilityHtml(study) {
   </div>
 
   <!-- KAPAK — YAPILABILIRLIK NO + META -->
-  <div style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; margin-top:10px;">
+  <div data-pdf-section="kapak" style="display:grid; grid-template-columns:2fr 1fr 1fr; gap:12px; margin-top:10px;">
     <div style="padding:10px 12px; background:#eff6ff; border-radius:6px; border:1px solid #bfdbfe;">
       <div style="font-size:8px; color:#78716c; text-transform:uppercase; letter-spacing:0.5px;">Yapılabilirlik No / Study No</div>
       <div style="font-size:14px; font-weight:800; color:#1e40af; font-family:'JetBrains Mono','Courier New',monospace; letter-spacing:1px;">
@@ -148,7 +148,7 @@ function buildFeasibilityHtml(study) {
   </div>
 
   <!-- MÜŞTERİ + PARÇA -->
-  <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:8px;">
+  <div data-pdf-section="musteri-parca" style="display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:8px;">
     <div style="padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="font-size:8px; color:#78716c; font-weight:600; text-transform:uppercase; letter-spacing:0.5px;">Müşteri / Customer</div>
       <div style="font-size:12px; font-weight:700; color:#1e40af; margin-top:3px;">${esc(study.customerName || "—")}</div>
@@ -169,7 +169,7 @@ function buildFeasibilityHtml(study) {
 
   <!-- HAMMADDE -->
   ${(study.materialType || study.materialShape || study.dimensions?.en || study.weightKg) ? `
-    <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+    <div data-pdf-section="hammadde" style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">🧱 HAMMADDE / RAW MATERIAL</div>
       <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr; gap:8px; font-size:10px;">
         <div><div style="color:#78716c; font-size:8px;">Malzeme</div><div style="font-weight:600;">${esc(study.materialType || "—")}</div></div>
@@ -184,7 +184,7 @@ function buildFeasibilityHtml(study) {
 
   <!-- OPERASYONLAR -->
   ${opCount > 0 ? `
-    <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+    <div data-pdf-section="operasyonlar" style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
         <div style="font-size:9px; color:#78716c; font-weight:600;">⚙️ OPERASYONLAR / OPERATIONS</div>
         <div style="font-size:10px; color:#1c1917;"><b>${opCount}</b> operasyon · Toplam: <b>${fmtNum(opMin, 1)}</b> dk (${fmtNum(opMin / 60, 2)} sa)</div>
@@ -219,7 +219,7 @@ function buildFeasibilityHtml(study) {
     const total = cat.key === "tooling" ? toolingTotal : fasonTotal;
     if (items.length === 0) return "";
     return `
-      <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+      <div data-pdf-section="kalemler-${cat.key}" style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
         <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
           <div style="font-size:9px; color:#78716c; font-weight:600;">${cat.icon} ${esc(cat.label).toUpperCase()}</div>
           <div style="font-size:10px; color:#1c1917;"><b>${items.length}</b> kalem · Toplam: <b style="color:#166534;">${fmtNum(total)} TL</b></div>
@@ -268,7 +268,7 @@ function buildFeasibilityHtml(study) {
 
   <!-- İSTERLER -->
   ${(study.demands || []).length > 0 ? `
-    <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+    <div data-pdf-section="isterler" style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
       <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">📋 MÜŞTERİ İSTERLERİ / CUSTOMER DEMANDS</div>
       <table style="width:100%; border-collapse:collapse; font-size:9px;">
         <thead>
@@ -295,7 +295,7 @@ function buildFeasibilityHtml(study) {
     </div>` : ""}
 
   <!-- DEĞERLENDİRME — Puanlı, iki bölüm -->
-  <div style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
+  <div data-pdf-section="degerlendirme" style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
     <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
       <div style="font-size:9px; color:#78716c; font-weight:600;">✅ YAPILABİLİRLİK DEĞERLENDİRMESİ / FEASIBILITY SCORING</div>
       <div style="font-size:14px; font-weight:800; color:${recommendation.color};">
@@ -325,7 +325,7 @@ function buildFeasibilityHtml(study) {
 
   <!-- Müzakere ipuçları -->
   ${(negotiationHints.length > 0 && scoreInfo.percent < 75) ? `
-    <div style="margin-top:10px; padding:10px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:6px;">
+    <div data-pdf-section="muzakere" style="margin-top:10px; padding:10px 12px; background:#fef3c7; border:1px solid #fde68a; border-radius:6px;">
       <div style="font-size:9px; color:#92400e; font-weight:600; margin-bottom:4px;">
         💬 MÜZAKERE / İYİLEŞTİRME İPUÇLARI (${negotiationHints.length})
       </div>
@@ -336,7 +336,7 @@ function buildFeasibilityHtml(study) {
   ` : ""}
 
   <!-- KARAR + ÖNERİLER + İMZALAR (birleşik blok) -->
-  <div style="margin-top:8px; padding:12px 14px; background:${decision ? decision.bg : "#fafaf9"}; border-radius:6px; border:1px solid ${decision ? decision.color : "#e7e5e4"};">
+  <div data-pdf-section="karar-imza" style="margin-top:8px; padding:12px 14px; background:${decision ? decision.bg : "#fafaf9"}; border-radius:6px; border:1px solid ${decision ? decision.color : "#e7e5e4"};">
     <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px;">
       <div style="font-size:9px; color:#78716c; font-weight:600;">🎯 ALINAN KARAR / FINAL DECISION</div>
       <div style="font-size:8px; color:#78716c; font-weight:600;">✍️ İMZALAR / SIGNATURES</div>
@@ -361,7 +361,7 @@ function buildFeasibilityHtml(study) {
   </div>
 
   <!-- FOOTER -->
-  <div style="margin-top:10px; padding-top:6px; border-top:1px solid #e7e5e4; font-size:8px; color:#a8a29e; display:flex; justify-content:space-between;">
+  <div data-pdf-section="footer" style="margin-top:10px; padding-top:6px; border-top:1px solid #e7e5e4; font-size:8px; color:#a8a29e; display:flex; justify-content:space-between;">
     <span>DENMA Mühendislik · ${esc(study.studyNo || "")} · Üretim: ${new Date().toLocaleDateString("tr-TR")}</span>
     <span style="font-family:'JetBrains Mono','Courier New',monospace;">${FORM_NO}</span>
   </div>
@@ -379,6 +379,21 @@ async function renderFeasibilityPdf(study) {
   document.body.appendChild(container);
   try {
     const root = container.querySelector("#feas-pdf-root");
+
+    // Section boundary'lerini DOM'dan oku — html2canvas'tan ÖNCE. Her section'ın
+    // root'a göre Y offset'i ve yüksekliği. Section-based bin-packing için lazım.
+    const sectionEls = Array.from(root.querySelectorAll("[data-pdf-section]"));
+    const rootRect = root.getBoundingClientRect();
+    const sectionsCss = sectionEls.map(el => {
+      const rect = el.getBoundingClientRect();
+      return {
+        name: el.dataset.pdfSection,
+        top: rect.top - rootRect.top,
+        height: rect.height,
+      };
+    }).filter(s => s.height > 0);
+    const rootCssHeight = root.scrollHeight;
+
     const canvas = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
     const pdf = new jsPDF({ orientation: "p", unit: "mm", format: "a4", compress: true });
     const pdfWidth = pdf.internal.pageSize.getWidth();   // 210
@@ -395,7 +410,6 @@ async function renderFeasibilityPdf(study) {
     // Case 2 — Küçük overflow (≤15mm): scale-to-fit. Kesme yerine görüntüyü A4'e
     // sığdıracak şekilde küçültüyoruz (gözle fark edilmez ~%3-5 shrink). Sayfa
     // sayısı arttırmadan bilginin tümü tek sayfada okunabilir.
-    // Eskiden tolerance ile klip ediliyordu (footer/imza kayboluyordu) → düzeltildi.
     const SMALL_OVERFLOW_MM = 15;
     if (imgHeightMm <= pdfHeight + SMALL_OVERFLOW_MM) {
       const scale = pdfHeight / imgHeightMm;
@@ -404,126 +418,128 @@ async function renderFeasibilityPdf(study) {
       pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", xOffset, 0, newWidth, pdfHeight, undefined, "FAST");
       return pdf;
     }
-    // Case 3 — Gerçek overflow (>15mm): sayfa sayfa dilimle. 2+ sayfada üstte
-    // kompakt "devam" şeridi + üst boşluk.
+    // Case 3 — Gerçek overflow: section-based bin-packing. Her section bir bütün,
+    // ortasından kesilmez. Section A4'ten büyükse fallback: piksel bazlı smart-break.
     const pxPerMm = canvasWidth / pdfWidth;
     const CONTINUATION_STRIP_MM = 12;
     const CONTINUATION_TOP_GAP_MM = 8;   // devam şeridinden sonra nefes payı
-    const MIN_LAST_PAGE_CONTENT_MM = 60;
     const firstPageContentPx = pdfHeight * pxPerMm;
     const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM - CONTINUATION_TOP_GAP_MM) * pxPerMm;
 
-    // Akıllı kesim: canvas'ı yukarıdan aşağıya tarayıp her satırın "yoğunluk"
-    // skorunu hesapla (düşük yoğunluk = az/hiç metin var = kesim adayı).
-    // İki metrik: (a) düşük yoğunluklu satır kümesi (beyaz veya hafif gri
-    // border/padding), (b) fallback için en düşük yoğunluklu satır.
-    // Parametreler gevşetildi çünkü html2canvas antialiasing tam beyaz üretmiyor,
-    // tablo border-bottom hafif gri, %98 beyaz filtresi hiç match etmiyordu.
-    const ctx = canvas.getContext("2d");
-    const sampleStep = 2;
-    const brightThreshold = 225; // "açık" piksel — border-bottom + padding tolere edilir
-    const whiteRatioThreshold = 0.85; // satırın %85+ pikseli açık → boşluk sayılır
-    const minGapPx = Math.max(Math.round(1.5 * pxPerMm), 4); // en az 1.5mm boşluk
+    // CSS piksel → canvas piksel çarpanı (html2canvas scale=2 için ≈2)
+    const cssToCanvas = canvasHeight / rootCssHeight;
+    const sectionsPx = sectionsCss.map(s => ({
+      name: s.name,
+      startPx: Math.round(s.top * cssToCanvas),
+      endPx: Math.round((s.top + s.height) * cssToCanvas),
+      heightPx: Math.round(s.height * cssToCanvas),
+    }));
 
-    // Yatay şerit yoğunluk skoru — 0 = tam beyaz, 1 = çok yoğun. Az meşgul satır
-    // = daha iyi kesim adayı. Şu an fallback için de kullanılacak.
-    const _rowDensity = (y) => {
-      const row = ctx.getImageData(0, y, canvas.width, 1).data;
-      let darkSum = 0;
-      let count = 0;
-      for (let i = 0; i < row.length; i += 4) {
-        const b = (row[i] + row[i + 1] + row[i + 2]) / 3;
-        if (b < brightThreshold) darkSum++;
-        count++;
-      }
-      return darkSum / count; // 0..1
-    };
-
-    // Tarama tek geçişte gap listesi + tüm satır yoğunlukları
-    const densities = new Array(Math.ceil(canvas.height / sampleStep));
-    const gaps = [];
-    let gapStart = -1;
-    for (let y = 0, idx = 0; y < canvas.height; y += sampleStep, idx++) {
-      const density = _rowDensity(y);
-      densities[idx] = density;
-      const isGap = density < (1 - whiteRatioThreshold); // ≥85% açık → gap
-      if (isGap) {
-        if (gapStart < 0) gapStart = y;
-      } else {
-        if (gapStart >= 0 && (y - gapStart) >= minGapPx) {
-          gaps.push((gapStart + y) / 2);
-        }
-        gapStart = -1;
-      }
-    }
-    if (gapStart >= 0) gaps.push((gapStart + canvas.height) / 2);
-
-    const SNAP_MAX_MM = 70; // uzun tablo satırları için geniş arama
-    const snapMaxPx = SNAP_MAX_MM * pxPerMm;
-    const snapToGap = (targetY) => {
-      // 1) Range içinde geriye doğru en yakın açık gap
-      let bestGap = null;
-      for (const g of gaps) {
-        if (g > targetY) break;
-        if (targetY - g <= snapMaxPx) {
-          if (bestGap === null || g > bestGap) bestGap = g;
-        }
-      }
-      if (bestGap !== null) return bestGap;
-      // 2) Fallback: range içinde en düşük yoğunluklu satır (metin ortası değil,
-      //    en azından en boş yer). Range içinde her densities örneğine bak.
-      const startIdx = Math.max(0, Math.floor((targetY - snapMaxPx) / sampleStep));
-      const endIdx = Math.min(densities.length - 1, Math.floor(targetY / sampleStep));
-      let bestIdx = endIdx;
-      let bestDens = Infinity;
-      for (let i = startIdx; i <= endIdx; i++) {
-        if (densities[i] < bestDens) {
-          bestDens = densities[i];
-          bestIdx = i;
-        }
-      }
-      return bestIdx * sampleStep;
-    };
-
-    // Sayfa dilimlerini hesapla — kesim noktalarını beyaz boşluklara snap et
+    // Section-based bin-packing: her section'ı sırayla dolaş, mevcut sayfaya
+    // sığıyorsa ekle, sığmıyorsa yeni sayfa aç. Section ortasından hiç kesim
+    // olmaz. Bir section A4'ten büyükse (nadir) o section'ın piksel bazlı
+    // smart-break'ini yaparız (bkz. sonrası).
     const slices = [];
-    let offset = 0;
-    let pageIdx = 0;
-    while (offset < canvasHeight) {
-      const isFirst = pageIdx === 0;
-      const contentPx = isFirst ? firstPageContentPx : continuationContentPx;
-      const targetEnd = offset + contentPx;
-      let sliceEnd;
-      if (targetEnd >= canvasHeight) {
-        sliceEnd = canvasHeight; // son sayfa — snap yok, kalan her şey
-      } else {
-        // Snap yalnız yeterince content varsa (aksi halde sonsuz döngü)
-        const snapped = snapToGap(targetEnd);
-        sliceEnd = snapped > offset + 20 * pxPerMm ? snapped : targetEnd;
-      }
-      const sliceHeight = sliceEnd - offset;
-      slices.push({ offset, height: sliceHeight, isContinuation: !isFirst });
-      offset = sliceEnd;
-      pageIdx++;
-    }
-    // Son sayfa çok az içerik kaldıysa (< MIN_LAST_PAGE_CONTENT_MM):
-    // önceki sayfadan içeriği son sayfaya KAYDIR (append DEĞİL — append edersek
-    // önceki sayfa A4'ten büyük olur, footer klip edilir). Redistribute yaklaşımı
-    // sadece slice sınırını yukarı çekiyor; toplam sayfa sayısı aynı, ama son sayfa
-    // "60mm en az" olacak şekilde önceki sayfadan içerik alıyor.
-    if (slices.length >= 2) {
-      const last = slices[slices.length - 1];
-      const lastHeightMm = last.height / pxPerMm;
-      if (lastHeightMm < MIN_LAST_PAGE_CONTENT_MM) {
-        const neededPx = (MIN_LAST_PAGE_CONTENT_MM - lastHeightMm) * pxPerMm;
-        const penultimate = slices[slices.length - 2];
-        // Penultimate'ten al, son sayfaya ver (önce sınırı geriye çek, sonra genişlet)
-        const canTake = Math.min(neededPx, penultimate.height - 10 * pxPerMm); // en az 10mm bırak
-        if (canTake > 0) {
-          penultimate.height -= canTake;
-          last.offset -= canTake;
-          last.height += canTake;
+    if (sectionsPx.length === 0) {
+      // Section marker yok — fallback: eski davranış (tek slice, tümü)
+      slices.push({ offset: 0, height: canvasHeight, isContinuation: false });
+    } else {
+      let currentStart = sectionsPx[0].startPx;
+      let currentEnd = currentStart;
+      let isFirstPage = true;
+      const flushPage = () => {
+        if (currentEnd > currentStart) {
+          slices.push({ offset: currentStart, height: currentEnd - currentStart, isContinuation: !isFirstPage });
+          isFirstPage = false;
         }
+      };
+      for (const s of sectionsPx) {
+        const availablePx = isFirstPage ? firstPageContentPx : continuationContentPx;
+        const proposedHeight = s.endPx - currentStart;
+        // Section, mevcut sayfaya sığıyor mu?
+        if (proposedHeight <= availablePx || currentEnd === currentStart) {
+          // Sığıyor VEYA mevcut sayfa boş (tek section bile A4'ten büyükse yine ekle,
+          // sonrasında dilim gerekirse ele alacağız)
+          currentEnd = s.endPx;
+        } else {
+          // Sığmıyor → önceki sayfayı kapat, yeni sayfada bu section'la başla
+          flushPage();
+          currentStart = s.startPx;
+          currentEnd = s.endPx;
+        }
+      }
+      flushPage();
+      // Bir slice (sayfa) tek section içerse ve A4'ten büyükse: o slice'ı piksel
+      // bazlı smart-break ile alt-slice'lara böl. Değerlendirme çok büyükse buna
+      // düşer. Diğer nadir vaka: tek section >A4. Piksel yoğunluk bazlı gap detection'ı
+      // yalnızca bu durumda çalıştırıyoruz (perf: gap detection maliyetli olabilir).
+      const bigSlices = slices.filter(s => {
+        const availablePx = s.isContinuation ? continuationContentPx : firstPageContentPx;
+        return s.height > availablePx;
+      });
+      if (bigSlices.length > 0) {
+        // Gap tarama sadece gerekli — canvas'ın YOĞUN olan slice'ında ara
+        const ctx = canvas.getContext("2d");
+        const _rowDensity = (y) => {
+          const row = ctx.getImageData(0, y, canvas.width, 1).data;
+          let dark = 0;
+          for (let i = 0; i < row.length; i += 4) {
+            const b = (row[i] + row[i + 1] + row[i + 2]) / 3;
+            if (b < 225) dark++;
+          }
+          return dark / (row.length / 4);
+        };
+        const sampleStep = 2;
+        // Her büyük slice için ayrı ayrı böl
+        const newSlices = [];
+        for (const s of slices) {
+          const availablePx = s.isContinuation ? continuationContentPx : firstPageContentPx;
+          if (s.height <= availablePx) {
+            newSlices.push(s);
+            continue;
+          }
+          // Bu slice bölünecek — içinde beyaz gap'leri bul
+          const localGaps = [];
+          let gapStart = -1;
+          const minGapPx = Math.max(Math.round(1.5 * pxPerMm), 4);
+          for (let y = s.offset; y < s.offset + s.height; y += sampleStep) {
+            const d = _rowDensity(y);
+            if (d < 0.15) {
+              if (gapStart < 0) gapStart = y;
+            } else {
+              if (gapStart >= 0 && (y - gapStart) >= minGapPx) {
+                localGaps.push((gapStart + y) / 2);
+              }
+              gapStart = -1;
+            }
+          }
+          // Sub-slice yap: iç section devam ediyorsa continuation modu
+          let offset = s.offset;
+          let isFirstSubSlice = true;
+          while (offset < s.offset + s.height) {
+            const isContinuation = s.isContinuation || !isFirstSubSlice;
+            const availableSub = isContinuation ? continuationContentPx : firstPageContentPx;
+            const targetEnd = offset + availableSub;
+            if (targetEnd >= s.offset + s.height) {
+              newSlices.push({ offset, height: (s.offset + s.height) - offset, isContinuation });
+              break;
+            }
+            // Snap to nearest gap before targetEnd
+            let bestGap = null;
+            for (const g of localGaps) {
+              if (g > targetEnd) break;
+              if (g > offset + 20 * pxPerMm) {
+                if (bestGap === null || g > bestGap) bestGap = g;
+              }
+            }
+            const sliceEnd = bestGap !== null ? bestGap : targetEnd;
+            newSlices.push({ offset, height: sliceEnd - offset, isContinuation });
+            offset = sliceEnd;
+            isFirstSubSlice = false;
+          }
+        }
+        slices.length = 0;
+        slices.push(...newSlices);
       }
     }
     const totalPages = slices.length;
