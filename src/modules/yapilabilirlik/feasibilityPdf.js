@@ -119,7 +119,7 @@ function buildFeasibilityHtml(study) {
   const negotiationHints = getNegotiationHints(study);
 
   return `
-<div id="feas-pdf-root" style="width:794px; padding:22px 40px; background:#fff; font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:#1c1917; box-sizing:border-box;">
+<div id="feas-pdf-root" style="width:794px; padding:22px 40px 40px; background:#fff; font-family:'Inter',system-ui,-apple-system,'Segoe UI',sans-serif; color:#1c1917; box-sizing:border-box;">
   <!-- HEADER -->
   <div style="display:flex; justify-content:space-between; align-items:center; padding-bottom:14px; border-bottom:2px solid #1e40af;">
     <img src="${LOGO_DENMA}" style="height:52px; width:auto; object-fit:contain;" alt="DENMA" />
@@ -380,26 +380,35 @@ async function renderFeasibilityPdf(study) {
   try {
     const root = container.querySelector("#feas-pdf-root");
     const canvas = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
-    const pdf = new jsPDF("p", "mm", "a4");
+    const pdf = new jsPDF({ orientation: "p", unit: "mm", format: "a4", compress: true });
     const pdfWidth = pdf.internal.pageSize.getWidth();   // 210
     const pdfHeight = pdf.internal.pageSize.getHeight(); // 297
     const canvasWidth = canvas.width;
     const canvasHeight = canvas.height;
-
-    // İçerik tek A4'e sığıyorsa direkt bas. HTML padding/whitespace nedeniyle
-    // birkaç mm taşma yaşanabildiği için küçük bir tolerans veriyoruz — aksi
-    // halde 2. sayfada neredeyse boş bir "devam" sayfası oluşuyordu.
-    const SINGLE_PAGE_TOLERANCE_MM = 8;
     const imgHeightMm = (canvasHeight * pdfWidth) / canvasWidth;
-    if (imgHeightMm <= pdfHeight + SINGLE_PAGE_TOLERANCE_MM) {
-      pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pdfWidth, imgHeightMm);
+
+    // Case 1 — İçerik tam A4'e sığıyor: direkt bas
+    if (imgHeightMm <= pdfHeight) {
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, 0, pdfWidth, imgHeightMm, undefined, "FAST");
       return pdf;
     }
-
-    // Taşma var — sayfa sayfa dilimle. 2+ sayfada üstte kompakt "devam" şeridi çıkar.
+    // Case 2 — Küçük overflow (≤15mm): scale-to-fit. Kesme yerine görüntüyü A4'e
+    // sığdıracak şekilde küçültüyoruz (gözle fark edilmez ~%3-5 shrink). Sayfa
+    // sayısı arttırmadan bilginin tümü tek sayfada okunabilir.
+    // Eskiden tolerance ile klip ediliyordu (footer/imza kayboluyordu) → düzeltildi.
+    const SMALL_OVERFLOW_MM = 15;
+    if (imgHeightMm <= pdfHeight + SMALL_OVERFLOW_MM) {
+      const scale = pdfHeight / imgHeightMm;
+      const newWidth = pdfWidth * scale;
+      const xOffset = (pdfWidth - newWidth) / 2; // yatayda ortala
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.92), "JPEG", xOffset, 0, newWidth, pdfHeight, undefined, "FAST");
+      return pdf;
+    }
+    // Case 3 — Gerçek overflow (>15mm): sayfa sayfa dilimle. 2+ sayfada üstte
+    // kompakt "devam" şeridi çıkar.
     const pxPerMm = canvasWidth / pdfWidth;
     const CONTINUATION_STRIP_MM = 12;
-    const MIN_LAST_PAGE_CONTENT_MM = 60; // son sayfada bundan az içerik kalırsa öncekine birleştir (imza + footer için)
+    const MIN_LAST_PAGE_CONTENT_MM = 60;
     const firstPageContentPx = pdfHeight * pxPerMm;
     const continuationContentPx = (pdfHeight - CONTINUATION_STRIP_MM) * pxPerMm;
 
@@ -415,14 +424,24 @@ async function renderFeasibilityPdf(study) {
       offset += sliceHeight;
       pageIdx++;
     }
-    // Son sayfa çok az içerik kaldıysa (< 25mm) — önceki sayfaya birleştir,
-    // "devam" sayfasında sadece şerit + boşluk görünmesin diye.
+    // Son sayfa çok az içerik kaldıysa (< MIN_LAST_PAGE_CONTENT_MM):
+    // önceki sayfadan içeriği son sayfaya KAYDIR (append DEĞİL — append edersek
+    // önceki sayfa A4'ten büyük olur, footer klip edilir). Redistribute yaklaşımı
+    // sadece slice sınırını yukarı çekiyor; toplam sayfa sayısı aynı, ama son sayfa
+    // "60mm en az" olacak şekilde önceki sayfadan içerik alıyor.
     if (slices.length >= 2) {
       const last = slices[slices.length - 1];
       const lastHeightMm = last.height / pxPerMm;
       if (lastHeightMm < MIN_LAST_PAGE_CONTENT_MM) {
-        slices[slices.length - 2].height += last.height;
-        slices.pop();
+        const neededPx = (MIN_LAST_PAGE_CONTENT_MM - lastHeightMm) * pxPerMm;
+        const penultimate = slices[slices.length - 2];
+        // Penultimate'ten al, son sayfaya ver (önce sınırı geriye çek, sonra genişlet)
+        const canTake = Math.min(neededPx, penultimate.height - 10 * pxPerMm); // en az 10mm bırak
+        if (canTake > 0) {
+          penultimate.height -= canTake;
+          last.offset -= canTake;
+          last.height += canTake;
+        }
       }
     }
     const totalPages = slices.length;
@@ -434,7 +453,7 @@ async function renderFeasibilityPdf(study) {
       let yPosMm = 0;
       if (p.isContinuation) {
         const headerImg = await renderContinuationStrip(study, i + 1, totalPages, pdfWidth);
-        pdf.addImage(headerImg.dataUrl, "JPEG", 0, 0, pdfWidth, headerImg.heightMm);
+        pdf.addImage(headerImg.dataUrl, "JPEG", 0, 0, pdfWidth, headerImg.heightMm, undefined, "FAST");
         yPosMm = headerImg.heightMm;
       }
 
@@ -444,7 +463,7 @@ async function renderFeasibilityPdf(study) {
       sliceCanvas.height = p.height;
       sliceCanvas.getContext("2d").drawImage(canvas, 0, p.offset, canvasWidth, p.height, 0, 0, canvasWidth, p.height);
       const sliceHeightMm = p.height / pxPerMm;
-      pdf.addImage(sliceCanvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, yPosMm, pdfWidth, sliceHeightMm);
+      pdf.addImage(sliceCanvas.toDataURL("image/jpeg", 0.92), "JPEG", 0, yPosMm, pdfWidth, sliceHeightMm, undefined, "FAST");
     }
 
     return pdf;
