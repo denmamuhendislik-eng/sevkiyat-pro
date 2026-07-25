@@ -169,6 +169,50 @@ async function listFolderFiles(drive, folderId) {
   return out;
 }
 
+// Klasördeki dosyaları progressive-deepening ile bul.
+// Root'ta dosya varsa direkt döner (COC gibi düz stok klasörü davranışı korunur).
+// Yoksa alt klasörlere iner (max derinlik). FAI'deki "STOK / TARIH / dosya.pdf"
+// yapısı için gerekli. Her dosya için içinde bulunduğu alt-klasör zinciri chain[]
+// olarak döner — arayan tarafta relativePath'e eklenir ki hangi tarih klasöründen
+// geldiği kullanıcıya görünür.
+async function listFolderFilesRecursive(drive, folderId, maxDepth = 2) {
+  // 1) Direkt dosyalar
+  const direct = await listFolderFiles(drive, folderId);
+  if (direct.length > 0 || maxDepth <= 0) {
+    return direct.map((f) => ({ file: f, chain: [] }));
+  }
+  // 2) Direkt dosya yok → alt klasörlere bak
+  let subFolders = [];
+  try {
+    const res = await drive.files.list({
+      q: `'${folderId}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false`,
+      fields: "files(id, name)",
+      orderBy: "name desc", // tarih klasörleri (2026-...) en yeni üstte
+      pageSize: 30,
+    });
+    subFolders = res.data.files || [];
+  } catch (e) {
+    console.warn("[drive] listFolderFilesRecursive alt klasör listeleme hatası", folderId, e.message);
+    return [];
+  }
+  if (subFolders.length === 0) return [];
+  const nested = await Promise.all(
+    subFolders.map(async (sf) => {
+      try {
+        const items = await listFolderFilesRecursive(drive, sf.id, maxDepth - 1);
+        return items.map((item) => ({
+          file: item.file,
+          chain: [sf.name, ...item.chain],
+        }));
+      } catch (e) {
+        console.warn("[drive] recursive alt klasör hatası", sf.id, e.message);
+        return [];
+      }
+    }),
+  );
+  return nested.flat();
+}
+
 // Strateji 1 — Klasör tabanlı arama (Ölçüm, FAİ)
 // parentFolderIds dizisindeki her kökte stokKodu içeren tüm alt klasörleri PARALEL arar,
 // dosyalarını PARALEL listeler, birleştirir.
@@ -195,27 +239,33 @@ async function searchByFolder(drive, parentFolderIds, stokKodu) {
   }
   console.log(`[drive] toplam ${allSubs.length} benzersiz alt klasör bulundu (${Date.now() - tStart}ms)`);
 
-  // Dosya listeleme paralel + relative path
+  // Dosya listeleme paralel + relative path.
+  // Progressive-deepening: stok klasörünün İÇİNDE tarih/varyant alt klasörü varsa (ör. FAI
+  // gidecekler akışı: STOK / TARIH / dosya.pdf) alt klasörlere inip dosyaları toplar.
+  // Kullanıcı önceki COC davranışını değiştirmedik — root'ta dosya varsa oradan alınır.
   const fileLists = await Promise.all(
     allSubs.map(async (sub) => {
       try {
-        const files = await listFolderFiles(drive, sub.id);
+        const items = await listFolderFilesRecursive(drive, sub.id, 2);
         // Sub klasörünün kendi path'i (kökten sub'a kadar)
         const subPath = await buildRelativePath(drive, sub.id, sub.parents, parentFolderIds);
         const fullSubPath = subPath ? `${subPath} / ${sub.name}` : sub.name;
-        return files.map((f) => ({
-          id: f.id,
-          name: f.name,
-          mimeType: f.mimeType,
-          size: Number(f.size || 0),
-          modifiedTime: f.modifiedTime,
-          webViewLink: f.webViewLink,
-          parentFolderName: sub.name,
-          parentFolderId: sub.id,
-          relativePath: fullSubPath,
-        }));
+        return items.map(({ file: f, chain }) => {
+          const chainPath = chain.length > 0 ? ` / ${chain.join(" / ")}` : "";
+          return {
+            id: f.id,
+            name: f.name,
+            mimeType: f.mimeType,
+            size: Number(f.size || 0),
+            modifiedTime: f.modifiedTime,
+            webViewLink: f.webViewLink,
+            parentFolderName: chain.length > 0 ? chain[chain.length - 1] : sub.name,
+            parentFolderId: sub.id,
+            relativePath: `${fullSubPath}${chainPath}`,
+          };
+        });
       } catch (e) {
-        console.warn("[drive] listFolderFiles hatası", sub.id, e.message);
+        console.warn("[drive] listFolderFilesRecursive hatası", sub.id, e.message);
         return [];
       }
     }),
