@@ -29,9 +29,67 @@ import JSZip from "jszip";
 export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels }) {
   const [subTab, setSubTab] = useState("list");
   const [pendingOpen, setPendingOpen] = useState(null); // { record, readOnly }
+  const [deltaSource, setDeltaSource] = useState(null); // Delta FAI oluşturma modalı için kaynak FAI
   const openRecord = (record, { readOnly = false } = {}) => {
     setPendingOpen({ record, readOnly });
     setSubTab("new");
+  };
+
+  // Delta (Partial/Kısmi) FAI oluştur — AS9102: proses/tezgah değişiminde
+  // aynı parça için yeni FAI, önceki FAI no'ya referans ile
+  const confirmDelta = async ({ source, reason, copyForm1, copyForm2, copyForm3 }) => {
+    try {
+      const newFaiNo = await suggestNextFaiNo(new Date(), { staging: false });
+      const base = makeEmptyFai(newFaiNo);
+      const newRecord = { ...base, faiNo: newFaiNo };
+      if (copyForm1) {
+        // Form 1 alanları — parça bilgisi, çizim, organizasyon
+        Object.assign(newRecord, {
+          partNumber: source.partNumber || "",
+          partName: source.partName || "",
+          partRevision: source.partRevision || "",
+          drawingNumber: source.drawingNumber || "",
+          drawingRevision: source.drawingRevision || "",
+          organizationName: source.organizationName || newRecord.organizationName,
+          supplierCode: source.supplierCode || "",
+          customerPoNumber: source.customerPoNumber || "",
+          detailOrAssembly: source.detailOrAssembly || "detail",
+          subComponents: Array.isArray(source.subComponents) ? source.subComponents.map(s => ({ ...s })) : [],
+          customerCode: source.customerCode || "",
+          customerName: source.customerName || "",
+          stockCode: source.stockCode || "",
+          linkedFeasibilityNo: source.linkedFeasibilityNo || null,
+        });
+      }
+      if (copyForm2) {
+        newRecord.materialsAndProcesses = Array.isArray(source.materialsAndProcesses)
+          ? source.materialsAndProcesses.map(m => ({ ...m })) : [];
+        newRecord.functionalTests = Array.isArray(source.functionalTests)
+          ? source.functionalTests.map(t => ({ ...t })) : [];
+      }
+      if (copyForm3) {
+        // Karakteristik referansları kopyala — actual/deviation/result BOŞ (yeniden ölçülecek)
+        newRecord.characteristics = (source.characteristics || []).map(c => ({
+          ...c,
+          actual: "",
+          deviation: "",
+          resultStatus: "",
+          // results string'ini de temizle
+          results: "",
+        }));
+      }
+      // Partial FAI işaretleri
+      newRecord.faiType = "partial";
+      newRecord.previousFairNumber = source.faiNo;
+      newRecord.partialFaiReason = reason || "";
+      newRecord.additionalChanges = source.additionalChanges || "";
+      // Meta
+      newRecord.source = "delta";
+      setDeltaSource(null);
+      openRecord(newRecord, { readOnly: false });
+    } catch (e) {
+      alert("Delta FAI oluşturma hatası: " + (e.message || e));
+    }
   };
 
   return (
@@ -57,19 +115,112 @@ export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, 
 
       {subTab === "list" && <FaiListView canEdit={canEdit} isAdmin={isAdmin}
         customerFilter={customerFilter} searchText={searchText}
-        onOpen={openRecord} />}
+        onOpen={openRecord}
+        onCreateDelta={(r) => setDeltaSource(r)} />}
       {subTab === "new" && <NewFaiView canEdit={canEdit} isAdmin={isAdmin}
         cocParts={cocParts} bomModels={bomModels}
         initialRecord={pendingOpen?.record || null}
         readOnly={!!pendingOpen?.readOnly}
-        onSaved={() => { setPendingOpen(null); setSubTab("list"); }} />}
+        onSaved={() => { setPendingOpen(null); setSubTab("list"); }}
+        onCreateDelta={(r) => setDeltaSource(r)} />}
+
+      {/* Delta FAI oluşturma modalı — AS9102 Partial FAI */}
+      {deltaSource && (
+        <DeltaFaiModal source={deltaSource} onCancel={() => setDeltaSource(null)} onConfirm={confirmDelta} />
+      )}
+    </div>
+  );
+}
+
+// Delta FAI modalı — kullanıcı kaynak FAI'den yeni Partial FAI oluşturur.
+// AS9102 Field 14: "partial" işaretli, previousFairNumber + partialFaiReason zorunlu.
+function DeltaFaiModal({ source, onCancel, onConfirm }) {
+  const [reason, setReason] = useState("");
+  const [copyForm1, setCopyForm1] = useState(true);
+  const [copyForm2, setCopyForm2] = useState(true);
+  const [copyForm3, setCopyForm3] = useState(true);
+  const [creating, setCreating] = useState(false);
+  const handleConfirm = async () => {
+    if (!reason.trim()) { alert("Değişiklik gerekçesi zorunlu (örn. 'Yeni tezgah: X · CAM güncellendi')"); return; }
+    setCreating(true);
+    try {
+      await onConfirm({ source, reason: reason.trim(), copyForm1, copyForm2, copyForm3 });
+    } finally {
+      setCreating(false);
+    }
+  };
+  return (
+    <div onClick={e => { if (e.target === e.currentTarget && !creating) onCancel(); }}
+      style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 300, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+      <div style={{ background: "#fff", borderRadius: 8, width: "min(560px, 100%)", maxHeight: "90vh", overflow: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+        <div style={{ padding: "14px 18px", borderBottom: "1px solid #e7e5e4", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>Δ Delta (Kısmi/Partial) FAI Oluştur</div>
+            <div style={{ fontSize: 10, color: "#78716c", marginTop: 2 }}>Proses/tezgah/malzeme değişikliği için AS9102 Partial FAI</div>
+          </div>
+          <button onClick={onCancel} disabled={creating} style={{ background: "transparent", border: "none", fontSize: 20, cursor: creating ? "not-allowed" : "pointer", color: "#78716c" }}>✕</button>
+        </div>
+        <div style={{ padding: 18 }}>
+          <div style={{ padding: 10, background: "#f0f9ff", border: "1px solid #bae6fd", borderRadius: 4, marginBottom: 14, fontSize: 11 }}>
+            <div><b>Kaynak FAI:</b> <span style={{ fontFamily: "ui-monospace, monospace" }}>{source.faiNo}</span></div>
+            <div><b>Parça:</b> {source.partName || "—"} {source.partNumber && <span style={{ fontFamily: "ui-monospace, monospace", color: "#78716c" }}>({source.partNumber})</span>}</div>
+            <div><b>Müşteri:</b> {source.customerName || "—"}</div>
+            <div style={{ marginTop: 4, color: "#0369a1", fontSize: 10 }}>Yeni FAI otomatik olarak bugünkü tarih üzerinden numaralanır ve bu FAI'ye referans verir.</div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, display: "block", marginBottom: 4 }}>Değişiklik Gerekçesi *</label>
+            <textarea value={reason} onChange={e => setReason(e.target.value)}
+              placeholder="örn. Yeni tezgah: DMG MORI NLX2500 · CAM güncellendi · Yeni tooling"
+              rows={3}
+              style={{ width: "100%", padding: 8, fontSize: 12, border: "1px solid #d6d3d1", borderRadius: 4, boxSizing: "border-box", fontFamily: "inherit" }} />
+            <div style={{ fontSize: 10, color: "#78716c", marginTop: 3 }}>Bu metin yeni FAI'nin Form 1 Field 14 altında "Kısmi FAI Gerekçesi" olarak PDF'e basılır.</div>
+          </div>
+          <div style={{ marginBottom: 14 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>Kaynaktan kopyalanacaklar:</div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "5px 0" }}>
+              <input type="checkbox" checked={copyForm1} onChange={e => setCopyForm1(e.target.checked)} />
+              <div>
+                <div>📝 Form 1 · Parça bilgisi</div>
+                <div style={{ fontSize: 10, color: "#78716c" }}>Parça no, isim, çizim no/rev, müşteri, alt bileşenler</div>
+              </div>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "5px 0" }}>
+              <input type="checkbox" checked={copyForm2} onChange={e => setCopyForm2(e.target.checked)} />
+              <div>
+                <div>🧪 Form 2 · Malzeme & Süreç</div>
+                <div style={{ fontSize: 10, color: "#78716c" }}>Malzeme sertifikaları, özel süreçler, fonksiyonel testler</div>
+              </div>
+            </label>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, padding: "5px 0" }}>
+              <input type="checkbox" checked={copyForm3} onChange={e => setCopyForm3(e.target.checked)} />
+              <div>
+                <div>📏 Form 3 · Karakteristik referansları</div>
+                <div style={{ fontSize: 10, color: "#78716c" }}>Numara + eleman + nominal + tolerans kopyalanır, <b>ölçüm değerleri boş kalır</b> (yeni tezgahta ölçüm yapılacak)</div>
+              </div>
+            </label>
+            <div style={{ fontSize: 10, color: "#a8a29e", marginTop: 6 }}>
+              Not: Ek belgeler (balonlu resim, sertifika PDF'leri) yeniden yüklenir — otomatik kopyalanmaz.
+            </div>
+          </div>
+        </div>
+        <div style={{ padding: "12px 18px", borderTop: "1px solid #e7e5e4", display: "flex", gap: 8, justifyContent: "flex-end", background: "#fafaf9" }}>
+          <button onClick={onCancel} disabled={creating}
+            style={{ padding: "7px 16px", fontSize: 12, background: "#fff", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: creating ? "not-allowed" : "pointer" }}>
+            İptal
+          </button>
+          <button onClick={handleConfirm} disabled={creating || !reason.trim()}
+            style={{ padding: "7px 16px", fontSize: 12, fontWeight: 600, background: reason.trim() ? "#1e40af" : "#a8a29e", color: "#fff", border: "none", borderRadius: 4, cursor: creating || !reason.trim() ? "not-allowed" : "pointer" }}>
+            {creating ? "Oluşturuluyor..." : "Δ Delta FAI Oluştur"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
 
 // ==================== Yeni FAI Form ====================
 
-function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, readOnly, onSaved }) {
+function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, readOnly, onSaved, onCreateDelta }) {
   const [faiNo, setFaiNo] = useState("");
   const [record, setRecord] = useState(() => makeEmptyFai(""));
   const [saving, setSaving] = useState(false);
@@ -459,6 +610,34 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
         <div style={{ marginBottom: 12, padding: 10, background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 4, fontSize: 11, color: "#166534" }}>
           🎯 <b>Yapılabilirlik'ten oluşturuldu</b> — <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 500 }}>{record.linkedFeasibilityNo}</span>
           <br /><span style={{ fontSize: 10, color: "#15803d" }}>Parça bilgisi + hammadde + fason kalemleri otomatik dolduruldu. Karakteristik ölçümler ve Form 3 elle doldurulmalıdır.</span>
+        </div>
+      )}
+
+      {/* Delta (Partial/Kısmi) FAI banner */}
+      {record.faiType === "partial" && record.previousFairNumber && (
+        <div style={{ marginBottom: 12, padding: 10, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e" }}>
+          Δ <b>Kısmi (Delta) FAI</b> · Kaynak: <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>#{record.previousFairNumber}</span>
+          {record.partialFaiReason && (
+            <div style={{ marginTop: 4, fontSize: 10, color: "#78350f" }}>
+              <b>Gerekçe:</b> {record.partialFaiReason}
+            </div>
+          )}
+          <div style={{ fontSize: 10, color: "#78350f", marginTop: 4 }}>
+            AS9102: Sadece değişiklikten etkilenen karakteristikler yeniden ölçülür. Etkilenmeyen kalemler önceki FAI'ye referanslıdır.
+          </div>
+        </div>
+      )}
+
+      {/* Mevcut kayıtlı FAI için "Δ Delta oluştur" hızlı erişim */}
+      {faiNo && initialRecord && canEdit && onCreateDelta && record.faiType !== "partial" && (
+        <div style={{ marginBottom: 12, padding: "8px 12px", background: "#f8fafc", border: "1px solid #cbd5e1", borderRadius: 4, fontSize: 11, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+          <span style={{ color: "#475569" }}>
+            Bu parça için proses/tezgah değişikliği mi var? Bu FAI'yi baz alarak yeni <b>Kısmi FAI</b> oluşturabilirsin.
+          </span>
+          <button onClick={() => onCreateDelta(record)}
+            style={{ padding: "5px 12px", fontSize: 11, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 4, cursor: "pointer", fontWeight: 600 }}>
+            Δ Delta FAI Oluştur
+          </button>
         </div>
       )}
 
@@ -1253,7 +1432,7 @@ async function downloadFaiZip(record) {
   }
 }
 
-function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
+function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen, onCreateDelta }) {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
   const [staging, setStaging] = useState(false);
@@ -1292,6 +1471,16 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
     );
     return filtered.sort((a, b) => (b.faiNo || "").localeCompare(a.faiNo || ""));
   }, [data, localSearch, searchText, customerFilter]);
+
+  // Delta zincirleri — her FAI için "beni referans alan partial FAI sayısı"
+  const deltaCountByFaiNo = useMemo(() => {
+    const map = {};
+    for (const r of Object.values(data?.records || {})) {
+      const prev = r.previousFairNumber;
+      if (r.faiType === "partial" && prev) map[prev] = (map[prev] || 0) + 1;
+    }
+    return map;
+  }, [data]);
 
   const handleDelete = async (faiNo) => {
     if (!confirm(`FAI ${faiNo} silinsin mi?`)) return;
@@ -1381,7 +1570,27 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
                       {r.customerName || "—"}
                     </td>
                     <td style={{ padding: "6px 10px", fontSize: 10, color: "#57534e" }}>
-                      {r.faiType === "partial" ? "Kısmi" : "Tam"} · {r.detailOrAssembly === "assembly" ? "Takım" : "Parça"}
+                      {r.faiType === "partial" ? (
+                        <span title={r.partialFaiReason || ""}
+                          style={{ display: "inline-block", padding: "1px 5px", background: "#fef3c7", color: "#92400e", borderRadius: 3, fontWeight: 600, marginRight: 4 }}>
+                          Δ Kısmi
+                        </span>
+                      ) : (
+                        <span style={{ display: "inline-block", padding: "1px 5px", background: "#dbeafe", color: "#1e40af", borderRadius: 3, fontWeight: 600, marginRight: 4 }}>
+                          ● Tam
+                        </span>
+                      )}
+                      {r.detailOrAssembly === "assembly" ? "Takım" : "Parça"}
+                      {r.previousFairNumber && (
+                        <div style={{ fontSize: 9, color: "#78716c", marginTop: 2, fontFamily: "ui-monospace, monospace" }}>
+                          ← #{r.previousFairNumber}
+                        </div>
+                      )}
+                      {deltaCountByFaiNo[r.faiNo] > 0 && (
+                        <div style={{ fontSize: 9, color: "#92400e", marginTop: 2, fontWeight: 500 }}>
+                          Δ {deltaCountByFaiNo[r.faiNo]} kısmi FAI
+                        </div>
+                      )}
                     </td>
                     <td style={{ padding: "6px 10px" }}>
                       <span style={{ padding: "1px 6px", background: badge?.bg, color: badge?.color, borderRadius: 3, fontSize: 9, fontWeight: 600 }}>{badge?.label}</span>
@@ -1397,6 +1606,13 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen }) {
                         <button onClick={() => downloadFaiZip(r)}
                           title="FAI paketi (PDF + ekler) ZIP indir"
                           style={{ padding: "3px 8px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>📦 ZIP</button>
+                        {canEdit && onCreateDelta && (
+                          <button onClick={() => onCreateDelta(r)}
+                            title="Bu FAI'den yeni Kısmi (Delta) FAI oluştur — proses/tezgah değişimi için"
+                            style={{ padding: "3px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: "pointer", fontWeight: 500 }}>
+                            Δ Delta
+                          </button>
+                        )}
                         {isAdmin && status !== "customerApproved" && (
                           <button onClick={() => handleDelete(r.faiNo)} disabled={!!deleting[r.faiNo]}
                             style={{ padding: "3px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>🗑</button>
