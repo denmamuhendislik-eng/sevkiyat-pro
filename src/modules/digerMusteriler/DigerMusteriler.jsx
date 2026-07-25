@@ -23,7 +23,7 @@ import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
 import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent, getSubDocFiles, DOC_TYPES } from './subComponents';
 import FaiView from './fai/FaiView';
-import { subscribeFaiArchive } from './fai/firestore';
+import { subscribeFaiArchive, subscribeFaiForYear } from './fai/firestore';
 import { getISOWeek, getWeekMonday, formatDateShort, weeksBetween, nextIsoWeek } from '../../shared/weekUtils';
 import { formatMoney } from '../../shared/moneyFormat';
 
@@ -144,6 +144,12 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   // viewMode: 'orders' (default sipariş listesi) | 'products' (stok bazlı agregasyon tablosu)
   const [viewMode, setViewMode] = useState('orders');
   const [productSort, setProductSort] = useState({ col: 'tutar', dir: 'desc' });
+  // COC listesinden "➕ FAI Oluştur" ile FAI view'a atlarken taşınan ön-doldurma bilgisi
+  const [pendingFaiCreate, setPendingFaiCreate] = useState(null); // { stockCode, partName, customerCode, customerName }
+  const openFaiForPart = (stockCode, partName, customerCode, customerName) => {
+    setPendingFaiCreate({ stockCode, partName, customerCode, customerName });
+    setViewMode('fai');
+  };
 
   // Picker: null | { orderId, anchorX, anchorY, origWeek, currentPlanWeek }
   const [picker, setPicker] = useState(null);
@@ -2232,11 +2238,14 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
           )}
 
           {viewMode === 'coc' && (
-            <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} cocParts={cocParts} />
+            <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} cocParts={cocParts}
+              onOpenFaiForPart={openFaiForPart} />
           )}
 
           {viewMode === 'fai' && (
-            <FaiView canEdit={canEdit} isAdmin={isAdmin} customerFilter={customerFilter} searchText={searchText} cocParts={cocParts} bomModels={bomModels} />
+            <FaiView canEdit={canEdit} isAdmin={isAdmin} customerFilter={customerFilter} searchText={searchText} cocParts={cocParts} bomModels={bomModels}
+              pendingCreate={pendingFaiCreate}
+              onPendingCreateConsumed={() => setPendingFaiCreate(null)} />
           )}
 
           {viewMode === 'driveConfig' && (
@@ -4309,7 +4318,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
 // Filtreler: müşteri (DigerMusteriler üst filtresinden), yıl, arama (certNo/orderNo/stokKodu/desc).
 // Tıkla → detay modal + PDF tekrar üret.
 // ====================================================================
-function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
+function CocArchiveView({ searchText, customerFilter, canEdit, cocParts, onOpenFaiForPart }) {
   const currentYear = new Date().getFullYear();
   const yearList = useMemo(() => {
     return [currentYear - 4, currentYear - 3, currentYear - 2, currentYear - 1, currentYear].map(String);
@@ -4320,6 +4329,39 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
   const [cocSearch, setCocSearch] = useState('');
   // Alt-tab: 'certificates' (sertifika arşivi) | 'parts' (parça master yönetimi)
   const [subTab, setSubTab] = useState('certificates');
+
+  // FAI kayıtları — kolonda "FAI var/yok" göstermek için (sistem içi + arşiv)
+  const [faiByYear, setFaiByYear] = useState({});
+  const [faiArchiveData, setFaiArchiveData] = useState({ records: {} });
+  useEffect(() => {
+    const faiYears = [String(currentYear - 2), String(currentYear - 1), String(currentYear)];
+    const unsubs = faiYears.map(y =>
+      subscribeFaiForYear(y, d => setFaiByYear(prev => ({ ...prev, [y]: d?.records || {} })))
+    );
+    const uArch = subscribeFaiArchive(setFaiArchiveData);
+    return () => { unsubs.forEach(u => u && u()); uArch && uArch(); };
+  }, [currentYear]);
+  // Map: stokKodu → { system: [records], archive: [records] }
+  const faiByStokKodu = useMemo(() => {
+    const map = {};
+    // Sistem içi FAI'ler
+    for (const y of Object.keys(faiByYear)) {
+      for (const r of Object.values(faiByYear[y] || {})) {
+        const key = String(r.stockCode || r.partNumber || '').trim();
+        if (!key) continue;
+        if (!map[key]) map[key] = { system: [], archive: [] };
+        map[key].system.push(r);
+      }
+    }
+    // Arşiv FAI'leri
+    for (const r of Object.values(faiArchiveData?.records || {})) {
+      const key = String(r.stockCode || r.partNumber || '').trim();
+      if (!key) continue;
+      if (!map[key]) map[key] = { system: [], archive: [] };
+      map[key].archive.push(r);
+    }
+    return map;
+  }, [faiByYear, faiArchiveData]);
 
   // Filtreleme + sıralama — üst ana arama VE coc-specific aramayı birleştir
   // Filtreden geçen ham satırlar
@@ -4456,13 +4498,14 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
               <th style={{ ...cocTh, textAlign: 'right' }}>Miktar</th>
               <th style={cocTh}>Seri No</th>
               <th style={{ ...cocTh, textAlign: 'center' }}>Doküman</th>
+              <th style={{ ...cocTh, textAlign: 'center', width: 100 }} title="Bu parçanın FAI (İlk Ürün Muayenesi) kaydı var mı?">FAI</th>
               <th style={{ ...cocTh, textAlign: 'center' }}>Feragat</th>
               <th style={{ ...cocTh, textAlign: 'center', width: 50 }}>Aksiyon</th>
             </tr>
           </thead>
           <tbody>
             {filtered.length === 0 ? (
-              <tr><td colSpan={11} style={{ padding: 30, textAlign: 'center', color: '#a8a29e', fontSize: 12 }}>
+              <tr><td colSpan={12} style={{ padding: 30, textAlign: 'center', color: '#a8a29e', fontSize: 12 }}>
                 {loaded ? 'Filtre/aramaya uyan COC kaydı bulunamadı' : 'Yükleniyor…'}
               </td></tr>
             ) : filtered.slice(0, 500).map(c => {
@@ -4508,6 +4551,48 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts }) {
                           {isFull ? '✓' : '⚠'} {stats.filled}/{stats.totalCats}{stats.othersCount > 0 ? `+${stats.othersCount}` : ''}
                           {stats.subCount > 0 && <span style={{ marginLeft: 3, fontSize: 8, opacity: 0.7 }}>🧩</span>}
                         </span>
+                      );
+                    })()}
+                  </td>
+                  <td style={{ ...cocTd, textAlign: 'center' }}>
+                    {(() => {
+                      const fai = faiByStokKodu[c.stokKodu];
+                      const sysCount = fai?.system?.length || 0;
+                      const archCount = fai?.archive?.length || 0;
+                      if (sysCount + archCount === 0) {
+                        return canEdit && onOpenFaiForPart ? (
+                          <button onClick={() => onOpenFaiForPart(c.stokKodu, c.description || '', c.customerCode, c.customerName || '')}
+                            title="Bu parça için FAI kaydı yok — tıkla, yeni FAI oluştur"
+                            style={{ padding: '2px 6px', fontSize: 9, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: 'pointer', fontWeight: 600 }}>
+                            ➕ Yok
+                          </button>
+                        ) : (
+                          <span title="FAI kaydı yok" style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: '#fef2f2', color: '#991b1b' }}>Yok</span>
+                        );
+                      }
+                      const sysBadges = sysCount > 0 ? (
+                        <span title={`Sistemde ${sysCount} FAI: ${fai.system.map(r => r.faiNo).join(', ')}`}
+                          style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: '#dcfce7', color: '#166534', marginRight: 3 }}>
+                          ✓ {sysCount}
+                        </span>
+                      ) : null;
+                      const archBadges = archCount > 0 ? (
+                        <span title={`Arşivde ${archCount} FAI: ${fai.archive.map(r => 'FAİ-' + r.faiNo).join(', ')}`}
+                          style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: '#dbeafe', color: '#1e40af' }}>
+                          🗄 {archCount}
+                        </span>
+                      ) : null;
+                      return (
+                        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 2 }}>
+                          {sysBadges}{archBadges}
+                          {canEdit && onOpenFaiForPart && (
+                            <button onClick={() => onOpenFaiForPart(c.stokKodu, c.description || '', c.customerCode, c.customerName || '')}
+                              title="Yeni FAI oluştur (revize/proses değişimi için)"
+                              style={{ marginLeft: 3, padding: '1px 4px', fontSize: 9, background: '#fff', color: '#57534e', border: '1px solid #d6d3d1', borderRadius: 2, cursor: 'pointer' }}>
+                              ➕
+                            </button>
+                          )}
+                        </div>
                       );
                     })()}
                   </td>

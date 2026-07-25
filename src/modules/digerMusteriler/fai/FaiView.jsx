@@ -26,7 +26,7 @@ import { searchCocDrive, importCocDriveFile, listFaiArchiveFolders } from "../dr
 import { parseMeasurementReport, characteristicToFaiRow } from "./measurementReportParser";
 import JSZip from "jszip";
 
-export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels }) {
+export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels, pendingCreate, onPendingCreateConsumed }) {
   const [subTab, setSubTab] = useState("list");
   const [pendingOpen, setPendingOpen] = useState(null); // { record, readOnly }
   const [deltaSource, setDeltaSource] = useState(null); // Delta FAI oluşturma modalı için kaynak FAI
@@ -34,6 +34,23 @@ export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, 
     setPendingOpen({ record, readOnly });
     setSubTab("new");
   };
+
+  // Dışarıdan (örn. COC listesinden "➕ FAI Oluştur" butonu) tetiklenen ön-doldurma.
+  // Yeni FAI formu açılır, parça no + müşteri bilgisi hazırdır.
+  useEffect(() => {
+    if (!pendingCreate) return;
+    const seed = {
+      ...makeEmptyFai(""),
+      stockCode: pendingCreate.stockCode || "",
+      partNumber: pendingCreate.stockCode || pendingCreate.partNumber || "",
+      partName: pendingCreate.partName || "",
+      customerCode: pendingCreate.customerCode || "",
+      customerName: pendingCreate.customerName || "",
+    };
+    openRecord(seed, { readOnly: false });
+    onPendingCreateConsumed && onPendingCreateConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pendingCreate]);
 
   // Delta (Partial/Kısmi) FAI oluştur — AS9102: proses/tezgah değişiminde
   // aynı parça için yeni FAI, önceki FAI no'ya referans ile
