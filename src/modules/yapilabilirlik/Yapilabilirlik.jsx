@@ -137,10 +137,18 @@ function validateBeforeSign(role, study, status) {
         blockers.push(`Fason #${i + 1} (${it.name}): birim fiyat eksik`);
       }
     });
+    // Hammadde bütünlük kontrolü:
+    //   Ölçü girilmişse malzeme türü ZORUNLU (density olmadan ağırlık hesaplanamaz).
+    //   Aksi halde teknik ekip ölçüyü yazıp materialType seçmeyi unutunca ağırlık 0
+    //   kalıyor → teklif malzeme maliyeti sıfır çıkıyor. Sık rastlanan hata.
+    const dim = study?.dimensions || {};
+    const hasAnyDim = Number(dim.en) || Number(dim.boy) || Number(dim.uzunluk);
+    if (hasAnyDim && !study?.materialType?.trim()) {
+      blockers.push("Hammadde ölçüleri girilmiş ama malzeme türü seçilmemiş — ağırlık hesaplanamıyor");
+    }
     // Soft uyarılar (hammadde detayları)
     if (!study?.materialType?.trim() && !study?.material?.trim()) warnings.push("Malzeme türü / notu girilmemiş");
-    const dim = study?.dimensions || {};
-    if (!Number(dim.en) && !Number(dim.boy) && !Number(dim.uzunluk)) warnings.push("Hammadde ölçüleri boş");
+    if (!hasAnyDim) warnings.push("Hammadde ölçüleri boş");
     if (!Number(study?.weightKg)) warnings.push("Hammadde ağırlığı girilmemiş");
   }
 
