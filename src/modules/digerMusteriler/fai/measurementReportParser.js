@@ -148,6 +148,31 @@ function mapRowToColumns(row, cols) {
 
 // Header alanlarını (Parça Kodu, İş Emri, vs.) satırlardan yakala.
 // "Parça Kodu (Part Code)" gibi etiket + ":" + değer formu.
+// PDF iki kolonlu (sol: Parça Kodu, sağ: Tarih), pdfjs join'lediğinde tek satırda
+// birleşiyor. Bu yüzden ":" sonrası tüm satırı değil, bir sonraki label başlayana
+// kadar olan kısmı almak lazım (yoksa "MM-9111-0751 Tarih (Date) : 12.07.2026"
+// gibi bitişik iki kolon yakalanır → FAI parça kodu uyumsuzluk uyarısı yanlış tetiklenir).
+const STOP_LABELS_FOR_VALUE = ["Parça Adı", "Parça Kodu", "CMM Cihaz", "Operasyon", "Tarih", "Is Emri", "İş Emri", "Hazırlayan", "Onay"];
+
+function _trimAtNextLabel(value, currentLabel) {
+  let out = value;
+  for (const stop of STOP_LABELS_FOR_VALUE) {
+    if (stop === currentLabel) continue;
+    // "stop" kelimesinden ÖNCEKI whitespace ile ara — kelimenin ortasında match olmasın
+    const idx = out.indexOf(stop);
+    if (idx > 0) {
+      // Bir önceki karakter whitespace mi kontrol et
+      const before = out[idx - 1];
+      if (/\s/.test(before)) {
+        out = out.substring(0, idx).trim();
+      }
+    }
+  }
+  // "(Part Code)" gibi parantez içi İngilizce açıklama başta kalabilir → temizle
+  out = out.replace(/^\(([^)]+)\)\s*/, "").trim();
+  return out;
+}
+
 function extractHeader(rows) {
   const header = {};
   const rowTexts = rows.slice(0, 20).map(r => r.items.map(i => i.str).join(" "));
@@ -155,16 +180,13 @@ function extractHeader(rows) {
     for (const text of rowTexts) {
       const idx = text.indexOf(label);
       if (idx === -1) continue;
-      // Etiketten sonra ":" arayıp değeri al
+      // Etiketten sonra ":" ara
       const after = text.substring(idx + label.length);
-      const m = after.match(/[:：]\s*([^\n]+?)(?:\s{2,}|$)/);
-      if (m && m[1]) { header[key] = m[1].trim(); break; }
-      // Fallback: doğrudan ":" sonrası tüm satır
-      const colonIdx = after.indexOf(":");
-      if (colonIdx !== -1) {
-        header[key] = after.substring(colonIdx + 1).trim().split(/\s{2,}/)[0];
-        break;
-      }
+      const colonIdx = after.search(/[:：]/);
+      if (colonIdx === -1) continue;
+      const rawValue = after.substring(colonIdx + 1).trim();
+      const trimmed = _trimAtNextLabel(rawValue, label);
+      if (trimmed) { header[key] = trimmed; break; }
     }
   }
   return header;
