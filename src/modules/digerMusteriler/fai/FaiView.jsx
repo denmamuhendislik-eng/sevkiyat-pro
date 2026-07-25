@@ -23,6 +23,7 @@ import {
 import { generateFaiPdf, buildFaiPdfBlob } from "./faiPdf";
 import { downloadCocAttachmentBlob } from "../firestore";
 import { searchCocDrive, importCocDriveFile, listFaiArchiveFolders } from "../driveClient";
+import { parseMeasurementReport, characteristicToFaiRow } from "./measurementReportParser";
 import JSZip from "jszip";
 
 export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels }) {
@@ -198,6 +199,30 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
     ...prev,
     functionalTests: (prev.functionalTests || []).filter((_, i) => i !== idx),
   }));
+
+  // CMM Ölçüm Raporu (FR-92.1 PDF) import — Form 3 karakteristikleri otomatik doldurur
+  const [importState, setImportState] = useState(null); // { header, characteristics, fileName } | { error } | null
+  const [importParsing, setImportParsing] = useState(false);
+  const importReport = async (file) => {
+    setImportParsing(true);
+    try {
+      const parsed = await parseMeasurementReport(file);
+      setImportState({ ...parsed, fileName: file.name });
+    } catch (e) {
+      setImportState({ error: e.message || "Parse hatası" });
+    } finally {
+      setImportParsing(false);
+    }
+  };
+  const applyImport = ({ replace }) => {
+    if (!importState || !importState.characteristics) return;
+    const newRows = importState.characteristics.map(characteristicToFaiRow);
+    setRecord(prev => ({
+      ...prev,
+      characteristics: replace ? newRows : [...(prev.characteristics || []), ...newRows],
+    }));
+    setImportState(null);
+  };
 
   // Form 3 — karakteristik ölçüm ekleme (F-3'te detaylandırılacak)
   const addCharacteristic = () => setRecord(prev => {
@@ -831,10 +856,23 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           <div style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>📏 Karakteristik Ölçümler</div>
-              <button onClick={addCharacteristic} disabled={readonlyForm} style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>+ Karakteristik</button>
+              <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                <label style={{ padding: "4px 10px", fontSize: 11, background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: readonlyForm || importParsing ? "not-allowed" : "pointer", opacity: readonlyForm || importParsing ? 0.5 : 1 }}
+                  title="Denma FR-92.1 CMM ölçüm raporu PDF'i yükle — karakteristikler otomatik doldurulur">
+                  {importParsing ? "⏳ Okunuyor..." : "📥 CMM Raporundan Aktar"}
+                  <input type="file" accept="application/pdf" style={{ display: "none" }} disabled={readonlyForm || importParsing}
+                    onChange={e => {
+                      const f = e.target.files?.[0];
+                      if (f) importReport(f);
+                      e.target.value = "";
+                    }} />
+                </label>
+                <button onClick={addCharacteristic} disabled={readonlyForm} style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>+ Karakteristik</button>
+              </div>
             </div>
             <div style={{ fontSize: 10, color: "#78716c", marginBottom: 8 }}>
               Çizimdeki her balonlu ölçüm için satır ekleyin. Balonlu resim ekiyle birlikte kullanılır.
+              CMM ölçüm raporu (FR-92.1 PDF) yükleyerek otomatik doldurulabilir.
             </div>
             {(record.characteristics || []).length === 0 ? (
               <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>Henüz karakteristik yok</div>
@@ -889,6 +927,105 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
               </div>
             )}
           </div>
+
+          {/* CMM Raporu Import Önizleme Modal */}
+          {importState && (
+            <div onClick={e => { if (e.target === e.currentTarget) setImportState(null); }}
+              style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", zIndex: 200, display: "flex", alignItems: "center", justifyContent: "center", padding: 20 }}>
+              <div style={{ background: "#fff", borderRadius: 8, width: "min(1100px, 100%)", maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}>
+                <div style={{ padding: "14px 18px", borderBottom: "1px solid #e7e5e4", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                  <div>
+                    <div style={{ fontSize: 14, fontWeight: 600 }}>📥 CMM Raporu Önizleme</div>
+                    <div style={{ fontSize: 10, color: "#78716c", marginTop: 2 }}>{importState.fileName || ""}</div>
+                  </div>
+                  <button onClick={() => setImportState(null)} style={{ background: "transparent", border: "none", fontSize: 20, cursor: "pointer", color: "#78716c" }}>✕</button>
+                </div>
+                {importState.error ? (
+                  <div style={{ padding: 20, color: "#991b1b", fontSize: 13 }}>
+                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Parse Hatası</div>
+                    <div>{importState.error}</div>
+                    <div style={{ marginTop: 12, fontSize: 11, color: "#78716c" }}>
+                      Yalnızca Denma FR-92.1 formatında hazırlanmış, metin katmanlı CMM ölçüm raporu PDF'leri destekleniyor.
+                      Taranmış PDF veya farklı şablon çalışmayabilir.
+                    </div>
+                  </div>
+                ) : (
+                  <>
+                    <div style={{ padding: "12px 18px", background: "#f8fafc", borderBottom: "1px solid #e7e5e4", display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 10, fontSize: 11 }}>
+                      {importState.header?.partCode && (
+                        <div><b>Parça Kodu:</b> {importState.header.partCode}
+                          {record.partNumber && importState.header.partCode !== record.partNumber && (
+                            <div style={{ color: "#dc2626", fontSize: 10, marginTop: 2 }}>⚠ FAI parça kodu ile uyumsuz ({record.partNumber})</div>
+                          )}
+                        </div>
+                      )}
+                      {importState.header?.cmmDevice && <div><b>CMM:</b> {importState.header.cmmDevice}</div>}
+                      {importState.header?.operationName && <div><b>Operasyon:</b> {importState.header.operationName}</div>}
+                      {importState.header?.date && <div><b>Tarih:</b> {importState.header.date}</div>}
+                      {importState.header?.workOrderNo && <div><b>İş Emri:</b> {importState.header.workOrderNo}</div>}
+                      {importState.header?.preparedBy && <div><b>Hazırlayan:</b> {importState.header.preparedBy}</div>}
+                    </div>
+                    <div style={{ padding: 12, overflow: "auto", flex: 1, minHeight: 0 }}>
+                      <div style={{ fontSize: 12, marginBottom: 8, color: "#166534", fontWeight: 500 }}>
+                        ✓ {importState.characteristics.length} karakteristik bulundu · {importState.characteristics.filter(c => c.resultStatus === "NOK").length} NOK
+                      </div>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+                        <thead>
+                          <tr style={{ background: "#f5f5f4", textAlign: "left" }}>
+                            <th style={{ padding: 4, fontWeight: 600, textAlign: "center", width: 30 }}>#</th>
+                            <th style={{ padding: 4, fontWeight: 600 }}>Eleman</th>
+                            <th style={{ padding: 4, fontWeight: 600 }}>Datum</th>
+                            <th style={{ padding: 4, fontWeight: 600 }}>Tür</th>
+                            <th style={{ padding: 4, fontWeight: 600, textAlign: "right" }}>Nominal</th>
+                            <th style={{ padding: 4, fontWeight: 600, textAlign: "right" }}>Ölçülen</th>
+                            <th style={{ padding: 4, fontWeight: 600, textAlign: "right" }}>+Tol</th>
+                            <th style={{ padding: 4, fontWeight: 600, textAlign: "right" }}>-Tol</th>
+                            <th style={{ padding: 4, fontWeight: 600, textAlign: "right" }}>Sapma</th>
+                            <th style={{ padding: 4, fontWeight: 600, textAlign: "center", width: 40 }}>Sonuç</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {importState.characteristics.map(c => {
+                            const bad = c.resultStatus === "NOK";
+                            return (
+                              <tr key={c.no} style={{ borderTop: "1px solid #f5f5f4", background: bad ? "#fef2f2" : "transparent", color: bad ? "#991b1b" : "inherit" }}>
+                                <td style={{ padding: 4, textAlign: "center", fontWeight: 500 }}>{c.no}</td>
+                                <td style={{ padding: 4 }}>{c.elementName}</td>
+                                <td style={{ padding: 4 }}>{c.datum}</td>
+                                <td style={{ padding: 4 }}>{c.toleranceName}</td>
+                                <td style={{ padding: 4, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{c.nominal}</td>
+                                <td style={{ padding: 4, textAlign: "right", fontVariantNumeric: "tabular-nums", fontWeight: 500 }}>{c.actual}</td>
+                                <td style={{ padding: 4, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{c.tolPlus}</td>
+                                <td style={{ padding: 4, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{c.tolMinus}</td>
+                                <td style={{ padding: 4, textAlign: "right", fontVariantNumeric: "tabular-nums" }}>{c.deviation}</td>
+                                <td style={{ padding: 4, textAlign: "center", fontWeight: 600 }}>{c.resultStatus}</td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                    <div style={{ padding: "12px 18px", borderTop: "1px solid #e7e5e4", display: "flex", gap: 8, justifyContent: "flex-end", background: "#fafaf9" }}>
+                      <button onClick={() => setImportState(null)}
+                        style={{ padding: "6px 14px", fontSize: 12, background: "#fff", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>
+                        İptal
+                      </button>
+                      {(record.characteristics || []).length > 0 && (
+                        <button onClick={() => applyImport({ replace: false })}
+                          style={{ padding: "6px 14px", fontSize: 12, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, cursor: "pointer" }}>
+                          Mevcutlara Ekle
+                        </button>
+                      )}
+                      <button onClick={() => applyImport({ replace: true })}
+                        style={{ padding: "6px 14px", fontSize: 12, fontWeight: 600, background: "#16a34a", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer" }}>
+                        {(record.characteristics || []).length > 0 ? "Değiştir (Mevcutları Sil)" : "Aktar"}
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+          )}
 
           <div style={cardStyle}>
             <label style={labelStyle}>Yorumlar</label>

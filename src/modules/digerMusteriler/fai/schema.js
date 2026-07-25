@@ -75,6 +75,18 @@ export const FORM3_CHARACTERISTIC_FIELDS = {
   results:             { no: 9,  label: "Ölçüm Sonuçları",              required: "always" },
   specialToolId:       { no: 10, label: "Özel Ölçüm Alet ID",           required: "conditional" },
   nonconformanceNumber:{ no: 11, label: "Uygunsuzluk Numarası",         required: "conditional" },
+  // CMM raporu import ile otomatik dolan yapılandırılmış alanlar (AS9102 Form 3 uyumlu).
+  // requirement/results string'lerine ek — Form 3 PDF çıktısında kolon halinde görünür.
+  // Eski FAI kayıtlarında boş kalır (backward-compat).
+  elementName:         { no: null, label: "Eleman Adı (ör. Ø10.1)",     required: "optional" },
+  datum:               { no: null, label: "Datum",                       required: "optional" },
+  toleranceName:       { no: null, label: "Tolerans Türü (Çap, Pozisyon vb.)", required: "optional" },
+  nominal:             { no: null, label: "Nominal",                     required: "optional" },
+  actual:              { no: null, label: "Ölçülen (Actual)",            required: "optional" },
+  tolPlus:             { no: null, label: "Üst Tolerans (+)",            required: "optional" },
+  tolMinus:            { no: null, label: "Alt Tolerans (-)",            required: "optional" },
+  deviation:           { no: null, label: "Sapma",                       required: "optional" },
+  resultStatus:        { no: null, label: "Sonuç (OK/NOK)",              required: "optional" },
 };
 
 // ============================================================
