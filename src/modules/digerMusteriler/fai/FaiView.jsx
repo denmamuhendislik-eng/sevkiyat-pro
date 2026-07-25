@@ -644,24 +644,50 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
       {/* F-9C: Bu parça için arşivde FAI varsa uyar */}
       {archiveMatches.length > 0 && (
         <div style={{ marginBottom: 12, padding: 10, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11, color: "#92400e" }}>
-          ⚠ <b>Bu parça için arşivde {archiveMatches.length} FAI var:</b>{" "}
-          {archiveMatches.slice(0, 5).map((a, i) => (
-            <span key={i} style={{ display: "inline-block", marginRight: 6 }}>
-              {(a.attachments?.other || []).filter(x => x?.isDriveLink).map((x, j) => (
-                <a key={j} href={x.driveUrl} target="_blank" rel="noreferrer"
-                  style={{ padding: "1px 6px", background: "#fff", color: "#92400e", border: "1px solid #fde68a", borderRadius: 2, fontSize: 10, fontWeight: 600, textDecoration: "none" }}>
-                  📂 FAİ-{a.faiNo}
-                </a>
-              ))}
-              {(!a.attachments?.other || !a.attachments.other.some(x => x?.isDriveLink)) && (
-                <span style={{ padding: "1px 6px", background: "#fff", color: "#92400e", borderRadius: 2, fontSize: 10, fontWeight: 600 }}>
-                  FAİ-{a.faiNo}
-                </span>
-              )}
-            </span>
-          ))}
-          {archiveMatches.length > 5 && <span style={{ fontSize: 10, color: "#78350f" }}>+{archiveMatches.length - 5} daha</span>}
-          <br /><span style={{ fontSize: 10, color: "#78350f" }}>Aynı parça daha önce FAI edilmiş. Revizyon/güncelleme yapıyorsanız Kısmi FAI seçmeyi düşünün.</span>
+          <div style={{ marginBottom: 6 }}>
+            ⚠ <b>Bu parça için arşivde {archiveMatches.length} FAI var:</b>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {archiveMatches.slice(0, 5).map((a, i) => {
+              const driveLinks = (a.attachments?.other || []).filter(x => x?.isDriveLink);
+              const isCurrentRef = record.faiType === "partial" && record.previousFairNumber === `FAİ-${a.faiNo}`;
+              return (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  {driveLinks.length > 0 ? driveLinks.map((x, j) => (
+                    <a key={j} href={x.driveUrl} target="_blank" rel="noreferrer"
+                      style={{ padding: "1px 6px", background: "#fff", color: "#92400e", border: "1px solid #fde68a", borderRadius: 2, fontSize: 10, fontWeight: 600, textDecoration: "none" }}>
+                      📂 FAİ-{a.faiNo}
+                    </a>
+                  )) : (
+                    <span style={{ padding: "1px 6px", background: "#fff", color: "#92400e", borderRadius: 2, fontSize: 10, fontWeight: 600 }}>
+                      FAİ-{a.faiNo}
+                    </span>
+                  )}
+                  {!readonlyForm && (
+                    isCurrentRef ? (
+                      <span title="Bu FAI'nin kısmisi olarak işaretli"
+                        style={{ padding: "1px 6px", background: "#dcfce7", color: "#166534", border: "1px solid #86efac", borderRadius: 2, fontSize: 10, fontWeight: 600 }}>
+                        ✓ Kısmi işaretlendi
+                      </span>
+                    ) : (
+                      <button onClick={() => {
+                        update("faiType", "partial");
+                        update("previousFairNumber", `FAİ-${a.faiNo}`);
+                      }}
+                        title="Bu FAI'yi 'önceki FAI' olarak referans al — mevcut form Kısmi (Delta) FAI olarak işaretlenir. Gerekçeyi Form 1 içinde doldurun."
+                        style={{ padding: "1px 8px", background: "#fff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, fontSize: 10, fontWeight: 600, cursor: "pointer" }}>
+                        🔗 Bunun Kısmisi
+                      </button>
+                    )
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          {archiveMatches.length > 5 && <div style={{ fontSize: 10, color: "#78350f", marginTop: 4 }}>+{archiveMatches.length - 5} daha</div>}
+          <div style={{ fontSize: 10, color: "#78350f", marginTop: 6 }}>
+            Aynı parça için tam FAI zaten var → yeni tezgah/proses değişimi için <b>"🔗 Bunun Kısmisi"</b> ile bağlantı kurabilirsin, yoksa boş bırak (bağımsız Full FAI).
+          </div>
         </div>
       )}
 
