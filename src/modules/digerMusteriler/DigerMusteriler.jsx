@@ -6682,12 +6682,17 @@ function DriveConfigView({ canEdit }) {
   const [error, setError] = useState('');
   const [savedAt, setSavedAt] = useState(null);
 
-  // Drive entegrasyonu olan kategoriler
+  // Drive entegrasyonu olan kategoriler.
+  // Not: FAI modülündeki bazı ek kategoriler de bu klasörleri kullanır
+  //   - FAI "Ölçüm Raporu ve Balonlu Resim" (Form 3) → measurement folder
+  //   - FAI "Hammadde (HM) Sertifikası" (Form 2) → rawMaterialCert folder
+  //   - FAI "Fason Uygunluk Sertifikası" (Form 2) → rawMaterialCert folder (kullanıcı: aynı klasör)
   const driveCategories = [
-    { key: 'measurement', label: '📏 Ölçüm Raporu', defaultStrategy: 'folder' },
-    { key: 'fai', label: '📋 FAİ Raporu', defaultStrategy: 'folder' },
-    { key: 'rawMaterialCert', label: '🧪 Hammadde Kalite Sertifikası', defaultStrategy: 'fulltext' },
-    { key: 'surfaceTreatment', label: '🔥 Isıl İşlem / Kaplama / Boya', defaultStrategy: 'fulltext' },
+    { key: 'measurement', label: '📏 Ölçüm Raporu · Balonlu Resim (COC + FAI Form 3)', defaultStrategy: 'folder' },
+    { key: 'bubbleDrawing', label: '🎈 Balonlu Resim (COC — measurement ile aynı klasör kullanılabilir)', defaultStrategy: 'folder' },
+    { key: 'fai', label: '📋 FAİ Raporu Arşivi (COC eki + FAI arşiv listesi)', defaultStrategy: 'folder' },
+    { key: 'rawMaterialCert', label: '🧪 Hammadde + Fason Sertifikası (COC + FAI Form 2 · HM/Fason)', defaultStrategy: 'fulltext' },
+    { key: 'surfaceTreatment', label: '🔥 Isıl İşlem / Kaplama / Boya (COC)', defaultStrategy: 'fulltext' },
   ];
 
   // Sadece ilk yüklemede initialize et — sonradan driveConfig değişse de kullanıcının
