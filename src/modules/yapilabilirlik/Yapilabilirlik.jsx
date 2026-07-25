@@ -1688,11 +1688,12 @@ function KpiView() {
             <StageRow icon="💼" label="Satış aşaması" days={stats.avgSalesDays} color="#1e40af" />
             <StageRow icon="⚙️" label="Teknik aşaması" days={stats.avgTechnicalDays} color="#0f766e" />
             <StageRow icon="⭐" label="GM aşaması" days={stats.avgGmDays} color="#991b1b" />
+            <StageRow icon="⏳" label={`Karar Bekliyor (Satış)${stats.evaluatingCount > 0 ? ` — ${stats.evaluatingCount} aktif` : ""}`} days={stats.avgEvaluatingDays} color="#a855f7" />
             <div style={{ borderTop: "1px solid #e7e5e4", paddingTop: 8, marginTop: 4 }}>
               <StageRow icon="🏁" label="Toplam (create→onay)" days={stats.avgTotalDays} color="#44403c" bold />
             </div>
             <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
-              💡 Medyan kullanılır; birkaç outlier ortalama'yı çarpıtmaz.
+              💡 Medyan kullanılır; birkaç outlier ortalama'yı çarpıtmaz. "Karar Bekliyor" son imzadan bugüne aging (aktif bekleyenlerin süresi).
             </div>
           </div>
         </KpiPanel>

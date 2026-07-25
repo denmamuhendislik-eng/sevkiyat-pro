@@ -55,6 +55,9 @@ export function computeFeasibilityStats(studies) {
   const gmDurations = [];         // technicalUnit → generalManager
   const totalDurations = [];      // createdAt → son imza (approved için)
   const conversionDurations = []; // son imza → convertedAt
+  const evaluatingWaits = [];     // "Karar Bekliyor" (evaluating) durumundaki studyler için
+                                  // son imza (technicalUnit veya generalManager) → bugün.
+                                  // Satış kararı ne kadar geciktiriyor metriği (aging bazlı).
 
   const slowestPending = []; // aktif bekleyenler
 
@@ -112,6 +115,14 @@ export function computeFeasibilityStats(studies) {
       const finalSig = sGm || sTech;
       const d = daysBetween(study.createdAt, finalSig);
       if (d != null && d >= 0) totalDurations.push(d);
+    }
+    // Karar bekleyen (evaluating) süresi — son imzadan bugüne
+    if (status === "evaluating") {
+      const finalSig = sGm || sTech;
+      if (finalSig) {
+        const d = daysBetween(finalSig, new Date().toISOString());
+        if (d != null && d >= 0) evaluatingWaits.push(d);
+      }
     }
     // Teklife dönüşüm süresi
     if (status === "convertedToQuote" && study.convertedAt) {
@@ -233,6 +244,8 @@ export function computeFeasibilityStats(studies) {
     avgSalesDays: median(salesDurations),
     avgTechnicalDays: median(technicalDurations),
     avgGmDays: median(gmDurations),
+    avgEvaluatingDays: median(evaluatingWaits),  // Karar Bekliyor (Satış) — aktif bekleyenler
+    evaluatingCount: evaluatingWaits.length,
     avgTotalDays: median(totalDurations),
     slowestPending: slowestPending.slice(0, 5),
 
