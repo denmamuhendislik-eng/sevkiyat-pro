@@ -240,7 +240,10 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
       // KORUMA: Kullanıcı bu siparişi zaten startWeek'ten önce bir haftaya atamışsa
       // (erken bitirme niyetiyle), otomatik plan dokunmaz — manuel kararı korunur.
       // Kademeli planlama akışını destekler (rolling forecast).
-      if (currentPlan < startWeek) continue;
+      // AMA: gerçekten geciken (isLate=true) siparişler bu koruyucudan MUAF —
+      // yoksa "geciken dahil" işaretli olsa bile aşağıdaki filter onları atardı
+      // (late order currentPlan zaten startWeek'ten küçük çünkü geçmişte).
+      if (currentPlan < startWeek && !isLate) continue;
       orders.push({
         id,
         stokKodu: o.stokKodu,
