@@ -2,7 +2,7 @@ import React, { useState, useEffect, useMemo, useRef } from "react";
 import {
   subscribeQuoteMaterials, subscribeQuoteFasonWorks, subscribeQuoteOptions,
   subscribeQuotePolicy, subscribeQuotesForYear, subscribeQuoteParts, subscribeQuoteCustomers,
-  saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision, deleteQuoteFull,
+  saveQuotePolicyUpdate, saveQuoteCustomer, createRevision, findRevisionChain, deleteRevision, deleteQuoteFull, assignRevisionReasonCode,
   saveQuoteMaterialUpdate, suggestMaterialPriceTl,
   addQuoteFasonWork, deleteQuoteFasonWork,
   updateQuoteStatus,
@@ -21,7 +21,7 @@ const PROMOTE_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/promot
 
 export default function Teklifler({ isAdmin, isUretim, isSales, pendingFromFeasibility, onConsumePendingFromFeasibility }) {
   const canEdit = !!(isAdmin || isSales || isUretim);
-  const [activeTab, setActiveTab] = useState("new");
+  const [activeTab, setActiveTab] = useState("list");
   // Revizyon/görüntüleme akışı — QuoteListView tetikler, NewQuoteView tüketir
   const [pendingOpen, setPendingOpen] = useState(null); // { quote, readOnly }
   const openQuote = (quote, { readOnly = false } = {}) => {
@@ -668,6 +668,21 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
   const q = active;
   const revBadgeColor = q.revNo > 0 ? { bg: "#fef3c7", fg: "#92400e" } : { bg: "#dbeafe", fg: "#1e40af" };
   const [statusMenu, setStatusMenu] = useState(false);
+  // Legacy revizyon için geriye dönük kod atama menüsü — Firestore'a revisionReasonCode yazar
+  const [assigningCodeFor, setAssigningCodeFor] = useState(null); // quote objesi
+  const [assignSaving, setAssignSaving] = useState(false);
+  const handleAssignCode = async (code) => {
+    if (!assigningCodeFor || !code) return;
+    setAssignSaving(true);
+    try {
+      await assignRevisionReasonCode(assigningCodeFor, code, { canEdit, staging: false });
+      setAssigningCodeFor(null);
+    } catch (e) {
+      alert("Kod atama hatası: " + e.message);
+    } finally {
+      setAssignSaving(false);
+    }
+  };
 
   // Draft → Sent otomatik geçiş: PDF/Excel indirdiğinde tetiklenir. Firestore live
   // subscribe olduğu için rozet otomatik güncellenir (toast gereksiz).
@@ -804,7 +819,23 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
             </td>
             <td style={{ ...td, color: "#78716c" }}>{hq.quoteDate || "—"}</td>
             <td style={{ ...td, color: "#78716c", fontStyle: "italic" }} colSpan="1">
-              {hq.revisionReason ? <span title={hq.revisionReason}>💬 {hq.revisionReason.length > 40 ? hq.revisionReason.substring(0, 40) + "…" : hq.revisionReason}</span> : "—"}
+              {hq.revisionReason ? (
+                <span title={hq.revisionReason}>
+                  💬 {hq.revisionReason.length > 40 ? hq.revisionReason.substring(0, 40) + "…" : hq.revisionReason}
+                  {hq.revisionReasonCode ? (
+                    <span title={REVISION_REASONS.find(r => r.key === hq.revisionReasonCode)?.label || hq.revisionReasonCode}
+                      style={{ marginLeft: 6, padding: "1px 5px", background: REVISION_REASONS.find(r => r.key === hq.revisionReasonCode)?.bg || "#f5f5f4", color: REVISION_REASONS.find(r => r.key === hq.revisionReasonCode)?.color || "#57534e", borderRadius: 3, fontSize: 9, fontWeight: 600, fontStyle: "normal" }}>
+                      {REVISION_REASONS.find(r => r.key === hq.revisionReasonCode)?.icon || "?"}
+                    </span>
+                  ) : canEdit && (
+                    <button onClick={() => setAssigningCodeFor(hq)}
+                      title="Bu eski revizyona sebep kodu ata — KPI dökümüne dahil olur"
+                      style={{ marginLeft: 6, padding: "1px 6px", fontSize: 9, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 3, cursor: "pointer", fontStyle: "normal", fontWeight: 600 }}>
+                      🏷 Sebep Ata
+                    </button>
+                  )}
+                </span>
+              ) : "—"}
             </td>
             <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{hq.lines?.length || 0}</td>
             <td style={{ ...td, textAlign: "right", color: "#78716c", fontVariantNumeric: "tabular-nums" }}>
@@ -830,6 +861,40 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
           </tr>
         );
       })}
+      {/* Legacy sebep kod atama modalı */}
+      {assigningCodeFor && (
+        <tr>
+          <td colSpan={9} style={{ padding: 0 }}>
+            <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+              onClick={(e) => { if (e.target === e.currentTarget && !assignSaving) setAssigningCodeFor(null); }}>
+              <div style={{ background: "#fff", borderRadius: 8, padding: 20, maxWidth: 500, width: "90%", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#92400e", marginBottom: 4 }}>
+                  🏷 Revizyon Sebebi Ata (Geriye Dönük)
+                </div>
+                <div style={{ fontSize: 11, color: "#57534e", marginBottom: 12 }}>
+                  <b style={{ fontFamily: "ui-monospace, monospace" }}>{assigningCodeFor.quoteNo}</b> — R{assigningCodeFor.revNo}
+                  <div style={{ marginTop: 4, fontStyle: "italic", padding: "6px 8px", background: "#f5f5f4", borderRadius: 3 }}>
+                    💬 "{assigningCodeFor.revisionReason || "—"}"
+                  </div>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {REVISION_REASONS.map(r => (
+                    <button key={r.key} onClick={() => handleAssignCode(r.key)} disabled={assignSaving}
+                      style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: r.bg, border: `1px solid ${r.color}`, borderRadius: 4, cursor: assignSaving ? "wait" : "pointer", fontSize: 12, color: r.color, fontWeight: 500, textAlign: "left" }}>
+                      <span>{r.icon}</span>
+                      <span style={{ flex: 1 }}>{r.label}</span>
+                    </button>
+                  ))}
+                </div>
+                <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 12 }}>
+                  <button onClick={() => setAssigningCodeFor(null)} disabled={assignSaving}
+                    style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: assignSaving ? "wait" : "pointer" }}>İptal</button>
+                </div>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
     </>
   );
 }

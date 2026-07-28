@@ -201,6 +201,29 @@ export async function updateQuoteStatus(quote, newStatus, { canEdit, staging = f
   return { newStatus };
 }
 
+// Mevcut bir revizyona geriye dönük olarak revisionReasonCode ata.
+// Eski (legacy) text-only revizyonları KPI dökümüne dahil etmek için.
+export async function assignRevisionReasonCode(quote, reasonCode, { canEdit, staging = false } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!quote?.quoteNo || !quote?.customerName) throw new Error("quoteNo ve customerName zorunlu");
+  if (!reasonCode) throw new Error("reasonCode zorunlu");
+  const year = "20" + String(quote.quoteNo).slice(0, 2);
+  const suffix = staging ? "_staging" : "";
+  const docName = `quotes_${year}${suffix}`;
+  const customerKey = String(quote.customerName).replace(/\s+/g, "_").substring(0, 40);
+  const groupKey = `${quote.quoteNo}__${customerKey}`;
+  const ref = doc(db, APP_COL, docName);
+  await setDoc(ref, {
+    quotes: {
+      [groupKey]: {
+        revisionReasonCode: reasonCode,
+        updatedAt: new Date().toISOString(),
+      },
+    },
+  }, { merge: true });
+  return { reasonCode };
+}
+
 // Bir teklifin revizyonunu oluştur — mevcut kalemleri kopyalar, R{n+1} verir.
 // baseQuote: klonlayacağımız kaynak teklif obj (aktif revizyon)
 // revisionReason: neden alanı zorunlu — "Aselsan %8 iskonto istedi", "Malzeme fiyatı arttı" vb.
