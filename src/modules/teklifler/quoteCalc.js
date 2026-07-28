@@ -1,3 +1,13 @@
+// Revizyon nedenleri (kod bazlı) — KPI'da dökümde kullanılır.
+// Backward-compat: eski revisionReason (kod olmadan free-text) hâlâ çalışır.
+export const REVISION_REASONS = [
+  { key: "discount",     label: "1. İskonto talebi",              icon: "💰", color: "#dc2626", bg: "#fef2f2" },
+  { key: "quantity",     label: "2. Miktar / parti revizyon talebi", icon: "📦", color: "#0369a1", bg: "#f0f9ff" },
+  { key: "partRevision", label: "3. Parça revizyonu",             icon: "🔧", color: "#7c3aed", bg: "#faf5ff" },
+  { key: "removeLine",   label: "4. Tekliften çıkarılacak kalem", icon: "🗑",  color: "#92400e", bg: "#fef3c7" },
+  { key: "other",        label: "5. Diğer",                        icon: "💬", color: "#57534e", bg: "#f5f5f4" },
+];
+
 // Teklif hesap motoru.
 // Excel formülü:
 //   Malzeme maliyeti = ağırlık kg × TL/kg

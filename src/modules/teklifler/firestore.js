@@ -204,7 +204,7 @@ export async function updateQuoteStatus(quote, newStatus, { canEdit, staging = f
 // Bir teklifin revizyonunu oluştur — mevcut kalemleri kopyalar, R{n+1} verir.
 // baseQuote: klonlayacağımız kaynak teklif obj (aktif revizyon)
 // revisionReason: neden alanı zorunlu — "Aselsan %8 iskonto istedi", "Malzeme fiyatı arttı" vb.
-export async function createRevision(baseQuote, revisionReason, { canEdit, staging = false } = {}) {
+export async function createRevision(baseQuote, revisionReason, { canEdit, staging = false, reasonCode = null } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!baseQuote?.quoteNo) throw new Error("Kaynak teklif quoteNo yok");
   if (!revisionReason || !revisionReason.trim()) throw new Error("Revizyon nedeni zorunlu");
@@ -218,6 +218,7 @@ export async function createRevision(baseQuote, revisionReason, { canEdit, stagi
     baseQuoteNo: baseNo,
     parentQuoteNo: baseQuote.quoteNo,
     revisionReason: revisionReason.trim(),
+    revisionReasonCode: reasonCode || null,
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };

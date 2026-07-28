@@ -127,6 +127,64 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
   const revCounts = nonArchiveGroups.map(g => Number(g.active.revNo) || 0);
   const avgRevNo = mean(revCounts);
 
+  // Revizyon sebep dökümü — kod bazlı sayı. Kodsuz (eski) revizyonlar "legacy" grubuna.
+  const revisionReasonBreakdown = {};
+  const discountRevisions = []; // { quoteNo, avgDiscountPct, maxDiscountPct, lines }
+  for (const g of nonArchiveGroups) {
+    // Zincirdeki her revizyon (R1+) için sebep say
+    for (let i = 0; i < g.all.length; i++) {
+      const rev = g.all[i];
+      const revNo = Number(rev.revNo) || 0;
+      if (revNo === 0) continue;
+      const code = rev.revisionReasonCode || (rev.revisionReason ? "legacy" : null);
+      if (!code) continue;
+      revisionReasonBreakdown[code] = (revisionReasonBreakdown[code] || 0) + 1;
+
+      // İskonto revizyonları için: parent (bir önceki revizyon) ile kalem bazlı fiyat karşılaştır
+      if (code === "discount") {
+        // Parent = revNo bir eksik olan
+        const parent = g.all.find(x => (Number(x.revNo) || 0) === revNo - 1);
+        if (parent) {
+          const discountLines = [];
+          for (const line of (rev.lines || [])) {
+            const parentLine = (parent.lines || []).find(pl =>
+              (pl.stockCode && pl.stockCode === line.stockCode) ||
+              (pl.stockName && pl.stockName === line.stockName)
+            );
+            if (parentLine) {
+              const pUnit = Number(parentLine.salePricePerUnit) || 0;
+              const cUnit = Number(line.salePricePerUnit) || 0;
+              if (pUnit > 0 && cUnit > 0) {
+                const discountPct = ((pUnit - cUnit) / pUnit) * 100;
+                discountLines.push({
+                  stockCode: line.stockCode || line.stockName || "—",
+                  stockName: line.stockName || "",
+                  parentUnit: pUnit,
+                  currentUnit: cUnit,
+                  discountPct,
+                });
+              }
+            }
+          }
+          if (discountLines.length > 0) {
+            const discounts = discountLines.map(l => l.discountPct);
+            discountRevisions.push({
+              quoteNo: rev.quoteNo,
+              customerName: rev.customerName || "—",
+              date: rev.updatedAt || rev.createdAt,
+              avgDiscountPct: mean(discounts) || 0,
+              maxDiscountPct: Math.max(...discounts),
+              minDiscountPct: Math.min(...discounts),
+              lines: discountLines,
+            });
+          }
+        }
+      }
+    }
+  }
+  // Toplam revizyon sayısı (sebep bazlı toplam — genel gösterim için)
+  const totalReasonedRevisions = Object.values(revisionReasonBreakdown).reduce((s, n) => s + n, 0);
+
   // Müşteri sıralaması — teklif sayısı ve ciro TÜM tekliflerden (arşiv dahil).
   // Dönüşüm oranı sadece arşiv olmayan tekliflerin kararlarından hesaplanır.
   const customerStats = {};
@@ -249,6 +307,9 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
     withRevisions,
     revisionRate,
     avgRevNo,
+    revisionReasonBreakdown,     // { discount: 5, quantity: 2, ... legacy: 3 }
+    totalReasonedRevisions,
+    discountRevisions,           // [{ quoteNo, avgDiscountPct, maxDiscountPct, lines: [...] }]
 
     // Müşteri sıralaması (ciro desc)
     customerRanking,

@@ -4,7 +4,7 @@ import {
   subscribeQuotePolicy, subscribeQuoteParts, subscribeQuoteCustomers,
   suggestNextQuoteNo, saveNewQuote, saveQuotePart,
 } from "./firestore";
-import { calculateQuoteTotal, paymentTermToGroup } from "./quoteCalc";
+import { calculateQuoteTotal, paymentTermToGroup, REVISION_REASONS } from "./quoteCalc";
 import { useMachineRatesForQuote } from "./machineRates";
 import { generateQuotePdf } from "./quotePdf";
 import { subscribeCurrencyRates } from "../maliyet/firestore";
@@ -52,6 +52,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
   const [baseQuoteNo, setBaseQuoteNo] = useState("");
   const [parentQuoteNo, setParentQuoteNo] = useState(null);
   const [revisionReason, setRevisionReason] = useState("");
+  const [revisionReasonCode, setRevisionReasonCode] = useState("");
   const [feasibilityNo, setFeasibilityNo] = useState(""); // yapılabilirlik bağlantısı (Faz Y-5, tek study — badge için)
   const [feasibilityNos, setFeasibilityNos] = useState([]); // birden fazla study'den geldiyse liste (Faz F4)
   const isRevision = revNo > 0;
@@ -102,6 +103,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     setBaseQuoteNo(initialQuote.baseQuoteNo || initialQuote.quoteNo || "");
     setParentQuoteNo(initialQuote.parentQuoteNo || null);
     setRevisionReason(initialQuote.revisionReason || "");
+    setRevisionReasonCode(initialQuote.revisionReasonCode || "");
     setFeasibilityNo(initialQuote.feasibilityNo || "");
     setFeasibilityNos(
       Array.isArray(initialQuote.feasibilityNos) && initialQuote.feasibilityNos.length > 0
@@ -286,7 +288,8 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     if (!customerName) { setSaveError("Müşteri seç"); return; }
     if (!quoteNo) { setSaveError("Teklif no boş"); return; }
     if (lines.length === 0) { setSaveError("En az 1 kalem ekle"); return; }
-    if (isRevision && !revisionReason.trim()) { setSaveError("Revizyon nedeni zorunlu"); return; }
+    if (isRevision && !revisionReasonCode) { setSaveError("Revizyon nedeni seçilmeli"); return; }
+    if (isRevision && revisionReasonCode === "other" && !revisionReason.trim()) { setSaveError("Diğer için açıklama zorunlu"); return; }
     setSaving(true); setSaveError("");
     try {
       const quotePayload = {
@@ -310,6 +313,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         baseQuoteNo: baseQuoteNo || quoteNo,
         parentQuoteNo: parentQuoteNo || null,
         revisionReason: isRevision ? revisionReason.trim() : null,
+        revisionReasonCode: isRevision ? (revisionReasonCode || null) : null,
         // Yapılabilirlik bağlantısı (Faz Y-5 tek, Faz F4 çoklu)
         feasibilityNo: feasibilityNo || null,
         feasibilityNos: feasibilityNos.length > 0 ? feasibilityNos : null,
@@ -434,10 +438,28 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
               <label style={{ fontSize: 11, fontWeight: 500, color: "#92400e", display: "block", marginBottom: 4 }}>
                 Revizyon Nedeni <span style={{ color: "#dc2626" }}>*</span>
               </label>
-              <textarea value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
-                placeholder="Örn: Aselsan %8 iskonto talep etti — labor marjı düşürüldü / Malzeme fiyatı arttı — hammadde marjı güncellendi"
-                style={{ width: "100%", minHeight: 40, padding: 6, fontSize: 11, border: "1px solid #fde68a", borderRadius: 4, background: "#fff", boxSizing: "border-box" }} />
-              {!revisionReason.trim() && <div style={{ fontSize: 10, color: "#dc2626", marginTop: 2 }}>⚠ Kaydetmek için neden yazılmalı</div>}
+              <select value={revisionReasonCode} onChange={e => setRevisionReasonCode(e.target.value)}
+                style={{ width: "100%", padding: 6, fontSize: 11, border: "1px solid #fde68a", borderRadius: 4, background: "#fff", boxSizing: "border-box" }}>
+                <option value="">— seç —</option>
+                {REVISION_REASONS.map(r => (
+                  <option key={r.key} value={r.key}>{r.label}</option>
+                ))}
+              </select>
+              {revisionReasonCode && (
+                <>
+                  <label style={{ fontSize: 10, color: "#92400e", display: "block", marginTop: 6, marginBottom: 2 }}>
+                    Açıklama {revisionReasonCode === "other" ? <span style={{ color: "#dc2626" }}>*</span> : <span style={{ color: "#a8a29e" }}>(opsiyonel)</span>}
+                  </label>
+                  <textarea value={revisionReason} onChange={e => setRevisionReason(e.target.value)}
+                    placeholder={revisionReasonCode === "discount" ? "Örn: Aselsan %8 iskonto — kalem bazlı düşüldü"
+                      : revisionReasonCode === "quantity" ? "Örn: Sipariş miktarı 10 → 50, parti 25"
+                      : revisionReasonCode === "partRevision" ? "Örn: Rev.AB → Rev.AC, malzeme değişti"
+                      : revisionReasonCode === "removeLine" ? "Örn: 2. kalem çıkarıldı"
+                      : "Detay giriniz..."}
+                    style={{ width: "100%", minHeight: 32, padding: 6, fontSize: 11, border: "1px solid #fde68a", borderRadius: 4, background: "#fff", boxSizing: "border-box" }} />
+                </>
+              )}
+              {!revisionReasonCode && <div style={{ fontSize: 10, color: "#dc2626", marginTop: 2 }}>⚠ Kaydetmek için neden seçilmeli</div>}
             </>
           )}
         </div>

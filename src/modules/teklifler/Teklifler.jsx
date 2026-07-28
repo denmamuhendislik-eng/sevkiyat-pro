@@ -14,7 +14,7 @@ import { generateQuoteExcel } from "./quoteExcel";
 import { computeQuoteStats } from "./quoteStats";
 import { subscribeCurrencyRates } from "../maliyet/firestore";
 import { getLatestRates, getAverageRatesForYear } from "../maliyet/currency";
-import { calculateQuoteTotal } from "./quoteCalc";
+import { calculateQuoteTotal, REVISION_REASONS } from "./quoteCalc";
 
 const IMPORT_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/importQuoteExcelHttp";
 const PROMOTE_URL = "https://europe-west1-sevkiyat-pro.cloudfunctions.net/promoteQuoteStagingHttp";
@@ -418,21 +418,27 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
     }
   };
 
-  const handleCreateRevision = async (activeQuote) => {
-    const reason = window.prompt("Revizyon nedeni (zorunlu):\n\nÖrn: Aselsan %8 iskonto istedi, malzeme fiyatı arttı, teknik değişiklik...", "");
-    if (!reason || !reason.trim()) return;
+  // Revizyon modal state — kod bazlı sebep + opsiyonel açıklama
+  const [revisionModalTarget, setRevisionModalTarget] = useState(null);
+  const openRevisionModal = (activeQuote) => setRevisionModalTarget(activeQuote);
+  const handleCreateRevision = async ({ code, note }) => {
+    const activeQuote = revisionModalTarget;
+    if (!activeQuote) return;
     setCreatingRev(true);
     try {
-      const { groupKey } = await createRevision(activeQuote, reason, { canEdit, staging });
-      // Yeni revizyonun quote objesini bul (bu tick'te yeni verilerle henüz güncellenmemiş olabilir)
+      const reasonLabel = REVISION_REASONS.find(r => r.key === code)?.label || "";
+      const combinedReason = note?.trim() ? `${reasonLabel} — ${note.trim()}` : reasonLabel;
+      await createRevision(activeQuote, combinedReason, { canEdit, staging, reasonCode: code });
       const newQuote = {
         ...activeQuote,
         quoteNo: `${activeQuote.baseQuoteNo || activeQuote.quoteNo}/R${(Number(activeQuote.revNo) || 0) + 1}`,
         revNo: (Number(activeQuote.revNo) || 0) + 1,
         baseQuoteNo: activeQuote.baseQuoteNo || activeQuote.quoteNo,
         parentQuoteNo: activeQuote.quoteNo,
-        revisionReason: reason.trim(),
+        revisionReason: combinedReason,
+        revisionReasonCode: code,
       };
+      setRevisionModalTarget(null);
       onOpen && onOpen(newQuote, { readOnly: false });
     } catch (e) {
       alert("Revizyon oluşturulamadı: " + e.message);
@@ -491,7 +497,7 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
                     key={g.key} group={g} active={q} hasHistory={hasHistory} isExpanded={isExpanded}
                     onToggleExpand={() => setExpandedBase(p => ({ ...p, [g.key]: !p[g.key] }))}
                     onOpen={onOpen}
-                    onCreateRevision={handleCreateRevision}
+                    onCreateRevision={openRevisionModal}
                     onRequestDelete={(qq) => { setDeleteError(""); setDeleteTarget({ quote: qq, chainLen: g.all.length }); }}
                     creatingRev={creatingRev}
                     canEdit={canEdit}
@@ -505,6 +511,15 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
       )}
 
       {/* SİLME ONAY MODALI (window.confirm yerine — Chrome bastırma sorununa karşı) */}
+      {/* Revizyon Oluşturma Modalı — sebep seçim + opsiyonel açıklama */}
+      {revisionModalTarget && (
+        <RevisionModal
+          target={revisionModalTarget}
+          onCancel={() => setRevisionModalTarget(null)}
+          onConfirm={handleCreateRevision}
+          creating={creatingRev}
+        />
+      )}
       {deleteTarget && (() => {
         const q = deleteTarget.quote;
         const isR0 = Number(q.revNo) === 0;
@@ -1857,12 +1872,81 @@ function QuoteKpiView() {
                   <span style={{ color: "#44403c" }}>Ort. revizyon no</span>
                   <span style={{ fontWeight: 600, color: "#1c1917" }}>{stats.avgRevNo == null ? "—" : stats.avgRevNo.toFixed(2)}</span>
                 </div>
+                {/* Revizyon sebep dökümü — kod bazlı */}
+                {stats.totalReasonedRevisions > 0 && (
+                  <div style={{ borderTop: "1px solid #f5f5f4", paddingTop: 6, marginTop: 2 }}>
+                    <div style={{ fontSize: 10, color: "#57534e", fontWeight: 600, marginBottom: 4 }}>Sebep Dökümü ({stats.totalReasonedRevisions})</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      {REVISION_REASONS.map(r => {
+                        const cnt = stats.revisionReasonBreakdown[r.key] || 0;
+                        if (cnt === 0) return null;
+                        const pct = (cnt / stats.totalReasonedRevisions) * 100;
+                        return (
+                          <div key={r.key} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10 }}>
+                            <span style={{ minWidth: 20, textAlign: "center" }}>{r.icon}</span>
+                            <span style={{ flex: 1, color: r.color }}>{r.label}</span>
+                            <span style={{ fontWeight: 600, color: r.color }}>{cnt}</span>
+                            <span style={{ fontSize: 9, color: "#78716c", minWidth: 35, textAlign: "right" }}>({pct.toFixed(0)}%)</span>
+                          </div>
+                        );
+                      })}
+                      {(stats.revisionReasonBreakdown.legacy || 0) > 0 && (
+                        <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "#a8a29e", fontStyle: "italic" }}>
+                          <span style={{ minWidth: 20, textAlign: "center" }}>💭</span>
+                          <span style={{ flex: 1 }}>Eski (kod yok)</span>
+                          <span>{stats.revisionReasonBreakdown.legacy}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
                 <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
                   💡 Revizyon oranı yüksekse fiyatlama/kapsam netliği eksik olabilir.
                 </div>
               </div>
             </QKpiPanel>
           </div>
+
+          {/* İskonto revizyonları — kalem bazlı % iskonto detayı */}
+          {stats.discountRevisions && stats.discountRevisions.length > 0 && (
+            <div style={{ marginBottom: 14 }}>
+              <QKpiPanel title={`💰 İskonto Revizyonları — Kalem Bazlı % (${stats.discountRevisions.length})`}>
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                  <thead>
+                    <tr style={{ background: "#fef2f2", textAlign: "left" }}>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Teklif No</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Müşteri</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Ort. İskonto</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600, textAlign: "right" }}>Max</th>
+                      <th style={{ padding: "5px 8px", fontSize: 10, fontWeight: 600 }}>Kalem Detay</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stats.discountRevisions.map((r, i) => (
+                      <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
+                        <td style={{ padding: "5px 8px", fontSize: 10, fontFamily: "ui-monospace, monospace" }}>{r.quoteNo}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10 }}>{r.customerName}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 11, textAlign: "right", fontWeight: 700, color: "#dc2626" }}>%{r.avgDiscountPct.toFixed(1)}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 10, textAlign: "right", color: "#991b1b" }}>%{r.maxDiscountPct.toFixed(1)}</td>
+                        <td style={{ padding: "5px 8px", fontSize: 9, color: "#57534e" }}>
+                          {r.lines.slice(0, 3).map(l => (
+                            <span key={l.stockCode} title={`${l.parentUnit.toFixed(2)} → ${l.currentUnit.toFixed(2)}`}
+                              style={{ display: "inline-block", marginRight: 6, padding: "0 4px", background: "#fef2f2", borderRadius: 2 }}>
+                              {l.stockCode}: <b>%{l.discountPct.toFixed(1)}</b>
+                            </span>
+                          ))}
+                          {r.lines.length > 3 && <span style={{ color: "#a8a29e" }}>+{r.lines.length - 3}</span>}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div style={{ fontSize: 10, color: "#78716c", marginTop: 6, padding: "0 4px" }}>
+                  💡 Bir önceki revizyona kıyasla kalem bazlı birim fiyat düşüşü. Negatif değer = fiyat arttırıldı.
+                </div>
+              </QKpiPanel>
+            </div>
+          )}
 
           {/* Dördüncü sıra: Parça — top ciro + top adet */}
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
@@ -1943,6 +2027,64 @@ function QuoteKpiView() {
           </div>
         </>
       )}
+    </div>
+  );
+}
+
+// Revizyon oluşturma modalı — sebep dropdown + opsiyonel açıklama
+function RevisionModal({ target, onCancel, onConfirm, creating }) {
+  const [code, setCode] = useState("");
+  const [note, setNote] = useState("");
+  const needsNote = code === "other";
+  const isValid = !!code && (!needsNote || note.trim().length > 0);
+  const handleSubmit = () => {
+    if (!isValid) return;
+    onConfirm({ code, note });
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000 }}
+      onClick={(e) => { if (e.target === e.currentTarget && !creating) onCancel(); }}>
+      <div style={{ background: "#fff", borderRadius: 8, padding: 20, maxWidth: 500, width: "90%", boxShadow: "0 8px 24px rgba(0,0,0,0.2)" }}>
+        <div style={{ fontSize: 15, fontWeight: 600, color: "#92400e", marginBottom: 4 }}>
+          🔄 Yeni Revizyon Oluştur
+        </div>
+        <div style={{ fontSize: 12, color: "#57534e", marginBottom: 12 }}>
+          <b style={{ fontFamily: "ui-monospace, monospace" }}>{target.quoteNo}</b> teklifinden R{(Number(target.revNo) || 0) + 1} oluşturulacak
+        </div>
+        <label style={{ fontSize: 11, fontWeight: 500, color: "#57534e", display: "block", marginBottom: 4 }}>
+          Revizyon Nedeni <span style={{ color: "#dc2626" }}>*</span>
+        </label>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+          {REVISION_REASONS.map(r => (
+            <label key={r.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: code === r.key ? r.bg : "#fafaf9", border: `1px solid ${code === r.key ? r.color : "#e7e5e4"}`, borderRadius: 4, cursor: "pointer", fontSize: 12 }}>
+              <input type="radio" name="revReason" value={r.key} checked={code === r.key} onChange={() => setCode(r.key)} />
+              <span style={{ color: code === r.key ? r.color : "#1c1917", fontWeight: code === r.key ? 600 : 400 }}>{r.icon} {r.label}</span>
+            </label>
+          ))}
+        </div>
+        {code && (
+          <>
+            <label style={{ fontSize: 11, fontWeight: 500, color: "#57534e", display: "block", marginBottom: 4 }}>
+              Açıklama {needsNote ? <span style={{ color: "#dc2626" }}>*</span> : <span style={{ color: "#a8a29e" }}>(opsiyonel)</span>}
+            </label>
+            <textarea value={note} onChange={e => setNote(e.target.value)}
+              placeholder={code === "discount" ? "Örn: Aselsan %8 iskonto talep etti"
+                : code === "quantity" ? "Örn: Sipariş miktarı 10 → 50, parti 25"
+                : code === "partRevision" ? "Örn: Rev.AB → Rev.AC, malzeme değişti"
+                : code === "removeLine" ? "Örn: 2. kalem çıkarıldı"
+                : "Detay giriniz..."}
+              style={{ width: "100%", minHeight: 50, padding: 8, fontSize: 12, border: "1px solid #d6d3d1", borderRadius: 4, boxSizing: "border-box", fontFamily: "inherit" }} />
+          </>
+        )}
+        <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 12 }}>
+          <button onClick={onCancel} disabled={creating}
+            style={{ padding: "6px 14px", fontSize: 12, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: creating ? "wait" : "pointer" }}>İptal</button>
+          <button onClick={handleSubmit} disabled={!isValid || creating}
+            style={{ padding: "6px 14px", fontSize: 12, background: isValid ? "#92400e" : "#a8a29e", color: "#fff", border: "none", borderRadius: 4, cursor: (!isValid || creating) ? "not-allowed" : "pointer", fontWeight: 500 }}>
+            {creating ? "Oluşturuluyor..." : "🔄 Revizyon Oluştur"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
