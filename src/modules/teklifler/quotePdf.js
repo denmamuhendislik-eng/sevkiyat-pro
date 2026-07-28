@@ -292,6 +292,7 @@ function buildQuoteHtml(quote, calc) {
   <!-- FOOTER -->
   <div style="position:absolute;bottom:20px;left:44px;right:44px;padding-top:8px;border-top:1px solid #e7e5e4;font-size:8px;color:#a8a29e;display:flex;justify-content:space-between;">
     <span>DENMA Mühendislik · Teklif No: ${esc(quote.quoteNo || "")}</span>
+    <span style="font-family:'JetBrains Mono','Courier New',monospace;">FR-28 Rev.Tar./No: 20.07.2026 / 02</span>
     <span>${new Date().toLocaleDateString("tr-TR")} · Sayfa 1</span>
   </div>
 </div>

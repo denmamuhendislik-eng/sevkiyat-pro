@@ -13,7 +13,7 @@ import {
 } from "./schema";
 import { FEASIBILITY_ROLES } from "./firestore";
 
-const FORM_NO = "FR-71.1 Rev.Tar./No: 11.12.2025 / 01";
+const FORM_NO = "FR-71 Rev.Tar./No: 20.07.2026 / 02";
 
 function fmtNum(n, decimals = 2) {
   return Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
