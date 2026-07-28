@@ -2953,11 +2953,45 @@ ${el.innerHTML}
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Import</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Mevcut</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Toplam</th>
+                    <th style={{textAlign:"center",padding:"6px 4px",color:"var(--color-text-tertiary)",width:70}}></th>
                   </tr></thead>
                   <tbody>
                     {importData.matched.map((m,i)=>{
                       const existing=(yearsData[importYear]?.orders||{})[m.pid]||0;
                       const isNameMatch = m.matchType === "name";
+                      // İsim eşleşmesi satırını "Tanınmayan" listesine demote et. Cascade da yeniden hesaplanır.
+                      const demoteToUnmatched = () => {
+                        const demoted = {
+                          code: m.originalCode || m.code,
+                          qty: m.qty,
+                          desc: m.name,
+                          nameTR: "",
+                          nameEN: m.nameEN || m.name,
+                          kg: "",
+                          approved: false,
+                          demotedFromName: true, // izlenebilirlik — orijinal isim eşleşmesinden geldi
+                        };
+                        const newMatched = importData.matched.filter((_, idx) => idx !== i);
+                        const newUnmatched = [...importData.unmatched, demoted];
+                        // Cascade yeniden hesap — satır 809-822 mantığının aynısı, güncel matched üzerinden.
+                        // Demote edilen ürün cascade parent'ıydıysa çocuklar da uygun şekilde eksilir.
+                        const cascadeMap = {};
+                        newMatched.forEach(mm => {
+                          combRules.filter(r => r.parent === mm.pid).forEach(rule => {
+                            rule.children.forEach(childId => {
+                              if (!cascadeMap[childId]) {
+                                const childP = products.find(pr => pr.id === childId);
+                                cascadeMap[childId] = { pid: childId, name: childP?.nameTR || `#${childId}`, code: childP?.vioCode || VIO_CODES[childId] || "—", qty: 0, parents: [] };
+                              }
+                              cascadeMap[childId].qty += mm.qty;
+                              cascadeMap[childId].parents.push({ pid: mm.pid, name: mm.name, qty: mm.qty });
+                            });
+                          });
+                        });
+                        const newCascadeItems = Object.values(cascadeMap);
+                        setImportData({ ...importData, matched: newMatched, unmatched: newUnmatched, cascadeItems: newCascadeItems });
+                        setImportNewProducts(newUnmatched.map(u => ({ ...u, vioCode: u.code || "" })));
+                      };
                       return <tr key={i} style={{borderBottom:"1px solid var(--color-border-tertiary)",background:isNameMatch?"#FEF3C7":i%2===0?"transparent":"var(--color-background-secondary)"}}>
                         <td style={{padding:"5px 8px",fontFamily:"monospace",fontSize:10}}>
                           {m.code}
@@ -2965,7 +2999,7 @@ ${el.innerHTML}
                         </td>
                         <td style={{padding:"5px 8px"}}>{m.name}</td>
                         <td style={{padding:"5px 8px",textAlign:"center"}}>
-                          {isNameMatch 
+                          {isNameMatch
                             ? <span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FEF3C7",color:"#B45309",fontWeight:500}} title={`Kod: ${m.originalCode} → İsim eşleşmesi ile ${m.name} bulundu`}>⚠ İsim</span>
                             : <span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#DCFCE7",color:"#16A34A"}}>✓ Kod</span>
                           }
@@ -2973,6 +3007,15 @@ ${el.innerHTML}
                         <td style={{textAlign:"right",padding:"5px 8px",fontWeight:600,color:"#534AB7"}}>+{m.qty}</td>
                         <td style={{textAlign:"right",padding:"5px 8px",color:"var(--color-text-tertiary)"}}>{existing}</td>
                         <td style={{textAlign:"right",padding:"5px 8px",fontWeight:600,color:"#1D9E75"}}>{existing+m.qty}</td>
+                        <td style={{padding:"3px 4px",textAlign:"center"}}>
+                          {isNameMatch && (
+                            <button onClick={demoteToUnmatched}
+                              title="Bu isim eşleşmesi yanlış — satırı 'Tanınmayan' listesine düşür. Sonra oradan doğru ürünü manuel seçebilirsin. Cascade otomatik yeniden hesaplanır."
+                              style={{padding:"2px 6px",fontSize:9,background:"#fff",color:"#B45309",border:"1px solid #FDE68A",borderRadius:3,cursor:"pointer",fontWeight:600}}>
+                              🚫 Yanlış
+                            </button>
+                          )}
+                        </td>
                       </tr>;
                     })}
                   </tbody>
