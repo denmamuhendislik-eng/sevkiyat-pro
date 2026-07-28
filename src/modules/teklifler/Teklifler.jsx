@@ -393,7 +393,18 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
       const sorted = revs.slice().sort((a, b) => (Number(b.revNo) || 0) - (Number(a.revNo) || 0));
       return { key, active: sorted[0], history: sorted.slice(1), all: sorted };
     });
-    return arr.sort((a, b) => (b.active.quoteDate || "").localeCompare(a.active.quoteDate || ""));
+    // Tarih desc + tie-breaker: quoteNo desc (YYAAGGXX formatı, büyük = daha yeni).
+    // Sadece tarih ile sıraladığında aynı-gün teklifler Firestore key iteration
+    // sırasında kararsız oluyordu (her subscribe'da yer değiştirebilirdi).
+    return arr.sort((a, b) => {
+      const da = a.active.quoteDate || "";
+      const db = b.active.quoteDate || "";
+      const dateCmp = db.localeCompare(da);
+      if (dateCmp !== 0) return dateCmp;
+      const qa = String(a.active.baseQuoteNo || a.active.quoteNo || "");
+      const qb = String(b.active.baseQuoteNo || b.active.quoteNo || "");
+      return qb.localeCompare(qa);
+    });
   }, [data, search]);
 
   const totalLines = groups.reduce((s, g) => s + (g.active.lines?.length || 0), 0);
