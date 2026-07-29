@@ -3065,8 +3065,14 @@ ${el.innerHTML}
                 <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:8}}>Bu ürünler products listesindeki kodlarla eşleşmedi. Eklemek için TR isim, EN isim, KG bilgilerini ve <b>VIO Kodu</b>'nu kontrol edin (default Excel'den gelir, yanlışsa düzeltin) → "Onayla".</div>
                 {importNewProducts.map((np,i)=>(
                   <div key={i} style={{padding:12,marginBottom:8,borderRadius:8,border:`1px solid ${np.approved?"#1D9E75":"#BA7517"}`,background:np.approved?"rgba(29,158,117,0.05)":"rgba(186,117,23,0.05)"}}>
-                    <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:6}}>
-                      <span style={{fontSize:10,fontFamily:"monospace",padding:"2px 6px",borderRadius:4,background:"var(--color-background-tertiary)"}}>{np.code}</span>
+                    <div style={{display:"flex",gap:8,alignItems:"center",marginBottom:6,flexWrap:"wrap"}}>
+                      <span style={{fontSize:10,fontFamily:"monospace",padding:"2px 6px",borderRadius:4,background:"var(--color-background-tertiary)"}}>{np.vioCode ?? np.code}</span>
+                      {np.vioCode && np.vioCode !== np.code && (
+                        <span title={`Excel'den gelen orijinal kod: ${np.code}`}
+                          style={{fontSize:9,fontFamily:"monospace",padding:"1px 5px",borderRadius:3,background:"transparent",color:"var(--color-text-tertiary)",textDecoration:"line-through"}}>
+                          {np.code}
+                        </span>
+                      )}
                       <span style={{fontSize:11,color:"var(--color-text-secondary)"}}>{np.desc}</span>
                       <span style={{fontSize:11,fontWeight:600,color:"#534AB7"}}>+{np.qty} adet</span>
                       {np.approved&&<span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:"rgba(29,158,117,0.15)",color:"#1D9E75",fontWeight:600}}>✓ Onaylandı</span>}
