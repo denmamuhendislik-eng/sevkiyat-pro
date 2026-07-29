@@ -2945,11 +2945,22 @@ ${el.innerHTML}
                     </h4>
                   </>;
                 })()}
-                {importData.matched.length>0?<table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
+                {(() => {
+                  // KG kayıtsız (0 veya missing) satırları say. Import butonunu bloke etmek + uyarı için.
+                  const missingKg = importData.matched.filter(m => !Number(m.kg) || Number(m.kg) <= 0).length;
+                  if (missingKg > 0) return (
+                    <div style={{marginBottom:8,padding:"8px 10px",background:"#fef2f2",border:"1px solid #fecaca",borderRadius:6,fontSize:11,color:"#991b1b"}}>
+                      ⚠ <b>{missingKg}</b> üründe KG kayıtsız — inline düzeltin (satır kırmızı zeminli). KG olmadan konteyner/sevkiyat hesapları bozulur. Tümü düzeltilene kadar "Siparişleri Aktar" pasif.
+                    </div>
+                  );
+                  return null;
+                })()}
+                <table style={{width:"100%",borderCollapse:"collapse",fontSize:11}}>
                   <thead><tr style={{borderBottom:"2px solid var(--color-border-tertiary)"}}>
                     <th style={{textAlign:"left",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>VIO Kodu</th>
                     <th style={{textAlign:"left",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Ürün</th>
                     <th style={{textAlign:"center",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Eşleşme</th>
+                    <th style={{textAlign:"right",padding:"6px 4px",color:"var(--color-text-tertiary)",width:80}}>KG</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Import</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Mevcut</th>
                     <th style={{textAlign:"right",padding:"6px 8px",color:"var(--color-text-tertiary)"}}>Toplam</th>
@@ -2959,6 +2970,18 @@ ${el.innerHTML}
                     {importData.matched.map((m,i)=>{
                       const existing=(yearsData[importYear]?.orders||{})[m.pid]||0;
                       const isNameMatch = m.matchType === "name";
+                      const kgMissing = !Number(m.kg) || Number(m.kg) <= 0;
+                      // KG düzelt — hem products master'ında hem importData.matched'de günceller.
+                      // products state değişince App.jsx otomatik Firestore'a yazıyor (mevcut saveToFirestore effect).
+                      const updateMatchedKg = (newKg) => {
+                        const kgNum = Number(newKg);
+                        if (!(kgNum > 0)) return;
+                        setProducts(prev => prev.map(p => p.id === m.pid ? { ...p, kg: kgNum } : p));
+                        setImportData(prev => prev ? {
+                          ...prev,
+                          matched: prev.matched.map((mm, idx) => idx === i ? { ...mm, kg: kgNum } : mm),
+                        } : prev);
+                      };
                       // İsim eşleşmesi satırını "Tanınmayan" listesine demote et. Cascade da yeniden hesaplanır.
                       const demoteToUnmatched = () => {
                         const demoted = {
@@ -2992,7 +3015,8 @@ ${el.innerHTML}
                         setImportData({ ...importData, matched: newMatched, unmatched: newUnmatched, cascadeItems: newCascadeItems });
                         setImportNewProducts(newUnmatched.map(u => ({ ...u, vioCode: u.code || "" })));
                       };
-                      return <tr key={i} style={{borderBottom:"1px solid var(--color-border-tertiary)",background:isNameMatch?"#FEF3C7":i%2===0?"transparent":"var(--color-background-secondary)"}}>
+                      const rowBg = kgMissing ? "#FEE2E2" : (isNameMatch ? "#FEF3C7" : (i%2===0 ? "transparent" : "var(--color-background-secondary)"));
+                      return <tr key={i} style={{borderBottom:"1px solid var(--color-border-tertiary)",background:rowBg}}>
                         <td style={{padding:"5px 8px",fontFamily:"monospace",fontSize:10}}>
                           {m.code}
                           {isNameMatch && <div style={{fontSize:9,color:"#B45309",marginTop:2}}>Beklenen: {m.expectedCode}</div>}
@@ -3003,6 +3027,20 @@ ${el.innerHTML}
                             ? <span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#FEF3C7",color:"#B45309",fontWeight:500}} title={`Kod: ${m.originalCode} → İsim eşleşmesi ile ${m.name} bulundu`}>⚠ İsim</span>
                             : <span style={{fontSize:9,padding:"2px 6px",borderRadius:4,background:"#DCFCE7",color:"#16A34A"}}>✓ Kod</span>
                           }
+                        </td>
+                        <td style={{padding:"3px 4px",textAlign:"right"}}>
+                          {kgMissing ? (
+                            <input type="number" step="0.001" min="0"
+                              defaultValue=""
+                              placeholder="⚠ KG"
+                              autoFocus={false}
+                              onBlur={e => updateMatchedKg(e.target.value)}
+                              onKeyDown={e => { if (e.key === "Enter") e.currentTarget.blur(); }}
+                              title="KG master'da yok — düzeltmek için değer gir. Değer products master'ına da yazılır."
+                              style={{width:64,padding:"3px 4px",fontSize:10,border:"1px solid #DC2626",borderRadius:3,background:"#fff",textAlign:"right"}} />
+                          ) : (
+                            <span style={{fontSize:10,color:"var(--color-text-secondary)",fontVariantNumeric:"tabular-nums"}}>{Number(m.kg).toFixed(2)}</span>
+                          )}
                         </td>
                         <td style={{textAlign:"right",padding:"5px 8px",fontWeight:600,color:"#534AB7"}}>+{m.qty}</td>
                         <td style={{textAlign:"right",padding:"5px 8px",color:"var(--color-text-tertiary)"}}>{existing}</td>
@@ -3107,16 +3145,29 @@ ${el.innerHTML}
               </div>}
 
               {/* Import Button */}
-              <div style={{display:"flex",gap:10,alignItems:"center",padding:14,borderRadius:10,background:"var(--color-background-secondary)",marginTop:16}}>
-                <div style={{flex:1,fontSize:12}}>
-                  <b>{importData.matched.length}</b> eşleşen ürün
-                  {importData.cascadeItems && importData.cascadeItems.length > 0 && <> + <b style={{color:"#2563EB"}}>{importData.cascadeItems.length}</b> bağlı ürün</>}
-                  {importNewProducts.filter(np=>np.approved).length>0&&` + ${importNewProducts.filter(np=>np.approved).length} yeni ürün`} <b>{importYear}</b> yılına eklenecek.
-                </div>
-                <button onClick={exportImportPreview} style={{...bS,padding:"8px 16px",fontSize:12,background:"#1D9E75",color:"#fff",border:"none"}}>📊 Excel İndir</button>
-                <button onClick={()=>{setImportData(null);setImportNewProducts([]);}} style={{...bS,padding:"8px 16px",fontSize:12}}>İptal</button>
-                <button onClick={executeImport} style={{...bP,padding:"8px 20px",fontSize:12}}>Siparişleri Aktar</button>
-              </div>
+              {(() => {
+                const missingKgCount = importData.matched.filter(m => !Number(m.kg) || Number(m.kg) <= 0).length;
+                const importBlocked = missingKgCount > 0;
+                return (
+                  <div style={{display:"flex",gap:10,alignItems:"center",padding:14,borderRadius:10,background:"var(--color-background-secondary)",marginTop:16}}>
+                    <div style={{flex:1,fontSize:12}}>
+                      <b>{importData.matched.length}</b> eşleşen ürün
+                      {importData.cascadeItems && importData.cascadeItems.length > 0 && <> + <b style={{color:"#2563EB"}}>{importData.cascadeItems.length}</b> bağlı ürün</>}
+                      {importNewProducts.filter(np=>np.approved).length>0&&` + ${importNewProducts.filter(np=>np.approved).length} yeni ürün`} <b>{importYear}</b> yılına eklenecek.
+                      {importBlocked && (
+                        <div style={{marginTop:4,fontSize:11,color:"#991b1b",fontWeight:500}}>
+                          ⚠ {missingKgCount} üründe KG kayıtsız — düzeltmeden aktarılamaz
+                        </div>
+                      )}
+                    </div>
+                    <button onClick={exportImportPreview} style={{...bS,padding:"8px 16px",fontSize:12,background:"#1D9E75",color:"#fff",border:"none"}}>📊 Excel İndir</button>
+                    <button onClick={()=>{setImportData(null);setImportNewProducts([]);}} style={{...bS,padding:"8px 16px",fontSize:12}}>İptal</button>
+                    <button onClick={executeImport} disabled={importBlocked}
+                      title={importBlocked ? `${missingKgCount} üründe KG kayıtsız — üstteki tabloda kırmızı satırlara KG girin` : ""}
+                      style={{...bP,padding:"8px 20px",fontSize:12,opacity:importBlocked?0.4:1,cursor:importBlocked?"not-allowed":"pointer"}}>Siparişleri Aktar</button>
+                  </div>
+                );
+              })()}
             </div>}
             
             {!importData&&<div style={{textAlign:"center",padding:40,color:"var(--color-text-tertiary)"}}>
