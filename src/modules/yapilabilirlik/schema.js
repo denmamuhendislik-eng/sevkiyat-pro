@@ -301,6 +301,10 @@ export function makeEmptyStudy(studyNo) {
     materialShape: "",   // DİKDÖRTGEN | SİLİNDİR | ALTIGEN | EBATSIZ
     dimensions: { en: 0, boy: 0, uzunluk: 0 },
     weightKg: 0,         // otomatik hesap veya manuel override
+    // Ek hammaddeler (multi-material desteği). Boş dizi ise davranış tekli mevcut hâli.
+    // Her item: { materialType, materialShape, dimensions: { en, boy, uzunluk }, weightKg }
+    // Malzeme maliyeti = primary weight × primary price + Σ (ek weight × ek price).
+    additionalMaterials: [],
     quantity: 1,         // sipariş adedi (müşterinin toplam talebi)
     batchSize: 0,        // parti büyüklüğü — 0 ise quantity'ye eşit sayılır.
                          // Marj bracket'i bu değer üzerinden bulunur (fiyatlama).

@@ -47,6 +47,17 @@ function studyToLine(study) {
       uzunluk: Number(study.dimensions?.uzunluk) || 0,
     },
     weightKg: Number(study.weightKg) || 0,
+    // Ek hammaddeler (multi-material). Boş dizi ise davranış tekli olarak devam eder.
+    additionalMaterials: (study.additionalMaterials || []).map(am => ({
+      materialType: am?.materialType || "",
+      materialShape: am?.materialShape || "",
+      dimensions: {
+        en: Number(am?.dimensions?.en) || 0,
+        boy: Number(am?.dimensions?.boy) || 0,
+        uzunluk: Number(am?.dimensions?.uzunluk) || 0,
+      },
+      weightKg: Number(am?.weightKg) || 0,
+    })),
     machines,
     fasonWorks,
     specialToolCost: toolingTotal,

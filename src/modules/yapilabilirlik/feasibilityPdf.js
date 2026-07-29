@@ -168,9 +168,12 @@ function buildFeasibilityHtml(study) {
   </div>
 
   <!-- HAMMADDE -->
-  ${(study.materialType || study.materialShape || study.dimensions?.en || study.weightKg) ? `
+  ${(study.materialType || study.materialShape || study.dimensions?.en || study.weightKg || (study.additionalMaterials || []).length > 0) ? (() => {
+    const addMats = study.additionalMaterials || [];
+    const totalKg = (Number(study.weightKg) || 0) + addMats.reduce((s, am) => s + (Number(am?.weightKg) || 0), 0);
+    return `
     <div data-pdf-section="hammadde" style="margin-top:8px; padding:10px 12px; background:#fafaf9; border-radius:6px; border:1px solid #e7e5e4;">
-      <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">🧱 HAMMADDE / RAW MATERIAL</div>
+      <div style="font-size:9px; color:#78716c; font-weight:600; margin-bottom:6px;">🧱 HAMMADDE / RAW MATERIAL${addMats.length > 0 ? ` (primary + ${addMats.length} ek · toplam ${fmtNum(totalKg, 3)} kg)` : ""}</div>
       <div style="display:grid; grid-template-columns:2fr 1fr 1fr 1fr 1fr 1fr; gap:8px; font-size:10px;">
         <div><div style="color:#78716c; font-size:8px;">Malzeme</div><div style="font-weight:600;">${esc(study.materialType || "—")}</div></div>
         <div><div style="color:#78716c; font-size:8px;">Şekil</div><div>${esc(study.materialShape || "—")}</div></div>
@@ -179,8 +182,25 @@ function buildFeasibilityHtml(study) {
         <div><div style="color:#78716c; font-size:8px;">UZUNLUK</div><div>${fmtNum(study.dimensions?.uzunluk, 1)} mm</div></div>
         <div><div style="color:#78716c; font-size:8px;">Ağırlık</div><div style="font-weight:600;">${fmtNum(study.weightKg, 3)} kg</div></div>
       </div>
+      ${addMats.length > 0 ? `
+        <div style="margin-top:8px; padding-top:6px; border-top:1px dashed #d6d3d1;">
+          <div style="font-size:8px; color:#57534e; font-weight:600; margin-bottom:4px;">EK HAMMADDELER (${addMats.length})</div>
+          ${addMats.map((am, i) => `
+            <div style="display:grid; grid-template-columns:24px 2fr 1fr 1fr 1fr 1fr 1fr; gap:6px; font-size:9px; padding:2px 0; border-bottom:1px solid #f5f5f4;">
+              <div style="color:#78716c;">#${i + 1}</div>
+              <div style="font-weight:600;">${esc(am.materialType || "—")}</div>
+              <div>${esc(am.materialShape || "—")}</div>
+              <div>${fmtNum(am.dimensions?.en, 1)}</div>
+              <div>${fmtNum(am.dimensions?.boy, 1)}</div>
+              <div>${fmtNum(am.dimensions?.uzunluk, 1)}</div>
+              <div style="font-weight:600;">${fmtNum(am.weightKg, 3)} kg</div>
+            </div>
+          `).join("")}
+        </div>
+      ` : ""}
       ${study.quantity ? `<div style="margin-top:6px; font-size:9px; color:#57534e;">Sipariş Miktarı: <b>${study.quantity}</b> adet · ${study.otherMaterials ? `Yardımcı: ${esc(study.otherMaterials)}` : ""}</div>` : ""}
-    </div>` : ""}
+    </div>`;
+  })() : ""}
 
   <!-- OPERASYONLAR -->
   ${opCount > 0 ? `

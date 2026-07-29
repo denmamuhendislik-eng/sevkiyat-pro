@@ -329,6 +329,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
             materialType: l.materialType,
             dimensions: l.dimensions,
             weightKg: r.weightKg,
+            additionalMaterials: Array.isArray(l.additionalMaterials) ? l.additionalMaterials : [],
             machines: l.machines,
             fasonWorks: l.fasonWorks,
             specialToolCost: l.specialToolCost,
@@ -952,6 +953,58 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
             </div>
           </div>
         </div>
+
+        {/* EK HAMMADDELER — multi-material. Feasibility'den taşınır veya elle eklenir.
+            Her satırın weightKg × TL/kg toplam malzeme maliyetine katılır. */}
+        <div style={{ marginTop: 8, paddingTop: 8, borderTop: "1px dashed #d6d3d1" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#57534e" }}>
+              🧱+ Ek Hammaddeler
+              {(line.additionalMaterials || []).length > 0 && (
+                <span style={{ marginLeft: 6, fontSize: 9, color: "#78716c" }}>· {line.additionalMaterials.length} ek</span>
+              )}
+            </div>
+            <button onClick={() => {
+              const cur = Array.isArray(line.additionalMaterials) ? line.additionalMaterials : [];
+              update(idx, "additionalMaterials", [...cur, { materialType: "", materialShape: "", dimensions: { en: 0, boy: 0, uzunluk: 0 }, weightKg: 0 }]);
+            }} style={{ padding: "2px 8px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>
+              + Ek Hammadde
+            </button>
+          </div>
+          {(line.additionalMaterials || []).map((am, ai) => {
+            const amMat = materials?.[am.materialType];
+            const updateAm = (key, val) => {
+              const next = [...(line.additionalMaterials || [])];
+              next[ai] = { ...next[ai], [key]: val };
+              update(idx, "additionalMaterials", next);
+            };
+            const updateAmDim = (dimKey, val) => {
+              const next = [...(line.additionalMaterials || [])];
+              next[ai] = { ...next[ai], dimensions: { ...(next[ai].dimensions || {}), [dimKey]: Number(val) || 0 } };
+              update(idx, "additionalMaterials", next);
+            };
+            const removeAm = () => {
+              const next = (line.additionalMaterials || []).filter((_, i) => i !== ai);
+              update(idx, "additionalMaterials", next);
+            };
+            const shapeUp = String(am.materialShape || amMat?.shape || "").toUpperCase();
+            const isCyl = shapeUp === "SİLİNDİR";
+            return (
+              <div key={ai} style={{ display: "grid", gridTemplateColumns: "2fr repeat(3, 1fr) 1fr 24px", gap: 4, marginBottom: 3, padding: 4, background: "#fafaf9", borderRadius: 3 }}>
+                <input list={`amLineMatList_${idx}_${ai}`} value={am.materialType || ""} onChange={e => updateAm("materialType", e.target.value)}
+                  placeholder={`Malzeme #${ai + 1}`} style={{ ...miniInput, fontSize: 10 }} />
+                <datalist id={`amLineMatList_${idx}_${ai}`}>
+                  {materialList.map(m => <option key={m.name} value={m.name}>{m.shape} · {m.priceTlPerKg}TL/kg</option>)}
+                </datalist>
+                <input type="number" value={am.dimensions?.en || 0} onChange={e => updateAmDim("en", e.target.value)} placeholder={isCyl ? "Ø çap" : "EN"} style={{ ...miniInput, fontSize: 10 }} />
+                <input type="number" value={am.dimensions?.boy || 0} onChange={e => updateAmDim("boy", e.target.value)} placeholder="BOY" disabled={isCyl} style={{ ...miniInput, fontSize: 10, opacity: isCyl ? 0.4 : 1 }} />
+                <input type="number" value={am.dimensions?.uzunluk || 0} onChange={e => updateAmDim("uzunluk", e.target.value)} placeholder="UZUNLUK" style={{ ...miniInput, fontSize: 10 }} />
+                <input type="number" step="0.001" value={am.weightKg || 0} onChange={e => updateAm("weightKg", Number(e.target.value) || 0)} placeholder="ağırlık kg" style={{ ...miniInput, fontSize: 10, background: "#fef3c7" }} />
+                <button onClick={removeAm} title="Sil" style={{ background: "transparent", border: "none", color: "#dc2626", cursor: "pointer" }}>🗑</button>
+              </div>
+            );
+          })}
+        </div>
       </div>
 
       {/* Makineler */}
@@ -1201,12 +1254,21 @@ function LineDetailPanel({ idx, line, calcResult, selectedMat, paymentTerm, curr
       {/* HAMMADDE */}
       {matPerUnit > 0 && (
         <div style={detailSection}>
-          <div style={detailSectionTitle}>🧱 Hammadde</div>
+          <div style={detailSectionTitle}>🧱 Hammadde{(calcResult.additionalMaterialsBreakdown?.length > 0) ? ` (primary + ${calcResult.additionalMaterialsBreakdown.length} ek)` : ""}</div>
           <table style={detailTable}>
             <tbody>
-              <tr><td style={detailLabel}>Ağırlık</td><td style={detailValue}>{calcResult.weightKg.toFixed(3)} kg</td></tr>
-              <tr><td style={detailLabel}>Birim fiyat</td><td style={detailValue}>{fmt(selectedMat?.priceTlPerKg || 0)} TL/kg</td></tr>
-              <tr><td style={detailLabel}>Malzeme maliyeti (adet)</td><td style={detailValueBold}>{fmt(matPerUnit)} TL</td></tr>
+              <tr><td style={detailLabel}>{(calcResult.additionalMaterialsBreakdown?.length > 0) ? "Primary ağırlık" : "Ağırlık"}</td><td style={detailValue}>{calcResult.weightKg.toFixed(3)} kg</td></tr>
+              <tr><td style={detailLabel}>Primary birim fiyat</td><td style={detailValue}>{fmt(selectedMat?.priceTlPerKg || 0)} TL/kg</td></tr>
+              <tr><td style={detailLabel}>Primary maliyeti</td><td style={detailValue}>{fmt(calcResult.materialPrimaryCostPerUnit || 0)} TL</td></tr>
+              {(calcResult.additionalMaterialsBreakdown || []).map((am, i) => (
+                <tr key={i}>
+                  <td style={{ ...detailLabel, fontSize: 10, color: "#78716c" }}>
+                    Ek #{i + 1}: {am.materialType || "—"} · {am.weightKg.toFixed(3)} kg × {fmt(am.pricePerKgTl)} TL/kg
+                  </td>
+                  <td style={detailValue}>{fmt(am.costPerUnit)} TL</td>
+                </tr>
+              ))}
+              <tr><td style={detailLabel}>{(calcResult.additionalMaterialsBreakdown?.length > 0) ? "Malzeme maliyeti TOPLAM (adet)" : "Malzeme maliyeti (adet)"}</td><td style={detailValueBold}>{fmt(matPerUnit)} TL</td></tr>
               <tr>
                 <MarginRow
                   label="Marj (miktar + vade grubu)"
@@ -1466,6 +1528,7 @@ function makeBlankLine() {
     stockName: "",
     quantity: 1,
     batchSize: 0, // 0 = quantity ile aynı sayılır (marj bracket için)
+    additionalMaterials: [], // multi-material desteği (Feasibility'den gelenler + elle eklenen)
     unit: "ADET",
     materialType: "",
     dimensions: { en: 0, boy: 0, uzunluk: 0 },
@@ -1546,6 +1609,16 @@ function normalizeIncomingLines(rawLines) {
       materialType: l.materialType || "",
       dimensions,
       weightKg: Number(l.weightKg) || 0,
+      additionalMaterials: Array.isArray(l.additionalMaterials) ? l.additionalMaterials.map(am => ({
+        materialType: am?.materialType || "",
+        materialShape: am?.materialShape || "",
+        dimensions: {
+          en: Number(am?.dimensions?.en) || 0,
+          boy: Number(am?.dimensions?.boy) || 0,
+          uzunluk: Number(am?.dimensions?.uzunluk) || 0,
+        },
+        weightKg: Number(am?.weightKg) || 0,
+      })) : [],
       machines,
       fasonWorks,
       specialToolCost: Number(l.specialToolCost) || 0,

@@ -458,7 +458,20 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
       // hesaplanmış değer (dimensions × density) persist edilir. PDF ve parça
       // kütüphanesi boyle "0.000 kg" yerine gerçek değeri görür.
       const effectiveWeightKg = (Number(study.weightKg) > 0) ? Number(study.weightKg) : (autoWeightKg > 0 ? Number(autoWeightKg.toFixed(4)) : 0);
-      const payload = { ...study, studyNo, weightKg: effectiveWeightKg };
+      // Ek hammaddeler için de aynı autofill
+      const effectiveAdditionalMaterials = (study.additionalMaterials || []).map(am => {
+        if (Number(am?.weightKg) > 0) return am;
+        const amMat = materialsData?.materials?.[am?.materialType];
+        const amAuto = calculateWeightKg({
+          shape: am?.materialShape || amMat?.shape,
+          en: am?.dimensions?.en,
+          boy: am?.dimensions?.boy,
+          uzunluk: am?.dimensions?.uzunluk,
+          density: amMat?.density,
+        });
+        return amAuto > 0 ? { ...am, weightKg: Number(amAuto.toFixed(4)) } : am;
+      });
+      const payload = { ...study, studyNo, weightKg: effectiveWeightKg, additionalMaterials: effectiveAdditionalMaterials };
       const out = await saveFeasibilityStudy(payload, { canEdit, staging, userEmail: "" });
 
       // Yeni müşteri ise quoteCustomers'a otomatik ekle (Karar 4)
@@ -549,9 +562,21 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
     }
     setCompleting(true); setError("");
     try {
-      // 1) Kaydet — ağırlık autofill (handleSave ile aynı davranış)
+      // 1) Kaydet — ağırlık autofill (handleSave ile aynı davranış, ek hammaddeler dahil)
       const effectiveWeightKg = (Number(study.weightKg) > 0) ? Number(study.weightKg) : (autoWeightKg > 0 ? Number(autoWeightKg.toFixed(4)) : 0);
-      const payload = { ...study, studyNo, weightKg: effectiveWeightKg };
+      const effectiveAdditionalMaterials = (study.additionalMaterials || []).map(am => {
+        if (Number(am?.weightKg) > 0) return am;
+        const amMat = materialsData?.materials?.[am?.materialType];
+        const amAuto = calculateWeightKg({
+          shape: am?.materialShape || amMat?.shape,
+          en: am?.dimensions?.en,
+          boy: am?.dimensions?.boy,
+          uzunluk: am?.dimensions?.uzunluk,
+          density: amMat?.density,
+        });
+        return amAuto > 0 ? { ...am, weightKg: Number(amAuto.toFixed(4)) } : am;
+      });
+      const payload = { ...study, studyNo, weightKg: effectiveWeightKg, additionalMaterials: effectiveAdditionalMaterials };
       await saveFeasibilityStudy(payload, { canEdit, staging, userEmail: "" });
       // 2) İmza at
       await signFeasibilityRole(studyNo, currentPendingRole, {
@@ -1109,6 +1134,129 @@ function NewFeasibilityView({ canEdit, isAdmin, isSales, isUretim, authUser, ini
             <label style={labelStyle}>Yardımcı Malzeme</label>
             <input value={study.otherMaterials || ""} onChange={e => update("otherMaterials", e.target.value)} disabled={readonlyForm} style={inputStyle} />
           </div>
+        </div>
+
+        {/* EK HAMMADDELER — multi-material desteği. Boşsa hiç görünmez (opsiyonel).
+            Kullanıcı "➕ Ek Hammadde Ekle" ile birden fazla malzeme ekleyebilir.
+            Teklife aktarımda: additionalMaterials array olarak gider ve quoteCalc
+            material cost'una tam olarak katılır (each × TL/kg). Backward-compat:
+            eski study'lerde bu array boş kalır → davranış aynı. */}
+        <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px dashed #d6d3d1" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#57534e" }}>
+              🧱+ Ek Hammaddeler
+              {(study.additionalMaterials || []).length > 0 && (
+                <span style={{ marginLeft: 6, fontSize: 10, color: "#78716c", fontWeight: 500 }}>
+                  · {study.additionalMaterials.length} ek
+                </span>
+              )}
+              {(() => {
+                const addKg = (study.additionalMaterials || []).reduce((s, am) => s + (Number(am?.weightKg) || 0), 0);
+                const primKg = Number(study.weightKg) || 0;
+                const totalKg = primKg + addKg;
+                if (addKg > 0) {
+                  return (
+                    <span style={{ marginLeft: 10, fontSize: 10, color: "#166534", fontWeight: 500 }}>
+                      · Toplam ağırlık: <b>{totalKg.toFixed(3)} kg</b> (primary {primKg.toFixed(3)} + ek {addKg.toFixed(3)})
+                    </span>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+            <button onClick={() => {
+              const cur = Array.isArray(study.additionalMaterials) ? study.additionalMaterials : [];
+              update("additionalMaterials", [...cur, { materialType: "", materialShape: "", dimensions: { en: 0, boy: 0, uzunluk: 0 }, weightKg: 0 }]);
+            }} disabled={readonlyForm}
+              style={{ padding: "3px 10px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>
+              ➕ Ek Hammadde Ekle
+            </button>
+          </div>
+          {(study.additionalMaterials || []).length > 0 && (
+            <div style={{ fontSize: 9, color: "#78716c", marginBottom: 6 }}>
+              Her ek hammaddenin ağırlığı × TL/kg teklif malzeme maliyetine dahil edilir. Ölçü girildiyse malzeme türü zorunlu (ağırlık ebattan hesaplanabilsin).
+            </div>
+          )}
+          {(study.additionalMaterials || []).map((am, ai) => {
+            const amMat = materialsData?.materials?.[am.materialType];
+            const amAutoWeight = calculateWeightKg({
+              shape: am.materialShape || amMat?.shape,
+              en: am.dimensions?.en,
+              boy: am.dimensions?.boy,
+              uzunluk: am.dimensions?.uzunluk,
+              density: amMat?.density,
+            });
+            const updateAm = (key, val) => {
+              const next = [...(study.additionalMaterials || [])];
+              next[ai] = { ...next[ai], [key]: val };
+              update("additionalMaterials", next);
+            };
+            const updateAmDim = (dimKey, val) => {
+              const next = [...(study.additionalMaterials || [])];
+              next[ai] = { ...next[ai], dimensions: { ...(next[ai].dimensions || {}), [dimKey]: Number(val) || 0 } };
+              update("additionalMaterials", next);
+            };
+            const removeAm = () => {
+              const next = (study.additionalMaterials || []).filter((_, i) => i !== ai);
+              update("additionalMaterials", next);
+            };
+            const shapeUp = String(am.materialShape || amMat?.shape || "").toUpperCase();
+            const isCyl = shapeUp === "SİLİNDİR";
+            return (
+              <div key={ai} style={{ padding: 6, marginBottom: 4, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+                <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 1fr 1fr 32px", gap: 6, alignItems: "end" }}>
+                  <div>
+                    <label style={{ ...labelStyle, fontSize: 9 }}>Malzeme #{ai + 1}</label>
+                    <input list={`amMaterialList_${ai}`} value={am.materialType || ""} onChange={e => updateAm("materialType", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, padding: 4, fontSize: 10 }} placeholder="AL-6061..." />
+                    <datalist id={`amMaterialList_${ai}`}>
+                      {materialList.map(m => (
+                        <option key={m.name} value={m.name}>{m.shape} · {m.priceTlPerKg}TL/kg</option>
+                      ))}
+                    </datalist>
+                  </div>
+                  <div>
+                    <label style={{ ...labelStyle, fontSize: 9 }}>Şekil</label>
+                    <select value={am.materialShape || amMat?.shape || ""} onChange={e => updateAm("materialShape", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, padding: 4, fontSize: 10 }}>
+                      <option value="">—</option>
+                      <option value="DİKDÖRTGEN">DİKDÖRTGEN</option>
+                      <option value="SİLİNDİR">SİLİNDİR</option>
+                      <option value="ALTIGEN">ALTIGEN</option>
+                      <option value="EBATSIZ">EBATSIZ</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ ...labelStyle, fontSize: 9 }}>{isCyl ? "Ø ÇAP" : "EN"}</label>
+                    <input type="number" value={am.dimensions?.en || 0} onChange={e => updateAmDim("en", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, padding: 4, fontSize: 10 }} />
+                  </div>
+                  <div>
+                    <label style={{ ...labelStyle, fontSize: 9 }}>{isCyl ? "BOY" : "BOY"}</label>
+                    <input type="number" value={am.dimensions?.boy || 0} onChange={e => updateAmDim("boy", e.target.value)} disabled={readonlyForm || isCyl} style={{ ...inputStyle, padding: 4, fontSize: 10, opacity: isCyl ? 0.4 : 1 }} />
+                  </div>
+                  <div>
+                    <label style={{ ...labelStyle, fontSize: 9 }}>{isCyl ? "UZUNLUK" : "UZUNLUK"}</label>
+                    <input type="number" value={am.dimensions?.uzunluk || 0} onChange={e => updateAmDim("uzunluk", e.target.value)} disabled={readonlyForm} style={{ ...inputStyle, padding: 4, fontSize: 10 }} />
+                  </div>
+                  <div>
+                    <label style={{ ...labelStyle, fontSize: 9 }}>Ağırlık kg</label>
+                    <input type="number" step="0.001" value={am.weightKg || 0} onChange={e => updateAm("weightKg", Number(e.target.value) || 0)}
+                      placeholder={amAutoWeight > 0 ? amAutoWeight.toFixed(3) : "0.000"}
+                      disabled={readonlyForm} style={{ ...inputStyle, padding: 4, fontSize: 10, background: "#fef3c7" }} />
+                    {amAutoWeight > 0 && Math.abs((am.weightKg || 0) - amAutoWeight) > 0.001 && !readonlyForm && (
+                      <button onClick={() => updateAm("weightKg", Number(amAutoWeight.toFixed(4)))}
+                        style={{ marginTop: 2, padding: "1px 4px", fontSize: 8, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, cursor: "pointer" }}>
+                        ↺ {amAutoWeight.toFixed(3)}
+                      </button>
+                    )}
+                  </div>
+                  <div style={{ textAlign: "center" }}>
+                    <button onClick={removeAm} disabled={readonlyForm}
+                      title="Bu ek hammaddeyi kaldır"
+                      style={{ padding: 4, fontSize: 12, background: "transparent", color: "#dc2626", border: "none", cursor: readonlyForm ? "not-allowed" : "pointer" }}>🗑</button>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 

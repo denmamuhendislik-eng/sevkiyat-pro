@@ -102,8 +102,34 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
     });
   }
 
-  // 2. Malzeme maliyeti (adet başına)
-  const materialCostPerUnit = weightKg * pricePerKgTl;
+  // 2. Malzeme maliyeti (adet başına). Primary + ek hammaddeler toplamı.
+  // Ek hammadde yoksa (line.additionalMaterials boş/yok) davranış tekli mevcut hâli.
+  let materialCostPerUnit = weightKg * pricePerKgTl;
+  const additionalMaterialsBreakdown = [];
+  for (const am of (line.additionalMaterials || [])) {
+    const amMat = materials?.[am?.materialType];
+    const amPrice = Number(amMat?.priceTlPerKg) || 0;
+    const amDensity = Number(amMat?.density) || 0;
+    let amWeight = Number(am?.weightKg) || 0;
+    if (!amWeight || amWeight <= 0) {
+      // Boşsa ebattan hesapla (feasibility'de autofill zaten yapılıyor; burada ekstra güvenlik)
+      amWeight = calculateWeightKg({
+        shape: amMat?.shape || am?.materialShape,
+        en: am?.dimensions?.en,
+        boy: am?.dimensions?.boy,
+        uzunluk: am?.dimensions?.uzunluk,
+        density: amDensity,
+      });
+    }
+    const amCost = amWeight * amPrice;
+    materialCostPerUnit += amCost;
+    additionalMaterialsBreakdown.push({
+      materialType: am?.materialType || "",
+      weightKg: amWeight,
+      pricePerKgTl: amPrice,
+      costPerUnit: amCost,
+    });
+  }
   const materialCostTotal = materialCostPerUnit * qty;
 
   // 3. İşçilik (makine dk × dk ücreti)
@@ -195,9 +221,12 @@ export function calculateLineCost({ line, materials, policy, paymentTerm }) {
   return {
     weightKg,
     quantity: qty,
+    // Ek hammadde breakdown — LineDetailPanel'de detay göstermek için
+    additionalMaterialsBreakdown,
+    materialPrimaryCostPerUnit: weightKg * pricePerKgTl,  // sadece primary
     // Adet başına
     perUnit: {
-      material: materialCostPerUnit,
+      material: materialCostPerUnit,  // primary + ek toplam
       labor: laborCostPerUnit,
       fason: fasonCostPerUnit,
       specialTool: specialToolPerUnit,
