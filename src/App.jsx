@@ -798,7 +798,9 @@ export default function App() {
           if (candidates.length === 1) nameMatch = candidates[0];
         }
         if (nameMatch) {
-          matched.push({ pid: nameMatch.id, code, qty, name: nameMatch.nameTR, nameEN: nameMatch.nameEN || '', kg: nameMatch.kg || 0, matchType: 'name', originalCode: code, expectedCode: VIO_CODES[nameMatch.id] || '?' });
+          // expectedCode önce products state'inden (user-added ürünlerin vioCode'u burada güncel), sonra VIO_CODES fallback
+          const productVio = products.find(p => p.id === nameMatch.id)?.vioCode;
+          matched.push({ pid: nameMatch.id, code, qty, name: nameMatch.nameTR, nameEN: nameMatch.nameEN || '', kg: nameMatch.kg || 0, matchType: 'name', originalCode: code, expectedCode: productVio || VIO_CODES[nameMatch.id] || '?' });
         } else {
           unmatched.push({ code, qty, desc: detail.stokAdi, nameTR: '', nameEN: detail.stokAdi, kg: '', approved: false });
         }
@@ -914,7 +916,9 @@ export default function App() {
           }
 
           if (nameMatch) {
-            matched.push({pid:nameMatch.id, code, qty, name:nameMatch.nameTR, nameEN:nameMatch.nameEN||"", kg:nameMatch.kg||0, matchType:"name", originalCode:code, expectedCode:VIO_CODES[nameMatch.id]||"?"});
+            // expectedCode önce products state'inden (user-added ürünlerin vioCode'u), sonra VIO_CODES fallback
+            const productVio = products.find(p => p.id === nameMatch.id)?.vioCode;
+            matched.push({pid:nameMatch.id, code, qty, name:nameMatch.nameTR, nameEN:nameMatch.nameEN||"", kg:nameMatch.kg||0, matchType:"name", originalCode:code, expectedCode: productVio || VIO_CODES[nameMatch.id] || "?"});
           } else {
             unmatched.push({code,qty,desc,nameTR:"",nameEN:desc,kg:"",approved:false});
           }
@@ -1114,17 +1118,22 @@ export default function App() {
 
   const approveNewProduct = (idx) => {
     const np=importNewProducts[idx];
-    if(!np.nameTR||!np.nameEN||!np.kg) {alert("TR isim, EN isim ve KG zorunlu!");return;}
     // VIO kodu zorunlu — kullanıcı modal'da default Excel kodunu görüp doğruladı.
     // Boş bırakılırsa MRP root mamul stok lookup (App.jsx:7896) çalışmaz,
     // konteyner sekmesinde ambar/cross-BOM eksik gözükür.
     const vio = ((np.vioCode ?? np.code) || "").trim();
     if (!vio) { alert("VIO Kodu zorunlu! Excel'den otomatik geldiyse kontrol edin, manuel girmek isterseniz alana yazın."); return; }
-    // Aynı vioCode başka üründe varsa onay sor
+    // Aynı vioCode master'da varsa: yeni ürün OLUŞTURMA — sipariş mevcut ürüne bağlanır.
+    // (Kullanıcı önceki import'ta bu kodu düzeltip onaylamış olabilir; şimdi tekrar geldiğinde
+    // duplicate ürün açmak yerine mevcut'a route etmek doğru davranış.)
     const dup = products.find(p => (p.vioCode || "").trim() === vio);
     if (dup) {
-      if (!confirm(`⚠ "${vio}" VIO kodu zaten "${dup.nameTR}" (#${dup.id}) ürününde tanımlı. Yine de yeni ürün olarak eklensin mi?`)) return;
+      if (!confirm(`🔗 "${vio}" VIO kodu zaten master'da: "${dup.nameTR}" (#${dup.id}) — ${dup.kg} kg.\n\nBu satırın siparişi mevcut ürüne bağlanacak (yeni ürün OLUŞTURULMAYACAK).\n\nDevam?`)) return;
+      setImportNewProducts(prev => prev.map((p, i) => i === idx ? { ...p, approved: true, newPid: dup.id, linkedToExisting: true } : p));
+      return;
     }
+    // Yeni ürün oluşturma akışı — TR/EN/KG zorunlu (sadece burada)
+    if(!np.nameTR||!np.nameEN||!np.kg) {alert("TR isim, EN isim ve KG zorunlu!");return;}
     const newId=Math.max(...products.map(p=>p.id))+1;
     const newP={id:newId,nameTR:np.nameTR,nameEN:np.nameEN,kg:parseFloat(np.kg),vioCode:vio,color:`#${Math.floor(Math.random()*16777215).toString(16).padStart(6,"0")}`};
     setProducts(prev=>[...prev,newP]);
@@ -3114,6 +3123,11 @@ ${el.innerHTML}
                       <span style={{fontSize:11,color:"var(--color-text-secondary)"}}>{np.desc}</span>
                       <span style={{fontSize:11,fontWeight:600,color:"#534AB7"}}>+{np.qty} adet</span>
                       {np.approved&&<span style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:"rgba(29,158,117,0.15)",color:"#1D9E75",fontWeight:600}}>✓ Onaylandı</span>}
+                      {np.approved && np.linkedToExisting && (
+                        <span title="Yeni ürün açılmadı — sipariş mevcut ürüne bağlandı" style={{fontSize:10,padding:"2px 6px",borderRadius:4,background:"#dbeafe",color:"#1e40af",fontWeight:600}}>
+                          🔗 Mevcut #{np.newPid}
+                        </span>
+                      )}
                     </div>
                     {!np.approved&&<div style={{display:"flex",gap:8,flexWrap:"wrap",alignItems:"flex-end"}}>
                       <div style={{flex:1,minWidth:150}}>
@@ -3140,6 +3154,18 @@ ${el.innerHTML}
                       </div>
                       <button onClick={()=>approveNewProduct(i)} style={{...bP,padding:"5px 12px",fontSize:10}}>Onayla</button>
                     </div>}
+                    {!np.approved && (() => {
+                      // vioCode master'da varsa proaktif hint — kullanıcı duplicate işlemi yapmasın diye
+                      const vio = ((np.vioCode ?? np.code) || "").trim();
+                      if (!vio) return null;
+                      const existing = products.find(p => (p.vioCode || "").trim() === vio);
+                      if (!existing) return null;
+                      return (
+                        <div style={{marginTop:6,padding:"6px 10px",background:"#eff6ff",border:"1px solid #bfdbfe",borderRadius:4,fontSize:10,color:"#1e40af"}}>
+                          🔗 <b>"{vio}"</b> master'da tanımlı: <b>"{existing.nameTR}"</b> (#{existing.id}) · {existing.kg} kg. "Onayla"ya basınca yeni ürün AÇILMAYACAK, sipariş bu ürüne bağlanacak.
+                        </div>
+                      );
+                    })()}
                   </div>
                 ))}
               </div>}
