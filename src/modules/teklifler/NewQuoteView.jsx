@@ -972,7 +972,7 @@ function LineEditor({ idx, line, calcResult, materialList, fasonList, optionsDat
             </button>
           </div>
           {(line.additionalMaterials || []).map((am, ai) => {
-            const amMat = materials?.[am.materialType];
+            const amMat = materialList.find(m => m.name === am.materialType);
             const updateAm = (key, val) => {
               const next = [...(line.additionalMaterials || [])];
               next[ai] = { ...next[ai], [key]: val };
