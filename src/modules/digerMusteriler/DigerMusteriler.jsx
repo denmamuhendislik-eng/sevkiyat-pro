@@ -21,7 +21,7 @@ import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
-import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent, getSubDocFiles, DOC_TYPES, OTHER_DOCS_CATEGORY, isNotApplicable } from './subComponents';
+import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent, getSubDocFiles, DOC_TYPES, OTHER_DOCS_CATEGORY, isNotApplicable, requiresCocEffective } from './subComponents';
 import FaiView from './fai/FaiView';
 import { subscribeFaiArchive, subscribeFaiForYear } from './fai/firestore';
 import { buildFaiPdfBlob } from './fai/faiPdf';
@@ -3156,7 +3156,7 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
           uniqueCerts.sort((a, b) => b.localeCompare(a));
           const latestCert = uniqueCerts.length > 0 ? matchingCerts.find(c => c.certNo === uniqueCerts[0]) : null;
           if (latestCert) {
-            const stats = getCocAttachmentStats(latestCert);
+            const stats = getCocAttachmentStats(latestCert, cocParts);
             const isFull = stats.totalFiles > 0 && stats.filled === stats.totalCats;
             const isEmpty = stats.totalFiles === 0;
             const bg = isFull ? '#dcfce7' : isEmpty ? '#fef2f2' : '#fef3c7';
@@ -4654,7 +4654,7 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts, onOpenF
                   </td>
                   <td style={{ ...cocTd, textAlign: 'center' }}>
                     {(() => {
-                      const stats = getCocAttachmentStats(c);
+                      const stats = getCocAttachmentStats(c, cocParts);
                       if (stats.totalFiles === 0) {
                         return <span title="Hiç doküman yok" style={{ padding: '1px 5px', borderRadius: 3, fontSize: 9, fontWeight: 600, background: '#fef2f2', color: '#991b1b' }}>0/{stats.totalCats}</span>;
                       }
@@ -7009,13 +7009,9 @@ function DriveSearchModal({ driveModal, cert, cocParts, canEdit, onClose, onTogg
 // Otomatik kural: feragatStatus === 'YOK' ise Feragat kategorisi de uygulanmaz sayılır.
 // Alt bileşen entegrasyonu (2026-07-21): montajlı parça ise her non-standard alt bileşen
 // için 3 belge kategorisi (hammadde/ölçüm/fason) toplama dahil edilir.
-function isRequiredSub(sub) {
-  if (sub?.requiresCoc === false) return false;
-  if (sub?.requiresCoc === true) return true;
-  return !isStandardFastener(sub?.stokAdi || sub?.stokKodu || '');
-}
-
-function getCocAttachmentStats(cert) {
+// cocParts (opsiyonel): requiresCoc override kaynağı — verilmezse sub.stokAdi
+// üzerinden heuristik (isStandardFastener) uygulanır.
+function getCocAttachmentStats(cert, cocParts = null) {
   const naRaw = Array.isArray(cert?.naCategories) ? cert.naCategories : [];
   const feragatYok = (cert?.feragatStatus || (cert?.feragatText ? 'VAR' : 'YOK')) === 'YOK';
   const naCategories = new Set([...naRaw, ...(feragatYok ? ['waiver'] : [])]);
@@ -7028,11 +7024,16 @@ function getCocAttachmentStats(cert) {
   }
   const others = Array.isArray(cert?.attachments?.others) ? cert.attachments.others.length : 0;
 
-  // Alt bileşen katkısı — her non-standard sub için DOC_TYPES.length kategori eklenir
-  const subs = Array.isArray(cert?.subComponents) ? cert.subComponents.filter(isRequiredSub) : [];
+  // Alt bileşen katkısı — requiresCocEffective ile cocParts override'ı da dahil.
+  // Her required sub için DOC_TYPES.length kategori; N/A işaretli kategoriler
+  // hem paydadan hem dolu sayımından düşer (subComponentStatus mantığı ile aynı).
+  const subs = Array.isArray(cert?.subComponents)
+    ? cert.subComponents.filter(s => requiresCocEffective(s, cocParts || {}))
+    : [];
   let subFilled = 0, subCats = 0, subFiles = 0;
   for (const sub of subs) {
     for (const cat of DOC_TYPES) {
+      if (isNotApplicable(sub, cat)) continue;
       subCats++;
       const files = getSubDocFiles(sub, cat);
       if (files.length > 0) {
