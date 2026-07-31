@@ -191,17 +191,26 @@ export function getSubDocFiles(subComponent, category) {
   return [v];
 }
 
+// Belge kategorisi bu alt bileşen için "uygulanmaz" mı? subComponent.notApplicable
+// alanı: { [category]: true } — kullanıcı belirtir. Backward-compat: alan yoksa false.
+export function isNotApplicable(subComponent, category) {
+  return subComponent?.notApplicable?.[category] === true;
+}
+
 // Bir alt bileşenin tamam mı eksik mi durumu — subComponent.docs objesine bakar.
-// Her doc türü için: hiç dosya yok → eksik, en az 1 dosya varsa o kategori tamam.
+// N/A işaretli kategoriler "gerekli" listesinden düşülür (kullanıcı bu belge bu
+// parçaya uygulanmıyor dedi). Tümü N/A ise status = complete.
 export function subComponentStatus(subComponent) {
   const need = docTypesForSupplyType(subComponent.supplyType);
+  const applicable = need.filter(k => !isNotApplicable(subComponent, k));
+  if (applicable.length === 0) return { status: "complete", have: 0, need: 0 };
   let have = 0;
-  for (const k of need) {
+  for (const k of applicable) {
     if (getSubDocFiles(subComponent, k).length > 0) have++;
   }
-  if (have === 0) return { status: "missing", have: 0, need: need.length };
-  if (have < need.length) return { status: "partial", have, need: need.length };
-  return { status: "complete", have, need: need.length };
+  if (have === 0) return { status: "missing", have: 0, need: applicable.length };
+  if (have < applicable.length) return { status: "partial", have, need: applicable.length };
+  return { status: "complete", have, need: applicable.length };
 }
 
 // Tüm liste için özet — kaç tamam, kaç eksik.
