@@ -5771,6 +5771,131 @@ function MontajPlani({ db, yearsData, products, userRole, selectedYear }) {
 
 
 // ============================================================
+// BomModelPicker — filtrelenebilir BOM Modeli seçici (searchable combobox)
+// MRP Eşleştirme satırlarındaki BOM dropdown'ın yerine kullanılır. Native
+// select'te 100+ BOM modeli scroll ile aranıyordu; input'a yazınca liste
+// filter olur.
+// Props:
+//   value: seçili key (string) — "" (boş) ya da "__direct__" ya da model key
+//   onChange(val): seçim değişince çağırılır (value semantiği: mevcut select ile aynı)
+//   options: [{ key, label }]
+//   hasDirect: true ise "📦 Doğrudan Talep (BOM'suz)" seçeneği hep başta gösterilir
+//   placeholder: input placeholder
+// ============================================================
+function BomModelPicker({ value, onChange, options, hasDirect = true, placeholder = "BOM Modeli seç veya ara..." }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef(null);
+
+  // value → gösterim label'ı. "__direct__" için özel, boşsa placeholder.
+  const selectedLabel = value === "__direct__"
+    ? "📦 Doğrudan Talep (BOM'suz)"
+    : (options.find(o => o.key === value)?.label || "");
+
+  // Filtre — case-insensitive substring
+  const filtered = useMemo(() => {
+    const q = query.trim().toLocaleLowerCase("tr-TR");
+    if (!q) return options;
+    return options.filter(o => o.label.toLocaleLowerCase("tr-TR").includes(q));
+  }, [options, query]);
+
+  // Dış tıklama → kapan
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e) => {
+      if (rootRef.current && !rootRef.current.contains(e.target)) setOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [open]);
+
+  const handleSelect = (key) => {
+    onChange(key);
+    setOpen(false);
+    setQuery("");
+  };
+
+  return (
+    <div ref={rootRef} style={{ position: "relative", width: "100%" }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          padding: "3px 6px", fontSize: 11, borderRadius: 4,
+          border: "1px solid var(--color-border-secondary)",
+          background: "var(--color-background-primary)",
+          cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+          minHeight: 22,
+        }}
+      >
+        <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: selectedLabel ? "inherit" : "var(--color-text-tertiary)" }}>
+          {selectedLabel || placeholder}
+        </span>
+        <span style={{ fontSize: 9, color: "var(--color-text-tertiary)" }}>{open ? "▲" : "▼"}</span>
+      </div>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 2px)", left: 0, right: 0,
+          background: "var(--color-background-primary)",
+          border: "1px solid var(--color-border-secondary)", borderRadius: 4,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.12)", zIndex: 50, maxHeight: 320, overflow: "hidden",
+          display: "flex", flexDirection: "column",
+        }}>
+          <input
+            autoFocus
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Escape") { setOpen(false); setQuery(""); }
+              if (e.key === "Enter" && filtered.length > 0) handleSelect(filtered[0].key);
+            }}
+            placeholder="🔎 kod veya ad yaz..."
+            style={{
+              padding: "5px 8px", fontSize: 11, border: "none",
+              borderBottom: "1px solid var(--color-border-tertiary)",
+              background: "var(--color-background-secondary)", outline: "none",
+            }}
+          />
+          <div style={{ overflow: "auto", flex: 1 }}>
+            {/* Sabit: Boşalt (temizle) */}
+            <div onClick={() => handleSelect("")}
+              style={{ padding: "5px 8px", fontSize: 10, cursor: "pointer", color: "var(--color-text-tertiary)", fontStyle: "italic" }}
+              onMouseEnter={e => e.currentTarget.style.background = "var(--color-background-secondary)"}
+              onMouseLeave={e => e.currentTarget.style.background = "transparent"}>
+              — Seçimi temizle —
+            </div>
+            {/* Sabit: Doğrudan Talep */}
+            {hasDirect && (
+              <div onClick={() => handleSelect("__direct__")}
+                style={{ padding: "5px 8px", fontSize: 11, cursor: "pointer", borderBottom: "1px solid var(--color-border-tertiary)", background: value === "__direct__" ? "var(--color-background-info)" : "transparent" }}
+                onMouseEnter={e => { if (value !== "__direct__") e.currentTarget.style.background = "var(--color-background-secondary)"; }}
+                onMouseLeave={e => { if (value !== "__direct__") e.currentTarget.style.background = "transparent"; }}>
+                📦 Doğrudan Talep (BOM'suz)
+              </div>
+            )}
+            {/* Filtrelenmiş BOM listesi */}
+            {filtered.length === 0 ? (
+              <div style={{ padding: "10px 8px", fontSize: 10, color: "var(--color-text-tertiary)", textAlign: "center" }}>
+                Eşleşen BOM bulunamadı
+              </div>
+            ) : (
+              filtered.map(opt => (
+                <div key={opt.key} onClick={() => handleSelect(opt.key)}
+                  style={{ padding: "5px 8px", fontSize: 11, cursor: "pointer", background: value === opt.key ? "var(--color-background-info)" : "transparent" }}
+                  onMouseEnter={e => { if (value !== opt.key) e.currentTarget.style.background = "var(--color-background-secondary)"; }}
+                  onMouseLeave={e => { if (value !== opt.key) e.currentTarget.style.background = "transparent"; }}
+                  title={opt.label}>
+                  {opt.label}
+                </div>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ============================================================
 // MRPPlanlama — BOM Yönetimi + İş Merkezi Tanımlama
 // ============================================================
 function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts, initialTab, onConsumeInitialTab, onNavigateToPage }) {
@@ -15498,10 +15623,12 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                                     <button onClick={() => saveBomMapping({ ...bomMapping, [p.id]: null })} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 10, color: "var(--color-text-tertiary)", padding: "2px" }} title="Sıfırla">✕</button>
                                   </div>
                                 ) : (
-                                  <select
+                                  <BomModelPicker
                                     value={m || ""}
-                                    onChange={e => {
-                                      const val = e.target.value;
+                                    options={modelOptions}
+                                    hasDirect={true}
+                                    placeholder="— BOM Modeli seç veya ara —"
+                                    onChange={(val) => {
                                       if (val === "__direct__") {
                                         // BOM'suz doğrudan talep — VIO stok kodunu kullan
                                         const vio = comp?.vioCode || comp?.bomCode || VIO_CODES[p.id] || p.vioCode || "";
@@ -15515,12 +15642,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                                         saveBomMapping({ ...bomMapping, [p.id]: val || null });
                                       }
                                     }}
-                                    style={{ width: "100%", padding: "3px 6px", fontSize: 11, borderRadius: 4, border: "1px solid var(--color-border-secondary)", background: "var(--color-background-primary)" }}
-                                  >
-                                    <option value="">— BOM Modeli Seçin —</option>
-                                    <option value="__direct__">📦 Doğrudan Talep (BOM'suz)</option>
-                                    {modelOptions.map(mo => <option key={mo.key} value={mo.key}>{mo.label}</option>)}
-                                  </select>
+                                  />
                                 )
                               ) : (
                                 <span style={{ fontSize: 10, color: "var(--color-text-secondary)" }}>
