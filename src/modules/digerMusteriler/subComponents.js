@@ -121,6 +121,12 @@ export const DOC_TYPES = ["hammaddeSertifikasi", "olcumRaporu", "fasonSertifikas
 export const DOC_TYPES_MAKE = DOC_TYPES;
 export const DOC_TYPES_BUY = DOC_TYPES;
 
+// Opsiyonel "diğer belgeler" kategorisi. Standart bağlantı elemanları için
+// zorunlu belge yok, ama kullanıcı istese çoklu ek dosya bağlayabilsin diye.
+// Required alt bileşenler için de yardımcı olabilir (örn. teknik resim, e-posta).
+// Status hesabına dahil DEĞİL — subComponentStatus DOC_TYPES üzerinden gider.
+export const OTHER_DOCS_CATEGORY = "otherDocs";
+
 // Aynı alt bileşen stokKodu için kütüphane geçmişi: mevcut cocCertificates'tan
 // aynı stokKodu'nun daha önce yüklenmiş belgelerini topla.
 //

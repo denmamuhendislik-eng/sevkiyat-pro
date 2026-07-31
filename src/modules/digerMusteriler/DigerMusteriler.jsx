@@ -21,7 +21,7 @@ import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
 import { parseSalesOrderExcel } from './parser';
 import { customerBadge, KNOWN_CUSTOMERS, ALL_CUSTOMER_GROUPS, OTHER_CUSTOMER_CODE, matchCustomer, isKnownCustomer } from './customerMeta';
-import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent, getSubDocFiles, DOC_TYPES } from './subComponents';
+import { resolveSubComponents, classifySubComponents, isStandardFastener, summarizeStatus, docTypesForSupplyType, subComponentStatus, SUB_DOC_TO_DRIVE_CATEGORY, findHistoricalDocsForSubComponent, getSubDocFiles, DOC_TYPES, OTHER_DOCS_CATEGORY } from './subComponents';
 import FaiView from './fai/FaiView';
 import { subscribeFaiArchive, subscribeFaiForYear } from './fai/firestore';
 import { buildFaiPdfBlob } from './fai/faiPdf';
@@ -4031,9 +4031,21 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                     })}
                     {showStandardFasteners && subClassified.standard.map((s, i) => {
                       const savingThis = !!savingRequires[s.stokKodu];
+                      const isExp = !!expandedSubIdx[s.stokKodu];
+                      const otherFiles = getSubDocFiles(s, OTHER_DOCS_CATEGORY);
+                      const uploadKey = `${s.stokKodu}|${OTHER_DOCS_CATEGORY}`;
+                      const isUploading = !!uploadingDoc[uploadKey];
                       return (
-                        <tr key={`std-${i}`} style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
-                          <td style={{ padding: '4px 8px', color: '#a8a29e' }}>L{s.level}</td>
+                        <React.Fragment key={`std-${i}`}>
+                        <tr style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
+                          <td style={{ padding: '4px 8px', color: '#a8a29e' }}>
+                            <button onClick={() => toggleSubExpand(s.stokKodu)}
+                              title="Opsiyonel diğer belge yükleme panelini aç/kapa"
+                              style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 10, marginRight: 2, color: '#a8a29e' }}>
+                              {isExp ? '▼' : '▶'}
+                            </button>
+                            L{s.level}
+                          </td>
                           <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#a8a29e' }}>{s.stokKodu}</td>
                           <td style={{ padding: '4px 8px', color: '#78716c' }}>{s.stokAdi || '—'}</td>
                           <td style={{ padding: '4px 8px', textAlign: 'right', color: '#78716c' }}>{s.qty} {s.unit}</td>
@@ -4045,6 +4057,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                           <td style={{ padding: '4px 8px' }}>
                             <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
                               <span style={{ fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>Standart bağlantı — COC gerekmez</span>
+                              {otherFiles.length > 0 && <span style={{ fontSize: 9, color: '#166534', fontWeight: 500 }}>· {otherFiles.length} ek</span>}
                               <button onClick={() => toggleRequiresCoc(s)} disabled={savingThis || !canEdit}
                                 title="Bu stoku özel parça olarak işaretle (COC gerektirir)"
                                 style={{ padding: '1px 4px', fontSize: 8, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', opacity: savingThis ? 0.5 : 1 }}>
@@ -4053,6 +4066,49 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
                             </div>
                           </td>
                         </tr>
+                        {isExp && (
+                          <tr style={{ background: '#fafaf9' }}>
+                            <td colSpan="6" style={{ padding: '10px 20px' }}>
+                              <div style={{ fontSize: 10, color: '#57534e', fontWeight: 600, marginBottom: 6 }}>
+                                📎 <span style={{ fontFamily: 'ui-monospace, monospace' }}>{s.stokKodu}</span> — Diğer Belgeler (opsiyonel, çoklu)
+                              </div>
+                              <div style={{ padding: 8, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 4, maxWidth: 480 }}>
+                                {otherFiles.length > 0 && (
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 6, paddingBottom: 6, borderBottom: '1px dashed #e7e5e4' }}>
+                                    {otherFiles.map((meta, fi) => (
+                                      <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                        <div style={{ flex: 1, fontSize: 9, color: '#166534', wordBreak: 'break-all' }}>
+                                          📄 {meta.name || 'dosya.pdf'}
+                                          {meta.size ? <span style={{ color: '#78716c' }}> · {(meta.size / 1024).toFixed(0)} KB</span> : null}
+                                        </div>
+                                        <a href={meta.url} target="_blank" rel="noreferrer"
+                                          style={{ padding: '1px 5px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, textDecoration: 'none' }}>
+                                          📥 Aç
+                                        </a>
+                                        <button onClick={() => handleDeleteSubDoc(s.stokKodu, OTHER_DOCS_CATEGORY, fi)} disabled={isUploading || !canEdit}
+                                          style={{ padding: '1px 5px', fontSize: 9, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                          🗑
+                                        </button>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', textAlign: 'center' }}>
+                                  {isUploading ? 'Yükleniyor...' : (otherFiles.length > 0 ? '📤 Dosya Ekle (çoklu)' : '📤 Dosya Seç (çoklu)')}
+                                  <input type="file" accept="application/pdf,image/*" multiple
+                                    style={{ display: 'none' }}
+                                    disabled={isUploading || !canEdit}
+                                    onChange={e => {
+                                      const fs = e.target.files;
+                                      if (fs && fs.length > 0) handleUploadSubDocs(s.stokKodu, OTHER_DOCS_CATEGORY, fs);
+                                      e.target.value = '';
+                                    }} />
+                                </label>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </React.Fragment>
                       );
                     })}
                     {subClassified.required.length === 0 && !showStandardFasteners && (
@@ -5668,26 +5724,83 @@ function CocSubComponentsSection({ cert: initialCert, canEdit }) {
                 </React.Fragment>
               );
             })}
-            {showStandard && standardSubs.map((s, i) => (
-              <tr key={`std-${i}`} style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
-                <td></td>
-                <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#a8a29e' }}>{s.stokKodu}</td>
-                <td style={{ padding: '4px 8px', color: '#78716c' }}>{s.stokAdi || '—'}</td>
-                <td style={{ padding: '4px 8px' }}>
-                  <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3, background: '#f5f5f4', color: '#78716c' }}>STD</span>
-                </td>
-                <td style={{ padding: '4px 8px' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
-                    <span style={{ fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>COC gerekmez</span>
-                    <button onClick={() => handleToggleRequires(s)} disabled={savingRequires[s.stokKodu] || !canEdit}
-                      title="Bu stoku özel parça olarak işaretle (COC gerektirir)"
-                      style={{ padding: '1px 4px', fontSize: 8, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', opacity: savingRequires[s.stokKodu] ? 0.5 : 1 }}>
-                      {savingRequires[s.stokKodu] ? '...' : '→ COC gerektir'}
+            {showStandard && standardSubs.map((s, i) => {
+              const isExp = !!expandedSub[s.stokKodu];
+              const otherFiles = getSubDocFiles(s, OTHER_DOCS_CATEGORY);
+              const uploadKey = `${s.stokKodu}|${OTHER_DOCS_CATEGORY}`;
+              const isUploading = !!uploadingDoc[uploadKey];
+              return (
+                <React.Fragment key={`std-${i}`}>
+                <tr style={{ borderTop: '1px solid #f5f5f4', background: '#fafaf9' }}>
+                  <td style={{ padding: '4px 6px', textAlign: 'center' }}>
+                    <button onClick={() => toggleSub(s.stokKodu)}
+                      title="Opsiyonel diğer belge yükleme panelini aç/kapa"
+                      style={{ background: 'transparent', border: 'none', cursor: 'pointer', fontSize: 10, color: '#a8a29e' }}>
+                      {isExp ? '▼' : '▶'}
                     </button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+                  </td>
+                  <td style={{ padding: '4px 8px', fontFamily: 'ui-monospace, monospace', color: '#a8a29e' }}>{s.stokKodu}</td>
+                  <td style={{ padding: '4px 8px', color: '#78716c' }}>{s.stokAdi || '—'}</td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <span style={{ padding: '1px 5px', fontSize: 9, fontWeight: 600, borderRadius: 3, background: '#f5f5f4', color: '#78716c' }}>STD</span>
+                  </td>
+                  <td style={{ padding: '4px 8px' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, flexWrap: 'wrap' }}>
+                      <span style={{ fontSize: 9, color: '#78716c', fontStyle: 'italic' }}>COC gerekmez</span>
+                      {otherFiles.length > 0 && <span style={{ fontSize: 9, color: '#166534', fontWeight: 500 }}>· {otherFiles.length} ek</span>}
+                      <button onClick={() => handleToggleRequires(s)} disabled={savingRequires[s.stokKodu] || !canEdit}
+                        title="Bu stoku özel parça olarak işaretle (COC gerektirir)"
+                        style={{ padding: '1px 4px', fontSize: 8, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', opacity: savingRequires[s.stokKodu] ? 0.5 : 1 }}>
+                        {savingRequires[s.stokKodu] ? '...' : '→ COC gerektir'}
+                      </button>
+                    </div>
+                  </td>
+                </tr>
+                {isExp && (
+                  <tr style={{ background: '#fff' }}>
+                    <td colSpan="5" style={{ padding: '10px 16px' }}>
+                      <div style={{ fontSize: 10, color: '#57534e', fontWeight: 600, marginBottom: 6 }}>
+                        📎 <span style={{ fontFamily: 'ui-monospace, monospace' }}>{s.stokKodu}</span> — Diğer Belgeler (opsiyonel, çoklu)
+                      </div>
+                      <div style={{ padding: 8, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 4, maxWidth: 480 }}>
+                        {otherFiles.length > 0 && (
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: 3, marginBottom: 6, paddingBottom: 6, borderBottom: '1px dashed #e7e5e4' }}>
+                            {otherFiles.map((meta, fi) => (
+                              <div key={fi} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+                                <div style={{ flex: 1, fontSize: 9, color: '#166534', wordBreak: 'break-all' }}>
+                                  📄 {meta.name || 'dosya.pdf'}
+                                  {meta.size ? <span style={{ color: '#78716c' }}> · {(meta.size / 1024).toFixed(0)} KB</span> : null}
+                                </div>
+                                <a href={meta.url} target="_blank" rel="noreferrer"
+                                  style={{ padding: '1px 5px', fontSize: 9, background: '#eff6ff', color: '#1e40af', border: '1px solid #bfdbfe', borderRadius: 3, textDecoration: 'none' }}>
+                                  📥 Aç
+                                </a>
+                                <button onClick={() => handleDeleteFile(s.stokKodu, OTHER_DOCS_CATEGORY, fi)} disabled={isUploading || !canEdit}
+                                  style={{ padding: '1px 5px', fontSize: 9, background: '#fef2f2', color: '#991b1b', border: '1px solid #fecaca', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed' }}>
+                                  🗑
+                                </button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        <label style={{ display: 'inline-block', padding: '4px 8px', fontSize: 10, background: '#f5f5f4', color: '#57534e', border: '1px dashed #d6d3d1', borderRadius: 3, cursor: canEdit ? 'pointer' : 'not-allowed', textAlign: 'center' }}>
+                          {isUploading ? 'Yükleniyor...' : (otherFiles.length > 0 ? '📤 Dosya Ekle (çoklu)' : '📤 Dosya Seç (çoklu)')}
+                          <input type="file" accept="application/pdf,image/*" multiple
+                            style={{ display: 'none' }}
+                            disabled={isUploading || !canEdit}
+                            onChange={e => {
+                              const fs = e.target.files;
+                              if (fs && fs.length > 0) handleUploadFiles(s.stokKodu, OTHER_DOCS_CATEGORY, fs);
+                              e.target.value = '';
+                            }} />
+                        </label>
+                      </div>
+                    </td>
+                  </tr>
+                )}
+                </React.Fragment>
+              );
+            })}
           </tbody>
         </table>
         <div style={{ marginTop: 6, fontSize: 9, color: '#78716c' }}>
@@ -6145,7 +6258,8 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
         }
       }
 
-      // 4) Alt bileşenler
+      // 4) Alt bileşenler — array format (Faz 2C+ tüm dosyalar array olarak
+      // tutuluyor). Eski tek-obje format için getSubDocFiles backward-compat sağlar.
       const subComps = Array.isArray(cert.subComponents) ? cert.subComponents : [];
       if (subComps.length > 0) {
         const CAT_LABELS = {
@@ -6153,28 +6267,34 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
           olcumRaporu: 'Olcum Raporu',
           fasonSertifikasi: 'Fason Sertifikasi',
           tedarikciCoc: 'Tedarikci COC',
+          [OTHER_DOCS_CATEGORY]: 'Diger Belgeler',
         };
+        const SUB_CATEGORIES = [...DOC_TYPES, OTHER_DOCS_CATEGORY];
         const rootFolder = flatten ? targetRoot : targetRoot.folder('Alt Bilesenler');
         for (const s of subComps) {
-          const docs = s.docs || {};
-          const hasAny = Object.values(docs).some(d => d?.path);
-          if (!hasAny) continue;
+          const allByCat = SUB_CATEGORIES
+            .map(cat => ({ cat, files: getSubDocFiles(s, cat) }))
+            .filter(x => x.files.length > 0);
+          if (allByCat.length === 0) continue;
           const subStok = sanitize(s.stokKodu || 'bilesen');
           const subTarget = flatten ? rootFolder : rootFolder.folder(subStok);
           const used = flatten ? globalUsed : new Set();
-          for (const [catKey, meta] of Object.entries(docs)) {
-            if (!meta?.path) continue;
-            const label = CAT_LABELS[catKey] || catKey;
-            const originalName = meta.name || 'dosya.pdf';
-            const ext = originalName.includes('.') ? originalName.substring(originalName.lastIndexOf('.')) : '';
-            const baseName = flatten
-              ? `AltBilesen_${subStok}__${sanitize(label)}${ext}`
-              : `${sanitize(label)}${ext}`;
-            const name = dedupeName(used, baseName);
-            fetchAll.push(
-              downloadCocAttachmentBlob(meta.path).then(b => subTarget.file(name, b))
-                .catch(e => console.warn(`Alt bileşen belgesi indirilemedi: ${s.stokKodu}/${catKey}`, e.message))
-            );
+          for (const { cat, files } of allByCat) {
+            const label = CAT_LABELS[cat] || cat;
+            files.forEach((meta, fi) => {
+              if (!meta?.path) return;
+              const originalName = meta.name || 'dosya.pdf';
+              const ext = originalName.includes('.') ? originalName.substring(originalName.lastIndexOf('.')) : '';
+              const suffix = files.length > 1 ? `_${fi + 1}` : '';
+              const baseName = flatten
+                ? `AltBilesen_${subStok}__${sanitize(label)}${suffix}${ext}`
+                : `${sanitize(label)}${suffix}${ext}`;
+              const name = dedupeName(used, baseName);
+              fetchAll.push(
+                downloadCocAttachmentBlob(meta.path).then(b => subTarget.file(name, b))
+                  .catch(e => console.warn(`Alt bileşen belgesi indirilemedi: ${s.stokKodu}/${cat}#${fi}`, e.message))
+              );
+            });
           }
         }
       }
