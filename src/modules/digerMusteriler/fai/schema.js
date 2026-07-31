@@ -188,6 +188,19 @@ export function makeEmptyForm2MasterItem() {
   };
 }
 
+// Tedarikçi master — Firestore: appData/faiSupplierMaster
+// Yapı: { items: { [id]: { name, notes, createdAt, updatedAt } } }
+// Form 2 tedarikçi alanı bu master'dan seçim + serbest yazım (combobox).
+// Manuel ekleme; Excel import yok (kullanıcı doldurdukça büyür).
+export function makeEmptySupplierMasterItem() {
+  return {
+    name: "",   // zorunlu
+    notes: "",  // opsiyonel
+    createdAt: null,
+    updatedAt: null,
+  };
+}
+
 // ============================================================
 // Ek belge kategorileri — FAI paketine dahil edilecek
 // (talimatta belirtildi: malzeme sertifikaları, kabul test raporu,

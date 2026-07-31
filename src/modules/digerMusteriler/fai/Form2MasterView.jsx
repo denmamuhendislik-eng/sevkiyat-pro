@@ -8,10 +8,12 @@ import * as XLSX from "xlsx";
 import {
   subscribeFaiForm2Master, saveFaiForm2MasterItem,
   deleteFaiForm2MasterItem, bulkImportFaiForm2Master,
+  subscribeFaiSupplierMaster,
 } from "./firestore";
 import {
   FAI_FORM2_MASTER_CATEGORIES, classifyMaterialProcess, makeEmptyForm2MasterItem, CUSTOMER_APPROVAL_OPTIONS,
 } from "./schema";
+import SupplierCombobox from "./SupplierCombobox";
 
 export default function Form2MasterView({ canEdit, userEmail }) {
   const [data, setData] = useState({ items: {} });
@@ -26,12 +28,14 @@ export default function Form2MasterView({ canEdit, userEmail }) {
   const [importState, setImportState] = useState(null); // {rows, preview, mode}
   const fileInputRef = useRef(null);
 
+  const [supplierMaster, setSupplierMaster] = useState({ items: {} });
   useEffect(() => {
     const unsub = subscribeFaiForm2Master(d => {
       setData(d || { items: {} });
       setLoaded(true);
     });
-    return () => unsub && unsub();
+    const unsubSup = subscribeFaiSupplierMaster(d => setSupplierMaster(d || { items: {} }));
+    return () => { unsub && unsub(); unsubSup && unsubSup(); };
   }, []);
 
   const list = useMemo(() => {
@@ -384,8 +388,13 @@ export default function Form2MasterView({ canEdit, userEmail }) {
               </div>
               <div>
                 <label style={lbl}>Tedarikçi (ops.)</label>
-                <input value={editing.supplier} onChange={e => setEditing({ ...editing, supplier: e.target.value })}
-                  style={inp} placeholder="Boş bırakılabilir" />
+                <SupplierCombobox
+                  value={editing.supplier}
+                  onChange={v => setEditing({ ...editing, supplier: v })}
+                  suppliers={supplierMaster.items || {}}
+                  placeholder="Boş bırakılabilir"
+                  style={{ padding: "5px 8px", fontSize: 11 }}
+                />
               </div>
               <div>
                 <label style={lbl}>Müşteri Onayı (ops.)</label>

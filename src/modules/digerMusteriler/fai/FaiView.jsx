@@ -10,7 +10,7 @@ import {
   computeFaiStatus, countFaiSignatures,
   subscribeFaiArchive, saveFaiArchiveRecords, deleteFaiArchiveRecord,
   archiveKey, parseFaiArchiveFolderName,
-  subscribeFaiForm2Master,
+  subscribeFaiForm2Master, subscribeFaiSupplierMaster,
 } from "./firestore";
 import {
   makeEmptyFai, FAI_STATUSES, FAI_ROLES,
@@ -26,6 +26,8 @@ import { downloadCocAttachmentBlob } from "../firestore";
 import { searchCocDrive, importCocDriveFile, listFaiArchiveFolders } from "../driveClient";
 import { parseMeasurementReport, characteristicToFaiRow } from "./measurementReportParser";
 import Form2MasterView from "./Form2MasterView";
+import SupplierMasterView from "./SupplierMasterView";
+import SupplierCombobox from "./SupplierCombobox";
 import JSZip from "jszip";
 
 export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels, pendingCreate, onPendingCreateConsumed }) {
@@ -138,6 +140,14 @@ export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, 
             cursor: "pointer", borderRadius: "4px 4px 0 0" }}>
           🧪 Malzeme/Süreç Master
         </button>
+        <button onClick={() => setSubTab("suppliers")}
+          style={{ padding: "6px 14px", border: "none",
+            background: subTab === "suppliers" ? "#534AB7" : "transparent",
+            color: subTab === "suppliers" ? "#fff" : "#57534e",
+            fontSize: 12, fontWeight: subTab === "suppliers" ? 500 : 400,
+            cursor: "pointer", borderRadius: "4px 4px 0 0" }}>
+          🏭 Tedarikçi Master
+        </button>
       </div>
 
       {subTab === "list" && <FaiListView canEdit={canEdit} isAdmin={isAdmin}
@@ -151,6 +161,7 @@ export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, 
         onSaved={() => { setPendingOpen(null); setSubTab("list"); }}
         onCreateDelta={(r) => setDeltaSource(r)} />}
       {subTab === "master" && <Form2MasterView canEdit={canEdit} />}
+      {subTab === "suppliers" && <SupplierMasterView canEdit={canEdit} />}
 
       {/* Delta FAI oluşturma modalı — AS9102 Partial FAI */}
       {deltaSource && (
@@ -262,13 +273,15 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
   const [quotePartsLib, setQuotePartsLib] = useState({ parts: {} });
   const [archiveData, setArchiveData] = useState({ records: {} });
   const [form2Master, setForm2Master] = useState({ items: {} });
+  const [supplierMaster, setSupplierMaster] = useState({ items: {} });
   const [masterPicker, setMasterPicker] = useState(null); // null | { step: 'name'|'variant', selectedName?, selectedCategory? }
   useEffect(() => {
     const u1 = subscribeQuoteCustomers(d => setCustomersData(d || { customers: {} }), { staging });
     const u2 = subscribeQuoteParts(d => setQuotePartsLib(d || { parts: {} }), { staging });
     const u3 = subscribeFaiArchive(d => setArchiveData(d || { records: {} }), { staging });
     const u4 = subscribeFaiForm2Master(d => setForm2Master(d || { items: {} }));
-    return () => { u1(); u2(); u3(); u4(); };
+    const u5 = subscribeFaiSupplierMaster(d => setSupplierMaster(d || { items: {} }));
+    return () => { u1(); u2(); u3(); u4(); u5(); };
   }, [staging]);
   const customerList = useMemo(() => Object.values(customersData?.customers || {}), [customersData]);
 
@@ -1196,7 +1209,14 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
                         </td>
                         <td style={{ padding: "3px 4px" }}><input value={mp.specificationNumber || ""} onChange={e => updateMatProcess(i, "specificationNumber", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
                         <td style={{ padding: "3px 4px" }}><input value={mp.code || ""} onChange={e => updateMatProcess(i, "code", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
-                        <td style={{ padding: "3px 4px" }}><input value={mp.supplier || ""} onChange={e => updateMatProcess(i, "supplier", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
+                        <td style={{ padding: "3px 4px" }}>
+                          <SupplierCombobox
+                            value={mp.supplier || ""}
+                            onChange={v => updateMatProcess(i, "supplier", v)}
+                            suppliers={supplierMaster.items || {}}
+                            disabled={readonlyForm}
+                          />
+                        </td>
                         <td style={{ padding: "3px 4px" }}>
                           <select value={mp.customerApprovalVerification || ""} onChange={e => updateMatProcess(i, "customerApprovalVerification", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2, background: "#fff" }}>
                             <option value="">—</option>

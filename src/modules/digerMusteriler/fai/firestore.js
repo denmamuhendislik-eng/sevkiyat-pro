@@ -429,3 +429,52 @@ export async function bulkImportFaiForm2Master(items, { canEdit, mode = "skip", 
   await setDoc(ref, { items: next, updatedAt: now, updatedBy: userEmail || "" }, { merge: true });
   return result;
 }
+
+// ============================================================
+// Tedarikçi Master — appData/faiSupplierMaster
+// ============================================================
+// Yapı: { items: { [id]: {name, notes, ...} } }
+
+const SUPPLIER_MASTER_DOC = "faiSupplierMaster";
+
+export function subscribeFaiSupplierMaster(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, SUPPLIER_MASTER_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || { items: {} }) : { items: {} }),
+    (err) => { console.error("supplierMaster listener:", err); callback({ items: {} }); }
+  );
+}
+
+export async function saveFaiSupplierMasterItem(item, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!item?.name || !String(item.name).trim()) throw new Error("Ad zorunlu");
+  const ref = doc(db, APP_COL, SUPPLIER_MASTER_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.items || {}) : {};
+  const id = item.id || makeMasterId();
+  const now = new Date().toISOString();
+  const existing = current[id] || {};
+  const next = {
+    ...existing,
+    name: String(item.name || "").trim(),
+    notes: String(item.notes || "").trim(),
+    createdAt: existing.createdAt || now,
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  };
+  await setDoc(ref, { items: { ...current, [id]: next }, updatedAt: now, updatedBy: userEmail || "" }, { merge: true });
+  return { id, ...next };
+}
+
+export async function deleteFaiSupplierMasterItem(id, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!id) throw new Error("id zorunlu");
+  const ref = doc(db, APP_COL, SUPPLIER_MASTER_DOC);
+  await updateDoc(ref, {
+    [`items.${id}`]: deleteField(),
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  });
+}
