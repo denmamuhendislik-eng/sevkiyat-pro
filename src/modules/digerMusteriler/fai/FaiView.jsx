@@ -17,7 +17,7 @@ import {
   DETAIL_OR_ASSEMBLY_OPTIONS, FAI_TYPE_OPTIONS, CUSTOMER_APPROVAL_OPTIONS,
   CHARACTERISTIC_TYPES, FAI_ATTACHMENT_CATEGORIES,
 } from "./schema";
-import { customerBadge, matchCustomer, isKnownCustomer, OTHER_CUSTOMER_CODE } from "../customerMeta";
+import { customerBadge, matchCustomer, isKnownCustomer, OTHER_CUSTOMER_CODE, resolveCustomerCode } from "../customerMeta";
 import {
   subscribeQuoteCustomers, subscribeQuoteParts,
 } from "../../teklifler/firestore";
@@ -1832,8 +1832,10 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen, onC
     let filtered = arr;
     if (customerFilter && customerFilter !== "all") {
       filtered = filtered.filter(r => {
-        if (customerFilter === OTHER_CUSTOMER_CODE) return !isKnownCustomer(r.customerCode);
-        return matchCustomer(r.customerCode, customerFilter);
+        // FAI'de customerCode boş/AS9102 üretici kodu olabildiği için ada da bak
+        const effCode = resolveCustomerCode(r.customerCode, r.customerName);
+        if (customerFilter === OTHER_CUSTOMER_CODE) return !isKnownCustomer(effCode);
+        return matchCustomer(effCode, customerFilter);
       });
     }
     if (q) filtered = filtered.filter(r =>
@@ -1935,11 +1937,14 @@ function FaiListView({ canEdit, isAdmin, customerFilter, searchText, onOpen, onC
                       {r.partNumber && <div style={{ fontSize: 9, color: "#78716c", fontFamily: "ui-monospace, monospace" }}>{r.partNumber}</div>}
                     </td>
                     <td style={{ padding: "6px 10px" }}>
-                      {r.customerName ? (
-                        <span style={{ padding: "1px 5px", background: customerBadge(r.customerCode).bg, color: customerBadge(r.customerCode).fg, borderRadius: 2, fontSize: 9, marginRight: 4 }}>
-                          {customerBadge(r.customerCode).label}
-                        </span>
-                      ) : null}
+                      {r.customerName ? (() => {
+                        const b = customerBadge(resolveCustomerCode(r.customerCode, r.customerName));
+                        return (
+                          <span style={{ padding: "1px 5px", background: b.bg, color: b.fg, borderRadius: 2, fontSize: 9, marginRight: 4 }}>
+                            {b.label}
+                          </span>
+                        );
+                      })() : null}
                       {r.customerName || "—"}
                     </td>
                     <td style={{ padding: "6px 10px", fontSize: 10, color: "#57534e" }}>

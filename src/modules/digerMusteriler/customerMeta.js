@@ -52,5 +52,23 @@ export const KNOWN_CUSTOMERS = [
 // Filtre + KPI için KNOWN_CUSTOMERS + [DĞR] listesi kullanılır (aşağıda helper).
 export const OTHER_CUSTOMER = { code: OTHER_CUSTOMER_CODE, shortLabel: "DĞR" };
 
+// FAI için özel — customerCode boş veya AS9102 uyarınca üretici (Denma) kodu
+// yazılıyor olabilir; müşteri rozetini isimden de çıkarabilelim.
+// Kod önce kontrol edilir (mevcut davranış); tanınmayan/boş ise ada bakılır.
+// UYARI: Bu helper sadece FAI listesinde kullanılıyor — customerBadge/isKnownCustomer
+// gibi genel fonksiyonlara dokunmadan geri uyumlu ek.
+export function resolveCustomerCode(code, name) {
+  if (matchCustomer(code, "120-0107")) return "120-0107";
+  if (matchCustomer(code, "120-116"))  return "120-116";
+  if (matchCustomer(code, "120-115"))  return "120-115";
+  if (name) {
+    const n = String(name).toLocaleUpperCase("tr-TR");
+    if (n.includes("ASELSAN"))  return "120-0107";
+    if (n.includes("ROKETSAN")) return "120-116";
+    if (n.includes("DENMA"))    return "120-115";
+  }
+  return code || "";
+}
+
 // UI filtre butonu sırası: ASL, RKT, DNM, DĞR
 export const ALL_CUSTOMER_GROUPS = [...KNOWN_CUSTOMERS, OTHER_CUSTOMER];
