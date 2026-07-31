@@ -322,3 +322,110 @@ export function countFaiSignatures(record) {
   if (sigs.customerApprovedBy?.signedAt) signed++;
   return { signed, total: 3 };
 }
+
+// ============================================================
+// Form 2 Malzeme/Süreç Master — appData/faiForm2Master
+// ============================================================
+// Yapı: { items: { [id]: {...} }, updatedAt, updatedBy }
+// id: crypto.randomUUID() ile üretilir.
+
+const FORM2_MASTER_DOC = "faiForm2Master";
+
+export function subscribeFaiForm2Master(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, FORM2_MASTER_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || { items: {} }) : { items: {} }),
+    (err) => { console.error("form2Master listener:", err); callback({ items: {} }); }
+  );
+}
+
+function makeMasterId() {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return `m_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// Tek item kaydet — id yoksa üret. name+code zorunlu.
+export async function saveFaiForm2MasterItem(item, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!item?.name || !item?.code) throw new Error("Ad ve Kod zorunlu");
+  const ref = doc(db, APP_COL, FORM2_MASTER_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.items || {}) : {};
+  const id = item.id || makeMasterId();
+  const now = new Date().toISOString();
+  const existing = current[id] || {};
+  const next = {
+    ...existing,
+    name: String(item.name || "").trim(),
+    code: String(item.code || "").trim(),
+    specNumber: String(item.specNumber || "").trim(),
+    supplier: String(item.supplier || "").trim(),
+    customerApproval: item.customerApproval || "",
+    category: item.category || existing.category || "process",
+    createdAt: existing.createdAt || now,
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  };
+  await setDoc(ref, { items: { ...current, [id]: next }, updatedAt: now, updatedBy: userEmail || "" }, { merge: true });
+  return { id, ...next };
+}
+
+export async function deleteFaiForm2MasterItem(id, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!id) throw new Error("id zorunlu");
+  const ref = doc(db, APP_COL, FORM2_MASTER_DOC);
+  await updateDoc(ref, {
+    [`items.${id}`]: deleteField(),
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  });
+}
+
+// Toplu import — items dizisindeki her satır için {id?, name, code, ...}
+// mode: 'skip' (aynı name+code varsa atla) | 'overwrite' (varsa üstüne yaz)
+// Dönüş: { added, skipped, overwritten, errors: [{row, reason}] }
+export async function bulkImportFaiForm2Master(items, { canEdit, mode = "skip", userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!Array.isArray(items) || items.length === 0) throw new Error("Boş liste");
+  const ref = doc(db, APP_COL, FORM2_MASTER_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.items || {}) : {};
+  // Mevcut (name+code) → id map, duplicate kontrolü için.
+  const keyToId = {};
+  for (const [id, it] of Object.entries(current)) {
+    const k = `${(it.name || "").trim().toLocaleLowerCase("tr-TR")}|${(it.code || "").trim().toLocaleLowerCase("tr-TR")}`;
+    keyToId[k] = id;
+  }
+  const now = new Date().toISOString();
+  const next = { ...current };
+  const result = { added: 0, skipped: 0, overwritten: 0, errors: [] };
+  items.forEach((raw, i) => {
+    const name = String(raw.name || "").trim();
+    const code = String(raw.code || "").trim();
+    if (!name || !code) {
+      result.errors.push({ row: i + 1, reason: "Ad veya Kod boş" });
+      return;
+    }
+    const k = `${name.toLocaleLowerCase("tr-TR")}|${code.toLocaleLowerCase("tr-TR")}`;
+    const existId = keyToId[k];
+    if (existId && mode === "skip") { result.skipped++; return; }
+    const id = existId || makeMasterId();
+    const existing = existId ? current[existId] : {};
+    next[id] = {
+      name, code,
+      specNumber: String(raw.specNumber || "").trim(),
+      supplier: String(raw.supplier || "").trim(),
+      customerApproval: raw.customerApproval || "",
+      category: raw.category || existing.category || "process",
+      createdAt: existing.createdAt || now,
+      updatedAt: now,
+      updatedBy: userEmail || "",
+    };
+    if (existId) result.overwritten++;
+    else result.added++;
+  });
+  await setDoc(ref, { items: next, updatedAt: now, updatedBy: userEmail || "" }, { merge: true });
+  return result;
+}

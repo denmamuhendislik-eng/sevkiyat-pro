@@ -24,6 +24,7 @@ import { generateFaiPdf, buildFaiPdfBlob } from "./faiPdf";
 import { downloadCocAttachmentBlob } from "../firestore";
 import { searchCocDrive, importCocDriveFile, listFaiArchiveFolders } from "../driveClient";
 import { parseMeasurementReport, characteristicToFaiRow } from "./measurementReportParser";
+import Form2MasterView from "./Form2MasterView";
 import JSZip from "jszip";
 
 export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, cocParts, bomModels, pendingCreate, onPendingCreateConsumed }) {
@@ -128,6 +129,14 @@ export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, 
             cursor: "pointer", borderRadius: "4px 4px 0 0" }}>
           ➕ Yeni FAI
         </button>
+        <button onClick={() => setSubTab("master")}
+          style={{ padding: "6px 14px", border: "none",
+            background: subTab === "master" ? "#534AB7" : "transparent",
+            color: subTab === "master" ? "#fff" : "#57534e",
+            fontSize: 12, fontWeight: subTab === "master" ? 500 : 400,
+            cursor: "pointer", borderRadius: "4px 4px 0 0" }}>
+          🧪 Malzeme/Süreç Master
+        </button>
       </div>
 
       {subTab === "list" && <FaiListView canEdit={canEdit} isAdmin={isAdmin}
@@ -140,6 +149,7 @@ export default function FaiView({ canEdit, isAdmin, customerFilter, searchText, 
         readOnly={!!pendingOpen?.readOnly}
         onSaved={() => { setPendingOpen(null); setSubTab("list"); }}
         onCreateDelta={(r) => setDeltaSource(r)} />}
+      {subTab === "master" && <Form2MasterView canEdit={canEdit} />}
 
       {/* Delta FAI oluşturma modalı — AS9102 Partial FAI */}
       {deltaSource && (

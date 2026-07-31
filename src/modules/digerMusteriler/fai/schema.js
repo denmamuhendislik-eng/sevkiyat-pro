@@ -150,6 +150,45 @@ export const FAI_ROLES = [
 // Kalite Kontrol için Diğer Müşteriler'de bir flag yok — canEdit yeterli (Kalite + Üretim + Satış)
 
 // ============================================================
+// Form 2 — Malzeme/Süreç Master Kayıtları
+// ============================================================
+// FAI Form 2 doldururken tekrar tekrar aynı hammadde/proses yazımını
+// önlemek için master kayıtlar. Firestore: appData/faiForm2Master
+//   { items: { [id]: {...} }, updatedAt, updatedBy }
+//
+// id: crypto.randomUUID() ile üretilir (stabil React key, çakışmaz).
+// Kategori otomatik sınıflandırılır (material vs process).
+
+export const FAI_FORM2_MASTER_CATEGORIES = [
+  { key: "material", label: "Hammadde" },
+  { key: "process",  label: "Süreç"    },
+];
+
+// Hammadde tanınma regex — LEVHA/CUBUK gibi Türkçe malzeme belirteçleri
+// ve yaygın malzeme kodları (AISI/AL/AA/PSZCL/CL/BRN vb.).
+// Kalan tümü "process" (süreç) sayılır.
+const MATERIAL_HINT_RE = /\b(LEVHA|CUBUK|ÇUBUK|AISI|AA\s*\d|AL\s*\d|ALUMINYUM|PSZCL|BRN|BRONZ|C\d{4,}|Q\d+MM)\b/i;
+
+export function classifyMaterialProcess(name, code) {
+  const s = `${name || ""} ${code || ""}`.toLocaleUpperCase("tr-TR");
+  return MATERIAL_HINT_RE.test(s) ? "material" : "process";
+}
+
+export function makeEmptyForm2MasterItem() {
+  return {
+    // id dış katmanda üretilir (Firestore key)
+    name: "",             // Malzeme/Süreç Adı — zorunlu
+    code: "",             // Spesifikasyon Kodu (detay) — zorunlu
+    specNumber: "",       // Spesifikasyon No (opsiyonel — Excel'de boş, sonradan doldurulabilir)
+    supplier: "",         // Tedarikçi (opsiyonel — Excel'de boş)
+    customerApproval: "", // "yes" | "no" | "" (opsiyonel — her FAI'de değişebilir)
+    category: "process",  // "material" | "process" (otomatik)
+    createdAt: null,
+    updatedAt: null,
+  };
+}
+
+// ============================================================
 // Ek belge kategorileri — FAI paketine dahil edilecek
 // (talimatta belirtildi: malzeme sertifikaları, kabul test raporu,
 //  balonlu resim, uygunsuzluk belgeleri, üretim rota vb.)
