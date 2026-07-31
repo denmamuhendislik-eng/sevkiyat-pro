@@ -6198,13 +6198,16 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
     }
   };
 
-  // Drive'dan arama — modal açar, sonuçları gösterir
+  // Drive'dan arama — modal açar, sonuçları gösterir.
+  // Alias: bubbleDrawing için ölçüm klasörü kullanılır (kullanıcı tercihi 2026-07-31 —
+  // aynı klasörde tutuluyorlar). Ek Drive Config gerekmez.
   const openDriveSearch = async (cat) => {
     if (!canEdit) return;
     setDriveModal({ category: cat, results: [], loading: true, error: '', selected: new Set(), strategy: null });
     try {
       const altName = getCocPartDriveAltName(cocParts, cert.stokKodu, cat.key);
-      const out = await searchCocDrive({ category: cat.key, stokKodu: cert.stokKodu, altName });
+      const searchCategory = cat.key === 'bubbleDrawing' ? 'measurement' : cat.key;
+      const out = await searchCocDrive({ category: searchCategory, stokKodu: cert.stokKodu, altName });
       setDriveModal((prev) => prev ? {
         ...prev,
         results: out.results || [],
@@ -6397,11 +6400,13 @@ function CocAttachmentsSection({ cert: initialCert, canEdit }) {
                         border: '1px solid #a8a29e', background: masterOpen[cat.key] ? '#f5f5f4' : '#fff', color: '#44403c',
                       }}>⚙ Master ({reusable.length})</button>
                   )}
-                  {!isNa && canEdit && ['rawMaterialCert', 'measurement', 'fai', 'surfaceTreatment'].includes(cat.key) && (
+                  {!isNa && canEdit && ['rawMaterialCert', 'measurement', 'fai', 'surfaceTreatment', 'bubbleDrawing'].includes(cat.key) && (
                     <button
                       onClick={() => openDriveSearch(cat)}
                       disabled={isBusy}
-                      title="Drive'da bu stok kodu için belge ara ve öner"
+                      title={cat.key === 'bubbleDrawing'
+                        ? "Drive'da bu stok kodu için balonlu resim ara (ölçüm raporu ile aynı klasörden)"
+                        : "Drive'da bu stok kodu için belge ara ve öner"}
                       style={{
                         padding: '3px 8px', borderRadius: 3, fontSize: 11, cursor: isBusy ? 'not-allowed' : 'pointer',
                         border: '1px solid #ea580c', background: '#fff7ed', color: '#9a3412',
