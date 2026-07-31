@@ -18,6 +18,8 @@ export default function Form2MasterView({ canEdit, userEmail }) {
   const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
   const [catFilter, setCatFilter] = useState("all"); // "all" | "material" | "process"
+  const [viewMode, setViewMode] = useState("grouped"); // "flat" | "grouped"
+  const [expandedGroups, setExpandedGroups] = useState({}); // { [groupKey]: bool }
   const [editing, setEditing] = useState(null); // { id?, name, code, ... }
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
@@ -53,6 +55,25 @@ export default function Form2MasterView({ canEdit, userEmail }) {
       process: all.filter(it => it.category === "process").length,
     };
   }, [data]);
+
+  // Gruplu görünüm — filtrelenmiş liste'yi isme göre grupla.
+  // Aynı isim + aynı kategori = tek grup (isim aynı ama kategori farklı olabilir teoride).
+  const grouped = useMemo(() => {
+    const map = new Map(); // key: `${category}|${name}` → { name, category, variants: [] }
+    for (const it of list) {
+      const k = `${it.category}|${it.name}`;
+      if (!map.has(k)) map.set(k, { name: it.name, category: it.category, variants: [] });
+      map.get(k).variants.push(it);
+    }
+    return Array.from(map.values());
+  }, [list]);
+
+  const toggleGroup = (key) => setExpandedGroups(p => ({ ...p, [key]: !p[key] }));
+  const openNewVariant = (baseName, category) => {
+    if (!canEdit) return;
+    setEditing({ ...makeEmptyForm2MasterItem(), name: baseName, category });
+    setError("");
+  };
 
   const openNew = () => {
     if (!canEdit) return;
@@ -198,6 +219,22 @@ export default function Form2MasterView({ canEdit, userEmail }) {
             </button>
           ))}
         </div>
+        <div style={{ display: "flex", gap: 2, border: "1px solid #d6d3d1", borderRadius: 4, overflow: "hidden" }}>
+          <button onClick={() => setViewMode("grouped")}
+            title="Aynı isimdeki variantları grup başlığı altında topla"
+            style={{ padding: "5px 10px", fontSize: 11, border: "none",
+              background: viewMode === "grouped" ? "#1e40af" : "#fff",
+              color: viewMode === "grouped" ? "#fff" : "#44403c", cursor: "pointer" }}>
+            🗂 Gruplu
+          </button>
+          <button onClick={() => setViewMode("flat")}
+            title="Tüm variantları tek düz tablo olarak göster"
+            style={{ padding: "5px 10px", fontSize: 11, border: "none",
+              background: viewMode === "flat" ? "#1e40af" : "#fff",
+              color: viewMode === "flat" ? "#fff" : "#44403c", cursor: "pointer" }}>
+            📋 Düz
+          </button>
+        </div>
         <button onClick={openNew} disabled={!canEdit}
           style={{ padding: "6px 12px", fontSize: 12, background: "#166534", color: "#fff", border: "none", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500 }}>
           + Yeni Kayıt
@@ -216,7 +253,7 @@ export default function Form2MasterView({ canEdit, userEmail }) {
         <div style={{ padding: 30, textAlign: "center", color: "#a8a29e", fontSize: 12 }}>
           {catCounts.all === 0 ? "Henüz master kayıt yok. Excel import ile başlayabilirsin." : "Filtreye uyan kayıt yok."}
         </div>
-      ) : (
+      ) : viewMode === "flat" ? (
         <div style={{ background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6, overflow: "hidden" }}>
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
             <thead>
@@ -257,6 +294,65 @@ export default function Form2MasterView({ canEdit, userEmail }) {
               ))}
             </tbody>
           </table>
+        </div>
+      ) : (
+        // Gruplu görünüm
+        <div style={{ background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6, overflow: "hidden" }}>
+          {grouped.map(g => {
+            const gKey = `${g.category}|${g.name}`;
+            const isExp = expandedGroups[gKey] !== false; // varsayılan açık
+            return (
+              <div key={gKey} style={{ borderBottom: "1px solid #f5f5f4" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: "#f9fafb", cursor: "pointer" }}
+                  onClick={() => toggleGroup(gKey)}>
+                  <span style={{ fontSize: 10, color: "#78716c", width: 12 }}>{isExp ? "▼" : "▶"}</span>
+                  <span style={{ padding: "1px 6px", fontSize: 9, fontWeight: 600, borderRadius: 3,
+                    background: g.category === "material" ? "#dbeafe" : "#dcfce7",
+                    color: g.category === "material" ? "#1e40af" : "#166534" }}>
+                    {g.category === "material" ? "🧱" : "⚙"}
+                  </span>
+                  <span style={{ fontWeight: 600, fontSize: 12 }}>{g.name}</span>
+                  <span style={{ fontSize: 10, color: "#78716c" }}>
+                    {g.variants.length} variant
+                  </span>
+                  <div style={{ marginLeft: "auto" }}>
+                    <button onClick={(e) => { e.stopPropagation(); openNewVariant(g.name, g.category); }} disabled={!canEdit}
+                      title={`"${g.name}" için yeni variant ekle (isim önceden dolu gelir)`}
+                      style={{ padding: "2px 8px", fontSize: 10, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                      + Variant
+                    </button>
+                  </div>
+                </div>
+                {isExp && (
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                    <tbody>
+                      {g.variants.map(it => (
+                        <tr key={it.id} style={{ borderTop: "1px solid #f5f5f4" }}>
+                          <td style={{ ...td, paddingLeft: 34, width: "45%", fontFamily: "ui-monospace, monospace", color: "#57534e", fontSize: 10 }}>{it.code}</td>
+                          <td style={td}>
+                            <span style={{ fontSize: 9, color: "#78716c" }}>Spec:</span> {it.specNumber || <span style={{ color: "#a8a29e" }}>—</span>}
+                          </td>
+                          <td style={td}>
+                            <span style={{ fontSize: 9, color: "#78716c" }}>Tedarikçi:</span> {it.supplier || <span style={{ color: "#a8a29e" }}>—</span>}
+                          </td>
+                          <td style={{ ...td, textAlign: "center", width: 80 }}>
+                            <button onClick={() => openEdit(it)} disabled={!canEdit}
+                              style={{ padding: "2px 6px", fontSize: 10, marginRight: 4, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                              ✏
+                            </button>
+                            <button onClick={() => handleDelete(it)} disabled={!canEdit}
+                              style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                              🗑
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 

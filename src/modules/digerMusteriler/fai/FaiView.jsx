@@ -10,6 +10,7 @@ import {
   computeFaiStatus, countFaiSignatures,
   subscribeFaiArchive, saveFaiArchiveRecords, deleteFaiArchiveRecord,
   archiveKey, parseFaiArchiveFolderName,
+  subscribeFaiForm2Master,
 } from "./firestore";
 import {
   makeEmptyFai, FAI_STATUSES, FAI_ROLES,
@@ -260,11 +261,14 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
   const [customersData, setCustomersData] = useState({ customers: {} });
   const [quotePartsLib, setQuotePartsLib] = useState({ parts: {} });
   const [archiveData, setArchiveData] = useState({ records: {} });
+  const [form2Master, setForm2Master] = useState({ items: {} });
+  const [masterPicker, setMasterPicker] = useState(null); // null | { step: 'name'|'variant', selectedName?, selectedCategory? }
   useEffect(() => {
     const u1 = subscribeQuoteCustomers(d => setCustomersData(d || { customers: {} }), { staging });
     const u2 = subscribeQuoteParts(d => setQuotePartsLib(d || { parts: {} }), { staging });
     const u3 = subscribeFaiArchive(d => setArchiveData(d || { records: {} }), { staging });
-    return () => { u1(); u2(); u3(); };
+    const u4 = subscribeFaiForm2Master(d => setForm2Master(d || { items: {} }));
+    return () => { u1(); u2(); u3(); u4(); };
   }, [staging]);
   const customerList = useMemo(() => Object.values(customersData?.customers || {}), [customersData]);
 
@@ -371,6 +375,22 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
       supplier: "", customerApprovalVerification: "", certificateNumber: "",
     }],
   }));
+  // Form 2 — master'dan seçim ile ekleme (autofill; uygunluk belge no boş kalır)
+  const addFromMaster = (masterItem) => {
+    setRecord(prev => ({
+      ...prev,
+      materialsAndProcesses: [...(prev.materialsAndProcesses || []), {
+        materialOrProcessName: masterItem.name || "",
+        specificationNumber: masterItem.specNumber || "",
+        code: masterItem.code || "",
+        supplier: masterItem.supplier || "",
+        customerApprovalVerification: masterItem.customerApproval || "",
+        certificateNumber: "",
+        masterId: masterItem.id, // rozet için
+      }],
+    }));
+    setMasterPicker(null);
+  };
   const updateMatProcess = (idx, key, value) => setRecord(prev => ({
     ...prev,
     materialsAndProcesses: (prev.materialsAndProcesses || []).map((it, i) => i === idx ? { ...it, [key]: value } : it),
@@ -1134,7 +1154,17 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           <div style={cardStyle}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
               <div style={{ fontSize: 13, fontWeight: 600 }}>🧪 Hammadde ve Özel İşlem(ler) — Uygunluk Sertifikaları</div>
-              <button onClick={addMaterialProcess} disabled={readonlyForm} style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>+ Malzeme/Proses</button>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => setMasterPicker({ step: "name" })} disabled={readonlyForm}
+                  title="Master listeden malzeme/süreç seç (isim → variant)"
+                  style={{ padding: "4px 10px", fontSize: 11, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>
+                  📚 Master'dan Seç
+                </button>
+                <button onClick={addMaterialProcess} disabled={readonlyForm}
+                  style={{ padding: "4px 10px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: readonlyForm ? "not-allowed" : "pointer" }}>
+                  + Boş Satır
+                </button>
+              </div>
             </div>
             <div style={{ fontSize: 10, color: "#78716c", marginBottom: 8 }}>
               Uygulanan özel prosesler (lehim, kaplama, ısıl işlem, kaynak, boya, potting vb.) veya kullanılan hammaddeler için uygunluk sertifikası bilgisi.
@@ -1158,7 +1188,12 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
                   <tbody>
                     {(record.materialsAndProcesses || []).map((mp, i) => (
                       <tr key={i} style={{ borderTop: "1px solid #f5f5f4" }}>
-                        <td style={{ padding: "3px 4px" }}><input value={mp.materialOrProcessName || ""} onChange={e => updateMatProcess(i, "materialOrProcessName", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="Örn. Anodizasyon" /></td>
+                        <td style={{ padding: "3px 4px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 3 }}>
+                            {mp.masterId && <span title="Master listeden seçildi" style={{ fontSize: 10 }}>💾</span>}
+                            <input value={mp.materialOrProcessName || ""} onChange={e => updateMatProcess(i, "materialOrProcessName", e.target.value)} disabled={readonlyForm} style={{ flex: 1, padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} placeholder="Örn. Anodizasyon" />
+                          </div>
+                        </td>
                         <td style={{ padding: "3px 4px" }}><input value={mp.specificationNumber || ""} onChange={e => updateMatProcess(i, "specificationNumber", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
                         <td style={{ padding: "3px 4px" }}><input value={mp.code || ""} onChange={e => updateMatProcess(i, "code", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
                         <td style={{ padding: "3px 4px" }}><input value={mp.supplier || ""} onChange={e => updateMatProcess(i, "supplier", e.target.value)} disabled={readonlyForm} style={{ width: "100%", padding: 3, fontSize: 10, border: "1px solid #d6d3d1", borderRadius: 2 }} /></td>
@@ -1541,6 +1576,144 @@ function NewFaiView({ canEdit, isAdmin, cocParts, bomModels, initialRecord, read
           </div>
         </div>
       )}
+
+      {/* Master seçici modal — 2 adımlı kaskad (isim → variant) */}
+      {masterPicker && (
+        <MasterPickerModal
+          items={form2Master.items || {}}
+          state={masterPicker}
+          setState={setMasterPicker}
+          onPick={addFromMaster}
+          onClose={() => setMasterPicker(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Master seçici modal — 2 adımlı (isim → variant). Tek variantlı ise direkt seç.
+function MasterPickerModal({ items, state, setState, onPick, onClose }) {
+  const [search, setSearch] = useState("");
+  const [catFilter, setCatFilter] = useState("all");
+  const all = useMemo(() => Object.entries(items).map(([id, it]) => ({ id, ...it })), [items]);
+
+  // Adım 1: unique isim listesi
+  const nameGroups = useMemo(() => {
+    const map = new Map();
+    const q = search.trim().toLocaleLowerCase("tr-TR");
+    for (const it of all) {
+      if (catFilter !== "all" && it.category !== catFilter) continue;
+      const hay = `${it.name || ""} ${it.code || ""}`.toLocaleLowerCase("tr-TR");
+      if (q && !hay.includes(q)) continue;
+      const k = `${it.category}|${it.name}`;
+      if (!map.has(k)) map.set(k, { name: it.name, category: it.category, variants: [] });
+      map.get(k).variants.push(it);
+    }
+    return Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name, "tr-TR"));
+  }, [all, search, catFilter]);
+
+  // Adım 2 için variant listesi
+  const variants = useMemo(() => {
+    if (state.step !== "variant") return [];
+    return all.filter(it => it.category === state.selectedCategory && it.name === state.selectedName);
+  }, [all, state]);
+
+  const handleNamePick = (g) => {
+    if (g.variants.length === 1) {
+      onPick(g.variants[0]);
+    } else {
+      setState({ step: "variant", selectedName: g.name, selectedCategory: g.category });
+    }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.5)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1000, padding: 20 }} onClick={onClose}>
+      <div style={{ background: "#fff", borderRadius: 8, padding: 16, width: "100%", maxWidth: 720, maxHeight: "85vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 4px 24px rgba(0,0,0,0.15)" }} onClick={e => e.stopPropagation()}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 600 }}>
+              {state.step === "name" ? "📚 Malzeme / Süreç Seç" : `📚 "${state.selectedName}" — Variant Seç`}
+            </div>
+            <div style={{ fontSize: 10, color: "#78716c" }}>
+              {state.step === "name" ? `${nameGroups.length} kalem bulundu · Adım 1/2` : `${variants.length} variant · Adım 2/2`}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 18 }}>✕</button>
+        </div>
+
+        {state.step === "name" ? (
+          <>
+            <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+              <input autoFocus type="text" placeholder="🔍 Ad veya kod ile ara..."
+                value={search} onChange={e => setSearch(e.target.value)}
+                style={{ flex: 1, padding: "6px 10px", fontSize: 12, border: "1px solid #d6d3d1", borderRadius: 4 }} />
+              <div style={{ display: "flex", gap: 2 }}>
+                {[
+                  { key: "all",      label: "Tümü" },
+                  { key: "material", label: "🧱 Hammadde" },
+                  { key: "process",  label: "⚙ Süreç" },
+                ].map(o => (
+                  <button key={o.key} onClick={() => setCatFilter(o.key)}
+                    style={{
+                      padding: "5px 10px", fontSize: 11, cursor: "pointer",
+                      border: "1px solid " + (catFilter === o.key ? "#1e40af" : "#d6d3d1"),
+                      background: catFilter === o.key ? "#1e40af" : "#fff",
+                      color: catFilter === o.key ? "#fff" : "#44403c",
+                      borderRadius: 4,
+                    }}>{o.label}</button>
+                ))}
+              </div>
+            </div>
+            <div style={{ flex: 1, overflow: "auto", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+              {nameGroups.length === 0 ? (
+                <div style={{ padding: 30, textAlign: "center", color: "#a8a29e", fontSize: 11 }}>
+                  {all.length === 0 ? "Master kayıt yok. Önce Master sekmesinden Excel import yap." : "Aramaya uyan kayıt yok."}
+                </div>
+              ) : nameGroups.map(g => (
+                <button key={`${g.category}|${g.name}`} onClick={() => handleNamePick(g)}
+                  style={{ display: "flex", width: "100%", alignItems: "center", gap: 8, padding: "8px 12px", border: "none", borderBottom: "1px solid #f5f5f4", background: "#fff", cursor: "pointer", textAlign: "left" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f0fdf4"}
+                  onMouseLeave={e => e.currentTarget.style.background = "#fff"}>
+                  <span style={{ padding: "1px 5px", fontSize: 9, fontWeight: 600, borderRadius: 3,
+                    background: g.category === "material" ? "#dbeafe" : "#dcfce7",
+                    color: g.category === "material" ? "#1e40af" : "#166534" }}>
+                    {g.category === "material" ? "🧱" : "⚙"}
+                  </span>
+                  <span style={{ fontWeight: 600, fontSize: 12 }}>{g.name}</span>
+                  <span style={{ fontSize: 10, color: "#78716c" }}>
+                    {g.variants.length === 1 ? "1 variant · direkt seçilecek" : `${g.variants.length} variant`}
+                  </span>
+                  <span style={{ marginLeft: "auto", fontSize: 10, color: "#a8a29e" }}>›</span>
+                </button>
+              ))}
+            </div>
+          </>
+        ) : (
+          <>
+            <div style={{ marginBottom: 10 }}>
+              <button onClick={() => setState({ step: "name" })}
+                style={{ padding: "4px 10px", fontSize: 11, background: "#f5f5f4", color: "#57534e", border: "1px solid #d6d3d1", borderRadius: 4, cursor: "pointer" }}>
+                ← Geri
+              </button>
+            </div>
+            <div style={{ flex: 1, overflow: "auto", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+              {variants.map(v => (
+                <button key={v.id} onClick={() => onPick(v)}
+                  style={{ display: "block", width: "100%", padding: "10px 12px", border: "none", borderBottom: "1px solid #f5f5f4", background: "#fff", cursor: "pointer", textAlign: "left" }}
+                  onMouseEnter={e => e.currentTarget.style.background = "#f0fdf4"}
+                  onMouseLeave={e => e.currentTarget.style.background = "#fff"}>
+                  <div style={{ fontSize: 11, fontFamily: "ui-monospace, monospace", color: "#44403c", marginBottom: 3 }}>{v.code}</div>
+                  <div style={{ fontSize: 10, color: "#78716c" }}>
+                    {v.specNumber && <>Spec: <b>{v.specNumber}</b> · </>}
+                    {v.supplier && <>Tedarikçi: <b>{v.supplier}</b></>}
+                    {!v.specNumber && !v.supplier && <span style={{ color: "#a8a29e" }}>(spec/tedarikçi boş — Form 2'de elle doldurabilirsin)</span>}
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
