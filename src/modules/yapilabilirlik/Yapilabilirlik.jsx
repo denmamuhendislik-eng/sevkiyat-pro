@@ -1831,7 +1831,7 @@ function KpiView() {
         <KpiPanel title="🎯 Durum Dağılımı">
           <StatusDonut byStatus={stats.byStatus} />
         </KpiPanel>
-        <KpiPanel title="⏱ Aşama Süreleri (medyan)">
+        <KpiPanel title="⏱ Aşama Süreleri (medyan · son 10)">
           <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 4px" }}>
             <StageRow icon="💼" label="Satış aşaması" days={stats.avgSalesDays} color="#1e40af" stat={stats.stageStats?.sales} />
             <StageRow icon="⚙️" label="Teknik aşaması" days={stats.avgTechnicalDays} color="#0f766e" stat={stats.stageStats?.technical} />
@@ -1841,7 +1841,7 @@ function KpiView() {
               <StageRow icon="🏁" label="Toplam (create→onay)" days={stats.avgTotalDays} color="#44403c" bold stat={stats.stageStats?.total} />
             </div>
             <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
-              💡 Medyan (birkaç outlier ortalama'yı çarpıtmaz). Aktif bekleyen study'ler de metriğe dahil (yaşlanma). Satır üzerine hover et → son 5 değer görünür.
+              💡 Medyan <b>son 10 study</b> üzerinden (kayan pencere) — geçmiş "hep aynı gün imza" desenleri yakın performansı bastırmasın. Aktif bekleyenler yaşlanma olarak dahil. Hover et → detay + dağılım.
             </div>
           </div>
         </KpiPanel>
@@ -2053,19 +2053,31 @@ function StatusDonut({ byStatus }) {
 
 // Aşama süre satırı
 function StageRow({ icon, label, days, color, bold, stat }) {
-  const n = stat?.n ?? null;
+  const n = stat?.n ?? null;                // toplam study
+  const windowN = stat?.windowN ?? null;    // medyan pencere büyüklüğü (son N)
   const samples = stat?.samples || [];
-  const tooltip = n != null
-    ? (samples.length > 0
-        ? `n=${n} · son ${samples.length} değer: ${samples.map(v => v.toFixed(2)).join(" · ")} gün`
-        : `n=${n} · geçerli veri yok`)
-    : undefined;
+  const bd = stat?.breakdown || null;
+  const tooltipLines = [];
+  if (n != null) {
+    tooltipLines.push(`Toplam study: ${n}${windowN != null && windowN !== n ? ` · medyan son ${windowN} üzerinden` : ""}`);
+    if (samples.length > 0) {
+      tooltipLines.push(`Son ${samples.length} değer: ${samples.map(v => v.toFixed(2)).join(" · ")} gün`);
+    }
+    if (bd) {
+      tooltipLines.push(`Dağılım (pencere): ${bd.fast} hızlı (<1g) · ${bd.normal} normal (1-7g) · ${bd.slow} yavaş (>7g)`);
+    }
+  }
+  const tooltip = tooltipLines.length > 0 ? tooltipLines.join("\n") : undefined;
   return (
     <div style={{ display: "flex", alignItems: "center", gap: 8 }} title={tooltip}>
       <span style={{ fontSize: 14 }}>{icon}</span>
       <span style={{ flex: 1, fontSize: 11, color: "#44403c", fontWeight: bold ? 600 : 400 }}>
         {label}
-        {n != null && <span style={{ marginLeft: 4, fontSize: 9, color: "#a8a29e", fontWeight: 400 }}>· n={n}</span>}
+        {windowN != null && windowN > 0 && (
+          <span style={{ marginLeft: 4, fontSize: 9, color: "#a8a29e", fontWeight: 400 }}>
+            · son {windowN}{n > windowN ? `/${n}` : ""}
+          </span>
+        )}
       </span>
       <span style={{ fontSize: 12, fontWeight: 600, color: days == null ? "#a8a29e" : color, fontVariantNumeric: "tabular-nums" }}>
         {days == null ? "—" : `${days.toFixed(1)} gün`}

@@ -44,17 +44,32 @@ function mean(arr) {
   return filtered.reduce((s, n) => s + n, 0) / filtered.length;
 }
 
-// Sample debug — son N geçerli değeri (finite) döndür.
-function lastN(arr, n) {
-  return (arr || []).filter(x => Number.isFinite(x)).slice(-n);
-}
-
 function median(arr) {
   const filtered = arr.filter(n => Number.isFinite(n));
   if (filtered.length === 0) return null;
   const sorted = filtered.slice().sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+// Kayan pencere — geçmişteki "hep aynı gün" imzaları yakın performansı
+// bastırmasın diye son N study'yi baz al. Girdi: [{value, t}] sortKey ile.
+const RECENT_WINDOW = 10;
+function recentValues(arr, n = RECENT_WINDOW) {
+  return arr
+    .filter(x => Number.isFinite(x?.value))
+    .slice()
+    .sort((a, b) => (b.t || "").localeCompare(a.t || "")) // en yeni önce
+    .slice(0, n)
+    .map(x => x.value);
+}
+
+// Dağılım kutuları — tooltip'te "5 hızlı · 3 normal · 2 yavaş" için.
+function breakdown(values) {
+  const fast = values.filter(v => v < 1).length;
+  const normal = values.filter(v => v >= 1 && v <= 7).length;
+  const slow = values.filter(v => v > 7).length;
+  return { fast, normal, slow };
 }
 
 export function computeFeasibilityStats(studies) {
@@ -120,55 +135,55 @@ export function computeFeasibilityStats(studies) {
     const sTech = sigs.technicalUnit?.signedAt;
     const sGm = sigs.generalManager?.signedAt;
 
-    // Tamamlanmış aşamalar — imza tarihleri arası fark
+    // Tamamlanmış aşamalar — imza tarihleri arası fark. t: sortKey (en yeni imza).
     if (sSales) {
       const d = daysBetween(study.createdAt, sSales);
-      if (d != null && d >= 0) salesDurations.push(d);
+      if (d != null && d >= 0) salesDurations.push({ value: d, t: toIso(sSales) });
     }
     if (sTech && sSales) {
       const d = daysBetween(sSales, sTech);
-      if (d != null && d >= 0) technicalDurations.push(d);
+      if (d != null && d >= 0) technicalDurations.push({ value: d, t: toIso(sTech) });
     }
     if (sGm && sTech) {
       const d = daysBetween(sTech, sGm);
-      if (d != null && d >= 0) gmDurations.push(d);
+      if (d != null && d >= 0) gmDurations.push({ value: d, t: toIso(sGm) });
     }
     // Aktif bekleyen aging — henüz imzalanmamış aşamalar için "geçen süre"
     // metriğe dahil edilsin. Aksi halde uzun bekleyen bir study medyana hiç
     // katkı vermeyip yanıltıcı düşük değerler çıkabiliyor (2026-08-03 gözlemi).
+    const nowIso = new Date().toISOString();
     if (!sSales && status === "salesPending") {
-      const d = daysBetween(study.createdAt, new Date().toISOString());
-      if (d != null && d >= 0) salesDurations.push(d);
+      const d = daysBetween(study.createdAt, nowIso);
+      if (d != null && d >= 0) salesDurations.push({ value: d, t: nowIso });
     }
     if (!sTech && status === "technicalPending" && sSales) {
-      const d = daysBetween(sSales, new Date().toISOString());
-      if (d != null && d >= 0) technicalDurations.push(d);
+      const d = daysBetween(sSales, nowIso);
+      if (d != null && d >= 0) technicalDurations.push({ value: d, t: nowIso });
     }
     if (!sGm && status === "gmPending" && sTech) {
-      const d = daysBetween(sTech, new Date().toISOString());
-      if (d != null && d >= 0) gmDurations.push(d);
+      const d = daysBetween(sTech, nowIso);
+      if (d != null && d >= 0) gmDurations.push({ value: d, t: nowIso });
     }
 
     // Toplam süre (createdAt → son imza)
     if (status === "approved" || status === "convertedToQuote") {
       const finalSig = sGm || sTech;
       const d = daysBetween(study.createdAt, finalSig);
-      if (d != null && d >= 0) totalDurations.push(d);
+      if (d != null && d >= 0) totalDurations.push({ value: d, t: toIso(finalSig) });
     }
     // Karar bekleme süresi — evaluating (aktif) + karar verilmiş (geçmiş)
     // Aktif: son imza → bugün (aging)
     // Geçmiş: son imza → updatedAt (updatedAt = karar tarihi proxy)
-    // Böylece metrik boş kalmıyor, geçmişten "genelde ne kadar sürdü" bilgisi de gelir.
     {
       const finalSig = sGm || sTech;
       if (finalSig) {
         if (status === "evaluating") {
-          const d = daysBetween(finalSig, new Date().toISOString());
-          if (d != null && d >= 0) { evaluatingWaits.push(d); evaluatingActiveCount++; }
+          const d = daysBetween(finalSig, nowIso);
+          if (d != null && d >= 0) { evaluatingWaits.push({ value: d, t: nowIso }); evaluatingActiveCount++; }
         } else if ((status === "approved" || status === "convertedToQuote" || status === "rejected") && study.updatedAt) {
           const d = daysBetween(finalSig, study.updatedAt);
           // 365 gün üstü outlier — sonradan başka bir sebeple updatedAt değişmiş olabilir
-          if (d != null && d >= 0 && d < 365) evaluatingWaits.push(d);
+          if (d != null && d >= 0 && d < 365) evaluatingWaits.push({ value: d, t: toIso(study.updatedAt) });
         }
       }
     }
@@ -177,7 +192,7 @@ export function computeFeasibilityStats(studies) {
       const finalSig = sGm || sTech;
       if (finalSig) {
         const d = daysBetween(finalSig, study.convertedAt);
-        if (d != null && d >= 0) conversionDurations.push(d);
+        if (d != null && d >= 0) conversionDurations.push({ value: d, t: toIso(study.convertedAt) });
       }
     }
 
@@ -281,30 +296,43 @@ export function computeFeasibilityStats(studies) {
     activePending,
     lostOpportunity,
 
-    // Dönüşüm
+    // Dönüşüm — conversionDurations'ta recent window yok (nadir olay, tümü kullanılır)
     decidedCount,
     conversionRate,
     rejectionRate,
-    avgConversionDays: median(conversionDurations),
-    avgConversionDaysMean: mean(conversionDurations),
+    avgConversionDays: median(conversionDurations.map(x => x.value)),
+    avgConversionDaysMean: mean(conversionDurations.map(x => x.value)),
 
-    // Süre
-    avgSalesDays: median(salesDurations),
-    avgTechnicalDays: median(technicalDurations),
-    avgGmDays: median(gmDurations),
-    avgEvaluatingDays: median(evaluatingWaits),  // Karar Bekliyor (Satış) — aktif + geçmiş
-    evaluatingCount: evaluatingActiveCount,       // Şu an bekleyenler (aktif)
-    evaluatingSampleSize: evaluatingWaits.length, // Aktif + geçmiş toplam (medyan örnek boyutu)
-    avgTotalDays: median(totalDurations),
-    // Sample size + son 5 değer — StageRow tooltip için (şeffaflık: medyan
-    // beklenmedik çıktığında hangi verilerden geldiğini görebilelim)
-    stageStats: {
-      sales:      { n: salesDurations.length,     samples: lastN(salesDurations, 5) },
-      technical:  { n: technicalDurations.length, samples: lastN(technicalDurations, 5) },
-      gm:         { n: gmDurations.length,        samples: lastN(gmDurations, 5) },
-      evaluating: { n: evaluatingWaits.length,    samples: lastN(evaluatingWaits, 5) },
-      total:      { n: totalDurations.length,     samples: lastN(totalDurations, 5) },
-    },
+    // Süre — medyan SON 10 study üzerinden (kayan pencere).
+    // Sebep: geçmiş "hep aynı gün imza" desenleri yakın performansı bastırmasın.
+    // Fallback: 10'dan az study varsa hepsi kullanılır.
+    avgSalesDays:      median(recentValues(salesDurations)),
+    avgTechnicalDays:  median(recentValues(technicalDurations)),
+    avgGmDays:         median(recentValues(gmDurations)),
+    avgEvaluatingDays: median(recentValues(evaluatingWaits)),
+    evaluatingCount: evaluatingActiveCount,
+    evaluatingSampleSize: evaluatingWaits.length,
+    avgTotalDays:      median(recentValues(totalDurations)),
+    // Sample debug — StageRow tooltip için. windowN: medyan hangi pencerede
+    // hesaplandı (min(total, 10)). breakdown: dağılım kutuları.
+    stageStats: (() => {
+      const build = (arr) => {
+        const rec = recentValues(arr);
+        return {
+          n: arr.length,           // toplam study sayısı
+          windowN: rec.length,     // medyan hangi pencerede (son N)
+          samples: rec.slice(0, 5).map(v => Number(v.toFixed ? v.toFixed(2) : v)),
+          breakdown: breakdown(rec),
+        };
+      };
+      return {
+        sales:      build(salesDurations),
+        technical:  build(technicalDurations),
+        gm:         build(gmDurations),
+        evaluating: build(evaluatingWaits),
+        total:      build(totalDurations),
+      };
+    })(),
     slowestPending: slowestPending.slice(0, 5),
 
     // Puan
