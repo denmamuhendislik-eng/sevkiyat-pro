@@ -9819,14 +9819,21 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       // Merge into BOM models
       try {
         let matched = 0, notFound = 0;
+        let updatedInstances = 0;         // toplam kaç BOM entry güncellendi (aynı stok birden fazla ağaçta olabilir)
+        const multiBomMatches = [];       // birden fazla BOM'da bulunan (stok, op) çiftleri
+        const updatedAt = new Date().toISOString();
+        const updatedAtTr = new Date().toLocaleDateString("tr-TR");
         const updatedBom = { ...bomModels };
         const mKeys = Object.keys(updatedBom).filter(k => k !== "undefined");
         // v21: Üzerine yazılan manuel değerler — MES import sonuç paneli için (geçici, state'e yazılır kapanınca kaybolur)
         const manualOverwrites = [];
 
+        // v22 (2026-08-03 fix): Erken break kaldırıldı — aynı stok kodu birden
+        // fazla BOM ağacında yer alabilir (alt bileşen olarak + kök ürün olarak),
+        // hepsi güncellenmeli. Aksi halde ağaçlar arasında MES tutarsızlığı oluşur.
         for (const [key, mesOp] of Object.entries(result.ops)) {
           if (mesOp.cycleTime === 0) continue;
-          let found = false;
+          let matchCount = 0;
           for (const mk of mKeys) {
             const model = updatedBom[mk];
             if (!model || !model.parts) continue;
@@ -9834,48 +9841,52 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
               const part = model.parts[pi];
               if (part.stockCode !== mesOp.stockCode) continue;
               for (let oi = 0; oi < part.operations.length; oi++) {
-                if (part.operations[oi].opCode === mesOp.opCode) {
-                  // Deep clone to avoid mutation issues
-                  if (!updatedBom[mk]._cloned) {
-                    updatedBom[mk] = { ...updatedBom[mk], parts: [...updatedBom[mk].parts] };
-                    updatedBom[mk]._cloned = true;
-                  }
-                  updatedBom[mk].parts[pi] = { ...updatedBom[mk].parts[pi], operations: [...updatedBom[mk].parts[pi].operations] };
-                  const prevOp = updatedBom[mk].parts[pi].operations[oi];
-                  // v21: Üzerine yazma tespiti — manuel değer MES ile değişiyorsa log'la (sonuç paneli için)
-                  if (prevOp.manualSource && prevOp.cycleTime != null && prevOp.cycleTime > 0 && prevOp.cycleTime !== mesOp.cycleTime) {
-                    manualOverwrites.push({
-                      stockCode: mesOp.stockCode,
-                      opCode: prevOp.opCode,
-                      opName: prevOp.opName,
-                      previousValue: prevOp.cycleTime,
-                      previousBy: prevOp.manualBy || "bilinmiyor",
-                      previousAt: prevOp.manualAt || null,
-                      newValue: mesOp.cycleTime,
-                      deltaPercent: prevOp.cycleTime > 0 ? Math.round(((mesOp.cycleTime - prevOp.cycleTime) / prevOp.cycleTime) * 10000) / 100 : 0,
-                    });
-                  }
-                  updatedBom[mk].parts[pi].operations[oi] = {
-                    ...prevOp,
-                    cycleTime: mesOp.cycleTime,
-                    mesRenewalTime: mesOp.renewalTime,
-                    mesSource: "MES Import " + new Date().toLocaleDateString("tr-TR"),
-                    mesImportedAt: new Date().toISOString(),
-                    // v21: manuel metadata temizle (artık MES kaynağı)
-                    manualSource: null,
-                    manualAt: null,
-                    manualBy: null,
-                  };
-                  found = true;
-                  matched++;
-                  break;
+                if (part.operations[oi].opCode !== mesOp.opCode) continue;
+                // Deep clone to avoid mutation issues
+                if (!updatedBom[mk]._cloned) {
+                  updatedBom[mk] = { ...updatedBom[mk], parts: [...updatedBom[mk].parts] };
+                  updatedBom[mk]._cloned = true;
                 }
+                updatedBom[mk].parts[pi] = { ...updatedBom[mk].parts[pi], operations: [...updatedBom[mk].parts[pi].operations] };
+                const prevOp = updatedBom[mk].parts[pi].operations[oi];
+                // Üzerine yazma tespiti — manuel değer MES ile değişiyorsa log'la (sonuç paneli için)
+                if (prevOp.manualSource && prevOp.cycleTime != null && prevOp.cycleTime > 0 && prevOp.cycleTime !== mesOp.cycleTime) {
+                  manualOverwrites.push({
+                    stockCode: mesOp.stockCode,
+                    opCode: prevOp.opCode,
+                    opName: prevOp.opName,
+                    bomKey: mk,
+                    previousValue: prevOp.cycleTime,
+                    previousBy: prevOp.manualBy || "bilinmiyor",
+                    previousAt: prevOp.manualAt || null,
+                    newValue: mesOp.cycleTime,
+                    deltaPercent: prevOp.cycleTime > 0 ? Math.round(((mesOp.cycleTime - prevOp.cycleTime) / prevOp.cycleTime) * 10000) / 100 : 0,
+                  });
+                }
+                updatedBom[mk].parts[pi].operations[oi] = {
+                  ...prevOp,
+                  cycleTime: mesOp.cycleTime,
+                  mesRenewalTime: mesOp.renewalTime,
+                  mesSource: "MES Import " + updatedAtTr,
+                  mesImportedAt: updatedAt,
+                  // manuel metadata temizle (artık MES kaynağı)
+                  manualSource: null,
+                  manualAt: null,
+                  manualBy: null,
+                };
+                matchCount++;
+                updatedInstances++;
               }
-              if (found) break;
             }
-            if (found) break;
           }
-          if (!found) notFound++;
+          if (matchCount === 0) {
+            notFound++;
+          } else {
+            matched++;
+            if (matchCount > 1) {
+              multiBomMatches.push({ stockCode: mesOp.stockCode, opCode: mesOp.opCode, count: matchCount });
+            }
+          }
         }
 
         // Clean up clone flags
@@ -9933,7 +9944,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           }
         }
 
-        setMesImportResult({ success: true, totalOps: result.totalOps, totalRows: result.totalRows, matched, notFound, totalMachines: result.totalMachines, machinesAdded, manualOverwrites, importedAt: new Date().toISOString() });
+        setMesImportResult({ success: true, totalOps: result.totalOps, totalRows: result.totalRows, matched, updatedInstances, multiBomMatches, notFound, totalMachines: result.totalMachines, machinesAdded, manualOverwrites, importedAt: new Date().toISOString() });
       } catch (err) {
         setMesImportResult({ error: "Firestore kayıt hatası: " + err.message });
       }
@@ -11025,13 +11036,23 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
                     title="Paneli kapat"
                     style={{ position: "absolute", top: 6, right: 10, cursor: "pointer", fontSize: 14, color: "var(--color-text-tertiary)", lineHeight: 1, padding: "2px 6px" }}>×</span>
               <div style={{ paddingRight: 20 }}>
-                ✓ MES: {mesImportResult.totalRows} satır · {mesImportResult.totalOps} parça×operasyon · <b>{mesImportResult.matched} eşleşti</b> · {mesImportResult.notFound} BOM'da bulunamadı
+                ✓ MES: {mesImportResult.totalRows} satır · {mesImportResult.totalOps} parça×operasyon · <b>{mesImportResult.matched} eşleşti</b>
+                {mesImportResult.updatedInstances > mesImportResult.matched && (
+                  <span> · <b>{mesImportResult.updatedInstances}</b> BOM kaydı güncellendi</span>
+                )}
+                {" "}· {mesImportResult.notFound} BOM'da bulunamadı
                 {(mesImportResult.manualOverwrites?.length || 0) > 0 && (
                   <span style={{ color: "#D97706", fontWeight: 500, marginLeft: 4 }}>
                     · <b>{mesImportResult.manualOverwrites.length}</b> manuel üzerine yazıldı
                   </span>
                 )}
               </div>
+              {(mesImportResult.multiBomMatches?.length || 0) > 0 && (
+                <span style={{ display: "block", marginTop: 4, fontSize: 11, color: "var(--color-text-secondary)" }}
+                  title={mesImportResult.multiBomMatches.map(m => `${m.stockCode}/${m.opCode}: ${m.count} BOM'da`).join("\n")}>
+                  ↳ <b>{mesImportResult.multiBomMatches.length}</b> stok+op birden fazla BOM ağacında bulundu, hepsi güncellendi (hover → detay)
+                </span>
+              )}
               {mesImportResult.machinesAdded > 0 && (
                 <span style={{ display: "block", marginTop: 4, fontSize: 11 }}>
                   ↳ Tezgah: {mesImportResult.totalMachines} tespit · <b>{mesImportResult.machinesAdded} yeni eklendi</b> (İş Merkezleri tab'ından kontrol edin)
