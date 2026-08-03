@@ -14,7 +14,23 @@ import {
 } from "./schema";
 import { computeStudyStatus } from "./firestore";
 
-function daysBetween(startIso, endIso) {
+// Firestore Timestamp objesi, ISO string veya Date — hepsini ISO'ya çevir.
+// Eski/backfill kayıtlarda Timestamp obje olarak gelebilir → parse hatasını
+// önlemek için savunma amaçlı normalize.
+function toIso(v) {
+  if (!v) return null;
+  if (typeof v === "string") return v;
+  if (v instanceof Date) return v.toISOString();
+  if (typeof v === "object") {
+    if (typeof v.toDate === "function") return v.toDate().toISOString();
+    if (typeof v.seconds === "number") return new Date(v.seconds * 1000).toISOString();
+  }
+  return null;
+}
+
+function daysBetween(start, end) {
+  const startIso = toIso(start);
+  const endIso = toIso(end);
   if (!startIso || !endIso) return null;
   const s = new Date(startIso).getTime();
   const e = new Date(endIso).getTime();
@@ -26,6 +42,11 @@ function mean(arr) {
   const filtered = arr.filter(n => Number.isFinite(n));
   if (filtered.length === 0) return null;
   return filtered.reduce((s, n) => s + n, 0) / filtered.length;
+}
+
+// Sample debug — son N geçerli değeri (finite) döndür.
+function lastN(arr, n) {
+  return (arr || []).filter(x => Number.isFinite(x)).slice(-n);
 }
 
 function median(arr) {
@@ -99,6 +120,7 @@ export function computeFeasibilityStats(studies) {
     const sTech = sigs.technicalUnit?.signedAt;
     const sGm = sigs.generalManager?.signedAt;
 
+    // Tamamlanmış aşamalar — imza tarihleri arası fark
     if (sSales) {
       const d = daysBetween(study.createdAt, sSales);
       if (d != null && d >= 0) salesDurations.push(d);
@@ -109,6 +131,21 @@ export function computeFeasibilityStats(studies) {
     }
     if (sGm && sTech) {
       const d = daysBetween(sTech, sGm);
+      if (d != null && d >= 0) gmDurations.push(d);
+    }
+    // Aktif bekleyen aging — henüz imzalanmamış aşamalar için "geçen süre"
+    // metriğe dahil edilsin. Aksi halde uzun bekleyen bir study medyana hiç
+    // katkı vermeyip yanıltıcı düşük değerler çıkabiliyor (2026-08-03 gözlemi).
+    if (!sSales && status === "salesPending") {
+      const d = daysBetween(study.createdAt, new Date().toISOString());
+      if (d != null && d >= 0) salesDurations.push(d);
+    }
+    if (!sTech && status === "technicalPending" && sSales) {
+      const d = daysBetween(sSales, new Date().toISOString());
+      if (d != null && d >= 0) technicalDurations.push(d);
+    }
+    if (!sGm && status === "gmPending" && sTech) {
+      const d = daysBetween(sTech, new Date().toISOString());
       if (d != null && d >= 0) gmDurations.push(d);
     }
 
@@ -259,6 +296,15 @@ export function computeFeasibilityStats(studies) {
     evaluatingCount: evaluatingActiveCount,       // Şu an bekleyenler (aktif)
     evaluatingSampleSize: evaluatingWaits.length, // Aktif + geçmiş toplam (medyan örnek boyutu)
     avgTotalDays: median(totalDurations),
+    // Sample size + son 5 değer — StageRow tooltip için (şeffaflık: medyan
+    // beklenmedik çıktığında hangi verilerden geldiğini görebilelim)
+    stageStats: {
+      sales:      { n: salesDurations.length,     samples: lastN(salesDurations, 5) },
+      technical:  { n: technicalDurations.length, samples: lastN(technicalDurations, 5) },
+      gm:         { n: gmDurations.length,        samples: lastN(gmDurations, 5) },
+      evaluating: { n: evaluatingWaits.length,    samples: lastN(evaluatingWaits, 5) },
+      total:      { n: totalDurations.length,     samples: lastN(totalDurations, 5) },
+    },
     slowestPending: slowestPending.slice(0, 5),
 
     // Puan

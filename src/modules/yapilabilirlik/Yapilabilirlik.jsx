@@ -1833,15 +1833,15 @@ function KpiView() {
         </KpiPanel>
         <KpiPanel title="⏱ Aşama Süreleri (medyan)">
           <div style={{ display: "flex", flexDirection: "column", gap: 8, padding: "8px 4px" }}>
-            <StageRow icon="💼" label="Satış aşaması" days={stats.avgSalesDays} color="#1e40af" />
-            <StageRow icon="⚙️" label="Teknik aşaması" days={stats.avgTechnicalDays} color="#0f766e" />
-            <StageRow icon="⭐" label="GM aşaması" days={stats.avgGmDays} color="#991b1b" />
-            <StageRow icon="⏳" label={`Karar Bekliyor (Satış)${stats.evaluatingCount > 0 ? ` — ${stats.evaluatingCount} aktif` : ""}${stats.evaluatingSampleSize > 0 ? ` · n=${stats.evaluatingSampleSize}` : ""}`} days={stats.avgEvaluatingDays} color="#a855f7" />
+            <StageRow icon="💼" label="Satış aşaması" days={stats.avgSalesDays} color="#1e40af" stat={stats.stageStats?.sales} />
+            <StageRow icon="⚙️" label="Teknik aşaması" days={stats.avgTechnicalDays} color="#0f766e" stat={stats.stageStats?.technical} />
+            <StageRow icon="⭐" label="GM aşaması" days={stats.avgGmDays} color="#991b1b" stat={stats.stageStats?.gm} />
+            <StageRow icon="⏳" label={`Karar Bekliyor (Satış)${stats.evaluatingCount > 0 ? ` — ${stats.evaluatingCount} aktif` : ""}`} days={stats.avgEvaluatingDays} color="#a855f7" stat={stats.stageStats?.evaluating} />
             <div style={{ borderTop: "1px solid #e7e5e4", paddingTop: 8, marginTop: 4 }}>
-              <StageRow icon="🏁" label="Toplam (create→onay)" days={stats.avgTotalDays} color="#44403c" bold />
+              <StageRow icon="🏁" label="Toplam (create→onay)" days={stats.avgTotalDays} color="#44403c" bold stat={stats.stageStats?.total} />
             </div>
             <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
-              💡 Medyan kullanılır; birkaç outlier ortalama'yı çarpıtmaz. "Karar Bekliyor" — aktifler için son imza→bugün (aging), karar verilmişler için son imza→updatedAt (karar tarihi proxy). "n=" örnek boyutu.
+              💡 Medyan (birkaç outlier ortalama'yı çarpıtmaz). Aktif bekleyen study'ler de metriğe dahil (yaşlanma). Satır üzerine hover et → son 5 değer görünür.
             </div>
           </div>
         </KpiPanel>
@@ -2052,11 +2052,21 @@ function StatusDonut({ byStatus }) {
 }
 
 // Aşama süre satırı
-function StageRow({ icon, label, days, color, bold }) {
+function StageRow({ icon, label, days, color, bold, stat }) {
+  const n = stat?.n ?? null;
+  const samples = stat?.samples || [];
+  const tooltip = n != null
+    ? (samples.length > 0
+        ? `n=${n} · son ${samples.length} değer: ${samples.map(v => v.toFixed(2)).join(" · ")} gün`
+        : `n=${n} · geçerli veri yok`)
+    : undefined;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }} title={tooltip}>
       <span style={{ fontSize: 14 }}>{icon}</span>
-      <span style={{ flex: 1, fontSize: 11, color: "#44403c", fontWeight: bold ? 600 : 400 }}>{label}</span>
+      <span style={{ flex: 1, fontSize: 11, color: "#44403c", fontWeight: bold ? 600 : 400 }}>
+        {label}
+        {n != null && <span style={{ marginLeft: 4, fontSize: 9, color: "#a8a29e", fontWeight: 400 }}>· n={n}</span>}
+      </span>
       <span style={{ fontSize: 12, fontWeight: 600, color: days == null ? "#a8a29e" : color, fontVariantNumeric: "tabular-nums" }}>
         {days == null ? "—" : `${days.toFixed(1)} gün`}
       </span>
