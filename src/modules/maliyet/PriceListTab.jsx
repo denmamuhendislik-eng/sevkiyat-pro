@@ -303,9 +303,22 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     [products, selectedIds]
   );
 
+  // Breakdown modunda mamul seçildiğinde/kaldırıldığında aynı grubun tüm alt
+  // parçalarını da otomatik seç/kaldır. Kullanıcı isteği: yedek parça listesinde
+  // mamulü seçmek = tüm kırılımı seçmek.
   const toggleSelect = (id) => setSelectedIds(prev => {
     const next = new Set(prev);
-    if (next.has(id)) next.delete(id); else next.add(id);
+    const clicked = products.find(p => p.id === id);
+    const willSelect = !next.has(id);
+    if (willSelect) next.add(id); else next.delete(id);
+    // Breakdown mod + tıklanan bir mamul (root) ise grubun alt parçalarını da toggle et
+    if (viewMode === "breakdown" && clicked?.isRoot && clicked.groupModelKey) {
+      for (const p of products) {
+        if (p.groupModelKey === clicked.groupModelKey && p.id !== id) {
+          if (willSelect) next.add(p.id); else next.delete(p.id);
+        }
+      }
+    }
     return next;
   });
   const selectAll = () => setSelectedIds(new Set(products.map(p => p.id)));
@@ -660,7 +673,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         💡 <b>Satış Fiyatı</b> = Maliyet × (1 + Marj%) → yuvarla. Fiyat, Mamul Maliyetleri hesabından birebir alınır.
         {viewMode === "roots" && <> · <b>Sadece Mamüller</b>: her BOM'un kök ürünü listelenir.</>}
         {viewMode === "global" && <> · <b>Global Alt Parçalar</b>: mamüller + hiçbir mamul olarak hesaplanmayan alt parçalar (BUY hammaddeler, yarı mamuller). Her stok tek satır.</>}
-        {viewMode === "breakdown" && <> · <b>Mamül Kırılımı</b>: her mamul + kendi BOM ağacındaki TÜM alt parçalar (yedek parça / kırılım listesi için). Aynı stok farklı mamullerde ayrı satır olarak görünür — her mamul için o BOM'un hesabı geçerli.</>}
+        {viewMode === "breakdown" && <> · <b>Mamül Kırılımı</b>: her mamul + kendi BOM ağacındaki TÜM alt parçalar (yedek parça / kırılım listesi için). Aynı stok farklı mamullerde ayrı satır olarak görünür — her mamul için o BOM'un hesabı geçerli. <b>Mamul satırının checkbox'ını tıklarsan alt parçaları da otomatik seçilir</b> (grup halinde export için pratik).</>}
       </div>
     </div>
   );
