@@ -116,42 +116,88 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   // Formül: salesTl = cost × (1 + marginPct/100), yuvarla
   // Overhead problemi YOK: rootCost/unitCost direkt Mamul Maliyeti'nden alınır.
   // ============================================================
+  // Her stok kodu için TEK SATIR. Root olarak hesaplanan varsa onu kullan
+  // (Mamul Maliyetleri'nde gösterilen değerle birebir aynı). Alt parça toggle
+  // açıksa: sadece hiçbir BOM'un root'u OLMAYAN stok kodları alt parça olarak
+  // eklenir (aynı stok kodu için root fiyatı ve alt parça fiyatı çelişkisini
+  // önler; Mamul Maliyetleri ekranı = fiyat listesi tek doğru kaynak).
   const products = useMemo(() => {
     if (!calc?.byModel) return [];
+    const models = Object.values(calc.byModel);
+    // Adım 1: Root stok kodları set + her stok koduna en yüksek rootCost
+    // (aynı stok kodu birden fazla BOM'un root'u ise en yüksek maliyetli).
+    const rootByStock = new Map(); // stockCode → { stockCode, stockName, cost }
+    for (const m of models) {
+      const code = (m.rootStockCode || "").trim();
+      if (!code) continue;
+      const cost = Number(m.rootCost) || 0;
+      const existing = rootByStock.get(code);
+      if (!existing || cost > existing.cost) {
+        rootByStock.set(code, {
+          stockCode: code,
+          stockName: m.rootStockName || m.modelName || "",
+          cost,
+          modelKey: m.modelKey,
+        });
+      }
+    }
     const rows = [];
-    for (const m of Object.values(calc.byModel)) {
-      // Root mamul satırı
-      const rootCost = Number(m.rootCost) || 0;
+    // Adım 2: Root mamuller (her stok kodu tek satır)
+    for (const r of rootByStock.values()) {
       rows.push({
-        id: `root:${m.modelKey}`,
-        modelKey: m.modelKey,
-        stockCode: m.rootStockCode || "",
-        stockName: m.rootStockName || m.modelName || "",
+        id: `root:${r.stockCode}`,
+        stockCode: r.stockCode,
+        stockName: r.stockName,
         level: 0,
         isRoot: true,
         parentModel: null,
-        parentModelStockCode: null,
-        cost: rootCost,
+        cost: r.cost,
       });
-      // Alt parçalar (toggle ON ise)
-      if (includeSubparts && m.partsList) {
-        for (const p of m.partsList) {
-          // Root parçayı zaten ekledik, atla
+    }
+    // Adım 3: Alt parçalar (toggle ON). Root olarak zaten mevcut olan kodlar atlanır.
+    // Aynı alt parça birden fazla BOM'da farklı unitCost ile varsa → en yüksek al,
+    // "Ana Mamul(ler)" listesine hepsini ekle.
+    if (includeSubparts) {
+      const subByStock = new Map(); // stockCode → { stockCode, stockName, cost, parentModels: Set, level }
+      for (const m of models) {
+        for (const p of (m.partsList || [])) {
+          // Root parçayı atla (parentIdx null/undefined olanlar root)
           if (p.parentIdx === null || p.parentIdx === undefined) continue;
-          const unitCost = Number(p.unitCost) || 0;
-          rows.push({
-            id: `${m.modelKey}:${p.idx}`,
-            modelKey: m.modelKey,
-            stockCode: p.stockCode || "",
-            stockName: p.stockName || "",
-            level: Number(p.level) || 1,
-            isRoot: false,
-            parentModel: m.modelCode || m.rootStockCode || "",
-            parentModelStockCode: m.rootStockCode || "",
-            cost: unitCost,
-            supplyType: p.supplyType || "",
-          });
+          const code = (p.stockCode || "").trim();
+          if (!code) continue;
+          // ÖNEMLİ: root olarak zaten mevcut olan stok kodu alt parça olarak eklenmez
+          // → Mamul Maliyetleri'ndeki değer korunur, çelişki oluşmaz
+          if (rootByStock.has(code)) continue;
+          const cost = Number(p.unitCost) || 0;
+          const parentModelName = m.modelCode || m.rootStockCode || "";
+          const existing = subByStock.get(code);
+          if (!existing) {
+            subByStock.set(code, {
+              stockCode: code,
+              stockName: p.stockName || "",
+              cost,
+              parentModels: new Set([parentModelName]),
+              level: Number(p.level) || 1,
+              supplyType: p.supplyType || "",
+            });
+          } else {
+            // Aynı stok kodu — en yüksek unitCost kalır (snapshot mantığıyla aynı)
+            if (cost > existing.cost) existing.cost = cost;
+            existing.parentModels.add(parentModelName);
+          }
         }
+      }
+      for (const s of subByStock.values()) {
+        rows.push({
+          id: `sub:${s.stockCode}`,
+          stockCode: s.stockCode,
+          stockName: s.stockName,
+          level: s.level,
+          isRoot: false,
+          parentModel: Array.from(s.parentModels).join(", "),
+          cost: s.cost,
+          supplyType: s.supplyType,
+        });
       }
     }
     // Hesap: satış + kâr + marj%
@@ -171,22 +217,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
             || (r.parentModel || "").toLocaleLowerCase("tr-TR").includes(q);
       })
       .sort((a, b) => {
-        // Root'lar önce, sonra maliyet desc; alt parçalar kendi ana mamulünün altında
-        if (includeSubparts) {
-          // Aynı model içinde: root önce (isRoot true), sonra alt parçalar level'a göre
-          const aKey = a.modelKey || "";
-          const bKey = b.modelKey || "";
-          if (aKey !== bKey) {
-            // Modeller arası: root maliyetine göre desc
-            const aModelCost = a.isRoot ? a.cost : (calc.byModel[aKey]?.rootCost || 0);
-            const bModelCost = b.isRoot ? b.cost : (calc.byModel[bKey]?.rootCost || 0);
-            return bModelCost - aModelCost;
-          }
-          // Aynı model içi: root önce
-          if (a.isRoot && !b.isRoot) return -1;
-          if (!a.isRoot && b.isRoot) return 1;
-          return (a.level || 0) - (b.level || 0);
-        }
+        // Root'lar önce (mamuller), sonra alt parçalar; ikisi de kendi içinde maliyet desc
+        if (a.isRoot && !b.isRoot) return -1;
+        if (!a.isRoot && b.isRoot) return 1;
         return b.cost - a.cost;
       });
   }, [calc, marginPct, rounding, includeSubparts, searchText, onlyCosted]);
@@ -426,13 +459,12 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     <div>
       {/* Üst bant: ay + marj + yuvarlama + toggle */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8, marginBottom: 12 }}>
-        <div title="Mamul Maliyetleri sekmesi ile ortak">
+        <div title="Ay seçimi Mamul Maliyetleri sekmesinden yapılır — burada değiştirilemez">
           <label style={{ fontSize: 11, color: "var(--color-text-secondary)", marginRight: 6 }}>Hesap ayı:</label>
-          <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}
-            style={{ padding: "5px 10px", fontSize: 12, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
-            {availableMonths.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
-          </select>
-          <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginLeft: 6 }}>(Mamul Maliyetleri ile ortak)</span>
+          <span style={{ padding: "5px 10px", fontSize: 12, background: "#fff", border: "1px solid var(--color-border-secondary)", borderRadius: 4, fontWeight: 500 }}>
+            📅 {monthLabel(selectedMonth) || "—"}
+          </span>
+          <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginLeft: 6 }}>(Mamul Maliyetleri'nden gelir)</span>
         </div>
         <div>
           <label style={{ fontSize: 11, color: "var(--color-text-secondary)", marginRight: 6 }}>Marj:</label>
@@ -524,11 +556,12 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                   </td>
                 )}
                 {includeSubparts && (
-                  <td style={{ ...td, fontSize: 10, color: "#78716c", fontFamily: "ui-monospace, monospace" }}>
-                    {p.isRoot ? "—" : (p.parentModel || "-")}
+                  <td style={{ ...td, fontSize: 10, color: "#78716c", fontFamily: "ui-monospace, monospace" }}
+                    title={p.parentModel || ""}>
+                    {p.isRoot ? "—" : (p.parentModel || "-").length > 30 ? (p.parentModel.slice(0, 28) + "…") : (p.parentModel || "-")}
                   </td>
                 )}
-                <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: p.isRoot ? 600 : 500, paddingLeft: (includeSubparts && !p.isRoot) ? 8 + (p.level - 1) * 6 : 8 }}>
+                <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: p.isRoot ? 600 : 500 }}>
                   {p.stockCode}
                 </td>
                 <td style={td}>{p.stockName || "—"}</td>
@@ -543,8 +576,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       </div>
 
       <div style={{ marginTop: 10, fontSize: 10, color: "var(--color-text-tertiary)" }}>
-        💡 <b>Satış Fiyatı</b> = Maliyet × (1 + Marj%) → yuvarla. <b>Maliyet</b> = Mamul Maliyetleri hesabından birebir alınır (hiç ek hesap yok).
-        {includeSubparts && <> · <b>Alt parça satırları</b>: Aynı stok kodu birden fazla mamulda kullanılırsa her mamulun altında ayrı satır olarak listelenir.</>}
+        💡 <b>Satış Fiyatı</b> = Maliyet × (1 + Marj%) → yuvarla. <b>Her stok kodu için tek satır</b> — Mamul olarak hesaplananlar öncelikli (Mamul Maliyetleri'ndeki değere birebir eşit).
+        {includeSubparts && <> · <b>Alt parça satırları</b>: sadece hiçbir mamulün kendi başına hesabında bulunmayan stok kodları (BUY hammaddeler, root olmayan yarı mamuller). "Ana Mamul" kolonu hangi mamullerin altında kullanıldığını gösterir.</>}
       </div>
     </div>
   );
