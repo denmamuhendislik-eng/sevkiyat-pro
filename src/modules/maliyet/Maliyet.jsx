@@ -4,6 +4,7 @@ import MachineRatesTab from "./MachineRatesTab";
 import UnitCostsTab from "./UnitCostsTab";
 import FasonRatesTab from "./FasonRatesTab";
 import ProductCostsTab from "./ProductCostsTab";
+import PriceListTab from "./PriceListTab";
 import InventoryTab from "./InventoryTab";
 import SuppliesTab from "./SuppliesTab";
 import MaliyetDashboard from "./MaliyetDashboard";
@@ -21,13 +22,14 @@ const TABS = [
   { id: "unitConversions", icon: "🔀", label: "Birim Dönüşümleri", phase: 1, active: true, note: "BOM birimi ≠ satınalma birimi olan stoklar (streç film MT ↔ AD gibi) için dönüşüm faktörü" },
   { id: "fasonRates", icon: "🔧", label: "Fason Ücretleri", phase: 3, active: true, note: "Geçici tablo — fason takip modülü gelene kadar" },
   { id: "productCosts", icon: "📦", label: "Mamul Maliyetleri", phase: 3, active: true },
+  { id: "priceList", icon: "💰", label: "Fiyat Listesi", phase: 3, active: true, note: "Mamul maliyetlerinden marj + yuvarlama ile satış fiyatı listesi (Excel/PDF export)" },
   { id: "shipmentCosts", icon: "🚛", label: "Sevkiyat Maliyetleri", phase: 4, active: false, note: "Faz 4 — FIFO bazlı" },
   { id: "inventory", icon: "📚", label: "Envanter Değeri", phase: 4, active: true },
   { id: "profitability", icon: "💵", label: "Karlılık", phase: 5, active: true, note: "Ürün × kanal birim karlılık — güncel maliyet (rootCost) vs güncel satış fiyatı" },
 ];
 
 // Sekmenin döviz toggle'ından etkilenip etkilenmediği
-const CURRENCY_AWARE = new Set(["dashboard", "machineRates", "productCosts", "inventory", "profitability"]);
+const CURRENCY_AWARE = new Set(["dashboard", "machineRates", "productCosts", "priceList", "inventory", "profitability"]);
 
 export default function Maliyet({ isAdmin, isUretim }) {
   const [activeTab, setActiveTab] = useState("dashboard");
@@ -177,6 +179,7 @@ export default function Maliyet({ isAdmin, isUretim }) {
       {activeTab === "unitConversions" && <UnitConversionsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "fasonRates" && <FasonRatesTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} />}
+      {activeTab === "priceList" && <PriceListTab canEdit={canEdit} {...currencyProps} />}
       {activeTab === "inventory" && <InventoryTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} currencyRates={currencyRates} />}
       {activeTab === "profitability" && <ProfitabilityTab {...currencyProps} />}
       {activeMeta && !activeMeta.active && (

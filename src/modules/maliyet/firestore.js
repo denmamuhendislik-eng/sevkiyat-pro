@@ -474,3 +474,35 @@ export function convertBomQtyToPurchaseUnit(bomQty, unitConversionsData, stokKod
   if (!conv || !conv.factor) return bomQty;
   return bomQty / conv.factor;
 }
+
+// ============================================================
+// Fiyat Listesi Politikası — appData/priceListPolicy
+// ============================================================
+// Marj ayarları + yuvarlama tercihi (basit ya da detaylı mod).
+// Yapı: {
+//   mode: "simple" | "detailed",
+//   defaultMarginPct, laborPct, materialFasonPct,
+//   rounding, currency, updatedAt, updatedBy
+// }
+
+const PRICE_LIST_POLICY_DOC = "priceListPolicy";
+
+export function subscribePriceListPolicy(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, PRICE_LIST_POLICY_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("priceListPolicy listener:", err); callback({}); }
+  );
+}
+
+export async function savePriceListPolicy(policy, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const ref = doc(db, APP_COL, PRICE_LIST_POLICY_DOC);
+  await setDoc(ref, {
+    ...policy,
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
