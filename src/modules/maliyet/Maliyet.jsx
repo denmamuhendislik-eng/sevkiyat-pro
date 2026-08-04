@@ -41,6 +41,11 @@ export default function Maliyet({ isAdmin, isUretim }) {
   const [usdOverride, setUsdOverride] = useState("");
   const [eurOverride, setEurOverride] = useState("");
 
+  // Hesap ayı state — ortak (Mamul Maliyetleri + Fiyat Listesi arasında paylaşılır).
+  // Varsayılan: bugünün ayı. Her iki tab kendi useEffect'inde ay yoksa son
+  // tamamlanan aya otomatik düşer — sonra o değeri buraya yazar.
+  const [sharedMonth, setSharedMonth] = useState(new Date().toISOString().slice(0, 7));
+
   useEffect(() => {
     const u = subscribeCurrencyRates(d => setCurrencyRates(d || {}));
     return u;
@@ -178,8 +183,8 @@ export default function Maliyet({ isAdmin, isUretim }) {
       {activeTab === "unitCosts" && <UnitCostsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "unitConversions" && <UnitConversionsTab canEdit={canEdit} isAdmin={isAdmin} />}
       {activeTab === "fasonRates" && <FasonRatesTab canEdit={canEdit} isAdmin={isAdmin} />}
-      {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} />}
-      {activeTab === "priceList" && <PriceListTab canEdit={canEdit} {...currencyProps} />}
+      {activeTab === "productCosts" && <ProductCostsTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} sharedMonth={sharedMonth} setSharedMonth={setSharedMonth} />}
+      {activeTab === "priceList" && <PriceListTab canEdit={canEdit} {...currencyProps} sharedMonth={sharedMonth} setSharedMonth={setSharedMonth} />}
       {activeTab === "inventory" && <InventoryTab canEdit={canEdit} isAdmin={isAdmin} {...currencyProps} currencyRates={currencyRates} />}
       {activeTab === "profitability" && <ProfitabilityTab {...currencyProps} />}
       {activeMeta && !activeMeta.active && (

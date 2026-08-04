@@ -42,7 +42,7 @@ function applyRounding(value, step) {
   return Math.ceil(value / step) * step;
 }
 
-export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rates = null }) {
+export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rates = null, sharedMonth, setSharedMonth }) {
   // Data subscriptions
   const [bomModels, setBomModels] = useState({});
   const [unitCosts, setUnitCosts] = useState({});
@@ -54,8 +54,11 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const [priceListPolicy, setPriceListPolicy] = useState({});
   const [loaded, setLoaded] = useState({ bom: false, uc: false, wc: false, labor: false, pol: false, fas: false, conv: false, plp: false });
 
+  // Hesap ayı: üst seviyeden paylaşılır (Mamul Maliyetleri ile ortak). Fallback: lokal.
+  const [localMonth, setLocalMonth] = useState(todayMonth());
+  const selectedMonth = sharedMonth !== undefined ? sharedMonth : localMonth;
+  const setSelectedMonth = setSharedMonth || setLocalMonth;
   // UI state
-  const [selectedMonth, setSelectedMonth] = useState(todayMonth());
   const [mode, setMode] = useState("simple");   // "simple" | "detailed"
   const [defaultMarginPct, setDefaultMarginPct] = useState(35);
   const [laborPct, setLaborPct] = useState(40);
@@ -97,6 +100,14 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const monthData = monthlyOverheads[selectedMonth];
   const monthlySupplies = laborData?.monthlySupplies || {};
   const availableMonths = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
+
+  // Seçili ay mevcut değilse en son mevcut aya düş (ProductCostsTab ile aynı davranış).
+  useEffect(() => {
+    if (availableMonths.length === 0) return;
+    if (monthlyOverheads[selectedMonth]) return;
+    setSelectedMonth(availableMonths[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableMonths, selectedMonth]);
 
   const allLoaded = Object.values(loaded).every(Boolean);
   const calc = useMemo(() => {
@@ -322,8 +333,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   if (!monthData) return (
     <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8 }}>
       <div style={{ fontSize: 32, marginBottom: 10 }}>📦</div>
-      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Hesap ayı yok</div>
-      <div style={{ fontSize: 12 }}>Önce Aylık Genel Giderler sekmesinden bir ay yükleyin</div>
+      <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 6 }}>Hesap ayı seçili değil / yüklenmemiş</div>
+      <div style={{ fontSize: 12 }}>Mamul Maliyetleri sekmesinde bir ay seçili değilse, önce Aylık Genel Giderler'den bir ay yükleyin. Ay seçimi Mamul Maliyetleri ile ortaktır.</div>
     </div>
   );
 
@@ -331,12 +342,13 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     <div>
       {/* Üst bant: ay + marj + yuvarlama */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", padding: "10px 14px", background: "var(--color-background-secondary)", borderRadius: 8, marginBottom: 12 }}>
-        <div>
+        <div title="Mamul Maliyetleri sekmesi ile ortak">
           <label style={{ fontSize: 11, color: "var(--color-text-secondary)", marginRight: 6 }}>Hesap ayı:</label>
           <select value={selectedMonth} onChange={e => setSelectedMonth(e.target.value)}
             style={{ padding: "5px 10px", fontSize: 12, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
             {availableMonths.map(m => <option key={m} value={m}>{monthLabel(m)}</option>)}
           </select>
+          <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", marginLeft: 6 }}>(Mamul Maliyetleri ile ortak)</span>
         </div>
         <div style={{ display: "flex", gap: 2, border: "1px solid var(--color-border-secondary)", borderRadius: 4, overflow: "hidden" }}>
           <button onClick={() => setMode("simple")}

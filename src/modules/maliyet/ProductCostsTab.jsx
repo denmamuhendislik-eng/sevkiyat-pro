@@ -107,7 +107,7 @@ function explainStatus(part) {
   return reasons.length > 0 ? reasons.join(" · ") : "—";
 }
 
-export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", rates = null }) {
+export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", rates = null, sharedMonth, setSharedMonth }) {
   // Para birimi yardımcısı — sadece sayı (sembol ayrı kolonlarda)
   const f2 = (tl) => fmtMoneyNum(tl, currency, rates, 2);
   const f0 = (tl) => fmtMoneyNum(tl, currency, rates, 0);
@@ -120,7 +120,11 @@ export default function ProductCostsTab({ canEdit, isAdmin, currency = "TRY", ra
   const [fasonRates, setFasonRates] = useState({});
   const [unitConversions, setUnitConversions] = useState({ conversions: {} });
   const [loaded, setLoaded] = useState({ bom: false, wc: false, unit: false, labor: false, pol: false, fason: false, uconv: false });
-  const [selectedMonth, setSelectedMonth] = useState(todayMonth());
+  // Hesap ayı: üst seviyeden gelirse onu kullan (Fiyat Listesi ile paylaşım),
+  // yoksa lokal state (backward-compat — sekme standalone kullanılırsa).
+  const [localMonth, setLocalMonth] = useState(todayMonth());
+  const selectedMonth = sharedMonth !== undefined ? sharedMonth : localMonth;
+  const setSelectedMonth = setSharedMonth || setLocalMonth;
   const [selectedModel, setSelectedModel] = useState(null);
   const [searchModel, setSearchModel] = useState("");
   const [showInconsistencies, setShowInconsistencies] = useState(false);
