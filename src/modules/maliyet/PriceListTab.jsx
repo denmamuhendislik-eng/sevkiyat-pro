@@ -15,6 +15,7 @@ import {
   subscribeUnitConversions, subscribePriceListPolicy, savePriceListPolicy,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
+import { DEFAULT_WEIGHTS, getOverheadMonthlyAvg } from "./distributionCalc";
 import { fmtMoneyNum, CURRENCY_SYMBOLS, convertFromTl } from "./currency";
 
 const todayMonth = () => new Date().toISOString().slice(0, 7);
@@ -70,7 +71,11 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     const u2 = subscribeUnitCosts(d => { setUnitCosts(d || {}); setLoaded(l => ({ ...l, uc: true })); });
     const u3 = subscribeWorkCenters(d => { setWorkCenters(d || {}); setLoaded(l => ({ ...l, wc: true })); });
     const u4 = subscribeLaborCosts(d => { setLaborData(d || {}); setLoaded(l => ({ ...l, labor: true })); });
-    const u5 = subscribeOverheadPolicy(d => { setPolicy(d || {}); setLoaded(l => ({ ...l, pol: true })); });
+    const u5 = subscribeOverheadPolicy(d => {
+      // ProfitabilityTab pattern'i: policy boş gelirse default weights ile boşluk doldur.
+      setPolicy(!d || Object.keys(d).length === 0 ? { weights: { ...DEFAULT_WEIGHTS }, wcSalaryMapping: {} } : d);
+      setLoaded(l => ({ ...l, pol: true }));
+    });
     const u6 = subscribeFasonRates(d => { setFasonRates(d || {}); setLoaded(l => ({ ...l, fas: true })); });
     const u7 = subscribeUnitConversions(d => { setUnitConversions(d || {}); setLoaded(l => ({ ...l, conv: true })); });
     const u8 = subscribePriceListPolicy(d => {
@@ -93,7 +98,6 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
-  const monthData = monthlyOverheads[selectedMonth];
   const monthlySupplies = laborData?.monthlySupplies || {};
   const availableMonths = useMemo(() => Object.keys(monthlyOverheads).sort().reverse(), [monthlyOverheads]);
 
@@ -104,6 +108,19 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     setSelectedMonth(availableMonths[0]);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [availableMonths, selectedMonth]);
+
+  // Overhead ay verisi — ProductCostsTab/ProfitabilityTab ile birebir aynı mantık.
+  // "avg" modda son X ayın ortalaması alınır (policy.overheadAvgWindowMonths, default 6).
+  // Aksi halde ham ay verisi. Bu monthData productCostCalc'a gider → aynı rootCost.
+  const overheadAvgMode = policy?.overheadAvgMode || "avg";
+  const overheadAvgWindow = Number(policy?.overheadAvgWindowMonths) || 6;
+  const monthData = useMemo(() => {
+    if (overheadAvgMode === "avg") {
+      const avg = getOverheadMonthlyAvg(monthlyOverheads, overheadAvgWindow, selectedMonth);
+      if (avg?._avgInfo?.monthsUsed > 0) return avg;
+    }
+    return monthlyOverheads[selectedMonth];
+  }, [monthlyOverheads, overheadAvgMode, overheadAvgWindow, selectedMonth]);
 
   const allLoaded = Object.values(loaded).every(Boolean);
   const calc = useMemo(() => {
