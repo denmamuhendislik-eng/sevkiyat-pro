@@ -63,6 +63,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   // viewMode: "roots" (sadece mamuller) | "global" (mamuller + global alt parçalar) |
   //           "breakdown" (mamul kırılımı: her mamul + kendi tüm alt parçaları)
   const [viewMode, setViewMode] = useState("roots");
+  // Breakdown modunda maksimum level filtresi — 1 (yedek parça, önerilen) / 2 / 999 (tüm)
+  const [maxLevel, setMaxLevel] = useState(1);
   const [searchText, setSearchText] = useState("");
   const [onlyCosted, setOnlyCosted] = useState(true);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -95,6 +97,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           // Backward-compat: eski includeSubparts bool → viewMode string
           if (typeof d.viewMode === "string") setViewMode(d.viewMode);
           else if (typeof d.includeSubparts === "boolean") setViewMode(d.includeSubparts ? "global" : "roots");
+          if (typeof d.maxLevel === "number") setMaxLevel(d.maxLevel);
         }
       }
     });
@@ -184,16 +187,18 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           groupModelKey: m.modelKey,
           cost: Number(m.rootCost) || 0,
         });
-        // Alt parçalar (root hariç, partsList'ten)
+        // Alt parçalar (root hariç, partsList'ten) — level filtresi ile
         for (const p of (m.partsList || [])) {
           if (p.parentIdx === null || p.parentIdx === undefined) continue;
           const code = (p.stockCode || "").trim();
           if (!code) continue;
+          const partLevel = Number(p.level) || 1;
+          if (partLevel > maxLevel) continue; // level filtresi
           rows.push({
             id: `bd:${m.modelKey}:${p.idx}`,
             stockCode: code,
             stockName: p.stockName || "",
-            level: Number(p.level) || 1,
+            level: partLevel,
             isRoot: false,
             parentModel: modelLabel,
             groupModelKey: m.modelKey,
@@ -296,7 +301,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         if (!a.isRoot && b.isRoot) return 1;
         return b.cost - a.cost;
       });
-  }, [calc, marginPct, rounding, viewMode, searchText, onlyCosted]);
+  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted]);
 
   const selectedProducts = useMemo(
     () => products.filter(p => selectedIds.has(p.id)),
@@ -328,7 +333,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     if (!canEdit) return;
     try {
       await savePriceListPolicy({
-        marginPct, rounding, viewMode,
+        marginPct, rounding, viewMode, maxLevel,
       }, { canEdit, userEmail });
       alert("Ayarlar kaydedildi ✓");
     } catch (e) {
@@ -580,6 +585,17 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
             <option value="breakdown">🌲 Mamül Kırılımı (yedek parça listesi)</option>
           </select>
         </div>
+        {viewMode === "breakdown" && (
+          <div title="Kırılımda hangi seviyeye kadar göster (L2+ genelde iç yapıdır, fiyat mükerrer olabilir)">
+            <label style={{ fontSize: 11, color: "var(--color-text-secondary)", marginRight: 6 }}>Seviye:</label>
+            <select value={maxLevel} onChange={e => setMaxLevel(Number(e.target.value))}
+              style={{ padding: "5px 10px", fontSize: 12, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
+              <option value={1}>L1 (yedek parça — önerilen)</option>
+              <option value={2}>L1-L2 (yarı mamul dahil)</option>
+              <option value={999}>Tüm seviyeler</option>
+            </select>
+          </div>
+        )}
         <button onClick={savePolicy} disabled={!canEdit}
           title="Marj + yuvarlama + toggle tercihi sistem geneline kaydedilir"
           style={{ padding: "5px 10px", fontSize: 11, background: "#f5f5f4", border: "1px solid var(--color-border-secondary)", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
@@ -673,7 +689,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         💡 <b>Satış Fiyatı</b> = Maliyet × (1 + Marj%) → yuvarla. Fiyat, Mamul Maliyetleri hesabından birebir alınır.
         {viewMode === "roots" && <> · <b>Sadece Mamüller</b>: her BOM'un kök ürünü listelenir.</>}
         {viewMode === "global" && <> · <b>Global Alt Parçalar</b>: mamüller + hiçbir mamul olarak hesaplanmayan alt parçalar (BUY hammaddeler, yarı mamuller). Her stok tek satır.</>}
-        {viewMode === "breakdown" && <> · <b>Mamül Kırılımı</b>: her mamul + kendi BOM ağacındaki TÜM alt parçalar (yedek parça / kırılım listesi için). Aynı stok farklı mamullerde ayrı satır olarak görünür — her mamul için o BOM'un hesabı geçerli. <b>Mamul satırının checkbox'ını tıklarsan alt parçaları da otomatik seçilir</b> (grup halinde export için pratik).</>}
+        {viewMode === "breakdown" && <> · <b>Mamül Kırılımı</b>: her mamul + BOM ağacındaki alt parçalar. Seviye = {maxLevel === 999 ? "tüm seviyeler" : maxLevel === 2 ? "L1-L2 (yarı mamul dahil)" : "L1 (yedek parça)"}. <b>L2+ genelde iç yapıdır</b>, fiyatı L1 içine dahildir; müşteriye yedek parça verirken L1 önerilir. Mamul satırının checkbox'ını tıklarsan alt parçaları da otomatik seçilir.</>}
       </div>
     </div>
   );
