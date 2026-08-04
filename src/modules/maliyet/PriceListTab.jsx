@@ -65,6 +65,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const [viewMode, setViewMode] = useState("roots");
   // Breakdown modunda maksimum level filtresi — 1 (yedek parça, önerilen) / 2 / 999 (tüm)
   const [maxLevel, setMaxLevel] = useState(1);
+  // Detay kolonları (Malzeme / İşçilik / Fason) bilgi amaçlı — fiyat hesabı değişmez
+  const [showDetailCols, setShowDetailCols] = useState(false);
   const [searchText, setSearchText] = useState("");
   const [onlyCosted, setOnlyCosted] = useState(true);
   const [selectedIds, setSelectedIds] = useState(new Set());
@@ -98,6 +100,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           if (typeof d.viewMode === "string") setViewMode(d.viewMode);
           else if (typeof d.includeSubparts === "boolean") setViewMode(d.includeSubparts ? "global" : "roots");
           if (typeof d.maxLevel === "number") setMaxLevel(d.maxLevel);
+          if (typeof d.showDetailCols === "boolean") setShowDetailCols(d.showDetailCols);
         }
       }
     });
@@ -162,6 +165,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           stockCode: code,
           stockName: m.rootStockName || m.modelName || "",
           cost,
+          material: Number(m.rootMaterial) || 0,
+          labor: Number(m.rootLabor) || 0,
+          fason: Number(m.rootFason) || 0,
           modelKey: m.modelKey,
         });
       }
@@ -186,6 +192,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           parentModel: modelLabel,
           groupModelKey: m.modelKey,
           cost: Number(m.rootCost) || 0,
+          material: Number(m.rootMaterial) || 0,
+          labor: Number(m.rootLabor) || 0,
+          fason: Number(m.rootFason) || 0,
         });
         // Alt parçalar (root hariç, partsList'ten) — level filtresi ile
         for (const p of (m.partsList || [])) {
@@ -204,6 +213,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
             groupModelKey: m.modelKey,
             cost: Number(p.unitCost) || 0,
             supplyType: p.supplyType || "",
+            material: Number(p.materialCost) || 0,
+            labor: Number(p.laborCost) || 0,
+            fason: Number(p.fasonCost) || 0,
           });
         }
       }
@@ -220,6 +232,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           parentModel: null,
           groupModelKey: null,
           cost: r.cost,
+          material: r.material,
+          labor: r.labor,
+          fason: r.fason,
         });
       }
       // 2) Global mod: root olmayan stok kodları alt parça olarak
@@ -239,12 +254,20 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                 stockCode: code,
                 stockName: p.stockName || "",
                 cost,
+                material: Number(p.materialCost) || 0,
+                labor: Number(p.laborCost) || 0,
+                fason: Number(p.fasonCost) || 0,
                 parentModels: new Set([parentModelName]),
                 level: Number(p.level) || 1,
                 supplyType: p.supplyType || "",
               });
             } else {
-              if (cost > existing.cost) existing.cost = cost;
+              if (cost > existing.cost) {
+                existing.cost = cost;
+                existing.material = Number(p.materialCost) || 0;
+                existing.labor = Number(p.laborCost) || 0;
+                existing.fason = Number(p.fasonCost) || 0;
+              }
               existing.parentModels.add(parentModelName);
             }
           }
@@ -260,6 +283,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
             groupModelKey: null,
             cost: s.cost,
             supplyType: s.supplyType,
+            material: s.material,
+            labor: s.labor,
+            fason: s.fason,
           });
         }
       }
@@ -333,7 +359,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     if (!canEdit) return;
     try {
       await savePriceListPolicy({
-        marginPct, rounding, viewMode, maxLevel,
+        marginPct, rounding, viewMode, maxLevel, showDetailCols,
       }, { canEdit, userEmail });
       alert("Ayarlar kaydedildi ✓");
     } catch (e) {
@@ -357,18 +383,24 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     if (list.length === 0) { alert("Listede ürün yok"); return; }
     const isInternal = variant === "internal";
     // Header
+    // Dahili modda showDetailCols açıksa Malzeme/İşçilik/Fason kolonları eklenir
+    const detailHeader = showDetailCols ? ["Malzeme", "İşçilik", "Fason"] : [];
     const header = isInternal
       ? (showSubpartsCols
-          ? ["Seviye", "Ana Mamul", "Stok Kodu", "Ad", "Maliyet", "Marj %", "Satış Fiyatı", "Kâr"]
-          : ["Stok Kodu", "Ad", "Maliyet", "Marj %", "Satış Fiyatı", "Kâr"])
+          ? ["Seviye", "Ana Mamul", "Stok Kodu", "Ad", ...detailHeader, "Maliyet", "Marj %", "Satış Fiyatı", "Kâr"]
+          : ["Stok Kodu", "Ad", ...detailHeader, "Maliyet", "Marj %", "Satış Fiyatı", "Kâr"])
       : (showSubpartsCols
           ? ["Seviye", "Ana Mamul", "Stok Kodu", "Ad", "Satış Fiyatı"]
           : ["Stok Kodu", "Ad", "Satış Fiyatı"]);
     const rows = [header];
     for (const p of list) {
       if (isInternal) {
+        const detailVals = showDetailCols
+          ? [Number(convVal(p.material).toFixed(2)), Number(convVal(p.labor).toFixed(2)), Number(convVal(p.fason).toFixed(2))]
+          : [];
         const baseRow = [
           p.stockCode, p.stockName,
+          ...detailVals,
           Number(convVal(p.cost).toFixed(2)),
           Number(p.marginActualPct.toFixed(1)),
           Number(convVal(p.salesTl).toFixed(2)),
@@ -400,9 +432,10 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     const ws = XLSX.utils.aoa_to_sheet(finalRows);
     // Kolon genişlikleri
     if (isInternal) {
+      const detailWch = showDetailCols ? [{ wch: 12 }, { wch: 12 }, { wch: 12 }] : [];
       ws["!cols"] = showSubpartsCols
-        ? [{ wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 44 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 12 }]
-        : [{ wch: 16 }, { wch: 44 }, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 12 }];
+        ? [{ wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 44 }, ...detailWch, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 12 }]
+        : [{ wch: 16 }, { wch: 44 }, ...detailWch, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 12 }];
     } else {
       ws["!cols"] = showSubpartsCols
         ? [{ wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 44 }, { wch: 14 }]
@@ -596,6 +629,11 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
             </select>
           </div>
         )}
+        <label style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, padding: "5px 10px", background: showDetailCols ? "#fef3c7" : "#fff", border: "1px solid " + (showDetailCols ? "#fde68a" : "var(--color-border-secondary)"), borderRadius: 4 }}
+          title="Malzeme / İşçilik / Fason kolonları — bilgi amaçlı (fiyat hesabı değişmez, toplam Maliyet aynı kalır)">
+          <input type="checkbox" checked={showDetailCols} onChange={e => setShowDetailCols(e.target.checked)} />
+          🔍 Detay Kolonları
+        </label>
         <button onClick={savePolicy} disabled={!canEdit}
           title="Marj + yuvarlama + toggle tercihi sistem geneline kaydedilir"
           style={{ padding: "5px 10px", fontSize: 11, background: "#f5f5f4", border: "1px solid var(--color-border-secondary)", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
@@ -641,6 +679,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
               {showSubpartsCols && <th style={{ ...th, width: 130 }}>Ana Mamul</th>}
               <th style={th}>Stok Kodu</th>
               <th style={{ ...th, minWidth: 220 }}>Ad</th>
+              {showDetailCols && <th style={{ ...th, textAlign: "right", background: "#fef3c7" }}>Malzeme</th>}
+              {showDetailCols && <th style={{ ...th, textAlign: "right", background: "#fef3c7" }}>İşçilik</th>}
+              {showDetailCols && <th style={{ ...th, textAlign: "right", background: "#fef3c7" }}>Fason</th>}
               <th style={{ ...th, textAlign: "right" }}>Maliyet</th>
               <th style={{ ...th, textAlign: "right" }}>Marj%</th>
               <th style={{ ...th, textAlign: "right", background: "#eff6ff" }}>Satış Fiyatı</th>
@@ -649,7 +690,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           </thead>
           <tbody>
             {products.length === 0 ? (
-              <tr><td colSpan={showSubpartsCols ? 9 : 7} style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)" }}>Eşleşen kayıt yok</td></tr>
+              <tr><td colSpan={(showSubpartsCols ? 9 : 7) + (showDetailCols ? 3 : 0)} style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)" }}>Eşleşen kayıt yok</td></tr>
             ) : products.map(p => (
               <tr key={p.id} style={{
                 borderTop: "1px solid #f5f5f4",
@@ -675,6 +716,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                   {p.stockCode}
                 </td>
                 <td style={td}>{p.stockName || "—"}</td>
+                {showDetailCols && <td style={{ ...td, textAlign: "right", color: "#78716c", background: "#fef3c7" }}>{p.material > 0 ? fMoneyDisplay(p.material) : "—"}</td>}
+                {showDetailCols && <td style={{ ...td, textAlign: "right", color: "#78716c", background: "#fef3c7" }}>{p.labor > 0 ? fMoneyDisplay(p.labor) : "—"}</td>}
+                {showDetailCols && <td style={{ ...td, textAlign: "right", color: "#78716c", background: "#fef3c7" }}>{p.fason > 0 ? fMoneyDisplay(p.fason) : "—"}</td>}
                 <td style={{ ...td, textAlign: "right", fontWeight: 500 }}>{fMoneyDisplay(p.cost)}</td>
                 <td style={{ ...td, textAlign: "right" }}>%{p.marginActualPct.toFixed(0)}</td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#166534", background: "#eff6ff" }}>{fMoneyDisplay(p.salesTl)}</td>
@@ -687,6 +731,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
 
       <div style={{ marginTop: 10, fontSize: 10, color: "var(--color-text-tertiary)" }}>
         💡 <b>Satış Fiyatı</b> = Maliyet × (1 + Marj%) → yuvarla. Fiyat, Mamul Maliyetleri hesabından birebir alınır.
+        {showDetailCols && <> · <b>Detay kolonları</b> (Malzeme/İşçilik/Fason) bilgi amaçlıdır — toplam <b>Maliyet</b>'ten farklı olabilir (aradaki fark = genel gider / overhead payı).</>}
         {viewMode === "roots" && <> · <b>Sadece Mamüller</b>: her BOM'un kök ürünü listelenir.</>}
         {viewMode === "global" && <> · <b>Global Alt Parçalar</b>: mamüller + hiçbir mamul olarak hesaplanmayan alt parçalar (BUY hammaddeler, yarı mamuller). Her stok tek satır.</>}
         {viewMode === "breakdown" && <> · <b>Mamül Kırılımı</b>: her mamul + BOM ağacındaki alt parçalar. Seviye = {maxLevel === 999 ? "tüm seviyeler" : maxLevel === 2 ? "L1-L2 (yarı mamul dahil)" : "L1 (yedek parça)"}. <b>L2+ genelde iç yapıdır</b>, fiyatı L1 içine dahildir; müşteriye yedek parça verirken L1 önerilir. Mamul satırının checkbox'ını tıklarsan alt parçaları da otomatik seçilir.</>}
