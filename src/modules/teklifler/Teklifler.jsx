@@ -678,6 +678,50 @@ function StatusBadge({ status, onChange, open, setOpen }) {
 function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand, onOpen, onCreateRevision, onRequestDelete, creatingRev, canEdit, isAdmin }) {
   const q = active;
   const revBadgeColor = q.revNo > 0 ? { bg: "#fef3c7", fg: "#92400e" } : { bg: "#dbeafe", fg: "#1e40af" };
+
+  // Aktif revizyonun sebep meta'sı + (discount ise) parent karşılaştırmalı kalem-bazlı %
+  const activeReasonMeta = useMemo(() => {
+    if (!q || !(Number(q.revNo) > 0)) return null;
+    const reasonDef = q.revisionReasonCode
+      ? (REVISION_REASONS.find(r => r.key === q.revisionReasonCode) || null)
+      : null;
+    // Discount ise parent (revNo-1) ile karşılaştır → kalem bazlı ort/max/min %
+    let discountStats = null;
+    if (q.revisionReasonCode === "discount" && Array.isArray(group?.all)) {
+      const parent = group.all.find(x => (Number(x.revNo) || 0) === (Number(q.revNo) - 1));
+      if (parent) {
+        const pcts = [];
+        const details = [];
+        for (const line of (q.lines || [])) {
+          const parentLine = (parent.lines || []).find(pl =>
+            (pl.stockCode && pl.stockCode === line.stockCode) ||
+            (pl.stockName && pl.stockName === line.stockName)
+          );
+          if (!parentLine) continue;
+          const pUnit = Number(parentLine.salePricePerUnit) || 0;
+          const cUnit = Number(line.salePricePerUnit) || 0;
+          if (pUnit > 0 && cUnit > 0) {
+            const pct = ((pUnit - cUnit) / pUnit) * 100;
+            pcts.push(pct);
+            details.push({ stockCode: line.stockCode || line.stockName || "—", pct });
+          }
+        }
+        if (pcts.length > 0) {
+          const avg = pcts.reduce((s, n) => s + n, 0) / pcts.length;
+          discountStats = {
+            avg, min: Math.min(...pcts), max: Math.max(...pcts),
+            lineCount: pcts.length, details,
+          };
+        }
+      }
+    }
+    return {
+      reasonDef,
+      hasLegacyText: !q.revisionReasonCode && !!q.revisionReason,
+      text: q.revisionReason || "",
+      discountStats,
+    };
+  }, [q, group]);
   const [statusMenu, setStatusMenu] = useState(false);
   // Legacy revizyon için geriye dönük kod atama menüsü — Firestore'a revisionReasonCode yazar
   const [assigningCodeFor, setAssigningCodeFor] = useState(null); // quote objesi
@@ -778,6 +822,33 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
           )}
           {q.quoteNo}
           {q.revNo > 0 && <span style={{ marginLeft: 6, padding: "1px 5px", background: revBadgeColor.bg, color: revBadgeColor.fg, borderRadius: 3, fontSize: 9, fontWeight: 600 }}>R{q.revNo} AKTİF</span>}
+          {activeReasonMeta && (activeReasonMeta.reasonDef || activeReasonMeta.hasLegacyText) && (() => {
+            const rd = activeReasonMeta.reasonDef;
+            const ds = activeReasonMeta.discountStats;
+            const bg = rd?.bg || "#f5f5f4";
+            const color = rd?.color || "#57534e";
+            const icon = rd?.icon || "?";
+            const label = rd?.label || "Legacy";
+            // İskonto ise ort % rozete eklenir; hover tooltip'te min/max + kalem sayısı + serbest metin
+            const shortText = ds
+              ? `${icon} ${label} ${ds.avg >= 0 ? "-" : "+"}%${Math.abs(ds.avg).toFixed(0)} ort`
+              : `${icon} ${label}`;
+            const tooltipParts = [];
+            if (rd) tooltipParts.push(`Sebep: ${label}`);
+            else tooltipParts.push("Legacy revizyon (kod atanmamış)");
+            if (activeReasonMeta.text) tooltipParts.push(`Not: ${activeReasonMeta.text}`);
+            if (ds) {
+              tooltipParts.push(`\n${ds.lineCount} kalem karşılaştırıldı (R${Number(q.revNo) - 1} → R${q.revNo})`);
+              tooltipParts.push(`Ortalama: %${ds.avg.toFixed(1)}${ds.avg >= 0 ? " iskonto" : " zam"}`);
+              tooltipParts.push(`Min: %${ds.min.toFixed(1)} · Max: %${ds.max.toFixed(1)}`);
+            }
+            return (
+              <span title={tooltipParts.join("\n")}
+                style={{ marginLeft: 6, padding: "1px 5px", background: bg, color, borderRadius: 3, fontSize: 9, fontWeight: 600 }}>
+                {shortText}
+              </span>
+            );
+          })()}
           {hasHistory && <span style={{ marginLeft: 4, fontSize: 9, color: "#78716c" }}>· {group.all.length} sürüm</span>}
         </td>
         <td style={td}>{q.quoteDate || "—"}</td>
