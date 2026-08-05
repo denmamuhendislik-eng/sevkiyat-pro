@@ -92,9 +92,17 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
     byStatus[st] = (byStatus[st] || 0) + 1;
   }
 
-  // Dönüşüm oranı — arşiv hariç
+  // Dönüşüm metrikleri — arşiv hariç, 3 tamamlayıcı görünüm:
+  //   conversionRate      : accepted / (accepted + rejected) — karar verilenlerin başarı oranı
+  //   overallConversionRate: accepted / nonArchive.length — genel başarı (bekleyenler dahil paydada)
+  //   pendingCount / pendingRate: draft + sent — karar bekleyen yük
+  // decidedCount aynı zamanda "sample size"tır — küçük örnekte %100 yanıltıcı olabilir.
   const decidedCount = byStatus.accepted + byStatus.rejected;
   const conversionRate = decidedCount > 0 ? (byStatus.accepted / decidedCount) * 100 : null;
+  const nonArchiveTotal = nonArchive.length;
+  const overallConversionRate = nonArchiveTotal > 0 ? (byStatus.accepted / nonArchiveTotal) * 100 : null;
+  const pendingCount = (byStatus.draft || 0) + (byStatus.sent || 0);
+  const pendingRate = nonArchiveTotal > 0 ? (pendingCount / nonArchiveTotal) * 100 : null;
 
   // Aktif teklifler (bekleyen) — arşiv hariç (arşivdekiler zaten kabul/red olmuş varsayılır)
   const activeStatuses = ["draft", "sent"];
@@ -296,6 +304,9 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
     // Dönüşüm
     decidedCount,
     conversionRate,
+    overallConversionRate,   // accepted / nonArchive.length
+    pendingCount,            // draft + sent
+    pendingRate,             // pendingCount / nonArchive.length
     avgConversionDays: median(conversionDays),
 
     // Feasibility

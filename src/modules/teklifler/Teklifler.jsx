@@ -1882,7 +1882,19 @@ function QuoteKpiView() {
             <QKpiCard label="Aktif Portföy" value={fmtTl(stats.activeTotalTl)}
               subtitle={`${stats.activeCount} açık teklif (arşiv hariç)`} color="#1e40af" />
             <QKpiCard label="Dönüşüm Oranı" value={fmtPct(stats.conversionRate)}
-              subtitle={stats.decidedCount > 0 ? `${stats.byStatus.accepted}/${stats.decidedCount} kabul (arşiv hariç)` : "karar verilen yok"} color="#16a34a" />
+              subtitle={stats.decidedCount > 0 ? `${stats.byStatus.accepted}/${stats.decidedCount} kabul (karar verilen)` : "karar verilen yok"}
+              color="#16a34a"
+              warning={stats.decidedCount > 0 && stats.decidedCount < 5 ? {
+                label: `n=${stats.decidedCount}`,
+                severity: stats.decidedCount < 3 ? "high" : "med",
+                tooltip: `Sadece ${stats.decidedCount} teklif için karar verilmiş — küçük örnek. Genel başarı için alt satırdaki "Toplam Oran"a bak.`,
+              } : null}
+              extras={[
+                { label: "Toplam Oran (kabul/tümü)", value: stats.overallConversionRate != null ? `${stats.byStatus.accepted}/${stats.nonArchiveCount} · ${stats.overallConversionRate.toFixed(0)}%` : "—",
+                  color: (stats.overallConversionRate || 0) >= 50 ? "#166534" : (stats.overallConversionRate || 0) >= 20 ? "#92400e" : "#991b1b" },
+                { label: "Bekleyen", value: stats.pendingCount > 0 ? `${stats.pendingCount} teklif · %${(stats.pendingRate || 0).toFixed(0)}` : "yok",
+                  color: "#1e40af" },
+              ]} />
             <QKpiCard label="Ort. Sipariş Süresi" value={fmtDay(stats.avgConversionDays)}
               subtitle="teklif → sipariş (arşiv hariç)" color="#7c3aed" />
           </div>
@@ -2165,12 +2177,32 @@ function RevisionModal({ target, onCancel, onConfirm, creating }) {
   );
 }
 
-function QKpiCard({ label, value, subtitle, color }) {
+function QKpiCard({ label, value, subtitle, color, extras, warning }) {
   return (
     <div style={{ padding: 14, background: "#fff", border: "1px solid #e7e5e4", borderTop: `3px solid ${color}`, borderRadius: 6 }}>
       <div style={{ fontSize: 10, color: "#78716c", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.3 }}>{label}</div>
-      <div style={{ fontSize: 22, fontWeight: 700, color, marginTop: 4 }}>{value}</div>
+      <div style={{ fontSize: 22, fontWeight: 700, color, marginTop: 4, display: "flex", alignItems: "baseline", gap: 6 }}>
+        {value}
+        {warning && (
+          <span title={warning.tooltip || ""} style={{ fontSize: 10, fontWeight: 600, padding: "1px 5px", borderRadius: 3,
+            background: warning.severity === "high" ? "#fef2f2" : "#fef3c7",
+            color: warning.severity === "high" ? "#991b1b" : "#92400e",
+            border: "1px solid " + (warning.severity === "high" ? "#fecaca" : "#fde68a") }}>
+            ⚠ {warning.label}
+          </span>
+        )}
+      </div>
       <div style={{ fontSize: 10, color: "#78716c", marginTop: 2 }}>{subtitle}</div>
+      {extras && extras.length > 0 && (
+        <div style={{ marginTop: 6, paddingTop: 6, borderTop: "1px dashed #e7e5e4", display: "flex", flexDirection: "column", gap: 3 }}>
+          {extras.map((e, i) => (
+            <div key={i} style={{ fontSize: 10, color: "#57534e", display: "flex", justifyContent: "space-between" }}>
+              <span>{e.label}</span>
+              <span style={{ fontWeight: 600, color: e.color || "#44403c" }}>{e.value}</span>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
