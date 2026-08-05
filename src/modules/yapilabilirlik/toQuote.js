@@ -89,6 +89,12 @@ export function feasibilityStudiesToQuotePayload(studies) {
   // Not: Yapılabilirlik bağlantı bilgisi feasibilityNo/feasibilityNos alanlarında
   // takip ediliyor (UI'da yeşil banner + list badge). notes'a otomatik metin
   // basmayız — PDF çıktısı temiz kalsın; kullanıcı isterse elle yazar.
+  // Müşteri teklif no (RFQ no) — yapılabilirlik'te line seviyesindeydi.
+  // Teklife üst seviyede aktarılır (birden fazla study varsa virgülle birleştir).
+  const customerQuoteNos = list
+    .map(s => String(s.customerQuoteNo || "").trim())
+    .filter(Boolean);
+  const customerQuoteNo = Array.from(new Set(customerQuoteNos)).join(", ");
   return {
     feasibilityNo: first.studyNo,
     feasibilityNos: list.map(s => s.studyNo),
@@ -96,6 +102,7 @@ export function feasibilityStudiesToQuotePayload(studies) {
     customerName: first.customerName || "",
     customerPhone: first.customerContact || "",
     customerEmail: first.customerEmail || "",
+    customerQuoteNo,
     quoteDate: new Date().toISOString().slice(0, 10),
     lines,
     notes: "",

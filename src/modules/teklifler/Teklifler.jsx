@@ -377,6 +377,7 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
       (x.customerName || "").toLocaleLowerCase("tr-TR").includes(s) ||
       (x.quoteNo || "").toLocaleLowerCase("tr-TR").includes(s) ||
       (x.baseQuoteNo || "").toLocaleLowerCase("tr-TR").includes(s) ||
+      (x.customerQuoteNo || "").toLocaleLowerCase("tr-TR").includes(s) ||
       (x.lines || []).some(l => (l.stockCode || "").toLocaleLowerCase("tr-TR").includes(s) || (l.stockName || "").toLocaleLowerCase("tr-TR").includes(s))
     ) : all;
     // baseQuoteNo + customerName ile gruplandır
@@ -470,7 +471,7 @@ function QuoteListView({ canEdit, isAdmin, onOpen }) {
           Staging
         </label>
         <input
-          type="text" placeholder="🔎 Müşteri / teklif no / stok kodu / ad"
+          type="text" placeholder="🔎 Müşteri / teklif no / müşteri teklif no / stok kodu / ad"
           value={search} onChange={e => setSearch(e.target.value)}
           style={{ flex: 1, minWidth: 240, padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}
         />
@@ -850,6 +851,12 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
             );
           })()}
           {hasHistory && <span style={{ marginLeft: 4, fontSize: 9, color: "#78716c" }}>· {group.all.length} sürüm</span>}
+          {q.customerQuoteNo && (
+            <div style={{ fontSize: 9, color: "#78716c", fontFamily: "ui-monospace, monospace", marginTop: 1 }}
+              title="Müşteri Teklif No (RFQ) — müşterinin kendi belge no'su">
+              📋 {q.customerQuoteNo}
+            </div>
+          )}
         </td>
         <td style={td}>{q.quoteDate || "—"}</td>
         <td style={td}>{q.customerName}</td>

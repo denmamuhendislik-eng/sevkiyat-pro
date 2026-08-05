@@ -33,6 +33,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerEmail, setCustomerEmail] = useState("");
+  const [customerQuoteNo, setCustomerQuoteNo] = useState(""); // müşterinin kendi RFQ/teklif no'su
   const [paymentTerm, setPaymentTerm] = useState("");
   const [shipping, setShipping] = useState("");
   const [shippingCost, setShippingCost] = useState(0);
@@ -86,6 +87,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
     setCustomerName(initialQuote.customerName || "");
     setCustomerPhone(initialQuote.customerPhone || "");
     setCustomerEmail(initialQuote.customerEmail || "");
+    setCustomerQuoteNo(initialQuote.customerQuoteNo || "");
     setPaymentTerm(initialQuote.paymentTerm || "");
     setShipping(initialQuote.shipping || "");
     setShippingCost(initialQuote.shippingCost || 0);
@@ -298,6 +300,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
         customerName,
         customerPhone,
         customerEmail,
+        customerQuoteNo: customerQuoteNo.trim(),
         paymentTerm,
         shipping,
         shippingCost,
@@ -517,6 +520,12 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
             <input value={customerEmail} onChange={e => setCustomerEmail(e.target.value)} style={inputStyle} />
           </div>
           <div>
+            <label style={labelStyle}>Müşteri Teklif No <span style={{ fontWeight: 400, color: "#78716c", fontSize: 10 }}>(müşterinin RFQ / kendi teklif no'su — opsiyonel)</span></label>
+            <input value={customerQuoteNo} onChange={e => setCustomerQuoteNo(e.target.value)}
+              placeholder="Örn. RFQ-2026-0142"
+              style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} />
+          </div>
+          <div>
             <label style={labelStyle}>Teklif No</label>
             <input value={quoteNo} onChange={e => setQuoteNo(e.target.value)} style={{ ...inputStyle, fontFamily: "ui-monospace, monospace" }} />
           </div>
@@ -727,7 +736,7 @@ export default function NewQuoteView({ canEdit, isAdmin, onSaved, initialQuote =
           onClick={async () => {
             try {
               const preview = {
-                quoteNo, quoteDate, customerName, customerPhone, customerEmail,
+                quoteNo, quoteDate, customerName, customerPhone, customerEmail, customerQuoteNo,
                 paymentTerm, shipping, shippingCost, shippingIncluded,
                 currency, exchangeRate, quoteType, term, notes, status,
                 lines: lines.map((l, i) => {
