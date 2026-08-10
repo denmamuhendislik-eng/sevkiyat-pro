@@ -12,6 +12,7 @@ import Teklifler from "./modules/teklifler";
 import Yapilabilirlik from "./modules/yapilabilirlik";
 import { subscribeFeasibilityForYear, isUserPendingForStudy } from "./modules/yapilabilirlik/firestore";
 import Maliyet from "./modules/maliyet/Maliyet";
+import Ihracat from "./modules/ihracat/Ihracat";
 import { parseBomExcel as parseBomExcelModule, isFasonOp, getDefaultWC } from "./shared/bomParser";
 import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
 
@@ -198,6 +199,8 @@ export default function App() {
   const [hideShipped, setHideShipped] = useState(true);
   const [importData, setImportData] = useState(null);
   const [importYear, setImportYear] = useState(new Date().getFullYear());
+  // v22: VIO Import ekranı alt sekmeleri (yurt içi vs. ihracat)
+  const [importSubTab, setImportSubTab] = useState("domestic");
   const [importNewProducts, setImportNewProducts] = useState([]);
   const [vioDragOver, setVioDragOver] = useState(false);
   // v21 Aşama 2: VIO Import tarihçesi — appData/vioImportHistory doc (yeni format için detaylı audit)
@@ -2908,6 +2911,27 @@ ${el.innerHTML}
 
           {/* VIO IMPORT */}
           {page==="import"&&isAdmin&&<div>
+            {/* v22: Alt sekmeler — yurt içi (mevcut) vs. ihracat (yeni modül) */}
+            <div style={{display:"flex",gap:4,marginBottom:14,borderBottom:"1px solid var(--color-border-tertiary)"}}>
+              <button onClick={()=>setImportSubTab("domestic")}
+                style={{padding:"8px 14px",border:"none",background:"transparent",
+                  borderBottom:`2px solid ${importSubTab==="domestic"?"#534AB7":"transparent"}`,
+                  color:importSubTab==="domestic"?"#534AB7":"var(--color-text-secondary)",
+                  fontSize:12,fontWeight:importSubTab==="domestic"?600:400,cursor:"pointer",marginBottom:-1}}>
+                📥 Yurt İçi VIO Import
+              </button>
+              <button onClick={()=>setImportSubTab("export")}
+                style={{padding:"8px 14px",border:"none",background:"transparent",
+                  borderBottom:`2px solid ${importSubTab==="export"?"#534AB7":"transparent"}`,
+                  color:importSubTab==="export"?"#534AB7":"var(--color-text-secondary)",
+                  fontSize:12,fontWeight:importSubTab==="export"?600:400,cursor:"pointer",marginBottom:-1}}>
+                🌍 İhracat Siparişleri
+              </button>
+            </div>
+            {importSubTab==="export" && (
+              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={products} />
+            )}
+            {importSubTab==="domestic" && <div>
             <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>
               VIO ERP'den aldığınız sipariş Excel'ini yükleyin. CODE sütunu ile ürünler otomatik eşleştirilir, miktarlar seçtiğiniz yıla eklenir.
             </div>
@@ -3282,6 +3306,7 @@ ${el.innerHTML}
                 </div>
               )}
             </div>
+          </div>}
           </div>}
           {page==="import"&&!isAdmin&&<div style={{textAlign:"center",padding:40,color:"var(--color-text-tertiary)"}}>
             <div style={{fontSize:36,marginBottom:10}}>🔒</div>
