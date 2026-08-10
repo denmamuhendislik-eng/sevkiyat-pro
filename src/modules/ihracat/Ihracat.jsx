@@ -80,10 +80,12 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
       {subTab === "import" && (
         <ImportPanel
           ordersData={ordersData}
+          allocationsData={allocationsData}
           settings={settings}
           products={products}
           canEdit={canEdit}
           userEmail={userEmail}
+          remainingByPid={remainingByPid}
         />
       )}
       {subTab === "recon" && (

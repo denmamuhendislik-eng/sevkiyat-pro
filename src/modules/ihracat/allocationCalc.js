@@ -124,6 +124,44 @@ export function validatePaymentPlan(paymentPlan) {
 //
 // Dönüş: [{ pid, stokKodu, name, planQty, orderQty, diff }]
 // diff = planQty - orderQty  (0 → tutuyor, +N → plan fazlası, -N → sipariş fazlası)
+// ============================================================
+// 5) Preview mutabakat — import ÖNCESİ, henüz Firestore'a yazılmadan
+// ============================================================
+// Parse edilmiş sipariş listesi (enriched) + Firestore'daki MEVCUT açık siparişler
+// birleştirilerek plan ile karşılaştırılır. Kullanıcı checkbox'lardan hangi
+// satırları seçtiyse, bu senaryonun mutabakat sonucu canlı hesaplanır.
+//
+// Skip mode senaryosu: mevcut kayıtlar korunur + yeni seçili satırlar eklenir.
+// Overwrite senaryosu: seçili satırlar mevcut ID'yi geçersiz kılar.
+export function computePreviewReconciliation({
+  planByPid,
+  selectedNewOrders,        // kullanıcının seçtiği YENİ satırlar (henüz Firestore'da yok)
+  existingOrdersMap,        // Firestore'daki mevcut orders (mutabakata katılan açık olanlar)
+  allocatedByOrderMap,      // mevcut konteyner tahsisleri
+  mode,                     // "skip" | "overwrite"
+  products,
+}) {
+  // Effective orders map: mevcut + yeni seçili (mode'a göre)
+  const effective = {};
+  // Mevcut kayıtları alt yapı olarak koy
+  for (const [id, o] of Object.entries(existingOrdersMap || {})) {
+    effective[id] = o;
+  }
+  // Yeni seçili satırları uygula
+  for (const o of (selectedNewOrders || [])) {
+    if (mode === "overwrite" || !effective[o.id]) {
+      effective[o.id] = o;
+    }
+    // Skip modda mevcut varsa dokunma (zaten yukarıda mevcut kayıt korundu)
+  }
+  return computeReconciliation({
+    planByPid,
+    ordersMap: effective,
+    allocatedByOrderMap,
+    products,
+  });
+}
+
 export function computeReconciliation({ planByPid, ordersMap, allocatedByOrderMap, products }) {
   const byPid = {}; // pid → { pid, stokKodu, name, planQty, orderQty }
 
