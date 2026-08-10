@@ -509,6 +509,17 @@ export default function App() {
     return map;
   }, [yd, products, getPStats]);
 
+  // v22: İhracat modülü için — products'ı VIO_CODES fallback ile enrich et.
+  // Firestore'da p.vioCode alanı boş olsa bile hardcoded VIO_CODES map'inden doldur.
+  // Diğer modüller de her yerde `p.vioCode || VIO_CODES[p.id]` fallback pattern'i
+  // kullanıyor; ihracat modülünde bu fallback'i tek yerde uygulayıp geçiriyoruz.
+  const productsForExport = useMemo(() => {
+    return (products || []).map(p => ({
+      ...p,
+      vioCode: (p.vioCode && String(p.vioCode).trim()) || VIO_CODES[p.id] || "",
+    }));
+  }, [products]);
+
   // Carry-over calculation
   const computeCarryOver = useCallback((fromYear) => {
     const fyd = yearsData[fromYear];
@@ -2941,7 +2952,7 @@ ${el.innerHTML}
               </button>
             </div>
             {importSubTab==="export" && (
-              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={products} remainingByPid={remainingByPidForExport} />
+              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={productsForExport} remainingByPid={remainingByPidForExport} />
             )}
             {importSubTab==="domestic" && <div>
             <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>

@@ -9,7 +9,7 @@
 //
 // Her iki taraf da aynı bilgiyi ölçüyor: OFMER'e daha ne kadar sevk kaldı.
 
-import React, { useMemo, useEffect } from "react";
+import React, { useMemo } from "react";
 import { computeAllocatedByOrder, computeReconciliation } from "./allocationCalc";
 
 export default function ReconciliationPanel({ ordersData, allocationsData, products, remainingByPid }) {
@@ -24,38 +24,8 @@ export default function ReconciliationPanel({ ordersData, allocationsData, produ
     });
   }, [remainingByPid, ordersData, allocatedByOrder, products]);
 
-  // Boş stok kodlu satırlar sayısı — üst uyarı için
+  // Boş stok kodlu satırlar sayısı — VIO_CODES fallback sonrası nadir olmalı
   const emptyStockRows = useMemo(() => rows.filter(r => !r.stokKodu || !String(r.stokKodu).trim()), [rows]);
-
-  // DEBUG: browser console'a boş stok kodlu ürünleri ve products örneğini dump et.
-  // Kullanıcı F12 ile bakıp yansıtabilir. Sorun çözülünce kaldırılır.
-  useEffect(() => {
-    if (emptyStockRows.length === 0) return;
-    // eslint-disable-next-line no-console
-    console.log("[İhracat Mutabakat DEBUG] Stok kodu boş görünen satırlar:", emptyStockRows.map(r => ({
-      pid: r.pid,
-      name: r.name,
-      planQty: r.planQty,
-      orderQty: r.orderQty,
-    })));
-    // Products dizisinde bu pid'lere karşılık gelen ürünleri de dump et
-    const debugProds = emptyStockRows.slice(0, 15).map(r => {
-      const p = (products || []).find(pp => Number(pp.id) === Number(r.pid));
-      return {
-        pid: r.pid,
-        found: !!p,
-        vioCode: p?.vioCode,
-        vioCodeType: typeof p?.vioCode,
-        vioCodeLen: p?.vioCode ? String(p.vioCode).length : 0,
-        nameTR: p?.nameTR,
-      };
-    });
-    // eslint-disable-next-line no-console
-    console.log("[İhracat Mutabakat DEBUG] products lookup (ilk 15):", debugProds);
-    // eslint-disable-next-line no-console
-    console.log("[İhracat Mutabakat DEBUG] products dizi boyutu:", (products || []).length,
-      "· vioCode dolu:", (products || []).filter(p => p?.vioCode).length);
-  }, [emptyStockRows, products]);
 
   const summary = useMemo(() => {
     let matched = 0, planExtra = 0, orderExtra = 0;
@@ -97,10 +67,8 @@ export default function ReconciliationPanel({ ordersData, allocationsData, produ
 
       {emptyStockRows.length > 0 && (
         <div style={{ padding: 10, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 6, fontSize: 11 }}>
-          ⚠ <b>{emptyStockRows.length}</b> ürünün VIO stok kodu mutabakat panelinde görüntülenemiyor.
-          Products ekranında bu ürünlerin <code>vioCode</code> alanı boş olabilir <b>veya</b> data akışında bir sorun var.
-          Detay için tarayıcı console'unu aç (F12) — geçici debug logu yazılıyor.
-          Aşağıda satırlarda ürün id (<code>#pid</code>) görürsün, Products ekranından kontrol edebilirsin.
+          ⚠ <b>{emptyStockRows.length}</b> ürünün VIO stok kodu tanımlı değil (ne Products'ta ne VIO_CODES tablosunda).
+          Aşağıda <code>#pid</code> olarak görünür; Products ekranından ekleyebilirsin.
         </div>
       )}
 
