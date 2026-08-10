@@ -14,8 +14,10 @@ import {
 } from "./firestore";
 import OrderList from "./OrderList";
 import OrderForm from "./OrderForm";
+import ImportPanel from "./ImportPanel";
+import ReconciliationPanel from "./ReconciliationPanel";
 
-export default function Ihracat({ canEdit, isAdmin, userEmail, products }) {
+export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid }) {
   const [subTab, setSubTab] = useState("list");
   const [editingOrder, setEditingOrder] = useState(null); // düzenlemek için seçilen sipariş
 
@@ -76,14 +78,21 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products }) {
         />
       )}
       {subTab === "import" && (
-        <div style={{ padding: 24, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8, fontSize: 12 }}>
-          📥 Excel Import — Faz 3'te gelecek (sonraki PR)
-        </div>
+        <ImportPanel
+          ordersData={ordersData}
+          settings={settings}
+          products={products}
+          canEdit={canEdit}
+          userEmail={userEmail}
+        />
       )}
       {subTab === "recon" && (
-        <div style={{ padding: 24, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8, fontSize: 12 }}>
-          🔍 Mutabakat — Faz 4'te gelecek (sonraki PR)
-        </div>
+        <ReconciliationPanel
+          ordersData={ordersData}
+          allocationsData={allocationsData}
+          products={products}
+          remainingByPid={remainingByPid}
+        />
       )}
     </div>
   );

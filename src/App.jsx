@@ -497,6 +497,18 @@ export default function App() {
     return {order,planned,shipped,pNotShipped,remaining:order-shipped,toBePlanned:order-planned};
   },[yd]);
 
+  // v22: İhracat mutabakatı için — pid → sevk edilecek kalan miktar (yıllık plan tarafı).
+  // İhracat modülüne prop olarak geçilir. Sadece okuma, dönüş yok.
+  const remainingByPidForExport = useMemo(() => {
+    if (!yd || !yd.orders) return {};
+    const map = {};
+    for (const p of (products || [])) {
+      const s = getPStats(p.id);
+      if (s.remaining > 0) map[p.id] = s.remaining;
+    }
+    return map;
+  }, [yd, products, getPStats]);
+
   // Carry-over calculation
   const computeCarryOver = useCallback((fromYear) => {
     const fyd = yearsData[fromYear];
@@ -2929,7 +2941,7 @@ ${el.innerHTML}
               </button>
             </div>
             {importSubTab==="export" && (
-              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={products} />
+              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={products} remainingByPid={remainingByPidForExport} />
             )}
             {importSubTab==="domestic" && <div>
             <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>
