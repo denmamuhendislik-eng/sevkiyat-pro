@@ -70,7 +70,7 @@ export default function InvoiceCreateModal({
     const u2 = subscribeExportSettings(d => setExportSettings(d || {}));
     return () => { u1 && u1(); u2 && u2(); };
   }, []);
-  const customerDefaults = exportSettings?.customerDefaults || {};
+  const customerDefaults = useMemo(() => exportSettings?.customerDefaults || {}, [exportSettings]);
 
   const allocatedByOrder = useMemo(
     () => computeAllocatedByOrder(allocationsData?.allocations || {}),
