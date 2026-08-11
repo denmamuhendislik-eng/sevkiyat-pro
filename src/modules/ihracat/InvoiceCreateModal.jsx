@@ -665,7 +665,7 @@ export default function InvoiceCreateModal({
                     Ek Kalemler (nakliye, yağ, sarf vs.):
                   </div>
                   {g.extraLines.map((el, ei) => (
-                    <div key={ei} style={{ display: "grid", gridTemplateColumns: "3fr 40px 30px 60px 30px", gap: 4, marginBottom: 3, alignItems: "center" }}>
+                    <div key={ei} style={{ display: "grid", gridTemplateColumns: "3fr 70px 50px 90px 30px", gap: 4, marginBottom: 3, alignItems: "center" }}>
                       <input value={el.description} onChange={e => updateExtraLine(g.key, ei, "description", e.target.value)}
                         placeholder="Örn. KONYA MILAN TRANSPORTATION COST" style={{ ...inp, fontSize: 10 }} />
                       <input type="number" value={el.qty} onChange={e => updateExtraLine(g.key, ei, "qty", e.target.value)} style={{ ...inp, fontSize: 10, textAlign: "right" }} />

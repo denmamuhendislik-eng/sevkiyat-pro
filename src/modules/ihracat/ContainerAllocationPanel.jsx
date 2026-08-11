@@ -115,14 +115,22 @@ export default function ContainerAllocationPanel({
         unitPrice: Number(oil.unitPrice) || 0,
       });
     }
+    // ORDER NR: bu konteynerdeki aktif (VOID hariç) fatura numaraları listelenir
+    // → nakliye faturasında hangi ticari faturalara ait olduğu görünür
+    const activeCIs = containerInvoices
+      .filter(i => (i.status || "issued") !== "cancelled")
+      .map(i => i.invoiceNo);
+    const orderNrValue = activeCIs.length > 0
+      ? `TRANSPORT - ${activeCIs.join(", ")}`
+      : (containerCustomer ? `TRANSPORT - CONTAINER ${containerId || ""}` : "");
     return {
       extraLines,
       currency: t.currency || "EUR",
-      // Nakliye + yağ genelde peşin ödeme — tek satır %100 CASH IN ADVANCE varsayımı
-      paymentPlan: [{ label: "CASH IN ADVANCE", pct: 100 }],
-      orderNr: containerCustomer ? `TRANSPORT - CONTAINER ${containerId || ""}` : "",
+      // Nakliye + yağ genelde teslimatta ödeme — tek satır %100 IN ADVANCE WITH DELIVERY
+      paymentPlan: [{ label: "IN ADVANCE WITH DELIVERY", pct: 100 }],
+      orderNr: orderNrValue,
     };
-  }, [invoiceSettings, oilCalculation, containerCustomer, containerId]);
+  }, [invoiceSettings, oilCalculation, containerCustomer, containerId, containerInvoices]);
 
   // Hiç ilgili item yok → panel gizli (kartın kalan alanında gürültü yapmasın)
   // Yerel satış konteynerlerinde OFMER ürünü olmadığı için panel görünmez.
