@@ -348,6 +348,26 @@ export async function saveInvoiceSettings(patch, { canEdit, userEmail = "" } = {
   }, { merge: true });
 }
 
+// Multi-bank hesap listesi kaydet — {accounts: [{id, label, branchName, iban, swift, currency, isDefault}]}
+// Yeni: birden fazla banka hesabı desteği (EUR, USD, farklı bankalar).
+// Backward-compat: eski bankInfo (tek hesap) hala okunur.
+export async function saveBankAccounts(accounts, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const list = Array.isArray(accounts) ? accounts : [];
+  // Tek default zorunlu — kullanıcı işaretlemediyse ilkini default yap
+  const hasDefault = list.some(a => a?.isDefault);
+  const normalized = list.map((a, i) => ({
+    ...a,
+    isDefault: hasDefault ? !!a.isDefault : i === 0,
+  }));
+  const ref = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  await setDoc(ref, {
+    bankAccounts: normalized,
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
 // Sayacı elle ayarla (kullanıcı bir kez başlangıç değeri gireceği için)
 // counter[year] = son basılan numara; sıradaki = counter+1
 export async function setInvoiceCounter(year, value, { canEdit, userEmail = "" } = {}) {

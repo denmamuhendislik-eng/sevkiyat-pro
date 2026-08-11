@@ -10,7 +10,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import {
   subscribeInvoiceSettings, saveInvoiceSettings, setInvoiceCounter,
-  uploadStampImage, deleteStampImage,
+  uploadStampImage, deleteStampImage, saveBankAccounts,
 } from "./firestore";
 
 // Denma default bilgileri (referans PDF'ten)
@@ -22,12 +22,15 @@ const DEFAULT_COMPANY = {
   website: "www.denma.com.tr",
   email: "bilgi@denma.com.tr",
 };
-const DEFAULT_BANK = {
+const DEFAULT_BANK_ACCOUNTS = [{
+  id: "default_1",
+  label: "Ziraat EUR",
   branchName: "T.C. ZİRAAT BANKASI A.Ş. / MERAM",
   iban: "TR45 0001 0021 7397 9930 1950 02",
   swift: "TCZBTR2A",
   currency: "EUR",
-};
+  isDefault: true,
+}];
 
 export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
   const [settings, setSettings] = useState({});
@@ -39,7 +42,7 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
 
   // Editable state (form)
   const [company, setCompany] = useState(DEFAULT_COMPANY);
-  const [bank, setBank] = useState(DEFAULT_BANK);
+  const [bankAccounts, setBankAccounts] = useState(DEFAULT_BANK_ACCOUNTS);
   const [counterYear, setCounterYear] = useState(String(new Date().getFullYear()));
   const [counterValue, setCounterValue] = useState("");
   const loadedRef = useRef(false);
@@ -51,7 +54,20 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
       if (!loadedRef.current) {
         loadedRef.current = true;
         if (d?.companyInfo) setCompany({ ...DEFAULT_COMPANY, ...d.companyInfo });
-        if (d?.bankInfo) setBank({ ...DEFAULT_BANK, ...d.bankInfo });
+        // Multi-bank: bankAccounts array öncelikli; yoksa legacy bankInfo → tek hesap
+        if (Array.isArray(d?.bankAccounts) && d.bankAccounts.length > 0) {
+          setBankAccounts(d.bankAccounts);
+        } else if (d?.bankInfo) {
+          setBankAccounts([{
+            id: "legacy_1",
+            label: "Ana Hesap",
+            branchName: d.bankInfo.branchName || "",
+            iban: d.bankInfo.iban || "",
+            swift: d.bankInfo.swift || "",
+            currency: d.bankInfo.currency || "EUR",
+            isDefault: true,
+          }]);
+        }
         const y = String(new Date().getFullYear());
         const counters = d?.counters || {};
         if (typeof counters[y] === "number") setCounterValue(String(counters[y]));
@@ -59,6 +75,24 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
     });
     return () => u && u();
   }, []);
+
+  const addBankAccount = () => {
+    const newId = `acc_${Date.now()}`;
+    setBankAccounts([...bankAccounts, {
+      id: newId, label: "", branchName: "", iban: "", swift: "", currency: "EUR", isDefault: bankAccounts.length === 0,
+    }]);
+  };
+  const updateBankAccount = (i, key, val) => {
+    setBankAccounts(bankAccounts.map((a, idx) => idx === i ? { ...a, [key]: val } : a));
+  };
+  const removeBankAccount = (i) => {
+    if (bankAccounts.length <= 1) { alert("En az bir banka hesabı olmalı"); return; }
+    if (!confirm("Bu banka hesabı silinsin mi?")) return;
+    setBankAccounts(bankAccounts.filter((_, idx) => idx !== i));
+  };
+  const setDefaultBank = (i) => {
+    setBankAccounts(bankAccounts.map((a, idx) => ({ ...a, isDefault: idx === i })));
+  };
 
   const handleSaveCompany = async () => {
     if (!canEdit) return;
@@ -70,13 +104,16 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   };
 
-  const handleSaveBank = async () => {
+  const handleSaveBanks = async () => {
     if (!canEdit) return;
+    // Doğrulama
+    const invalid = bankAccounts.some(a => !a.label?.trim() || !a.iban?.trim());
+    if (invalid) { alert("Her hesap için Etiket ve IBAN zorunlu"); return; }
     setSaving(true);
     setError("");
     try {
-      await saveInvoiceSettings({ bankInfo: bank }, { canEdit, userEmail });
-      alert("✓ Banka bilgisi kaydedildi");
+      await saveBankAccounts(bankAccounts, { canEdit, userEmail });
+      alert("✓ Banka hesapları kaydedildi");
     } catch (e) { setError(e.message); } finally { setSaving(false); }
   };
 
@@ -152,29 +189,56 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
         </div>
       </Section>
 
-      {/* Banka bilgisi */}
-      <Section title="🏦 Banka Bilgisi (fatura altında basılır)">
-        <Grid cols={2}>
-          <Field label="Şube / Banka Adı">
-            <input value={bank.branchName} onChange={e => setBank({ ...bank, branchName: e.target.value })} style={inp} />
-          </Field>
-          <Field label="Para Birimi">
-            <select value={bank.currency} onChange={e => setBank({ ...bank, currency: e.target.value })} style={{ ...inp, background: "#fff" }}>
-              <option value="EUR">EUR</option>
-              <option value="USD">USD</option>
-              <option value="TL">TL</option>
-              <option value="GBP">GBP</option>
-            </select>
-          </Field>
-          <Field label="IBAN">
-            <input value={bank.iban} onChange={e => setBank({ ...bank, iban: e.target.value })} style={{ ...inp, fontFamily: "ui-monospace, monospace" }} />
-          </Field>
-          <Field label="SWIFT Kodu">
-            <input value={bank.swift} onChange={e => setBank({ ...bank, swift: e.target.value })} style={{ ...inp, fontFamily: "ui-monospace, monospace" }} />
-          </Field>
-        </Grid>
+      {/* Banka hesapları (multi) */}
+      <Section title="🏦 Banka Hesapları (fatura altında basılır — fatura oluştururken seçilir)">
+        <div style={{ fontSize: 10, color: "#78716c", marginBottom: 8 }}>
+          Birden fazla banka hesabı ekleyebilirsin (örn. Ziraat EUR, İş Bankası USD). Fatura oluştururken hangisini basılacağını seçersin.
+          Default hesap her fatura için ön seçili gelir.
+        </div>
+        {bankAccounts.map((a, i) => (
+          <div key={a.id} style={{ padding: 10, background: a.isDefault ? "#f0fdf4" : "#fafaf9", border: `1px solid ${a.isDefault ? "#86efac" : "#e7e5e4"}`, borderRadius: 6, marginBottom: 8 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+              <input type="radio" name="defaultBank" checked={!!a.isDefault} onChange={() => setDefaultBank(i)} disabled={!canEdit} />
+              <span style={{ fontSize: 11, fontWeight: 600 }}>Default</span>
+              <span style={{ marginLeft: "auto", fontSize: 9, color: "#78716c" }}>#{i + 1}</span>
+              <button onClick={() => removeBankAccount(i)} disabled={!canEdit || bankAccounts.length <= 1}
+                title={bankAccounts.length <= 1 ? "En az bir hesap olmalı" : "Bu hesabı sil"}
+                style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: (canEdit && bankAccounts.length > 1) ? "pointer" : "not-allowed", opacity: bankAccounts.length > 1 ? 1 : 0.4 }}>🗑</button>
+            </div>
+            <Grid cols={2}>
+              <Field label="Etiket (dropdown'da görünen isim) *">
+                <input value={a.label} onChange={e => updateBankAccount(i, "label", e.target.value)}
+                  placeholder="Örn. Ziraat EUR" style={inp} />
+              </Field>
+              <Field label="Para Birimi">
+                <select value={a.currency} onChange={e => updateBankAccount(i, "currency", e.target.value)} style={{ ...inp, background: "#fff" }}>
+                  <option value="EUR">EUR</option>
+                  <option value="USD">USD</option>
+                  <option value="TL">TL</option>
+                  <option value="GBP">GBP</option>
+                </select>
+              </Field>
+              <Field label="Şube / Banka Adı">
+                <input value={a.branchName} onChange={e => updateBankAccount(i, "branchName", e.target.value)}
+                  placeholder="Örn. T.C. ZİRAAT BANKASI A.Ş. / MERAM" style={inp} />
+              </Field>
+              <Field label="IBAN *">
+                <input value={a.iban} onChange={e => updateBankAccount(i, "iban", e.target.value)}
+                  placeholder="TR..." style={{ ...inp, fontFamily: "ui-monospace, monospace" }} />
+              </Field>
+              <Field label="SWIFT Kodu">
+                <input value={a.swift} onChange={e => updateBankAccount(i, "swift", e.target.value)}
+                  placeholder="TCZBTR2A" style={{ ...inp, fontFamily: "ui-monospace, monospace" }} />
+              </Field>
+            </Grid>
+          </div>
+        ))}
+        <button onClick={addBankAccount} disabled={!canEdit}
+          style={{ padding: "6px 12px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
+          + Yeni Banka Hesabı Ekle
+        </button>
         <div style={{ textAlign: "right", marginTop: 8 }}>
-          <button onClick={handleSaveBank} disabled={!canEdit || saving} style={btnPri}>💾 Banka Bilgisini Kaydet</button>
+          <button onClick={handleSaveBanks} disabled={!canEdit || saving} style={btnPri}>💾 Banka Hesaplarını Kaydet</button>
         </div>
       </Section>
 
