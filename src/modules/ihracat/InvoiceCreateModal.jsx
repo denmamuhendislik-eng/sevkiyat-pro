@@ -124,29 +124,71 @@ export default function InvoiceCreateModal({
       }];
     }
     // container modu
-    // Yeni kural (kullanıcı isteği):
-    //   - "Tek satır %100 DELIVERY" tipli sipariş(ler) tek grupta birleşir
-    //   - Diğer tüm planlar (avans/taksit vb.) HER SİPARİŞ için AYRI grup
-    // Sipariş belge no sırasına göre sırala (kullanıcı deneyimi için stabil).
-    const orderIdList = Object.keys(sourceOrderLines).sort((a, b) => {
-      const ba = String(sourceOrderLines[a]?.order?.belgeNo || "");
-      const bb = String(sourceOrderLines[b]?.order?.belgeNo || "");
-      return ba.localeCompare(bb, "tr", { numeric: true });
-    });
-    const deliveryGroup = [];
-    const otherGroups = []; // her biri tek sipariş
-    for (const oid of orderIdList) {
-      const o = sourceOrderLines[oid].order;
-      if (isSimpleFullOnDelivery(o.paymentPlan)) {
-        deliveryGroup.push(oid);
+    // Kural (kullanıcı isteği):
+    //   1) Aynı belgeNo (sipariş no) → tek faturada birleşir (aynı sipariş,
+    //      birden fazla kalem tahsis edilmişse).
+    //   2) Farklı belgeNo'lar taksitli plan (%20/%80 vb.) → her belge ayrı fatura.
+    //   3) "Tek satır %100 DELIVERY" plana sahip TÜM belgeler → tek grupta
+    //      birleşir ve en son fatura olur.
+    //   4) Sıra: konteynerdeki items listesinde ilk gelen kalemin siparişi önce.
+
+    // (a) Aynı belgeNo'lu orderId'leri grupla
+    const orderIdsByBelge = {};
+    for (const oid of Object.keys(sourceOrderLines)) {
+      const belge = String(sourceOrderLines[oid]?.order?.belgeNo || "").trim();
+      if (!belge) continue;
+      if (!orderIdsByBelge[belge]) orderIdsByBelge[belge] = [];
+      orderIdsByBelge[belge].push(oid);
+    }
+
+    // (b) Delivery %100 mı? — belge bazında ilk orderId'ye bak (aynı belge → aynı plan varsayımı)
+    const deliveryBelgeNos = [];
+    const otherBelgeNos = [];
+    for (const [belge, oids] of Object.entries(orderIdsByBelge)) {
+      const firstOrder = sourceOrderLines[oids[0]].order;
+      if (isSimpleFullOnDelivery(firstOrder.paymentPlan)) {
+        deliveryBelgeNos.push(belge);
       } else {
-        otherGroups.push([oid]);
+        otherBelgeNos.push(belge);
       }
     }
-    // Delivery grubu önce (varsa), sonra diğer siparişler
+
+    // (c) Konteynerdeki items listesinde her pid'in ilk gelme index'i
+    //     (items prop'u zaten sevkiyat detay kartındaki sıralı listedir)
+    const pidToItemIdx = new Map();
+    (items || []).forEach((it, idx) => {
+      const pid = Number(it.pid);
+      if (!pidToItemIdx.has(pid)) pidToItemIdx.set(pid, idx);
+    });
+
+    // (d) Bir belgenin "sıra puanı": kendi kalemleri arasında konteyner items
+    //     listesinde en erken gelenin index'i (küçük = önce)
+    const belgeSortKey = (belge) => {
+      let minIdx = Infinity;
+      for (const oid of orderIdsByBelge[belge]) {
+        for (const line of (sourceOrderLines[oid]?.lines || [])) {
+          const idx = pidToItemIdx.get(Number(line.pid));
+          if (idx != null && idx < minIdx) minIdx = idx;
+        }
+      }
+      return minIdx === Infinity ? 9999 : minIdx;
+    };
+
+    // (e) "Diğer" belgeleri konteyner sırasına göre sırala
+    otherBelgeNos.sort((a, b) => belgeSortKey(a) - belgeSortKey(b));
+
+    // (f) Grupları oluştur: önce diğerleri (her belge ayrı), sonra delivery grubu (tek)
     const allGroups = [];
-    if (deliveryGroup.length > 0) allGroups.push(deliveryGroup);
-    for (const g of otherGroups) allGroups.push(g);
+    for (const belge of otherBelgeNos) {
+      allGroups.push(orderIdsByBelge[belge]);
+    }
+    if (deliveryBelgeNos.length > 0) {
+      // Delivery grubunun içindeki belgeleri de sırala (konteyner sırasına göre)
+      deliveryBelgeNos.sort((a, b) => belgeSortKey(a) - belgeSortKey(b));
+      const merged = deliveryBelgeNos.flatMap(b => orderIdsByBelge[b]);
+      allGroups.push(merged);
+    }
+
     return allGroups.map((orderIds, idx) => {
       const first = sourceOrderLines[orderIds[0]].order;
       return {
