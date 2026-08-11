@@ -22,6 +22,33 @@ function hashPaymentPlan(plan) {
   return plan.map(p => `${(p.label || "").trim()}|${Number(p.pct) || 0}`).sort().join(",");
 }
 
+// Sadece "tek satır, %100, teslimatta ödemeli" planları birleştir.
+// Diğer tüm planlar (avans + teslimat, farklı yüzdeler, T/T 60 gün gibi)
+// birleştirilmez, her sipariş kendi faturasına gider.
+function isSimpleFullOnDelivery(plan) {
+  if (!Array.isArray(plan)) return false;
+  const filled = plan.filter(p => Number(p?.pct) > 0);
+  if (filled.length !== 1) return false;
+  if (Math.abs(Number(filled[0].pct) - 100) > 0.01) return false;
+  const lbl = String(filled[0].label || "").toUpperCase();
+  // "IN ADVANCE WITH DELIVERY" veya "ON DELIVERY" veya "AT DELIVERY" varyantları
+  return lbl.includes("DELIVERY");
+}
+
+// Unique belgeNo (aynı sipariş no'ları tekrarlamasın)
+function uniqueBelgeNos(orderIds, sourceOrderLines) {
+  const seen = new Set();
+  const out = [];
+  for (const oid of orderIds) {
+    const belge = sourceOrderLines[oid]?.order?.belgeNo;
+    if (belge != null && !seen.has(String(belge))) {
+      seen.add(String(belge));
+      out.push(belge);
+    }
+  }
+  return out.join(", ");
+}
+
 export default function InvoiceCreateModal({
   containerId,       // opsiyonel — konteynerdeki tahsislerden başlar
   year,              // opsiyonel
@@ -97,19 +124,33 @@ export default function InvoiceCreateModal({
       }];
     }
     // container modu
-    const byHash = new Map();
-    for (const [orderId, entry] of Object.entries(sourceOrderLines)) {
-      const o = entry.order;
-      const h = hashPaymentPlan(o.paymentPlan);
-      if (!byHash.has(h)) byHash.set(h, []);
-      byHash.get(h).push(orderId);
+    // Yeni kural (kullanıcı isteği):
+    //   - "Tek satır %100 DELIVERY" tipli sipariş(ler) tek grupta birleşir
+    //   - Diğer tüm planlar (avans/taksit vb.) HER SİPARİŞ için AYRI grup
+    // Sipariş belge no sırasına göre sırala (kullanıcı deneyimi için stabil).
+    const orderIdList = Object.keys(sourceOrderLines).sort((a, b) => {
+      const ba = String(sourceOrderLines[a]?.order?.belgeNo || "");
+      const bb = String(sourceOrderLines[b]?.order?.belgeNo || "");
+      return ba.localeCompare(bb, "tr", { numeric: true });
+    });
+    const deliveryGroup = [];
+    const otherGroups = []; // her biri tek sipariş
+    for (const oid of orderIdList) {
+      const o = sourceOrderLines[oid].order;
+      if (isSimpleFullOnDelivery(o.paymentPlan)) {
+        deliveryGroup.push(oid);
+      } else {
+        otherGroups.push([oid]);
+      }
     }
-    let idx = 0;
-    return Array.from(byHash.values()).map(orderIds => {
-      idx++;
+    // Delivery grubu önce (varsa), sonra diğer siparişler
+    const allGroups = [];
+    if (deliveryGroup.length > 0) allGroups.push(deliveryGroup);
+    for (const g of otherGroups) allGroups.push(g);
+    return allGroups.map((orderIds, idx) => {
       const first = sourceOrderLines[orderIds[0]].order;
       return {
-        key: `grp_${idx}`,
+        key: `grp_${idx + 1}`,
         orderIds,
         extraLines: [],
         customerCode: first.customerCode || "",
@@ -121,7 +162,7 @@ export default function InvoiceCreateModal({
         deliveryTerms: first.deliveryTerms || "",
         deliveryTermsShort: shortDelivery(first.deliveryTerms || ""),
         paymentPlan: Array.isArray(first.paymentPlan) ? first.paymentPlan.map(p => ({ ...p })) : [{ label: "", pct: 100 }],
-        orderNr: orderIds.map(oid => sourceOrderLines[oid].order.belgeNo).join(", "),
+        orderNr: uniqueBelgeNos(orderIds, sourceOrderLines),
       };
     });
   }, [sourceOrderLines, mode]);
@@ -165,9 +206,13 @@ export default function InvoiceCreateModal({
     const first = source.order;
     const newKey = `grp_${Date.now()}`;
     setGroups(prev => {
-      const filtered = prev.map(g => g.key === currentGroupKey
-        ? { ...g, orderIds: g.orderIds.filter(x => x !== orderId) }
-        : g);
+      // Kaynak gruptan orderId'yi çıkar + orderNr'ı yeniden hesapla
+      const updated = prev.map(g => {
+        if (g.key !== currentGroupKey) return g;
+        const newOrderIds = g.orderIds.filter(x => x !== orderId);
+        return { ...g, orderIds: newOrderIds, orderNr: uniqueBelgeNos(newOrderIds, sourceOrderLines) };
+      });
+      // Yeni grubu oluştur
       const newGroup = {
         key: newKey,
         orderIds: [orderId],
@@ -181,9 +226,31 @@ export default function InvoiceCreateModal({
         deliveryTerms: first.deliveryTerms || "",
         deliveryTermsShort: shortDelivery(first.deliveryTerms || ""),
         paymentPlan: Array.isArray(first.paymentPlan) ? first.paymentPlan.map(p => ({ ...p })) : [],
-        orderNr: first.belgeNo,
+        orderNr: String(first.belgeNo || ""),
       };
-      return [...filtered.filter(g => g.orderIds.length > 0 || g.extraLines.length > 0), newGroup];
+      // Kaynak grubun konumu (temizleme öncesi) — yeni grup hemen altına yerleştir
+      const sourceIdx = updated.findIndex(g => g.key === currentGroupKey);
+      const cleaned = updated.filter(g => g.orderIds.length > 0 || g.extraLines.length > 0);
+      // Kaynak grup hala varsa altına, silindiyse eski konumuna
+      const stillIdx = cleaned.findIndex(g => g.key === currentGroupKey);
+      if (stillIdx >= 0) {
+        return [...cleaned.slice(0, stillIdx + 1), newGroup, ...cleaned.slice(stillIdx + 1)];
+      }
+      const insertAt = Math.min(Math.max(0, sourceIdx), cleaned.length);
+      return [...cleaned.slice(0, insertAt), newGroup, ...cleaned.slice(insertAt)];
+    });
+  };
+
+  // Gruplar arası sıralama — kullanıcı ↑↓ ile değiştirir
+  const moveGroup = (groupKey, direction) => {
+    setGroups(prev => {
+      const idx = prev.findIndex(g => g.key === groupKey);
+      if (idx < 0) return prev;
+      const targetIdx = direction === "up" ? idx - 1 : idx + 1;
+      if (targetIdx < 0 || targetIdx >= prev.length) return prev;
+      const copy = [...prev];
+      [copy[idx], copy[targetIdx]] = [copy[targetIdx], copy[idx]];
+      return copy;
     });
   };
 
@@ -351,6 +418,14 @@ export default function InvoiceCreateModal({
                     <span style={{ marginLeft: 8, fontSize: 10, color: "#78716c" }}>
                       · {g.orderIds.length} sipariş · {totals.lineCount} kalem · Toplam <b>{totals.total.toLocaleString("tr-TR", { minimumFractionDigits: 2 })} {g.currency}</b>
                     </span>
+                  </div>
+                  <div style={{ display: "flex", gap: 3 }}>
+                    <button onClick={() => moveGroup(g.key, "up")} disabled={gi === 0}
+                      title="Yukarı taşı (numaralı sırası daha erken olur)"
+                      style={{ padding: "2px 6px", fontSize: 10, background: gi === 0 ? "#f5f5f4" : "#eff6ff", color: gi === 0 ? "#a8a29e" : "#1e40af", border: `1px solid ${gi === 0 ? "#d6d3d1" : "#bfdbfe"}`, borderRadius: 3, cursor: gi === 0 ? "not-allowed" : "pointer" }}>↑</button>
+                    <button onClick={() => moveGroup(g.key, "down")} disabled={gi === groups.length - 1}
+                      title="Aşağı taşı"
+                      style={{ padding: "2px 6px", fontSize: 10, background: gi === groups.length - 1 ? "#f5f5f4" : "#eff6ff", color: gi === groups.length - 1 ? "#a8a29e" : "#1e40af", border: `1px solid ${gi === groups.length - 1 ? "#d6d3d1" : "#bfdbfe"}`, borderRadius: 3, cursor: gi === groups.length - 1 ? "not-allowed" : "pointer" }}>↓</button>
                   </div>
                 </div>
 
