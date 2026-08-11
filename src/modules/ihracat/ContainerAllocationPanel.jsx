@@ -13,6 +13,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
   computeAllocatedByOrder, computeOrderRemaining, suggestFifoAllocation,
+  forecastContainerBilling,
 } from "./allocationCalc";
 import {
   saveContainerAllocation, deleteContainerAllocation,
@@ -100,6 +101,20 @@ export default function ContainerAllocationPanel({
     }
     return { totalOil: total, breakdown };
   }, [items, invoiceSettings]);
+
+  // Öngörülen fatura toplamı (nakliye + yağ dahil)
+  const forecast = useMemo(() => {
+    if (relevantItems.length === 0) return null;
+    return forecastContainerBilling({
+      containerId, year,
+      items: relevantItems,
+      ordersMap: ordersData?.orders || {},
+      allocationsMap: allocationsData?.allocations || {},
+      allocatedByOrderMap: allocatedByOrder,
+      containerInvoices,
+      invoiceSettings,
+    });
+  }, [containerId, year, relevantItems, ordersData, allocationsData, allocatedByOrder, containerInvoices, invoiceSettings]);
 
   const transportPresets = useMemo(() => {
     const t = invoiceSettings?.transportDefault || { description: "TRANSPORTATION COST", unit: "AD", unitPrice: 0, currency: "EUR" };
@@ -243,6 +258,55 @@ export default function ContainerAllocationPanel({
         </div>
       )}
 
+      {/* Öngörü — her zaman görünür (collapse'dan bağımsız) */}
+      {forecast && forecast.grandTotal > 0 && (
+        <div style={{ marginTop: 6, padding: 8, background: "#ffffff", border: "1px solid #dbeafe", borderRadius: 4 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 8, fontSize: 10 }}>
+            <span style={{ fontSize: 11 }}>📊</span>
+            <span style={{ fontWeight: 700, color: "#1e40af" }}>
+              Öngörülen Fatura Toplamı: {fmt(forecast.grandTotal)} {forecast.currency}
+            </span>
+            {forecast.issuedTotal > 0 && (
+              <span style={{ padding: "1px 6px", background: "#dcfce7", color: "#166534", borderRadius: 2, fontWeight: 600 }}>
+                ✅ Kesildi: {fmt(forecast.issuedTotal)}
+              </span>
+            )}
+            {forecast.pendingTotal > 0 && (
+              <span style={{ padding: "1px 6px", background: "#dbeafe", color: "#1e40af", borderRadius: 2, fontWeight: 600 }}>
+                🔮 Kalan: {fmt(forecast.pendingTotal)}
+              </span>
+            )}
+            {forecast.mixedCurrency && (
+              <span style={{ padding: "1px 6px", background: "#fef3c7", color: "#92400e", borderRadius: 2, fontWeight: 600 }}>
+                ⚠ Çoklu döviz
+              </span>
+            )}
+          </div>
+          {Object.keys(forecast.byLabel).length > 0 && (
+            <div style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6, fontSize: 9, color: "#44403c" }}>
+              {Object.entries(forecast.byLabel)
+                .sort((a, b) => b[1].total - a[1].total)
+                .map(([label, v]) => (
+                  <div key={label} style={{ padding: "3px 8px", background: "#f5f5f4", border: "1px solid #e7e5e4", borderRadius: 3 }}>
+                    <span style={{ fontWeight: 600 }}>{label}:</span>{" "}
+                    <span style={{ fontWeight: 700, color: "#1e40af" }}>{fmt(v.total)}</span>
+                    {v.issued > 0 && v.pending > 0 && (
+                      <span style={{ marginLeft: 4, color: "#78716c", fontSize: 8 }}>
+                        (✅ {fmt(v.issued)} / 🔮 {fmt(v.pending)})
+                      </span>
+                    )}
+                  </div>
+                ))}
+            </div>
+          )}
+          {forecast.warnings.length > 0 && (
+            <div style={{ marginTop: 6, padding: 5, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 3, fontSize: 9 }}>
+              ⚠ {forecast.warnings.join(" · ")}
+            </div>
+          )}
+        </div>
+      )}
+
       {!collapsed && containerInvoices.length > 0 && (
         <div style={{ marginTop: 8, padding: 6, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 4 }}>
           <div style={{ fontSize: 10, fontWeight: 700, color: "#44403c", marginBottom: 4 }}>
@@ -370,6 +434,10 @@ export default function ContainerAllocationPanel({
 
 const invTh = { padding: "3px 6px", fontWeight: 700, fontSize: 9, textAlign: "left", color: "#44403c" };
 const invTd = { padding: "3px 6px", fontSize: 10, verticalAlign: "middle" };
+
+function fmt(n) {
+  return Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
 
 function ItemAllocation({
   item, containerId, year, products,
