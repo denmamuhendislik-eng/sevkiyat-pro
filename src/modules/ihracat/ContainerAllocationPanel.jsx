@@ -266,14 +266,19 @@ export default function ContainerAllocationPanel({
             <span style={{ fontWeight: 700, color: "#1e40af" }}>
               Öngörülen Fatura Toplamı: {fmt(forecast.grandTotal)} {forecast.currency}
             </span>
-            {forecast.issuedTotal > 0 && (
+            {forecast.paidTotal > 0 && (
               <span style={{ padding: "1px 6px", background: "#dcfce7", color: "#166534", borderRadius: 2, fontWeight: 600 }}>
-                ✅ Kesildi: {fmt(forecast.issuedTotal)}
+                ✅ Ödendi: {fmt(forecast.paidTotal)}
+              </span>
+            )}
+            {forecast.issuedNotPaidTotal > 0 && (
+              <span style={{ padding: "1px 6px", background: "#fef3c7", color: "#92400e", borderRadius: 2, fontWeight: 600 }}>
+                🕐 Kesildi bekliyor: {fmt(forecast.issuedNotPaidTotal)}
               </span>
             )}
             {forecast.pendingTotal > 0 && (
               <span style={{ padding: "1px 6px", background: "#dbeafe", color: "#1e40af", borderRadius: 2, fontWeight: 600 }}>
-                🔮 Kalan: {fmt(forecast.pendingTotal)}
+                🔮 Kesilecek: {fmt(forecast.pendingTotal)}
               </span>
             )}
             {forecast.mixedCurrency && (
@@ -290,9 +295,13 @@ export default function ContainerAllocationPanel({
                   <div key={label} style={{ padding: "3px 8px", background: "#f5f5f4", border: "1px solid #e7e5e4", borderRadius: 3 }}>
                     <span style={{ fontWeight: 600 }}>{label}:</span>{" "}
                     <span style={{ fontWeight: 700, color: "#1e40af" }}>{fmt(v.total)}</span>
-                    {v.issued > 0 && v.pending > 0 && (
+                    {(v.paid > 0 || (v.issued > 0 && v.pending > 0)) && (
                       <span style={{ marginLeft: 4, color: "#78716c", fontSize: 8 }}>
-                        (✅ {fmt(v.issued)} / 🔮 {fmt(v.pending)})
+                        (
+                        {v.paid > 0 && <>✅ {fmt(v.paid)} </>}
+                        {v.issued - (v.paid || 0) > 0.005 && <>🕐 {fmt(v.issued - (v.paid || 0))} </>}
+                        {v.pending > 0 && <>🔮 {fmt(v.pending)}</>}
+                        )
                       </span>
                     )}
                   </div>

@@ -48,23 +48,43 @@ export default function PaymentRequestModal({ invoices, customerOptions, initial
   }, [selectedCustomer, exportSettings]);
 
   // Müşteri için "delivery" etiketli fatura satırları
+  // Kural: paid faturalar hariç. Partial için delivery kısmının kalanı hesaplanır
+  // (varsayım: avans önce ödenir → delivery kalanı = deliveryAmount - max(0, paid - nonDeliveryAmount))
   const rows = useMemo(() => {
     if (!selectedCustomer) return [];
     const list = [];
     for (const inv of (invoices || [])) {
       if (inv.customerCode !== selectedCustomer) continue;
       if ((inv.status || "issued") !== "issued") continue;
+      if ((inv.paymentStatus || "unpaid") === "paid") continue; // tam ödenmiş
       const plan = Array.isArray(inv.paymentPlan) ? inv.paymentPlan : [];
+      const total = Number(inv.totalAmount) || 0;
+      const paid = Number(inv.paidAmount) || 0;
+      // Non-delivery (avans) toplam yüzdesi
+      const nonDeliveryPct = plan
+        .filter(p => !isDeliveryLabel(p?.label))
+        .reduce((s, p) => s + (Number(p?.pct) || 0), 0);
+      const nonDeliveryAmount = total * (nonDeliveryPct / 100);
       for (const p of plan) {
         if (!isDeliveryLabel(p?.label)) continue;
         const pct = Number(p?.pct) || 0;
         if (pct <= 0) continue;
-        const total = Number(inv.totalAmount) || 0;
+        const deliveryAmount = total * (pct / 100);
+        // Ödenen tutar avansı aşmışsa fazlası delivery'e sayılır
+        const paidTowardsDelivery = Math.max(0, paid - nonDeliveryAmount);
+        // Bu spesifik delivery satırının kalanı
+        // (birden fazla delivery satırı varsa proportional dağıt — nadiren olur)
+        const totalDeliveryAmount = plan
+          .filter(pp => isDeliveryLabel(pp?.label))
+          .reduce((s, pp) => s + total * ((Number(pp?.pct) || 0) / 100), 0);
+        const thisLineRatio = totalDeliveryAmount > 0 ? deliveryAmount / totalDeliveryAmount : 1;
+        const remainingForThisLine = Math.max(0, (totalDeliveryAmount - paidTowardsDelivery) * thisLineRatio);
+        if (remainingForThisLine < 0.005) continue; // bu delivery satırı de ödenmiş
         list.push({
           invoiceNo: inv.invoiceNo,
           label: String(p.label || "").trim(),
           pct,
-          amount: total * (pct / 100),
+          amount: remainingForThisLine,
           currency: inv.currency || "EUR",
           invoiceDate: inv.invoiceDate || "",
           key: `${inv.invoiceNo}__${String(p.label)}__${pct}`,

@@ -123,19 +123,26 @@ export function forecastContainerBilling({
   ordersMap, allocationsMap, allocatedByOrderMap,
   containerInvoices, invoiceSettings,
 }) {
-  const byLabel = {}; // label → {total, issued, pending}
+  const byLabel = {}; // label → {total, issued, pending, paid}
   let grandTotal = 0;
   let issuedTotal = 0;
   let pendingTotal = 0;
+  let paidTotal = 0;
   const warnings = [];
   const currencies = new Set();
 
   const bumpLabel = (label, amount, isIssued) => {
     const key = String(label || "").trim() || "(etiketsiz)";
-    if (!byLabel[key]) byLabel[key] = { total: 0, issued: 0, pending: 0 };
+    if (!byLabel[key]) byLabel[key] = { total: 0, issued: 0, pending: 0, paid: 0 };
     byLabel[key].total += amount;
     if (isIssued) byLabel[key].issued += amount;
     else byLabel[key].pending += amount;
+  };
+
+  const bumpLabelPaid = (label, amount) => {
+    const key = String(label || "").trim() || "(etiketsiz)";
+    if (!byLabel[key]) byLabel[key] = { total: 0, issued: 0, pending: 0, paid: 0 };
+    byLabel[key].paid = (byLabel[key].paid || 0) + amount;
   };
 
   const distributeAmount = (orderAmount, paymentPlan, isIssued) => {
@@ -149,6 +156,17 @@ export function forecastContainerBilling({
     for (const p of plan) {
       const portion = orderAmount * (Number(p.pct) / (totalPct || 100));
       bumpLabel(p.label, portion, isIssued);
+    }
+  };
+
+  // Ödenen tutarı payment plan etiketleri arasında proportional dağıt
+  const distributePaid = (paidAmt, paymentPlan) => {
+    if (paidAmt <= 0) return;
+    const plan = Array.isArray(paymentPlan) ? paymentPlan.filter(p => Number(p?.pct) > 0) : [];
+    if (plan.length === 0) { bumpLabelPaid("(etiketsiz)", paidAmt); return; }
+    const totalPct = plan.reduce((s, p) => s + (Number(p.pct) || 0), 0);
+    for (const p of plan) {
+      bumpLabelPaid(p.label, paidAmt * (Number(p.pct) / (totalPct || 100)));
     }
   };
 
@@ -222,6 +240,14 @@ export function forecastContainerBilling({
     }
   }
 
+  // ÖDENEN — aktif ticari faturaların paidAmount'ları payment label'a proportional dağıt
+  for (const inv of activeCommercialInvoices) {
+    const paidAmt = Number(inv.paidAmount) || 0;
+    if (paidAmt <= 0) continue;
+    paidTotal += paidAmt;
+    distributePaid(paidAmt, inv.paymentPlan);
+  }
+
   // TRANSPORT SIDE — kesilmiş nakliye faturaları varsa onları kullan, yoksa ayarlardan öngör
   if (activeTransportInvoices.length > 0) {
     for (const inv of activeTransportInvoices) {
@@ -231,6 +257,12 @@ export function forecastContainerBilling({
       distributeAmount(amt, inv.paymentPlan, true);
       grandTotal += amt;
       issuedTotal += amt;
+      // Nakliye faturası ödenmiş mi?
+      const paidAmt = Number(inv.paidAmount) || 0;
+      if (paidAmt > 0) {
+        paidTotal += paidAmt;
+        distributePaid(paidAmt, inv.paymentPlan);
+      }
     }
   } else {
     // Nakliye henüz kesilmemiş → ayarlardan öngör
@@ -255,7 +287,9 @@ export function forecastContainerBilling({
 
   const currency = currencies.size === 1 ? [...currencies][0] : (currencies.size > 1 ? "MIX" : "EUR");
   return {
-    grandTotal, issuedTotal, pendingTotal,
+    grandTotal, issuedTotal, pendingTotal, paidTotal,
+    // "Kesildi ama bekleyen" = kesildi - ödendi (kalan tahsilat)
+    issuedNotPaidTotal: Math.max(0, issuedTotal - paidTotal),
     byLabel, currency, mixedCurrency: currencies.size > 1,
     warnings,
   };

@@ -10,11 +10,20 @@ import { generateInvoicePdf } from "./invoicePdf";
 import InvoiceCreateModal from "./InvoiceCreateModal";
 import InvoiceEditModal from "./InvoiceEditModal";
 import PaymentRequestModal from "./PaymentRequestModal";
+import PaymentModal from "./PaymentModal";
 
+// Ödeme durumu meta — VOID hariç 3 durum + iptal
 const STATUS_META = {
-  issued: { label: "Kesildi", bg: "#dbeafe", fg: "#1e40af" },
   cancelled: { label: "İPTAL (VOID)", bg: "#fef2f2", fg: "#991b1b" },
+  paid: { label: "Ödendi", bg: "#dcfce7", fg: "#166534" },
+  partial: { label: "Kısmi Ödendi", bg: "#fef3c7", fg: "#92400e" },
+  unpaid: { label: "Bekliyor", bg: "#dbeafe", fg: "#1e40af" },
 };
+
+function derivePaymentStatus(inv) {
+  if ((inv.status || "issued") === "cancelled") return "cancelled";
+  return inv.paymentStatus || "unpaid";
+}
 
 export default function InvoiceList({ canEdit, userEmail, products, ordersData, allocationsData }) {
   const [data, setData] = useState({ invoices: {} });
@@ -27,6 +36,7 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
   const [editInvoice, setEditInvoice] = useState(null); // ✏ düzenleme modalı
   const [showBlank, setShowBlank] = useState(false); // "Yeni Boş Fatura" modal
   const [showPaymentRequest, setShowPaymentRequest] = useState(false);
+  const [paymentInvoice, setPaymentInvoice] = useState(null); // 💰 Ödeme kaydı modalı
 
   useEffect(() => {
     const u1 = subscribeExportInvoices(d => { setData(d || { invoices: {} }); setLoaded(true); });
@@ -47,7 +57,10 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
     return invoices
       .filter(i => {
         if (customerFilter !== "all" && i.customerCode !== customerFilter) return false;
-        if (statusFilter !== "all" && (i.status || "issued") !== statusFilter) return false;
+        if (statusFilter !== "all") {
+          const derived = derivePaymentStatus(i);
+          if (derived !== statusFilter) return false;
+        }
         if (!q) return true;
         const hay = `${i.invoiceNo || ""} ${i.customerName || ""} ${i.orderNr || ""} ${(i.lines || []).map(l => l.description).join(" ")}`.toLocaleLowerCase("tr-TR");
         return hay.includes(q);
@@ -110,8 +123,10 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           style={{ padding: "6px 10px", fontSize: 12, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
           <option value="all">Tümü</option>
-          <option value="issued">Kesildi</option>
-          <option value="cancelled">İptal</option>
+          <option value="unpaid">🔵 Bekliyor</option>
+          <option value="partial">🟡 Kısmi</option>
+          <option value="paid">✅ Ödendi</option>
+          <option value="cancelled">🚫 İptal</option>
         </select>
         <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{list.length} fatura</span>
         <button onClick={() => setShowPaymentRequest(true)}
@@ -142,15 +157,20 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
                 <th style={th}>Müşteri</th>
                 <th style={th}>Order NR.</th>
                 <th style={{ ...th, textAlign: "right" }}>Toplam</th>
+                <th style={{ ...th, textAlign: "right" }}>Ödenen / Kalan</th>
                 <th style={th}>Currency</th>
                 <th style={{ ...th, textAlign: "center" }}>Durum</th>
-                <th style={{ ...th, textAlign: "center", width: 120 }}>Aksiyon</th>
+                <th style={{ ...th, textAlign: "center", width: 150 }}>Aksiyon</th>
               </tr>
             </thead>
             <tbody>
               {list.map(i => {
-                const st = STATUS_META[i.status || "issued"];
+                const derivedStatus = derivePaymentStatus(i);
+                const st = STATUS_META[derivedStatus] || STATUS_META.unpaid;
                 const isVoid = (i.status || "issued") === "cancelled";
+                const total = Number(i.totalAmount || 0);
+                const paid = Number(i.paidAmount || 0);
+                const remaining = Math.max(0, total - paid);
                 return (
                   <tr key={i.invoiceNo} style={{ borderTop: "1px solid #f5f5f4", background: isVoid ? "#fafaf9" : "transparent", opacity: isVoid ? 0.65 : 1 }}>
                     <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{i.invoiceNo}</td>
@@ -158,7 +178,15 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
                     <td style={td}>{i.customerName || "—"}</td>
                     <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 10 }}>{i.orderNr || "—"}</td>
                     <td style={{ ...td, textAlign: "right", fontWeight: 600 }}>
-                      {Number(i.totalAmount || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {total.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                    </td>
+                    <td style={{ ...td, textAlign: "right", fontSize: 10 }}>
+                      {isVoid ? "—" : (
+                        <div>
+                          <div style={{ color: "#166534", fontWeight: 600 }}>{paid.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                          <div style={{ color: remaining > 0 ? "#dc2626" : "#a8a29e", fontSize: 9 }}>kalan {remaining.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        </div>
+                      )}
                     </td>
                     <td style={td}>{i.currency || "—"}</td>
                     <td style={{ ...td, textAlign: "center" }}>
@@ -170,6 +198,11 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
                       <button onClick={() => handleDownload(i)}
                         title="PDF indir"
                         style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄</button>
+                      {!isVoid && (
+                        <button onClick={() => setPaymentInvoice(i)} disabled={!canEdit}
+                          title="Ödeme Kaydet / Geçmiş"
+                          style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>💰</button>
+                      )}
                       {!isVoid && (
                         <button onClick={() => setEditInvoice(i)} disabled={!canEdit}
                           title="Düzenle"
@@ -260,6 +293,16 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
           userEmail={userEmail}
           onClose={() => setEditInvoice(null)}
           onSaved={() => { /* liste subscription ile kendini günceller — modalı açık bırak */ }}
+        />
+      )}
+
+      {/* Ödeme kaydı modalı */}
+      {paymentInvoice && (
+        <PaymentModal
+          invoice={data?.invoices?.[paymentInvoice.invoiceNo] || paymentInvoice}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setPaymentInvoice(null)}
         />
       )}
 

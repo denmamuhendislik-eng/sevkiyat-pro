@@ -570,6 +570,84 @@ export async function deleteExportInvoice(invoiceNo, { canEdit, userEmail = "" }
   return { deleted: true, counterRolledBack, newCounterValue };
 }
 
+// Ödeme kaydı ekle — invoice.paymentHistory'ye push + paidAmount/paymentStatus günceller
+// Kısmi/tam ödeme ayrımı otomatik: paidAmount >= totalAmount → paid, > 0 → partial, = 0 → unpaid
+export async function recordPayment(invoiceNo, { amount, date, notes }, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!invoiceNo) throw new Error("invoiceNo zorunlu");
+  const amt = Number(amount) || 0;
+  if (amt <= 0) throw new Error("Tutar pozitif olmalı");
+  const ref = doc(db, APP_COL, EXPORT_INVOICES_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.invoices || {}) : {};
+  const inv = current[invoiceNo];
+  if (!inv) throw new Error(`Fatura bulunamadı: ${invoiceNo}`);
+  if ((inv.status || "issued") === "cancelled") throw new Error("İptal edilmiş fatura için ödeme kaydı eklenemez");
+  const now = new Date().toISOString();
+  const history = Array.isArray(inv.paymentHistory) ? [...inv.paymentHistory] : [];
+  const newEntry = {
+    id: `pmt_${Date.now()}`,
+    amount: amt,
+    date: date || now.slice(0, 10),
+    notes: String(notes || "").trim(),
+    by: userEmail || "",
+    recordedAt: now,
+  };
+  history.push(newEntry);
+  const paidAmount = history.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const total = Number(inv.totalAmount) || 0;
+  const paymentStatus = paidAmount >= total - 0.005 ? "paid" : (paidAmount > 0 ? "partial" : "unpaid");
+  await setDoc(ref, {
+    invoices: {
+      [invoiceNo]: {
+        ...inv,
+        paymentHistory: history,
+        paidAmount,
+        paymentStatus,
+        paidAt: now,
+        paidBy: userEmail || "",
+        updatedAt: now,
+        updatedBy: userEmail || "",
+      },
+    },
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+  return { paidAmount, paymentStatus, entry: newEntry };
+}
+
+// Ödeme kaydını iptal et — history'den kaldırır, tutarları yeniden hesaplar
+export async function revertPayment(invoiceNo, paymentId, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!invoiceNo) throw new Error("invoiceNo zorunlu");
+  if (!paymentId) throw new Error("paymentId zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_INVOICES_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.invoices || {}) : {};
+  const inv = current[invoiceNo];
+  if (!inv) throw new Error(`Fatura bulunamadı: ${invoiceNo}`);
+  const history = Array.isArray(inv.paymentHistory) ? inv.paymentHistory.filter(p => p.id !== paymentId) : [];
+  const paidAmount = history.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const total = Number(inv.totalAmount) || 0;
+  const paymentStatus = paidAmount >= total - 0.005 ? "paid" : (paidAmount > 0 ? "partial" : "unpaid");
+  const now = new Date().toISOString();
+  await setDoc(ref, {
+    invoices: {
+      [invoiceNo]: {
+        ...inv,
+        paymentHistory: history,
+        paidAmount,
+        paymentStatus,
+        updatedAt: now,
+        updatedBy: userEmail || "",
+      },
+    },
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+  return { paidAmount, paymentStatus };
+}
+
 // İptal (soft) — numara VOID, tekrar kullanılmaz. Kayıt silinmez, status: cancelled.
 export async function cancelExportInvoice(invoiceNo, reason, { canEdit, userEmail = "" } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
