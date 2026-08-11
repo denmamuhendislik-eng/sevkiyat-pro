@@ -212,6 +212,8 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         };
         await saveExportOrder(payload, { canEdit, userEmail });
         applyMotorSyncForEdit(payload);
+        // Bağlı child kayıtlarını da güncelle (miktar, teslim tarihi, status vs)
+        await syncLinkedChildren(payload);
       } else {
         // Yeni sipariş: her geçerli kalem için ayrı kayıt + ayrı motor sync
         for (const line of validLines) {
@@ -229,6 +231,8 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           };
           await saveExportOrder(payload, { canEdit, userEmail });
           applyMotorSyncForNew(payload);
+          // Cascade child kayıtları — parent'ın bileşenleri ayrı kalem olarak
+          await createLinkedChildren(payload);
         }
       }
       // Teslim şekli + ödeme etiketleri
@@ -258,6 +262,48 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     }
   };
 
+  // Bağlı child kayıtları oluştur — parent'ın kombine bileşenleri ayrı kalem olarak
+  // Motor sync ÇAĞRILMAZ (parent'ın cascade'i zaten yd.orders'a yazıyor — çift sayım önlenir)
+  const createLinkedChildren = async (parentPayload) => {
+    if (!parentPayload?.pid) return;
+    if ((parentPayload.status || "open") === "cancelled") return;
+    const rules = (combRules || []).filter(r => Number(r.parent) === Number(parentPayload.pid));
+    if (rules.length === 0) return;
+    const childIds = [...new Set(rules.flatMap(r => (r.children || []).map(Number)))];
+    for (const cid of childIds) {
+      const child = (products || []).find(p => Number(p.id) === cid);
+      if (!child) continue;
+      const childStokKodu = child.vioCode || "";
+      if (!childStokKodu) continue; // vioCode olmayan ürüne kayıt açmayız
+      const childId = buildId(parentPayload.belgeNo, childStokKodu, parentPayload.teslimTarihi);
+      const childPayload = {
+        ...parentPayload,
+        id: childId,
+        stokKodu: childStokKodu,
+        stokAdi: child.nameTR || "",
+        descriptionEn: child.nameEN || "",
+        pid: cid,
+        // Miktar parent'a eşit (cascade 1:1). Kullanıcı edit'te değiştiremez (kilitli).
+        orijinalMiktar: parentPayload.orijinalMiktar,
+        sevkedilenBaslangic: parentPayload.sevkedilenBaslangic || 0,
+        birimFiyat: 0, // Default 0 — parent fiyatına dahil. Kullanıcı isterse edit'te değiştirir.
+        isLinkedChild: true,
+        linkedParentPid: parentPayload.pid,
+        linkedParentStokKodu: parentPayload.stokKodu,
+        source: "cascade",
+      };
+      await saveExportOrder(childPayload, { canEdit, userEmail });
+    }
+  };
+
+  // Edit sonrası bağlı child kayıtlarını senkronla — parent'ın yeni değerlerine göre
+  // Bir child zaten varsa güncellenir; yeni bir child (kural değişikliği) varsa oluşturulur.
+  // Kural gereği artık child olmayan bir kayıt (parent kuralı kaldırıldıysa) BURADA silinmez —
+  // ihracat siparişleri manuel yönetilir, defensive silme risklidir.
+  const syncLinkedChildren = async (parentPayload) => {
+    await createLinkedChildren(parentPayload);
+  };
+
   // Motor sync helper — yeni sipariş (create)
   const applyMotorSyncForNew = (payload) => {
     if (!motorSync?.enabled || !motorSync.apply) return;
@@ -276,6 +322,8 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
   // Motor sync helper — edit (delta hesabı, pid/yıl değişimi dahil)
   const applyMotorSyncForEdit = (payload) => {
     if (!motorSync?.enabled || !motorSync.apply) return;
+    // Bağlı child kaydının edit'inde motor sync tetiklenmez (parent cascade'i sağlar)
+    if (editingOrder?.isLinkedChild) return;
     const wasActive = editingOrder ? (editingOrder.status || "open") !== "cancelled" : false;
     const isActive = (payload.status || "open") !== "cancelled";
     const oldPid = editingOrder ? editingOrder.pid : null;
@@ -435,7 +483,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
               {cascadeChildren.length > 0 && (
                 <div style={{ marginTop: 6, padding: 6, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 3 }}>
                   <div style={{ fontSize: 9, fontWeight: 700, color: "#1e40af", marginBottom: 3 }}>
-                    🔗 Bu ürün kombine parent — kayıt sonrası Sevkiyat Planı'na aşağıdaki bağlı ürünler de aynı miktarda eklenir:
+                    🔗 Bu ürün kombine parent — kayıt sonrası aşağıdaki bağlı ürünler siparişe ayrı kalem olarak eklenir + Sevkiyat Planı'na cascade edilir:
                   </div>
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                     {cascadeChildren.map(c => (

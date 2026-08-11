@@ -121,10 +121,12 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
         patch: { status: newStatus },
       }, { canEdit, userEmail });
       // Motor sync — her kalem için open ↔ cancelled geçişi
+      // Bağlı (isLinkedChild) kayıtlar atlanır: parent cascade zaten yd.orders'a yazıyor
       if (motorSync?.enabled && motorSync.apply) {
         const isActiveNew = newStatus !== "cancelled";
         for (const it of group.items) {
           if (it.pid == null) continue;
+          if (it.isLinkedChild) continue; // parent'ın cascade'i child'ı halleder
           const wasActive = (it.status || "open") !== "cancelled";
           if (wasActive === isActiveNew) continue;
           const netQty = Math.max(0, (Number(it.orijinalMiktar) || 0) - (Number(it.sevkedilenBaslangic) || 0));
@@ -144,10 +146,18 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
 
   const handleItemStatusChange = async (order, newStatus) => {
     if (!canEdit) return;
+    // Bağlı child kayıtlarını da güncelle (aynı belgeNo + linkedParentPid=order.pid)
+    const linkedChildren = order.isLinkedChild ? [] : orders.filter(x =>
+      x.isLinkedChild && x.belgeNo === order.belgeNo && Number(x.linkedParentPid) === Number(order.pid)
+    );
     try {
       await updateExportOrderStatus(order.id, newStatus, { canEdit, userEmail });
-      // Motor sync — status open ↔ cancelled geçişi motor'a yansır
-      if (motorSync?.enabled && motorSync.apply && order.pid != null) {
+      for (const child of linkedChildren) {
+        try { await updateExportOrderStatus(child.id, newStatus, { canEdit, userEmail }); }
+        catch (childErr) { console.warn("Bağlı child status güncellenemedi:", child.id, childErr.message); }
+      }
+      // Motor sync — status open ↔ cancelled geçişi, SADECE parent için (cascade child'ı halleder)
+      if (motorSync?.enabled && motorSync.apply && order.pid != null && !order.isLinkedChild) {
         const oldStatus = order.status || "open";
         const wasActive = oldStatus !== "cancelled";
         const isActive = newStatus !== "cancelled";
@@ -169,11 +179,23 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
 
   const handleDeleteItem = async (order) => {
     if (!canEdit) return;
-    if (!confirm(`Kalem silinsin mi?\n\nBelge ${order.belgeNo} · ${order.stokKodu}`)) return;
+    // Bağlı child kayıtları — parent'ın silinmesiyle beraber silinir
+    const linkedChildren = order.isLinkedChild ? [] : orders.filter(x =>
+      x.isLinkedChild && x.belgeNo === order.belgeNo && Number(x.linkedParentPid) === Number(order.pid)
+    );
+    const extraMsg = linkedChildren.length > 0
+      ? `\n\n🔗 ${linkedChildren.length} bağlı ürün kaydı da silinecek.`
+      : "";
+    if (!confirm(`Kalem silinsin mi?\n\nBelge ${order.belgeNo} · ${order.stokKodu}${extraMsg}`)) return;
     try {
       await deleteExportOrder(order.id, { canEdit, userEmail });
-      // Motor sync — miktarı yd.orders'tan düş (sadece aktif siparişler için)
-      if (motorSync?.enabled && motorSync.apply && order.pid != null && (order.status || "open") !== "cancelled") {
+      // Bağlı child'ları da sil
+      for (const child of linkedChildren) {
+        try { await deleteExportOrder(child.id, { canEdit, userEmail }); }
+        catch (childErr) { console.warn("Bağlı child silinemedi:", child.id, childErr.message); }
+      }
+      // Motor sync — sadece parent (isLinkedChild değil) için — cascade otomatik children'a düşer
+      if (motorSync?.enabled && motorSync.apply && order.pid != null && !order.isLinkedChild && (order.status || "open") !== "cancelled") {
         const netQty = Math.max(0, (Number(order.orijinalMiktar) || 0) - (Number(order.sevkedilenBaslangic) || 0));
         const orderYear = order.teslimTarihi
           ? Number(String(order.teslimTarihi).slice(0, 4))
@@ -304,17 +326,32 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                         </tr>
                       </thead>
                       <tbody>
-                        {/* Gerçek kalemler */}
-                        {g.items.map(o => {
+                        {/* Kalemler — gerçek + bağlı (isLinkedChild) beraber, bağlılar sonda sıralanır */}
+                        {(() => {
+                          const sortedItems = [...g.items].sort((a, b) => {
+                            const aL = !!a.isLinkedChild;
+                            const bL = !!b.isLinkedChild;
+                            if (aL !== bL) return aL ? 1 : -1; // linked'lar sona
+                            return 0;
+                          });
+                          return sortedItems;
+                        })().map(o => {
                           const tahsis = allocatedByOrder.get(o.id) || 0;
                           const fill = computeOrderFillStatus(o, allocatedByOrder);
                           const stMeta = STATUS_LABELS[o.status || "open"];
+                          const isLinked = !!o.isLinkedChild;
                           return (
-                            <tr key={o.id} style={{ borderTop: "1px solid #f5f5f4" }}>
-                              <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>{o.stokKodu || "—"}</td>
+                            <tr key={o.id} style={{ borderTop: "1px solid #f5f5f4", background: isLinked ? "#fafaf9" : "transparent" }}>
+                              <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
+                                {isLinked && <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, background: "rgba(30,64,175,0.12)", color: "#1e40af", borderRadius: 2, marginRight: 4 }}>🔗 BAĞLI</span>}
+                                {o.stokKodu || "—"}
+                              </td>
                               <td style={td}>
                                 <div>{o.stokAdi || "—"}</div>
                                 {o.descriptionEn && <div style={{ fontSize: 9, color: "#78716c", fontStyle: "italic" }}>{o.descriptionEn}</div>}
+                                {isLinked && o.linkedParentStokKodu && (
+                                  <div style={{ fontSize: 8, color: "#a8a29e", marginTop: 2 }}>Parent: {o.linkedParentStokKodu}</div>
+                                )}
                               </td>
                               <td style={{ ...td, textAlign: "right" }}>{Number(o.orijinalMiktar || 0).toLocaleString("tr-TR")}</td>
                               <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{Number(o.sevkedilenBaslangic || 0).toLocaleString("tr-TR")}</td>
@@ -327,70 +364,33 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                               </td>
                               <td style={{ ...td, fontSize: 10 }}>{o.teslimTarihi || "—"}</td>
                               <td style={{ ...td, textAlign: "center" }}>
-                                <select value={o.status || "open"} onChange={e => handleItemStatusChange(o, e.target.value)} disabled={!canEdit}
-                                  style={{ padding: "2px 6px", fontSize: 9, fontWeight: 600, border: "1px solid " + stMeta.fg, borderRadius: 3, background: stMeta.bg, color: stMeta.fg, cursor: canEdit ? "pointer" : "not-allowed" }}>
-                                  <option value="open">Açık</option>
-                                  <option value="closed">Kapalı</option>
-                                  <option value="cancelled">İptal</option>
-                                </select>
+                                {isLinked ? (
+                                  <span title="Bağlı ürünün durumu parent'a bağlıdır" style={{ padding: "2px 6px", fontSize: 9, fontWeight: 600, borderRadius: 3, background: stMeta.bg, color: stMeta.fg, opacity: 0.75 }}>{stMeta.label}</span>
+                                ) : (
+                                  <select value={o.status || "open"} onChange={e => handleItemStatusChange(o, e.target.value)} disabled={!canEdit}
+                                    style={{ padding: "2px 6px", fontSize: 9, fontWeight: 600, border: "1px solid " + stMeta.fg, borderRadius: 3, background: stMeta.bg, color: stMeta.fg, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                                    <option value="open">Açık</option>
+                                    <option value="closed">Kapalı</option>
+                                    <option value="cancelled">İptal</option>
+                                  </select>
+                                )}
                               </td>
                               <td style={{ ...td, textAlign: "center" }}>
-                                <button onClick={() => onEdit(o)} disabled={!canEdit}
-                                  title="Kalem içi bilgileri düzenle (miktar, fiyat, termin) — teslim şekli / ödeme planı sipariş bazlıdır"
-                                  style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
-                                <button onClick={() => handleDeleteItem(o)} disabled={!canEdit}
-                                  style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
+                                {isLinked ? (
+                                  <span style={{ fontSize: 9, color: "#a8a29e" }} title="Bağlı ürün — parent'tan yönetilir">🔗</span>
+                                ) : (
+                                  <>
+                                    <button onClick={() => onEdit(o)} disabled={!canEdit}
+                                      title="Kalem içi bilgileri düzenle (miktar, fiyat, termin) — teslim şekli / ödeme planı sipariş bazlıdır"
+                                      style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
+                                    <button onClick={() => handleDeleteItem(o)} disabled={!canEdit}
+                                      style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
+                                  </>
+                                )}
                               </td>
                             </tr>
                           );
                         })}
-                        {/* Virtüel bağlı ürünler (cascade children) — kayıt yok, sadece görsel
-                            Sevkiyat Planı'na gerçekten yansıyanları burada da göstermek için */}
-                        {(() => {
-                          const virtualRows = [];
-                          for (const parent of g.items) {
-                            if (!parent.pid) continue;
-                            if ((parent.status || "open") === "cancelled") continue;
-                            const rules = (combRules || []).filter(r => Number(r.parent) === Number(parent.pid));
-                            for (const rule of rules) {
-                              for (const childId of (rule.children || [])) {
-                                const child = (products || []).find(p => Number(p.id) === Number(childId));
-                                const parentNet = Math.max(0, (Number(parent.orijinalMiktar) || 0) - (Number(parent.sevkedilenBaslangic) || 0));
-                                virtualRows.push({
-                                  key: `virt_${parent.id}_${childId}`,
-                                  parentBelgeStok: `${parent.belgeNo || ""} / ${parent.stokKodu || ""}`,
-                                  stokKodu: child?.vioCode || `#${childId}`,
-                                  nameTR: child?.nameTR || `pid ${childId}`,
-                                  nameEN: child?.nameEN || "",
-                                  qty: parentNet,
-                                  currency: parent.currency || "",
-                                });
-                              }
-                            }
-                          }
-                          if (virtualRows.length === 0) return null;
-                          return virtualRows.map(v => (
-                            <tr key={v.key} style={{ borderTop: "1px solid #f5f5f4", background: "#fafaf9", opacity: 0.85 }}>
-                              <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
-                                <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, background: "rgba(30,64,175,0.12)", color: "#1e40af", borderRadius: 2, marginRight: 4 }}>🔗 BAĞLI</span>
-                                {v.stokKodu}
-                              </td>
-                              <td style={td}>
-                                <div>{v.nameTR}</div>
-                                {v.nameEN && <div style={{ fontSize: 9, color: "#78716c", fontStyle: "italic" }}>{v.nameEN}</div>}
-                                <div style={{ fontSize: 8, color: "#a8a29e", marginTop: 2 }}>Parent: {v.parentBelgeStok}</div>
-                              </td>
-                              <td style={{ ...td, textAlign: "right", color: "#1e40af", fontWeight: 600 }}>{v.qty.toLocaleString("tr-TR")}</td>
-                              <td style={{ ...td, textAlign: "right", color: "#a8a29e" }}>—</td>
-                              <td style={{ ...td, textAlign: "right", color: "#a8a29e" }}>—</td>
-                              <td style={{ ...td, textAlign: "right", color: "#a8a29e", background: "#f5f5f4" }}>—</td>
-                              <td style={{ ...td, textAlign: "right", color: "#a8a29e", fontSize: 9 }}>parent fiyatına dahil</td>
-                              <td style={{ ...td, fontSize: 10, color: "#a8a29e" }}>—</td>
-                              <td style={{ ...td, textAlign: "center", fontSize: 9, color: "#78716c" }}>parent'a bağlı</td>
-                              <td style={{ ...td, textAlign: "center", color: "#a8a29e", fontSize: 9 }}>—</td>
-                            </tr>
-                          ));
-                        })()}
                       </tbody>
                     </table>
                   </div>
