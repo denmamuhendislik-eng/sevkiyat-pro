@@ -376,16 +376,14 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                                 )}
                               </td>
                               <td style={{ ...td, textAlign: "center" }}>
-                                {isLinked ? (
-                                  <span style={{ fontSize: 9, color: "#a8a29e" }} title="Bağlı ürün — parent'tan yönetilir">🔗</span>
-                                ) : (
-                                  <>
-                                    <button onClick={() => onEdit(o)} disabled={!canEdit}
-                                      title="Kalem içi bilgileri düzenle (miktar, fiyat, termin) — teslim şekli / ödeme planı sipariş bazlıdır"
-                                      style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
-                                    <button onClick={() => handleDeleteItem(o)} disabled={!canEdit}
-                                      style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
-                                  </>
+                                <button onClick={() => onEdit(o)} disabled={!canEdit}
+                                  title={isLinked
+                                    ? "Bağlı ürünü düzenle (birim fiyat ve İngilizce ürün adı değiştirilebilir)"
+                                    : "Kalem içi bilgileri düzenle (miktar, fiyat, termin)"}
+                                  style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
+                                {!isLinked && (
+                                  <button onClick={() => handleDeleteItem(o)} disabled={!canEdit}
+                                    style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
                                 )}
                               </td>
                             </tr>

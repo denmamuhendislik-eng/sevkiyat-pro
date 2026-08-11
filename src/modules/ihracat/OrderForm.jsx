@@ -212,8 +212,10 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         };
         await saveExportOrder(payload, { canEdit, userEmail });
         applyMotorSyncForEdit(payload);
-        // Bağlı child kayıtlarını da güncelle (miktar, teslim tarihi, status vs)
-        await syncLinkedChildren(payload);
+        // Bağlı child kayıtlarını senkronla — SADECE parent düzenleniyorsa (child'ın child'ı yok)
+        if (!editingOrder?.isLinkedChild) {
+          await syncLinkedChildren(payload);
+        }
       } else {
         // Yeni sipariş: her geçerli kalem için ayrı kayıt + ayrı motor sync
         for (const line of validLines) {
@@ -276,21 +278,24 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       const childStokKodu = child.vioCode || "";
       if (!childStokKodu) continue; // vioCode olmayan ürüne kayıt açmayız
       const childId = buildId(parentPayload.belgeNo, childStokKodu, parentPayload.teslimTarihi);
+      // Mevcut child kaydı varsa (edit senaryosu) fiyat/description KORUNUR
+      const existingChild = ordersData?.orders?.[childId];
       const childPayload = {
         ...parentPayload,
         id: childId,
         stokKodu: childStokKodu,
-        stokAdi: child.nameTR || "",
-        descriptionEn: child.nameEN || "",
+        stokAdi: existingChild?.stokAdi || child.nameTR || "",
+        descriptionEn: existingChild?.descriptionEn || child.nameEN || "",
         pid: cid,
-        // Miktar parent'a eşit (cascade 1:1). Kullanıcı edit'te değiştiremez (kilitli).
+        // Miktar / başlangıç sevk parent'a bağlı (cascade 1:1)
         orijinalMiktar: parentPayload.orijinalMiktar,
         sevkedilenBaslangic: parentPayload.sevkedilenBaslangic || 0,
-        birimFiyat: 0, // Default 0 — parent fiyatına dahil. Kullanıcı isterse edit'te değiştirir.
+        // Fiyat: mevcut kayıt varsa onu koru (kullanıcı manuel girmiş olabilir), yoksa 0
+        birimFiyat: existingChild?.birimFiyat != null ? Number(existingChild.birimFiyat) : 0,
         isLinkedChild: true,
         linkedParentPid: parentPayload.pid,
         linkedParentStokKodu: parentPayload.stokKodu,
-        source: "cascade",
+        source: existingChild?.source || "cascade",
       };
       await saveExportOrder(childPayload, { canEdit, userEmail });
     }
@@ -368,6 +373,13 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       </div>
       {error && (
         <div style={{ padding: 8, marginBottom: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>⚠ {error}</div>
+      )}
+      {editingOrder?.isLinkedChild && (
+        <div style={{ padding: 8, marginBottom: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11 }}>
+          🔗 <b>Bağlı ürünü düzenliyorsun.</b> Bu kalem parent siparişinin (
+          {editingOrder.linkedParentStokKodu ? <code>{editingOrder.linkedParentStokKodu}</code> : `pid ${editingOrder.linkedParentPid}`}
+          ) kombine bileşenidir. <b>Stok kodu, miktar ve başlangıç sevk</b> parent'a bağlıdır — sadece <b>birim fiyat</b>, <b>ürün adı (İngilizce)</b> ve <b>ödeme/teslim ayarlarını</b> değiştirebilirsin.
+        </div>
       )}
 
       {/* Müşteri */}
@@ -451,33 +463,46 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                   </button>
                 )}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8 }}>
-                <Field label="Stok Kodu (VIO) *">
-                  <input list="ih-product-list" value={line.stokKodu}
-                    onChange={e => applyProductToLine(idx, e.target.value)}
-                    placeholder="Örn. 152-0104" style={{ ...inp, fontFamily: "ui-monospace, monospace" }} />
-                  {line.pid != null && <div style={{ fontSize: 9, color: "#166534", marginTop: 2 }}>✓ pid={line.pid}</div>}
-                </Field>
-                <Field label="Ürün Adı (TR)">
-                  <input value={line.stokAdi} onChange={e => updateLine(idx, { stokAdi: e.target.value })} style={inp} />
-                </Field>
-              </div>
-              <Field label="Ürün Adı (İngilizce — fatura için)">
-                <input value={line.descriptionEn} onChange={e => updateLine(idx, { descriptionEn: e.target.value })}
-                  placeholder="Örn. GEAR SET C54ST" style={inp} />
-              </Field>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-                <Field label="Miktar *">
-                  <input type="number" value={line.orijinalMiktar} onChange={e => updateLine(idx, { orijinalMiktar: e.target.value })} style={inp} />
-                </Field>
-                <Field label="Başlangıç Sevk (VIO)">
-                  <input type="number" value={line.sevkedilenBaslangic} onChange={e => updateLine(idx, { sevkedilenBaslangic: e.target.value })}
-                    title="Excel import'ta VIO'daki geçmiş sevk miktarı. Manuel girişte genellikle 0." style={inp} />
-                </Field>
-                <Field label="Birim Fiyat">
-                  <input type="number" step="0.01" value={line.birimFiyat} onChange={e => updateLine(idx, { birimFiyat: e.target.value })} style={inp} />
-                </Field>
-              </div>
+              {(() => {
+                const linkedLock = !!editingOrder?.isLinkedChild;
+                const disabledStyle = { ...inp, background: linkedLock ? "#f5f5f4" : "#fff", color: linkedLock ? "#78716c" : "inherit", cursor: linkedLock ? "not-allowed" : "text" };
+                return (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8 }}>
+                      <Field label={linkedLock ? "Stok Kodu (VIO) — 🔒 parent'a bağlı" : "Stok Kodu (VIO) *"}>
+                        <input list="ih-product-list" value={line.stokKodu}
+                          onChange={e => !linkedLock && applyProductToLine(idx, e.target.value)}
+                          disabled={linkedLock}
+                          placeholder="Örn. 152-0104" style={{ ...disabledStyle, fontFamily: "ui-monospace, monospace" }} />
+                        {line.pid != null && <div style={{ fontSize: 9, color: "#166534", marginTop: 2 }}>✓ pid={line.pid}</div>}
+                      </Field>
+                      <Field label="Ürün Adı (TR)">
+                        <input value={line.stokAdi} onChange={e => updateLine(idx, { stokAdi: e.target.value })} style={inp} />
+                      </Field>
+                    </div>
+                    <Field label="Ürün Adı (İngilizce — fatura için)">
+                      <input value={line.descriptionEn} onChange={e => updateLine(idx, { descriptionEn: e.target.value })}
+                        placeholder="Örn. GEAR SET C54ST" style={inp} />
+                    </Field>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                      <Field label={linkedLock ? "Miktar — 🔒 parent'a bağlı" : "Miktar *"}>
+                        <input type="number" value={line.orijinalMiktar}
+                          onChange={e => !linkedLock && updateLine(idx, { orijinalMiktar: e.target.value })}
+                          disabled={linkedLock} style={disabledStyle} />
+                      </Field>
+                      <Field label={linkedLock ? "Başlangıç Sevk (VIO) — 🔒 parent'a bağlı" : "Başlangıç Sevk (VIO)"}>
+                        <input type="number" value={line.sevkedilenBaslangic}
+                          onChange={e => !linkedLock && updateLine(idx, { sevkedilenBaslangic: e.target.value })}
+                          disabled={linkedLock}
+                          title="Excel import'ta VIO'daki geçmiş sevk miktarı. Manuel girişte genellikle 0." style={disabledStyle} />
+                      </Field>
+                      <Field label="Birim Fiyat">
+                        <input type="number" step="0.01" value={line.birimFiyat} onChange={e => updateLine(idx, { birimFiyat: e.target.value })} style={inp} />
+                      </Field>
+                    </div>
+                  </>
+                );
+              })()}
 
               {/* Cascade önizleme */}
               {cascadeChildren.length > 0 && (
