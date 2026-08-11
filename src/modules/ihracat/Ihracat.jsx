@@ -11,6 +11,7 @@
 import React, { useState, useEffect } from "react";
 import {
   subscribeExportSalesOrders, subscribeContainerAllocations, subscribeExportSettings,
+  subscribeExportInvoices,
 } from "./firestore";
 import OrderList from "./OrderList";
 import OrderForm from "./OrderForm";
@@ -18,6 +19,7 @@ import ImportPanel from "./ImportPanel";
 import ReconciliationPanel from "./ReconciliationPanel";
 import InvoiceSettingsPanel from "./InvoiceSettingsPanel";
 import InvoiceList from "./InvoiceList";
+import SummaryPanel from "./SummaryPanel";
 
 export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid, syncExportOrderToPlan, combRules }) {
   const [subTab, setSubTab] = useState("list");
@@ -26,6 +28,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
   const [ordersData, setOrdersData] = useState({ orders: {} });
   const [allocationsData, setAllocationsData] = useState({ allocations: {} });
   const [settings, setSettings] = useState({});
+  const [invoicesData, setInvoicesData] = useState({ invoices: {} });
 
   // v22: Motor sync flag — appData/exportSettings.motorSyncEnabled (default true)
   const motorSyncEnabled = settings?.motorSyncEnabled !== false;
@@ -34,7 +37,8 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
     const u1 = subscribeExportSalesOrders(d => setOrdersData(d || { orders: {} }));
     const u2 = subscribeContainerAllocations(d => setAllocationsData(d || { allocations: {} }));
     const u3 = subscribeExportSettings(d => setSettings(d || {}));
-    return () => { u1(); u2(); u3(); };
+    const u4 = subscribeExportInvoices(d => setInvoicesData(d || { invoices: {} }));
+    return () => { u1(); u2(); u3(); u4(); };
   }, []);
 
   const openEditForm = (order) => {
@@ -68,6 +72,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         <TabBtn active={subTab === "import"} onClick={() => setSubTab("import")}>📥 Excel Import</TabBtn>
         <TabBtn active={subTab === "recon"} onClick={() => setSubTab("recon")}>🔍 Mutabakat</TabBtn>
         <TabBtn active={subTab === "invoices"} onClick={() => setSubTab("invoices")}>🧾 Faturalar</TabBtn>
+        <TabBtn active={subTab === "summary"} onClick={() => setSubTab("summary")}>📊 Özet</TabBtn>
         {isAdmin && (
           <TabBtn active={subTab === "settings"} onClick={() => setSubTab("settings")}>⚙ Fatura Ayarları</TabBtn>
         )}
@@ -127,6 +132,9 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           ordersData={ordersData}
           allocationsData={allocationsData}
         />
+      )}
+      {subTab === "summary" && (
+        <SummaryPanel invoicesData={invoicesData} ordersData={ordersData} />
       )}
       {subTab === "settings" && isAdmin && (
         <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} motorSyncEnabled={motorSyncEnabled} />
