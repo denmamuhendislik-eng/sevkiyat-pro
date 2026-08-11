@@ -17,7 +17,7 @@ function buildId(belgeNo, stokKodu, teslimTarihi) {
 
 // Yeni boş kalem
 function newLine() {
-  return { stokKodu: "", pid: null, stokAdi: "", descriptionEn: "", orijinalMiktar: "", sevkedilenBaslangic: "", birimFiyat: "" };
+  return { stokKodu: "", pid: null, stokAdi: "", descriptionEn: "", orijinalMiktar: "", sevkedilenBaslangic: "", birimFiyat: "", childPrices: {} };
 }
 
 export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync, combRules = [], ordersData }) {
@@ -55,7 +55,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       setDeliveryTerms(editingOrder.deliveryTerms || "");
       setPaymentPlan(Array.isArray(editingOrder.paymentPlan) && editingOrder.paymentPlan.length > 0 ? editingOrder.paymentPlan : [{ label: "", pct: 100 }]);
       setStatus(editingOrder.status || "open");
-      // Edit modunda tek kalem
+      // Edit modunda tek kalem (bağlı child fiyatları ayrı useEffect ile hydrate edilir)
       setLines([{
         stokKodu: editingOrder.stokKodu || "",
         pid: editingOrder.pid != null ? editingOrder.pid : null,
@@ -64,6 +64,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         orijinalMiktar: String(editingOrder.orijinalMiktar || ""),
         sevkedilenBaslangic: String(editingOrder.sevkedilenBaslangic || ""),
         birimFiyat: String(editingOrder.birimFiyat || ""),
+        childPrices: {},
       }]);
     } else {
       setCustomerCode(""); setCustomerName("");
@@ -128,6 +129,30 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     }
     updateLine(idx, patch);
   };
+
+  // Edit modunda parent düzenleniyorsa — mevcut bağlı child kayıtlarındaki fiyatları hydrate et
+  useEffect(() => {
+    if (!editingOrder || editingOrder.isLinkedChild) return;
+    if (editingOrder.pid == null || !editingOrder.belgeNo) return;
+    const rules = (combRules || []).filter(r => Number(r.parent) === Number(editingOrder.pid));
+    if (rules.length === 0) return;
+    const childIds = [...new Set(rules.flatMap(r => (r.children || []).map(Number)))];
+    const priceMap = {};
+    for (const cid of childIds) {
+      const cp = (products || []).find(p => Number(p.id) === cid);
+      const childStokKodu = cp?.vioCode || "";
+      if (!childStokKodu) continue;
+      const childId = buildId(editingOrder.belgeNo, childStokKodu, editingOrder.teslimTarihi || "");
+      const existingChild = ordersData?.orders?.[childId];
+      if (existingChild?.birimFiyat != null) {
+        priceMap[cid] = String(existingChild.birimFiyat);
+      }
+    }
+    if (Object.keys(priceMap).length > 0) {
+      setLines(prev => prev.map((l, i) => i === 0 ? { ...l, childPrices: priceMap } : l));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingOrder, combRules, products, ordersData]);
 
   // Müşteri değişince mevcut kalemlerde boş fiyatları auto-fill
   useEffect(() => {
@@ -214,7 +239,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         applyMotorSyncForEdit(payload);
         // Bağlı child kayıtlarını senkronla — SADECE parent düzenleniyorsa (child'ın child'ı yok)
         if (!editingOrder?.isLinkedChild) {
-          await syncLinkedChildren(payload);
+          await syncLinkedChildren(payload, line.childPrices || {});
         }
       } else {
         // Yeni sipariş: her geçerli kalem için ayrı kayıt + ayrı motor sync
@@ -234,7 +259,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           await saveExportOrder(payload, { canEdit, userEmail });
           applyMotorSyncForNew(payload);
           // Cascade child kayıtları — parent'ın bileşenleri ayrı kalem olarak
-          await createLinkedChildren(payload);
+          await createLinkedChildren(payload, line.childPrices || {});
         }
       }
       // Teslim şekli + ödeme etiketleri
@@ -266,7 +291,8 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
 
   // Bağlı child kayıtları oluştur — parent'ın kombine bileşenleri ayrı kalem olarak
   // Motor sync ÇAĞRILMAZ (parent'ın cascade'i zaten yd.orders'a yazıyor — çift sayım önlenir)
-  const createLinkedChildren = async (parentPayload) => {
+  // childPrices: kullanıcının form üzerinden bağlı ürünler için girdiği fiyatlar {pid: string}
+  const createLinkedChildren = async (parentPayload, childPrices = {}) => {
     if (!parentPayload?.pid) return;
     if ((parentPayload.status || "open") === "cancelled") return;
     const rules = (combRules || []).filter(r => Number(r.parent) === Number(parentPayload.pid));
@@ -278,8 +304,16 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       const childStokKodu = child.vioCode || "";
       if (!childStokKodu) continue; // vioCode olmayan ürüne kayıt açmayız
       const childId = buildId(parentPayload.belgeNo, childStokKodu, parentPayload.teslimTarihi);
-      // Mevcut child kaydı varsa (edit senaryosu) fiyat/description KORUNUR
+      // Mevcut child kaydı varsa (edit senaryosu) description KORUNUR
       const existingChild = ordersData?.orders?.[childId];
+      // Fiyat önceliği: form'daki input (childPrices) > mevcut kayıt > 0
+      const userEnteredPrice = childPrices[cid];
+      let effectivePrice = 0;
+      if (userEnteredPrice != null && userEnteredPrice !== "") {
+        effectivePrice = Number(userEnteredPrice) || 0;
+      } else if (existingChild?.birimFiyat != null) {
+        effectivePrice = Number(existingChild.birimFiyat) || 0;
+      }
       const childPayload = {
         ...parentPayload,
         id: childId,
@@ -290,8 +324,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         // Miktar / başlangıç sevk parent'a bağlı (cascade 1:1)
         orijinalMiktar: parentPayload.orijinalMiktar,
         sevkedilenBaslangic: parentPayload.sevkedilenBaslangic || 0,
-        // Fiyat: mevcut kayıt varsa onu koru (kullanıcı manuel girmiş olabilir), yoksa 0
-        birimFiyat: existingChild?.birimFiyat != null ? Number(existingChild.birimFiyat) : 0,
+        birimFiyat: effectivePrice,
         isLinkedChild: true,
         linkedParentPid: parentPayload.pid,
         linkedParentStokKodu: parentPayload.stokKodu,
@@ -302,11 +335,8 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
   };
 
   // Edit sonrası bağlı child kayıtlarını senkronla — parent'ın yeni değerlerine göre
-  // Bir child zaten varsa güncellenir; yeni bir child (kural değişikliği) varsa oluşturulur.
-  // Kural gereği artık child olmayan bir kayıt (parent kuralı kaldırıldıysa) BURADA silinmez —
-  // ihracat siparişleri manuel yönetilir, defensive silme risklidir.
-  const syncLinkedChildren = async (parentPayload) => {
-    await createLinkedChildren(parentPayload);
+  const syncLinkedChildren = async (parentPayload, childPrices = {}) => {
+    await createLinkedChildren(parentPayload, childPrices);
   };
 
   // Motor sync helper — yeni sipariş (create)
@@ -504,20 +534,30 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                 );
               })()}
 
-              {/* Cascade önizleme */}
+              {/* Cascade önizleme — her bağlı ürün için fiyat girilebilir */}
               {cascadeChildren.length > 0 && (
-                <div style={{ marginTop: 6, padding: 6, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 3 }}>
-                  <div style={{ fontSize: 9, fontWeight: 700, color: "#1e40af", marginBottom: 3 }}>
-                    🔗 Bu ürün kombine parent — kayıt sonrası aşağıdaki bağlı ürünler siparişe ayrı kalem olarak eklenir + Sevkiyat Planı'na cascade edilir:
+                <div style={{ marginTop: 6, padding: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 3 }}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#1e40af", marginBottom: 6 }}>
+                    🔗 Bu ürün kombine parent — bağlı ürünler ayrı kalem olarak eklenir. Fiyatları şimdi girebilir veya sonra düzenleyebilirsin.
                   </div>
-                  <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                    {cascadeChildren.map(c => (
-                      <div key={c.pid} style={{ padding: "2px 6px", fontSize: 9, background: "#fff", border: "1px solid #bfdbfe", borderRadius: 3 }}>
-                        <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{c.vioCode || `#${c.pid}`}</span>
-                        <span style={{ marginLeft: 4, color: "#57534e" }}>{c.nameTR}</span>
-                        {netQty > 0 && <span style={{ marginLeft: 4, fontWeight: 700, color: "#166534" }}>+{netQty}</span>}
-                      </div>
-                    ))}
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                    {cascadeChildren.map(c => {
+                      const priceVal = (line.childPrices || {})[c.pid] || "";
+                      return (
+                        <div key={c.pid} style={{ display: "grid", gridTemplateColumns: "auto 1fr auto 90px 40px", gap: 8, alignItems: "center", padding: "4px 8px", background: "#fff", border: "1px solid #bfdbfe", borderRadius: 3, fontSize: 10 }}>
+                          <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 600, color: "#1e40af" }}>{c.vioCode || `#${c.pid}`}</span>
+                          <span style={{ color: "#57534e" }}>{c.nameTR}</span>
+                          <span style={{ fontSize: 9, color: "#78716c" }}>Miktar: <b style={{ color: "#166534" }}>{netQty > 0 ? netQty : "—"}</b></span>
+                          <input type="number" step="0.01" value={priceVal}
+                            onChange={e => updateLine(idx, { childPrices: { ...(line.childPrices || {}), [c.pid]: e.target.value } })}
+                            placeholder="0.00" style={{ ...inp, fontSize: 10, padding: "3px 6px", textAlign: "right" }} />
+                          <span style={{ fontSize: 9, color: "#78716c" }}>{currency}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div style={{ fontSize: 8, color: "#78716c", marginTop: 4 }}>
+                    💡 Fiyat boş bırakırsan 0 kaydedilir (parent fiyatına dahil kabul edilir). Sonradan sipariş listesinden ✏ ile de değiştirebilirsin.
                   </div>
                 </div>
               )}
