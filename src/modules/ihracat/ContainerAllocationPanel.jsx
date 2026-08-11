@@ -15,6 +15,7 @@ import {
   computeAllocatedByOrder, computeOrderRemaining, suggestFifoAllocation,
 } from "./allocationCalc";
 import { saveContainerAllocation, deleteContainerAllocation } from "./firestore";
+import InvoiceCreateModal from "./InvoiceCreateModal";
 
 export default function ContainerAllocationPanel({
   containerId, year, items, products,
@@ -22,6 +23,7 @@ export default function ContainerAllocationPanel({
 }) {
   const [expandedPid, setExpandedPid] = useState(null);
   const [collapsed, setCollapsed] = useState(true);
+  const [showInvoiceModal, setShowInvoiceModal] = useState(false);
 
   // Konteynerdeki hangi item'lar ihracat siparişinde var? Diğerlerini gösterme.
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
@@ -63,16 +65,25 @@ export default function ContainerAllocationPanel({
 
   return (
     <div style={{ marginTop: 8, marginBottom: 8, padding: 8, background: "rgba(30,64,175,0.04)", border: "1px solid rgba(30,64,175,0.2)", borderRadius: 6 }}>
-      {/* Header — collapse toggle */}
-      <div onClick={() => setCollapsed(!collapsed)}
-        style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1e40af" }}>
-        <span>{collapsed ? "▶" : "▼"}</span>
-        <span>🔗 İhracat Sipariş Tahsisi ({relevantItems.length} ürün)</span>
-        <div style={{ marginLeft: "auto", display: "flex", gap: 6, fontSize: 9 }}>
-          {completeCount > 0 && <span style={{ color: "#166534" }}>✅ {completeCount} tam</span>}
-          {partialCount > 0 && <span style={{ color: "#92400e" }}>◐ {partialCount} kısmi</span>}
-          {emptyCount > 0 && <span style={{ color: "#78716c" }}>⭕ {emptyCount} boş</span>}
+      {/* Header — collapse toggle + fatura buton */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <div onClick={() => setCollapsed(!collapsed)}
+          style={{ display: "flex", alignItems: "center", gap: 8, cursor: "pointer", fontSize: 11, fontWeight: 600, color: "#1e40af", flex: 1 }}>
+          <span>{collapsed ? "▶" : "▼"}</span>
+          <span>🔗 İhracat Sipariş Tahsisi ({relevantItems.length} ürün)</span>
+          <div style={{ display: "flex", gap: 6, fontSize: 9 }}>
+            {completeCount > 0 && <span style={{ color: "#166534" }}>✅ {completeCount} tam</span>}
+            {partialCount > 0 && <span style={{ color: "#92400e" }}>◐ {partialCount} kısmi</span>}
+            {emptyCount > 0 && <span style={{ color: "#78716c" }}>⭕ {emptyCount} boş</span>}
+          </div>
         </div>
+        {(completeCount > 0 || partialCount > 0) && (
+          <button onClick={(e) => { e.stopPropagation(); setShowInvoiceModal(true); }} disabled={!canEdit}
+            title="Bu konteynerdeki tahsis edilmiş kalemlerden fatura(lar) oluştur"
+            style={{ padding: "3px 10px", fontSize: 10, background: "#166534", color: "#fff", border: "none", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500 }}>
+            🧾 Fatura Oluştur
+          </button>
+        )}
       </div>
 
       {!collapsed && (
@@ -94,6 +105,21 @@ export default function ContainerAllocationPanel({
             />
           ))}
         </div>
+      )}
+      {showInvoiceModal && (
+        <InvoiceCreateModal
+          mode="container"
+          containerId={containerId}
+          year={year}
+          items={relevantItems}
+          products={products}
+          ordersData={ordersData}
+          allocationsData={allocationsData}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setShowInvoiceModal(false)}
+          onCreated={() => setShowInvoiceModal(false)}
+        />
       )}
     </div>
   );

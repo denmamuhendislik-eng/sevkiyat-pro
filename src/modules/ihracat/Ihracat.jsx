@@ -17,6 +17,7 @@ import OrderForm from "./OrderForm";
 import ImportPanel from "./ImportPanel";
 import ReconciliationPanel from "./ReconciliationPanel";
 import InvoiceSettingsPanel from "./InvoiceSettingsPanel";
+import InvoiceList from "./InvoiceList";
 
 export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid }) {
   const [subTab, setSubTab] = useState("list");
@@ -54,6 +55,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         <TabBtn active={subTab === "new"} onClick={openNewForm}>➕ {editingOrder ? "Düzenle" : "Yeni Sipariş"}</TabBtn>
         <TabBtn active={subTab === "import"} onClick={() => setSubTab("import")}>📥 Excel Import</TabBtn>
         <TabBtn active={subTab === "recon"} onClick={() => setSubTab("recon")}>🔍 Mutabakat</TabBtn>
+        <TabBtn active={subTab === "invoices"} onClick={() => setSubTab("invoices")}>🧾 Faturalar</TabBtn>
         {isAdmin && (
           <TabBtn active={subTab === "settings"} onClick={() => setSubTab("settings")}>⚙ Fatura Ayarları</TabBtn>
         )}
@@ -98,6 +100,15 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           allocationsData={allocationsData}
           products={products}
           remainingByPid={remainingByPid}
+        />
+      )}
+      {subTab === "invoices" && (
+        <InvoiceList
+          canEdit={canEdit}
+          userEmail={userEmail}
+          products={products}
+          ordersData={ordersData}
+          allocationsData={allocationsData}
         />
       )}
       {subTab === "settings" && isAdmin && (
