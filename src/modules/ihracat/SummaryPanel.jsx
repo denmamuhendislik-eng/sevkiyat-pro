@@ -459,7 +459,7 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               <div style={{ maxHeight: 320, overflow: "auto" }}>
                 <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
                   <thead style={{ position: "sticky", top: 0, background: "#fef2f2" }}><tr>
-                    <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                    <th style={th}>Belge</th><th style={th}>Stok Kodu</th><th style={th}>Ürün Adı</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
                   </tr></thead>
                   <tbody>
                     {orderTerminAlerts.overdue.map(o => {
@@ -468,6 +468,7 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
                         <tr key={o.id} style={{ borderTop: "1px solid #fecaca" }}>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
+                          <td style={td}>{o.stokAdi || "—"}</td>
                           <td style={{ ...td, color: "#991b1b" }}>{o.teslimTarihi}</td>
                           <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#991b1b" }}>{fmt0(rem)}</td>
                         </tr>
@@ -486,7 +487,7 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               <div style={{ maxHeight: 320, overflow: "auto" }}>
                 <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
                   <thead style={{ position: "sticky", top: 0, background: "#fef3c7" }}><tr>
-                    <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                    <th style={th}>Belge</th><th style={th}>Stok Kodu</th><th style={th}>Ürün Adı</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
                   </tr></thead>
                   <tbody>
                     {orderTerminAlerts.upcoming.map(o => {
@@ -495,6 +496,7 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
                         <tr key={o.id} style={{ borderTop: "1px solid #fde68a" }}>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
+                          <td style={td}>{o.stokAdi || "—"}</td>
                           <td style={{ ...td, color: "#92400e" }}>{o.teslimTarihi}</td>
                           <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#92400e" }}>{fmt0(rem)}</td>
                         </tr>
