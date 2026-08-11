@@ -24,7 +24,7 @@ function summarizePaymentPlan(plan) {
   return plan.map(p => `%${p.pct}`).join(" + ");
 }
 
-export default function OrderList({ ordersData, allocationsData, settings, products, canEdit, userEmail, onEdit, motorSync }) {
+export default function OrderList({ ordersData, allocationsData, settings, products, canEdit, userEmail, onEdit, motorSync, combRules = [] }) {
   const [search, setSearch] = useState("");
   const [customerFilter, setCustomerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("open");
@@ -304,6 +304,7 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                         </tr>
                       </thead>
                       <tbody>
+                        {/* Gerçek kalemler */}
                         {g.items.map(o => {
                           const tahsis = allocatedByOrder.get(o.id) || 0;
                           const fill = computeOrderFillStatus(o, allocatedByOrder);
@@ -343,6 +344,53 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                             </tr>
                           );
                         })}
+                        {/* Virtüel bağlı ürünler (cascade children) — kayıt yok, sadece görsel
+                            Sevkiyat Planı'na gerçekten yansıyanları burada da göstermek için */}
+                        {(() => {
+                          const virtualRows = [];
+                          for (const parent of g.items) {
+                            if (!parent.pid) continue;
+                            if ((parent.status || "open") === "cancelled") continue;
+                            const rules = (combRules || []).filter(r => Number(r.parent) === Number(parent.pid));
+                            for (const rule of rules) {
+                              for (const childId of (rule.children || [])) {
+                                const child = (products || []).find(p => Number(p.id) === Number(childId));
+                                const parentNet = Math.max(0, (Number(parent.orijinalMiktar) || 0) - (Number(parent.sevkedilenBaslangic) || 0));
+                                virtualRows.push({
+                                  key: `virt_${parent.id}_${childId}`,
+                                  parentBelgeStok: `${parent.belgeNo || ""} / ${parent.stokKodu || ""}`,
+                                  stokKodu: child?.vioCode || `#${childId}`,
+                                  nameTR: child?.nameTR || `pid ${childId}`,
+                                  nameEN: child?.nameEN || "",
+                                  qty: parentNet,
+                                  currency: parent.currency || "",
+                                });
+                              }
+                            }
+                          }
+                          if (virtualRows.length === 0) return null;
+                          return virtualRows.map(v => (
+                            <tr key={v.key} style={{ borderTop: "1px solid #f5f5f4", background: "#fafaf9", opacity: 0.85 }}>
+                              <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
+                                <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, background: "rgba(30,64,175,0.12)", color: "#1e40af", borderRadius: 2, marginRight: 4 }}>🔗 BAĞLI</span>
+                                {v.stokKodu}
+                              </td>
+                              <td style={td}>
+                                <div>{v.nameTR}</div>
+                                {v.nameEN && <div style={{ fontSize: 9, color: "#78716c", fontStyle: "italic" }}>{v.nameEN}</div>}
+                                <div style={{ fontSize: 8, color: "#a8a29e", marginTop: 2 }}>Parent: {v.parentBelgeStok}</div>
+                              </td>
+                              <td style={{ ...td, textAlign: "right", color: "#1e40af", fontWeight: 600 }}>{v.qty.toLocaleString("tr-TR")}</td>
+                              <td style={{ ...td, textAlign: "right", color: "#a8a29e" }}>—</td>
+                              <td style={{ ...td, textAlign: "right", color: "#a8a29e" }}>—</td>
+                              <td style={{ ...td, textAlign: "right", color: "#a8a29e", background: "#f5f5f4" }}>—</td>
+                              <td style={{ ...td, textAlign: "right", color: "#a8a29e", fontSize: 9 }}>parent fiyatına dahil</td>
+                              <td style={{ ...td, fontSize: 10, color: "#a8a29e" }}>—</td>
+                              <td style={{ ...td, textAlign: "center", fontSize: 9, color: "#78716c" }}>parent'a bağlı</td>
+                              <td style={{ ...td, textAlign: "center", color: "#a8a29e", fontSize: 9 }}>—</td>
+                            </tr>
+                          ));
+                        })()}
                       </tbody>
                     </table>
                   </div>

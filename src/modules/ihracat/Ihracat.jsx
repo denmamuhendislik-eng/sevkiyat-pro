@@ -83,6 +83,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           userEmail={userEmail}
           onEdit={openEditForm}
           motorSync={motorSync}
+          combRules={combRules || []}
         />
       )}
       {subTab === "new" && (
