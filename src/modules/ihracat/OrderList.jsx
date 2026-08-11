@@ -24,7 +24,7 @@ function summarizePaymentPlan(plan) {
   return plan.map(p => `%${p.pct}`).join(" + ");
 }
 
-export default function OrderList({ ordersData, allocationsData, settings, products, canEdit, userEmail, onEdit }) {
+export default function OrderList({ ordersData, allocationsData, settings, products, canEdit, userEmail, onEdit, motorSync }) {
   const [search, setSearch] = useState("");
   const [customerFilter, setCustomerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("open");
@@ -120,6 +120,23 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
         belgeNo: group.belgeNo,
         patch: { status: newStatus },
       }, { canEdit, userEmail });
+      // Motor sync — her kalem için open ↔ cancelled geçişi
+      if (motorSync?.enabled && motorSync.apply) {
+        const isActiveNew = newStatus !== "cancelled";
+        for (const it of group.items) {
+          if (it.pid == null) continue;
+          const wasActive = (it.status || "open") !== "cancelled";
+          if (wasActive === isActiveNew) continue;
+          const netQty = Math.max(0, (Number(it.orijinalMiktar) || 0) - (Number(it.sevkedilenBaslangic) || 0));
+          const orderYear = it.teslimTarihi
+            ? Number(String(it.teslimTarihi).slice(0, 4))
+            : new Date().getFullYear();
+          const delta = isActiveNew ? +netQty : -netQty;
+          if (delta !== 0 && Number.isFinite(orderYear) && orderYear > 2020) {
+            motorSync.apply({ pid: it.pid, deltaQty: delta, year: orderYear, cascade: true });
+          }
+        }
+      }
     } catch (e) {
       alert("Durum güncellenemedi: " + e.message);
     }
@@ -129,6 +146,22 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     if (!canEdit) return;
     try {
       await updateExportOrderStatus(order.id, newStatus, { canEdit, userEmail });
+      // Motor sync — status open ↔ cancelled geçişi motor'a yansır
+      if (motorSync?.enabled && motorSync.apply && order.pid != null) {
+        const oldStatus = order.status || "open";
+        const wasActive = oldStatus !== "cancelled";
+        const isActive = newStatus !== "cancelled";
+        if (wasActive !== isActive) {
+          const netQty = Math.max(0, (Number(order.orijinalMiktar) || 0) - (Number(order.sevkedilenBaslangic) || 0));
+          const orderYear = order.teslimTarihi
+            ? Number(String(order.teslimTarihi).slice(0, 4))
+            : new Date().getFullYear();
+          const delta = isActive ? +netQty : -netQty;
+          if (delta !== 0 && Number.isFinite(orderYear) && orderYear > 2020) {
+            motorSync.apply({ pid: order.pid, deltaQty: delta, year: orderYear, cascade: true });
+          }
+        }
+      }
     } catch (e) {
       alert("Durum güncellenemedi: " + e.message);
     }
@@ -139,6 +172,16 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     if (!confirm(`Kalem silinsin mi?\n\nBelge ${order.belgeNo} · ${order.stokKodu}`)) return;
     try {
       await deleteExportOrder(order.id, { canEdit, userEmail });
+      // Motor sync — miktarı yd.orders'tan düş (sadece aktif siparişler için)
+      if (motorSync?.enabled && motorSync.apply && order.pid != null && (order.status || "open") !== "cancelled") {
+        const netQty = Math.max(0, (Number(order.orijinalMiktar) || 0) - (Number(order.sevkedilenBaslangic) || 0));
+        const orderYear = order.teslimTarihi
+          ? Number(String(order.teslimTarihi).slice(0, 4))
+          : new Date().getFullYear();
+        if (netQty > 0 && Number.isFinite(orderYear) && orderYear > 2020) {
+          motorSync.apply({ pid: order.pid, deltaQty: -netQty, year: orderYear, cascade: true });
+        }
+      }
     } catch (e) {
       alert("Silinemedi: " + e.message);
     }

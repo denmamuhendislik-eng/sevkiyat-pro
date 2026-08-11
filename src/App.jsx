@@ -523,6 +523,31 @@ export default function App() {
     return map;
   }, [yd, products, getPStats]);
 
+  // v22: İhracat modülü → Sevkiyat Planı motor senkron callback'i.
+  // OrderForm/OrderList değişikliklerini yd.orders'a **delta** olarak uygular.
+  // Kritik prensip: sadece delta (fark), tekrar tam miktar yazımı YOK — çift sayım riski
+  // önlenmiş olur. Cascade (combRules parent→children) VIO import ile aynı davranır.
+  const syncExportOrderToPlan = useCallback(({ pid, deltaQty, year, cascade = true }) => {
+    if (pid == null || !year) return;
+    const p = Number(pid);
+    const y = Number(year);
+    const delta = Number(deltaQty) || 0;
+    if (delta === 0) return;
+    setYearsData(prev => {
+      const ydp = { ...(prev[y] || { containers: [], orders: {}, carryOver: {}, quantities: {} }) };
+      const orders = { ...ydp.orders };
+      orders[p] = Math.max(0, (orders[p] || 0) + delta);
+      if (cascade) {
+        combRules.filter(r => r.parent === p).forEach(rule => {
+          rule.children.forEach(childId => {
+            orders[childId] = Math.max(0, (orders[childId] || 0) + delta);
+          });
+        });
+      }
+      return { ...prev, [y]: { ...ydp, orders } };
+    });
+  }, [combRules]);
+
   // v22: İhracat modülü için — products'ı VIO_CODES fallback ile enrich et.
   // Firestore'da p.vioCode alanı boş olsa bile hardcoded VIO_CODES map'inden doldur.
   // Diğer modüller de her yerde `p.vioCode || VIO_CODES[p.id]` fallback pattern'i
@@ -2966,7 +2991,7 @@ ${el.innerHTML}
               </button>
             </div>
             {importSubTab==="export" && (
-              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={productsForExport} remainingByPid={remainingByPidForExport} />
+              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={productsForExport} remainingByPid={remainingByPidForExport} syncExportOrderToPlan={syncExportOrderToPlan} />
             )}
             {importSubTab==="domestic" && <div>
             <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>

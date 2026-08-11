@@ -11,7 +11,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   subscribeInvoiceSettings, saveInvoiceSettings, setInvoiceCounter,
   uploadStampImage, deleteStampImage, saveBankAccounts,
-  uploadLogoImage, deleteLogoImage,
+  uploadLogoImage, deleteLogoImage, setMotorSyncEnabled,
 } from "./firestore";
 
 // Denma default bilgileri (referans PDF'ten)
@@ -36,7 +36,24 @@ const DEFAULT_BANK_ACCOUNTS = [{
 const DEFAULT_OIL_PRODUCT = { description: "GEAR OIL ISO VG220", unit: "KG", unitPrice: 5, currency: "EUR" };
 const DEFAULT_TRANSPORT = { description: "KONYA MILAN TRANSPORTATION COST", unit: "AD", unitPrice: 3900, currency: "EUR" };
 
-export default function InvoiceSettingsPanel({ canEdit, userEmail, products = [] }) {
+export default function InvoiceSettingsPanel({ canEdit, userEmail, products = [], motorSyncEnabled = true }) {
+  const [motorSyncBusy, setMotorSyncBusy] = useState(false);
+  const [motorSyncError, setMotorSyncError] = useState("");
+  const handleMotorSyncToggle = async (nextEnabled) => {
+    if (!canEdit) return;
+    if (!nextEnabled) {
+      if (!confirm(
+        "Motor Senkronizasyonunu KAPATMAK istediğinden emin misin?\n\n" +
+        "Kapalıyken ihracat sipariş değişiklikleri Sevkiyat Planı'na YANSIMAZ.\n" +
+        "Mevcut miktarlar yerinde kalır, ama yeni sipariş eklersen mutabakat bozulur.\n\n" +
+        "Devam et?"
+      )) return;
+    }
+    setMotorSyncBusy(true); setMotorSyncError("");
+    try {
+      await setMotorSyncEnabled(nextEnabled, { canEdit, userEmail });
+    } catch (e) { setMotorSyncError(e.message); } finally { setMotorSyncBusy(false); }
+  };
   const [settings, setSettings] = useState({});
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -212,6 +229,31 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail, products = []
   return (
     <div style={{ maxWidth: 800, margin: "0 auto" }}>
       {error && <div style={{ padding: 8, marginBottom: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>⚠ {error}</div>}
+
+      {/* Motor Sync */}
+      <Section title="🔄 Motor Senkronizasyonu (Sevkiyat Planı bağlantısı)">
+        <div style={{ display: "flex", gap: 14, alignItems: "flex-start" }}>
+          <div style={{ minWidth: 60 }}>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, cursor: canEdit ? "pointer" : "not-allowed" }}>
+              <input type="checkbox" checked={!!motorSyncEnabled}
+                onChange={e => handleMotorSyncToggle(e.target.checked)}
+                disabled={!canEdit || motorSyncBusy}
+                style={{ width: 18, height: 18 }} />
+              <span style={{ fontSize: 12, fontWeight: 600, color: motorSyncEnabled ? "#166534" : "#991b1b" }}>
+                {motorSyncEnabled ? "AKTİF" : "KAPALI"}
+              </span>
+            </label>
+          </div>
+          <div style={{ flex: 1, fontSize: 11, lineHeight: 1.5, color: "#57534e" }}>
+            Bu ayar açıkken, ihracat siparişleri üzerinde yaptığın **her değişiklik** (yeni sipariş, miktar güncelleme, iptal, silme) doğrudan Sevkiyat Planı'nın <b>YENİ</b> sütununa <b>delta olarak</b> yansır.
+            <br />
+            <span style={{ color: "#78716c" }}>
+              Mevcut siparişler retroactive senkronlanmaz — sadece kayıt sonrası fark uygulanır (çift sayım olmaz). Cascade rules (parent → children) VIO import ile aynı şekilde çalışır.
+            </span>
+            {motorSyncError && <div style={{ marginTop: 6, color: "#991b1b" }}>⚠ {motorSyncError}</div>}
+          </div>
+        </div>
+      </Section>
 
       {/* Logo */}
       <Section title="🖼 Firma Logosu (fatura antetinde basılır)">

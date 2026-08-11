@@ -206,6 +206,17 @@ export async function addPaymentLabel(label, { canEdit, userEmail = "" } = {}) {
 }
 
 // Müşteri default currency + paymentPlan kaydet
+// v22 Motor Sync feature flag — appData/exportSettings.motorSyncEnabled
+export async function setMotorSyncEnabled(enabled, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const ref = doc(db, APP_COL, EXPORT_SETTINGS_DOC);
+  await setDoc(ref, {
+    motorSyncEnabled: !!enabled,
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
 export async function saveCustomerDefaults(customerCode, defaults, { canEdit, userEmail = "" } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!customerCode) throw new Error("customerCode zorunlu");

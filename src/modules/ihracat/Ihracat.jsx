@@ -19,13 +19,16 @@ import ReconciliationPanel from "./ReconciliationPanel";
 import InvoiceSettingsPanel from "./InvoiceSettingsPanel";
 import InvoiceList from "./InvoiceList";
 
-export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid }) {
+export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid, syncExportOrderToPlan }) {
   const [subTab, setSubTab] = useState("list");
   const [editingOrder, setEditingOrder] = useState(null); // düzenlemek için seçilen sipariş
 
   const [ordersData, setOrdersData] = useState({ orders: {} });
   const [allocationsData, setAllocationsData] = useState({ allocations: {} });
   const [settings, setSettings] = useState({});
+
+  // v22: Motor sync flag — appData/exportSettings.motorSyncEnabled (default true)
+  const motorSyncEnabled = settings?.motorSyncEnabled !== false;
 
   useEffect(() => {
     const u1 = subscribeExportSalesOrders(d => setOrdersData(d || { orders: {} }));
@@ -47,8 +50,17 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
     setSubTab("list");
   };
 
+  // Motor sync bağlantı objesi — modüle daha aşağıya prop olarak inecek
+  const motorSync = { enabled: motorSyncEnabled, apply: syncExportOrderToPlan };
+
   return (
     <div>
+      {!motorSyncEnabled && (
+        <div style={{ padding: 8, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 4, fontSize: 11 }}>
+          ⚠ <b>Motor Senkronizasyonu KAPALI</b> — ihracat siparişi değişiklikleri Sevkiyat Planı'na yansımıyor.
+          {isAdmin && <span> Açmak için: Fatura Ayarları → 🔄 Motor Senkronizasyonu.</span>}
+        </div>
+      )}
       {/* Alt tab bar */}
       <div style={{ display: "flex", gap: 4, marginBottom: 14, borderBottom: "1px solid var(--color-border-tertiary)" }}>
         <TabBtn active={subTab === "list"} onClick={() => setSubTab("list")}>📋 Sipariş Listesi</TabBtn>
@@ -70,6 +82,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           canEdit={canEdit}
           userEmail={userEmail}
           onEdit={openEditForm}
+          motorSync={motorSync}
         />
       )}
       {subTab === "new" && (
@@ -81,6 +94,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           userEmail={userEmail}
           onSaved={closeForm}
           onCancel={closeForm}
+          motorSync={motorSync}
         />
       )}
       {subTab === "import" && (
@@ -112,7 +126,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         />
       )}
       {subTab === "settings" && isAdmin && (
-        <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} />
+        <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} motorSyncEnabled={motorSyncEnabled} />
       )}
     </div>
   );

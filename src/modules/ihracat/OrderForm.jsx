@@ -13,7 +13,7 @@ function buildId(belgeNo, stokKodu, teslimTarihi) {
   return `${String(belgeNo || "").trim()}_${String(stokKodu || "").trim()}_${key}`;
 }
 
-export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel }) {
+export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync }) {
   // Alanlar
   const [customerCode, setCustomerCode] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -147,6 +147,47 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         source: editingOrder?.source || "manual",
       };
       await saveExportOrder(payload, { canEdit, userEmail });
+      // Motor sync — Sevkiyat Planı'na delta uygula
+      // Destekler: yeni sipariş, miktar güncelleme, iptal ↔ aktifleştirme,
+      //            pid değişimi (stokKodu değişince), yıl değişimi (teslim tarihi değişince)
+      if (motorSync?.enabled && motorSync.apply) {
+        const wasActive = editingOrder ? (editingOrder.status || "open") !== "cancelled" : false;
+        const isActive = (payload.status || "open") !== "cancelled";
+        // Eski state
+        const oldPid = editingOrder ? editingOrder.pid : null;
+        const oldYear = editingOrder && editingOrder.teslimTarihi
+          ? Number(String(editingOrder.teslimTarihi).slice(0, 4))
+          : null;
+        const oldNet = (editingOrder && wasActive)
+          ? Math.max(0, (Number(editingOrder.orijinalMiktar) || 0) - (Number(editingOrder.sevkedilenBaslangic) || 0))
+          : 0;
+        // Yeni state
+        const newPid = payload.pid;
+        const newYear = payload.teslimTarihi
+          ? Number(String(payload.teslimTarihi).slice(0, 4))
+          : new Date().getFullYear();
+        const newNet = isActive
+          ? Math.max(0, (Number(payload.orijinalMiktar) || 0) - (Number(payload.sevkedilenBaslangic) || 0))
+          : 0;
+        const validYear = (y) => Number.isFinite(y) && y > 2020;
+        const samePidYear = oldPid != null && newPid != null
+          && Number(oldPid) === Number(newPid)
+          && oldYear != null && Number(oldYear) === Number(newYear);
+        if (samePidYear) {
+          const delta = newNet - oldNet;
+          if (delta !== 0 && validYear(newYear)) {
+            motorSync.apply({ pid: newPid, deltaQty: delta, year: newYear, cascade: true });
+          }
+        } else {
+          // Farklı pid veya yıl: eski yerden düş, yeni yere ekle
+          if (oldPid != null && oldNet > 0 && validYear(oldYear)) {
+            motorSync.apply({ pid: oldPid, deltaQty: -oldNet, year: oldYear, cascade: true });
+          }
+          if (newPid != null && newNet > 0 && validYear(newYear)) {
+            motorSync.apply({ pid: newPid, deltaQty: +newNet, year: newYear, cascade: true });
+          }
+        }
+      }
       // Teslim şekli + ödeme etiketleri havuzuna ekle
       if (payload.deliveryTerms) await addDeliveryTerm(payload.deliveryTerms, { canEdit, userEmail });
       for (const p of payload.paymentPlan) {
