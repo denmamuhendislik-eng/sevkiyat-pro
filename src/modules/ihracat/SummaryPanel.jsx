@@ -3,6 +3,7 @@
 // Filtreler: dönem (bu ay / bu yıl / özel aralık / tümü)
 
 import React, { useState, useMemo } from "react";
+import { computeAllocatedByOrder } from "./allocationCalc";
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 });
@@ -41,7 +42,7 @@ function computeInvoiceRemainingByLabel(inv) {
   return out;
 }
 
-export default function SummaryPanel({ invoicesData, ordersData }) {
+export default function SummaryPanel({ invoicesData, ordersData, allocationsData }) {
   const [period, setPeriod] = useState("thisYear"); // "thisMonth" | "thisYear" | "custom" | "all"
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
@@ -76,6 +77,110 @@ export default function SummaryPanel({ invoicesData, ordersData }) {
       return true;
     });
   }, [invoices, fromDate, toDate, period]);
+
+  // Siparişleri teslim tarihiyle filtrele — bağlı child kayıtları hariç
+  const filteredOrders = useMemo(() => {
+    return orders.filter(o => {
+      if (o?.isLinkedChild) return false; // sipariş özetine cascade child'lar sayılmaz
+      if (period === "all") return true;
+      if (!o.teslimTarihi) return false;
+      if (fromDate && o.teslimTarihi < fromDate) return false;
+      if (toDate && o.teslimTarihi > toDate) return false;
+      return true;
+    });
+  }, [orders, fromDate, toDate, period]);
+
+  // Tahsis edilen miktar (order.id → allocated qty)
+  const allocatedByOrder = useMemo(
+    () => computeAllocatedByOrder(allocationsData?.allocations || {}),
+    [allocationsData]
+  );
+
+  // Faturalanmış orderId set — active (VOID hariç) faturalarda linkedOrderIds
+  const invoicedOrderIds = useMemo(() => {
+    const s = new Set();
+    for (const inv of invoices) {
+      if ((inv.status || "issued") === "cancelled") continue;
+      for (const oid of (inv.linkedOrderIds || [])) s.add(oid);
+    }
+    return s;
+  }, [invoices]);
+
+  // Sipariş KPI'ları — currency bazlı gruplu
+  const orderKpis = useMemo(() => {
+    const byCurrency = new Map();
+    for (const o of filteredOrders) {
+      const cur = o.currency || "EUR";
+      if (!byCurrency.has(cur)) {
+        byCurrency.set(cur, {
+          openCount: 0, closedCount: 0, cancelledCount: 0,
+          belgeSet: new Set(),
+          totalQty: 0, shippedQty: 0, allocatedQty: 0, remainingQty: 0,
+          totalAmount: 0, invoicedAmount: 0, notInvoicedAmount: 0,
+        });
+      }
+      const b = byCurrency.get(cur);
+      const status = o.status || "open";
+      if (status === "open") b.openCount++;
+      else if (status === "closed") b.closedCount++;
+      else if (status === "cancelled") b.cancelledCount++;
+      if (o.belgeNo) b.belgeSet.add(`${o.customerCode}__${o.belgeNo}`);
+      if (status === "cancelled") continue;
+      const orij = Number(o.orijinalMiktar) || 0;
+      const sevkBas = Number(o.sevkedilenBaslangic) || 0;
+      const tahsis = allocatedByOrder.get(o.id) || 0;
+      const shipped = sevkBas + tahsis;
+      const remaining = Math.max(0, orij - shipped);
+      const price = Number(o.birimFiyat) || 0;
+      b.totalQty += orij;
+      b.shippedQty += sevkBas;
+      b.allocatedQty += tahsis;
+      b.remainingQty += remaining;
+      b.totalAmount += orij * price;
+      if (invoicedOrderIds.has(o.id)) b.invoicedAmount += orij * price;
+      else b.notInvoicedAmount += orij * price;
+    }
+    return Array.from(byCurrency, ([currency, v]) => ({
+      currency,
+      openCount: v.openCount,
+      closedCount: v.closedCount,
+      cancelledCount: v.cancelledCount,
+      belgeCount: v.belgeSet.size,
+      itemCount: v.openCount + v.closedCount, // aktifler
+      totalQty: v.totalQty,
+      shippedQty: v.shippedQty + v.allocatedQty,
+      remainingQty: v.remainingQty,
+      fillRate: v.totalQty > 0 ? Math.round(((v.shippedQty + v.allocatedQty) / v.totalQty) * 100) : 0,
+      totalAmount: v.totalAmount,
+      invoicedAmount: v.invoicedAmount,
+      notInvoicedAmount: v.notInvoicedAmount,
+      invoicedRate: v.totalAmount > 0 ? Math.round((v.invoicedAmount / v.totalAmount) * 100) : 0,
+    })).sort((a, b) => b.totalAmount - a.totalAmount);
+  }, [filteredOrders, allocatedByOrder, invoicedOrderIds]);
+
+  // Termin uyarıları — yaklaşan (30 gün) + geciken
+  const orderTerminAlerts = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const in30 = new Date();
+    in30.setDate(in30.getDate() + 30);
+    const in30Str = in30.toISOString().slice(0, 10);
+    const upcoming = [];
+    const overdue = [];
+    for (const o of filteredOrders) {
+      if ((o.status || "open") !== "open") continue;
+      if (!o.teslimTarihi) continue;
+      const orij = Number(o.orijinalMiktar) || 0;
+      const sevkBas = Number(o.sevkedilenBaslangic) || 0;
+      const tahsis = allocatedByOrder.get(o.id) || 0;
+      const remaining = Math.max(0, orij - sevkBas - tahsis);
+      if (remaining <= 0) continue;
+      if (o.teslimTarihi < today) overdue.push(o);
+      else if (o.teslimTarihi <= in30Str) upcoming.push(o);
+    }
+    overdue.sort((a, b) => (a.teslimTarihi || "").localeCompare(b.teslimTarihi || ""));
+    upcoming.sort((a, b) => (a.teslimTarihi || "").localeCompare(b.teslimTarihi || ""));
+    return { upcoming: upcoming.slice(0, 10), overdue: overdue.slice(0, 10) };
+  }, [filteredOrders, allocatedByOrder]);
 
   // KPI hesaplamaları (currency bazlı gruplu)
   const kpis = useMemo(() => {
@@ -187,6 +292,91 @@ export default function SummaryPanel({ invoicesData, ordersData }) {
           {filteredInvoices.length} fatura {fromDate && `· ${fromDate} → ${toDate || "…"}`}
         </span>
       </div>
+
+      {/* Sipariş KPI bloğu */}
+      {orderKpis.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#44403c", marginBottom: 8 }}>📦 Sipariş Özeti</div>
+          {orderKpis.map(k => (
+            <div key={`order_${k.currency}`} style={{ padding: 12, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6, marginBottom: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: "#57534e", marginBottom: 8 }}>
+                💱 {k.currency} · {k.belgeCount} sipariş / {k.itemCount} aktif kalem
+                {k.cancelledCount > 0 && <span style={{ marginLeft: 6, color: "#dc2626" }}>· {k.cancelledCount} iptal</span>}
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                <Kpi color="#1e40af" bg="#eff6ff" label="💰 Toplam Sipariş Tutarı" value={`${fmt(k.totalAmount)} ${k.currency}`} sub={`${fmt0(k.totalQty)} adet`} />
+                <Kpi color="#166534" bg="#dcfce7" label="✅ Sevk Edilen" value={`${fmt0(k.shippedQty)} adet`} sub={`Fill rate: %${k.fillRate}`} />
+                <Kpi color="#dc2626" bg="#fef2f2" label="🔮 Bekleyen Miktar" value={`${fmt0(k.remainingQty)} adet`} sub={`${k.openCount} açık kalem`} />
+                <Kpi color="#7c3aed" bg="#f5f3ff" label="🧾 Faturalanma" value={`%${k.invoicedRate}`} sub={`${fmt(k.notInvoicedAmount)} ${k.currency} kesilmedi`} />
+              </div>
+              {k.totalQty > 0 && (
+                <div style={{ marginTop: 8, height: 6, background: "#f5f5f4", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ width: `${k.fillRate}%`, height: "100%", background: k.fillRate === 100 ? "#166534" : "#1e40af", transition: "width 0.3s" }} />
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Termin uyarıları */}
+      {(orderTerminAlerts.overdue.length > 0 || orderTerminAlerts.upcoming.length > 0) && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, marginBottom: 14 }}>
+          {orderTerminAlerts.overdue.length > 0 && (
+            <div style={{ padding: 10, background: "#fef2f2", border: "1px solid #fecaca", borderRadius: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#991b1b", marginBottom: 6 }}>
+                🔴 Geciken Siparişler ({orderTerminAlerts.overdue.length})
+              </div>
+              <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                <thead><tr style={{ background: "#fff" }}>
+                  <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                </tr></thead>
+                <tbody>
+                  {orderTerminAlerts.overdue.map(o => {
+                    const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
+                    return (
+                      <tr key={o.id} style={{ borderTop: "1px solid #fecaca" }}>
+                        <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
+                        <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
+                        <td style={{ ...td, color: "#991b1b" }}>{o.teslimTarihi}</td>
+                        <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#991b1b" }}>{fmt0(rem)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          {orderTerminAlerts.upcoming.length > 0 && (
+            <div style={{ padding: 10, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 6 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e", marginBottom: 6 }}>
+                🕐 Yaklaşan Terminler ({orderTerminAlerts.upcoming.length}) <span style={{ fontSize: 9, fontWeight: 400 }}>· 30 gün içinde</span>
+              </div>
+              <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                <thead><tr style={{ background: "#fff" }}>
+                  <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                </tr></thead>
+                <tbody>
+                  {orderTerminAlerts.upcoming.map(o => {
+                    const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
+                    return (
+                      <tr key={o.id} style={{ borderTop: "1px solid #fde68a" }}>
+                        <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
+                        <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
+                        <td style={{ ...td, color: "#92400e" }}>{o.teslimTarihi}</td>
+                        <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#92400e" }}>{fmt0(rem)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Fatura KPI ayırıcı başlık */}
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#44403c", marginBottom: 8, marginTop: 4 }}>💰 Fatura Özeti</div>
 
       {/* KPI kartları — currency bazlı */}
       {kpis.length === 0 ? (
@@ -300,11 +490,12 @@ export default function SummaryPanel({ invoicesData, ordersData }) {
   );
 }
 
-function Kpi({ label, value, color, bg }) {
+function Kpi({ label, value, color, bg, sub }) {
   return (
     <div style={{ padding: "8px 10px", background: bg || "#fafaf9", borderRadius: 4 }}>
       <div style={{ fontSize: 10, color: "#57534e", fontWeight: 600 }}>{label}</div>
       <div style={{ fontSize: 15, fontWeight: 700, color: color || "#44403c", marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>{sub}</div>}
     </div>
   );
 }

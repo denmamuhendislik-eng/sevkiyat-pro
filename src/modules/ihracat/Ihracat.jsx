@@ -134,7 +134,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         />
       )}
       {subTab === "summary" && (
-        <SummaryPanel invoicesData={invoicesData} ordersData={ordersData} />
+        <SummaryPanel invoicesData={invoicesData} ordersData={ordersData} allocationsData={allocationsData} />
       )}
       {subTab === "settings" && isAdmin && (
         <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} motorSyncEnabled={motorSyncEnabled} />
