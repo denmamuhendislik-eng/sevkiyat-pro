@@ -109,6 +109,19 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
   const updateLine = (idx, patch) => setLines(prev => prev.map((l, i) => i === idx ? { ...l, ...patch } : l));
 
   // Ürün seçildiğinde satırı otomatik doldur + fiyat auto-fill
+  // Fiyat öncelik: müşteri+pid geçmişi → ürün kartı satış fiyatı (salesPriceEur)
+  const lookupPrice = (customerC, pid) => {
+    if (customerC) {
+      const prior = Object.values(ordersData?.orders || {})
+        .filter(o => o.customerCode === customerC && Number(o.pid) === Number(pid) && Number(o.birimFiyat) > 0)
+        .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))[0];
+      if (prior?.birimFiyat > 0) return Number(prior.birimFiyat);
+    }
+    const pm = (products || []).find(p => Number(p.id) === Number(pid));
+    if (pm?.salesPriceEur > 0) return Number(pm.salesPriceEur);
+    return null;
+  };
+
   const applyProductToLine = (idx, code) => {
     const found = (products || []).find(p => p.vioCode === code);
     const patch = { stokKodu: code };
@@ -117,14 +130,22 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       patch.stokAdi = found.nameTR || "";
       const currentLine = lines[idx];
       if (!currentLine?.descriptionEn && found.nameEN) patch.descriptionEn = found.nameEN;
-      // Fiyat auto-fill: aynı customerCode + aynı pid için son sipariş
-      if (!editingOrder && customerCode && !currentLine?.birimFiyat) {
-        const prior = Object.values(ordersData?.orders || {})
-          .filter(o => o.customerCode === customerCode && Number(o.pid) === Number(found.id) && Number(o.birimFiyat) > 0)
-          .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))[0];
-        if (prior) {
-          patch.birimFiyat = String(prior.birimFiyat || "");
+      // Ana kalem fiyatı
+      if (!editingOrder && !currentLine?.birimFiyat) {
+        const p = lookupPrice(customerCode, found.id);
+        if (p != null) patch.birimFiyat = String(p);
+      }
+      // Cascade children: her child için de fiyat pre-fill (geçmiş → ürün kartı)
+      const rules = (combRules || []).filter(r => Number(r.parent) === Number(found.id));
+      if (rules.length > 0 && !editingOrder) {
+        const childIds = [...new Set(rules.flatMap(r => (r.children || []).map(Number)))];
+        const nextChildPrices = { ...(currentLine?.childPrices || {}) };
+        for (const cid of childIds) {
+          if (nextChildPrices[cid]) continue; // user already typed
+          const p = lookupPrice(customerCode, cid);
+          if (p != null) nextChildPrices[cid] = String(p);
         }
+        patch.childPrices = nextChildPrices;
       }
     }
     updateLine(idx, patch);
@@ -154,21 +175,40 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingOrder, combRules, products, ordersData]);
 
-  // Müşteri değişince mevcut kalemlerde boş fiyatları auto-fill
+  // Müşteri değişince mevcut kalemlerde boş fiyatları auto-fill (ana + cascade children)
   useEffect(() => {
     if (editingOrder) return;
     if (!customerCode) return;
     let anyUpdated = false;
     const updated = lines.map(l => {
-      if (l.pid == null || l.birimFiyat) return l;
-      const prior = Object.values(ordersData?.orders || {})
-        .filter(o => o.customerCode === customerCode && Number(o.pid) === Number(l.pid) && Number(o.birimFiyat) > 0)
-        .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))[0];
-      if (prior) {
-        anyUpdated = true;
-        return { ...l, birimFiyat: String(prior.birimFiyat || "") };
+      let newLineObj = l;
+      // Ana kalem fiyatı
+      if (l.pid != null && !l.birimFiyat) {
+        const p = lookupPrice(customerCode, l.pid);
+        if (p != null) {
+          newLineObj = { ...newLineObj, birimFiyat: String(p) };
+          anyUpdated = true;
+        }
       }
-      return l;
+      // Cascade children fiyatları
+      if (l.pid != null) {
+        const rules = (combRules || []).filter(r => Number(r.parent) === Number(l.pid));
+        if (rules.length > 0) {
+          const childIds = [...new Set(rules.flatMap(r => (r.children || []).map(Number)))];
+          const nextChildPrices = { ...(newLineObj.childPrices || {}) };
+          let cpUpdated = false;
+          for (const cid of childIds) {
+            if (nextChildPrices[cid]) continue;
+            const p = lookupPrice(customerCode, cid);
+            if (p != null) { nextChildPrices[cid] = String(p); cpUpdated = true; }
+          }
+          if (cpUpdated) {
+            newLineObj = { ...newLineObj, childPrices: nextChildPrices };
+            anyUpdated = true;
+          }
+        }
+      }
+      return newLineObj;
     });
     if (anyUpdated) setLines(updated);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -306,13 +346,16 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       const childId = buildId(parentPayload.belgeNo, childStokKodu, parentPayload.teslimTarihi);
       // Mevcut child kaydı varsa (edit senaryosu) description KORUNUR
       const existingChild = ordersData?.orders?.[childId];
-      // Fiyat önceliği: form'daki input (childPrices) > mevcut kayıt > 0
+      // Fiyat önceliği: form input > mevcut kayıt > müşteri+pid geçmişi > ürün kartı salesPriceEur > 0
       const userEnteredPrice = childPrices[cid];
       let effectivePrice = 0;
       if (userEnteredPrice != null && userEnteredPrice !== "") {
         effectivePrice = Number(userEnteredPrice) || 0;
-      } else if (existingChild?.birimFiyat != null) {
+      } else if (existingChild?.birimFiyat != null && Number(existingChild.birimFiyat) > 0) {
         effectivePrice = Number(existingChild.birimFiyat) || 0;
+      } else {
+        const hist = lookupPrice(parentPayload.customerCode, cid);
+        if (hist != null) effectivePrice = hist;
       }
       const childPayload = {
         ...parentPayload,
