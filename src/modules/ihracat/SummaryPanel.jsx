@@ -43,12 +43,28 @@ function computeInvoiceRemainingByLabel(inv) {
 }
 
 export default function SummaryPanel({ invoicesData, ordersData, allocationsData }) {
-  const [period, setPeriod] = useState("thisYear"); // "thisMonth" | "thisYear" | "custom" | "all"
+  const [period, setPeriod] = useState("thisYear"); // "thisMonth" | "thisYear" | "year" | "custom" | "all"
+  const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
 
   const invoices = useMemo(() => Object.values(invoicesData?.invoices || {}), [invoicesData]);
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
+
+  // Verideki farklı yılların listesi (invoice tarihi + sipariş tarihi)
+  const availableYears = useMemo(() => {
+    const set = new Set();
+    for (const inv of invoices) {
+      if (inv?.invoiceDate) set.add(String(inv.invoiceDate).slice(0, 4));
+    }
+    for (const o of orders) {
+      if (o?.orderDate) set.add(String(o.orderDate).slice(0, 4));
+      else if (o?.createdAt) set.add(String(o.createdAt).slice(0, 4));
+    }
+    // Bugünün yılı hep dahil
+    set.add(String(new Date().getFullYear()));
+    return Array.from(set).filter(y => /^\d{4}$/.test(y)).sort();
+  }, [invoices, orders]);
 
   // Dönem filtresi
   const { fromDate, toDate } = useMemo(() => {
@@ -63,11 +79,15 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
     if (period === "thisYear") {
       return { fromDate: `${y}-01-01`, toDate: `${y}-12-31` };
     }
+    if (period === "year") {
+      const yy = selectedYear;
+      return { fromDate: `${yy}-01-01`, toDate: `${yy}-12-31` };
+    }
     if (period === "custom") {
       return { fromDate: customFrom || "", toDate: customTo || "" };
     }
     return { fromDate: "", toDate: "" };
-  }, [period, customFrom, customTo]);
+  }, [period, customFrom, customTo, selectedYear]);
 
   const filteredInvoices = useMemo(() => {
     return invoices.filter(inv => {
@@ -299,6 +319,25 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               borderRadius: 4, cursor: "pointer",
             }}>{p.label}</button>
         ))}
+        {/* Yıl butonları — veride hangi yıllar varsa */}
+        {availableYears.length > 0 && (
+          <div style={{ display: "flex", gap: 4, alignItems: "center", marginLeft: 4, paddingLeft: 8, borderLeft: "1px solid #d6d3d1" }}>
+            <span style={{ fontSize: 10, color: "#78716c" }}>Yıl:</span>
+            {availableYears.map(y => {
+              const isActive = period === "year" && selectedYear === y;
+              return (
+                <button key={y} onClick={() => { setPeriod("year"); setSelectedYear(y); }}
+                  style={{
+                    padding: "4px 8px", fontSize: 11, fontWeight: 500,
+                    background: isActive ? "#166534" : "#fff",
+                    color: isActive ? "#fff" : "#44403c",
+                    border: "1px solid " + (isActive ? "#166534" : "#d6d3d1"),
+                    borderRadius: 4, cursor: "pointer",
+                  }}>{y}</button>
+              );
+            })}
+          </div>
+        )}
         {period === "custom" && (
           <>
             <input type="date" value={customFrom} onChange={e => setCustomFrom(e.target.value)}
