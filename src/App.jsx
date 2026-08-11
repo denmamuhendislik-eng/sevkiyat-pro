@@ -13,6 +13,8 @@ import Yapilabilirlik from "./modules/yapilabilirlik";
 import { subscribeFeasibilityForYear, isUserPendingForStudy } from "./modules/yapilabilirlik/firestore";
 import Maliyet from "./modules/maliyet/Maliyet";
 import Ihracat from "./modules/ihracat/Ihracat";
+import ContainerAllocationPanel from "./modules/ihracat/ContainerAllocationPanel";
+import { subscribeExportSalesOrders, subscribeContainerAllocations } from "./modules/ihracat/firestore";
 import { parseBomExcel as parseBomExcelModule, isFasonOp, getDefaultWC } from "./shared/bomParser";
 import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
 
@@ -496,6 +498,18 @@ export default function App() {
     });
     return {order,planned,shipped,pNotShipped,remaining:order-shipped,toBePlanned:order-planned};
   },[yd]);
+
+  // v22: Sevkiyat Detay konteyner tahsis paneli için — ihracat orders + allocations
+  // subscribe. Sadece admin veya satış görünürlüğünde aktif olacak ama subscribe
+  // her zaman açık kalıyor (basit tutmak için). Firestore doc'un boyutu küçük.
+  const [exportOrdersData, setExportOrdersData] = useState({ orders: {} });
+  const [containerAllocationsData, setContainerAllocationsData] = useState({ allocations: {} });
+  useEffect(() => {
+    if (!authUser) return;
+    const u1 = subscribeExportSalesOrders(d => setExportOrdersData(d || { orders: {} }));
+    const u2 = subscribeContainerAllocations(d => setContainerAllocationsData(d || { allocations: {} }));
+    return () => { u1 && u1(); u2 && u2(); };
+  }, [authUser]);
 
   // v22: İhracat mutabakatı için — pid → sevk edilecek kalan miktar (yıllık plan tarafı).
   // İhracat modülüne prop olarak geçilir. Sadece okuma, dönüş yok.
@@ -3593,6 +3607,19 @@ ${el.innerHTML}
                   </tbody>
                 </table>
                 :<div style={{color:"var(--color-text-tertiary)",textAlign:"center",padding:10,fontSize:10}}>Boş</div>}
+                {/* v22: İhracat sipariş tahsis paneli — konteynerde ihracat siparişi olan
+                    ürün varsa görünür, yoksa null döner (sessiz). Motor/paketleme dokunulmaz. */}
+                {(isAdmin || isSales) && items.length > 0 && (
+                  <ContainerAllocationPanel
+                    containerId={c.id}
+                    year={String(selYear)}
+                    items={items}
+                    products={products}
+                    ordersData={exportOrdersData}
+                    allocationsData={containerAllocationsData}
+                    canEdit={isAdmin || isSales}
+                  />
+                )}
                 {canPack&&items.length>0&&<div style={{marginTop:8,textAlign:"right"}}><button onClick={(e)=>{e.stopPropagation();openPacking(c.id);}} style={{padding:"5px 14px",borderRadius:6,border:"1.5px solid #534AB7",background:"rgba(83,74,183,0.08)",color:"#534AB7",fontSize:11,fontWeight:600,cursor:"pointer"}}>{hasPacking?"📦 Paketlemeyi Düzenle":"📦 Paketle"}</button></div>}
               </div>;
             })}
