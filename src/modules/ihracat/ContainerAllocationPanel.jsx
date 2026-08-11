@@ -50,6 +50,24 @@ export default function ContainerAllocationPanel({
   }, [invoicesData, containerId, year]);
   const activeInvoiceCount = containerInvoices.filter(i => (i.status || "issued") !== "cancelled").length;
 
+  // Konteynerdeki hangi item'lar ihracat siparişinde var? Diğerlerini gösterme.
+  const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
+  const openOrders = useMemo(() => orders.filter(o => (o.status || "open") === "open"), [orders]);
+
+  const relevantItems = useMemo(() => {
+    return (items || []).filter(item => {
+      return openOrders.some(o =>
+        o.pid != null &&
+        Number(o.pid) === Number(item.pid)
+      );
+    });
+  }, [items, openOrders]);
+
+  const allocatedByOrder = useMemo(
+    () => computeAllocatedByOrder(allocationsData?.allocations || {}),
+    [allocationsData]
+  );
+
   // Konteynerdeki ihracat müşterisi (tek müşteri varsayımı — çoklu müşteri gelirse null döner)
   const containerCustomer = useMemo(() => {
     const codes = new Map();
@@ -105,24 +123,6 @@ export default function ContainerAllocationPanel({
       orderNr: containerCustomer ? `TRANSPORT - CONTAINER ${containerId || ""}` : "",
     };
   }, [invoiceSettings, oilCalculation, containerCustomer, containerId]);
-
-  // Konteynerdeki hangi item'lar ihracat siparişinde var? Diğerlerini gösterme.
-  const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
-  const openOrders = useMemo(() => orders.filter(o => (o.status || "open") === "open"), [orders]);
-
-  const relevantItems = useMemo(() => {
-    return (items || []).filter(item => {
-      return openOrders.some(o =>
-        o.pid != null &&
-        Number(o.pid) === Number(item.pid)
-      );
-    });
-  }, [items, openOrders]);
-
-  const allocatedByOrder = useMemo(
-    () => computeAllocatedByOrder(allocationsData?.allocations || {}),
-    [allocationsData]
-  );
 
   // Hiç ilgili item yok → panel gizli (kartın kalan alanında gürültü yapmasın)
   // Yerel satış konteynerlerinde OFMER ürünü olmadığı için panel görünmez.
