@@ -231,7 +231,7 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
     }
     overdue.sort((a, b) => (a.teslimTarihi || "").localeCompare(b.teslimTarihi || ""));
     upcoming.sort((a, b) => (a.teslimTarihi || "").localeCompare(b.teslimTarihi || ""));
-    return { upcoming: upcoming.slice(0, 10), overdue: overdue.slice(0, 10) };
+    return { upcoming, overdue };
   }, [filteredOrders, allocatedByOrder]);
 
   // KPI hesaplamaları (currency bazlı gruplu)
@@ -308,7 +308,7 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
         overdue.push({ inv, daysPassed, remaining });
       }
     }
-    return overdue.sort((a, b) => b.daysPassed - a.daysPassed).slice(0, 10);
+    return overdue.sort((a, b) => b.daysPassed - a.daysPassed);
   }, [filteredInvoices]);
 
   return (
@@ -427,24 +427,26 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               <div style={{ fontSize: 12, fontWeight: 700, color: "#991b1b", marginBottom: 6 }}>
                 🔴 Geciken Siparişler ({orderTerminAlerts.overdue.length})
               </div>
-              <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
-                <thead><tr style={{ background: "#fff" }}>
-                  <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
-                </tr></thead>
-                <tbody>
-                  {orderTerminAlerts.overdue.map(o => {
-                    const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
-                    return (
-                      <tr key={o.id} style={{ borderTop: "1px solid #fecaca" }}>
-                        <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
-                        <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
-                        <td style={{ ...td, color: "#991b1b" }}>{o.teslimTarihi}</td>
-                        <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#991b1b" }}>{fmt0(rem)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div style={{ maxHeight: 320, overflow: "auto" }}>
+                <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                  <thead style={{ position: "sticky", top: 0, background: "#fef2f2" }}><tr>
+                    <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                  </tr></thead>
+                  <tbody>
+                    {orderTerminAlerts.overdue.map(o => {
+                      const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
+                      return (
+                        <tr key={o.id} style={{ borderTop: "1px solid #fecaca" }}>
+                          <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
+                          <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
+                          <td style={{ ...td, color: "#991b1b" }}>{o.teslimTarihi}</td>
+                          <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#991b1b" }}>{fmt0(rem)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
           {orderTerminAlerts.upcoming.length > 0 && (
@@ -452,24 +454,26 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               <div style={{ fontSize: 12, fontWeight: 700, color: "#92400e", marginBottom: 6 }}>
                 🕐 Yaklaşan Terminler ({orderTerminAlerts.upcoming.length}) <span style={{ fontSize: 9, fontWeight: 400 }}>· 30 gün içinde</span>
               </div>
-              <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
-                <thead><tr style={{ background: "#fff" }}>
-                  <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
-                </tr></thead>
-                <tbody>
-                  {orderTerminAlerts.upcoming.map(o => {
-                    const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
-                    return (
-                      <tr key={o.id} style={{ borderTop: "1px solid #fde68a" }}>
-                        <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
-                        <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
-                        <td style={{ ...td, color: "#92400e" }}>{o.teslimTarihi}</td>
-                        <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#92400e" }}>{fmt0(rem)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+              <div style={{ maxHeight: 320, overflow: "auto" }}>
+                <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                  <thead style={{ position: "sticky", top: 0, background: "#fef3c7" }}><tr>
+                    <th style={th}>Belge</th><th style={th}>Stok</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                  </tr></thead>
+                  <tbody>
+                    {orderTerminAlerts.upcoming.map(o => {
+                      const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
+                      return (
+                        <tr key={o.id} style={{ borderTop: "1px solid #fde68a" }}>
+                          <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
+                          <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
+                          <td style={{ ...td, color: "#92400e" }}>{o.teslimTarihi}</td>
+                          <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#92400e" }}>{fmt0(rem)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
           )}
         </div>
@@ -522,28 +526,30 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               (fatura kesildikten 60+ gün geçmiş ve hâlâ tam ödenmemiş)
             </span>
           </div>
-          <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#fff" }}>
-                <th style={th}>Fatura No</th>
-                <th style={th}>Tarih</th>
-                <th style={th}>Müşteri</th>
-                <th style={{ ...th, textAlign: "right" }}>Kalan</th>
-                <th style={{ ...th, textAlign: "right" }}>Gün</th>
-              </tr>
-            </thead>
-            <tbody>
-              {alerts.map(a => (
-                <tr key={a.inv.invoiceNo} style={{ borderTop: "1px solid #fecaca" }}>
-                  <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{a.inv.invoiceNo}</td>
-                  <td style={td}>{a.inv.invoiceDate}</td>
-                  <td style={td}>{a.inv.customerName}</td>
-                  <td style={{ ...td, textAlign: "right", fontWeight: 600, color: "#991b1b" }}>{fmt(a.remaining)} {a.inv.currency}</td>
-                  <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{a.daysPassed}g</td>
+          <div style={{ maxHeight: 400, overflow: "auto" }}>
+            <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+              <thead style={{ position: "sticky", top: 0, background: "#fef2f2" }}>
+                <tr>
+                  <th style={th}>Fatura No</th>
+                  <th style={th}>Tarih</th>
+                  <th style={th}>Müşteri</th>
+                  <th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                  <th style={{ ...th, textAlign: "right" }}>Gün</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {alerts.map(a => (
+                  <tr key={a.inv.invoiceNo} style={{ borderTop: "1px solid #fecaca" }}>
+                    <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{a.inv.invoiceNo}</td>
+                    <td style={td}>{a.inv.invoiceDate}</td>
+                    <td style={td}>{a.inv.customerName}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 600, color: "#991b1b" }}>{fmt(a.remaining)} {a.inv.currency}</td>
+                    <td style={{ ...td, textAlign: "right", fontWeight: 700 }}>{a.daysPassed}g</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
