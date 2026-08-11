@@ -17,6 +17,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
   // Alanlar
   const [customerCode, setCustomerCode] = useState("");
   const [customerName, setCustomerName] = useState("");
+  const [customerAddress, setCustomerAddress] = useState("");
+  const [customerCity, setCustomerCity] = useState("");
+  const [customerCountry, setCustomerCountry] = useState("");
   const [belgeNo, setBelgeNo] = useState("");
   const [stokKodu, setStokKodu] = useState("");
   const [stokAdi, setStokAdi] = useState("");
@@ -40,6 +43,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     if (editingOrder) {
       setCustomerCode(editingOrder.customerCode || "");
       setCustomerName(editingOrder.customerName || "");
+      setCustomerAddress(editingOrder.customerAddress || "");
+      setCustomerCity(editingOrder.customerCity || "");
+      setCustomerCountry(editingOrder.customerCountry || "");
       setBelgeNo(editingOrder.belgeNo || "");
       setStokKodu(editingOrder.stokKodu || "");
       setStokAdi(editingOrder.stokAdi || "");
@@ -55,7 +61,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       setStatus(editingOrder.status || "open");
     } else {
       // Yeni form — temiz başlat
-      setCustomerCode(""); setCustomerName(""); setBelgeNo(""); setStokKodu(""); setStokAdi("");
+      setCustomerCode(""); setCustomerName("");
+      setCustomerAddress(""); setCustomerCity(""); setCustomerCountry("");
+      setBelgeNo(""); setStokKodu(""); setStokAdi("");
       setDescriptionEn(""); setPid(null); setOrijinalMiktar(""); setSevkedilenBaslangic("");
       setBirimFiyat(""); setCurrency("EUR"); setTeslimTarihi(""); setDeliveryTerms("");
       setPaymentPlan([{ label: "", pct: 100 }]); setStatus("open");
@@ -73,6 +81,10 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       if (d) {
         if (d.currency) setCurrency(d.currency);
         if (Array.isArray(d.paymentPlan) && d.paymentPlan.length > 0) setPaymentPlan(d.paymentPlan);
+        if (d.address) setCustomerAddress(d.address);
+        if (d.city) setCustomerCity(d.city);
+        if (d.country) setCustomerCountry(d.country);
+        if (d.deliveryTerms) setDeliveryTerms(d.deliveryTerms);
       }
     }
   };
@@ -116,6 +128,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         id,
         customerCode: customerCode.trim(),
         customerName: customerName.trim(),
+        customerAddress: customerAddress.trim(),
+        customerCity: customerCity.trim(),
+        customerCountry: customerCountry.trim(),
         belgeNo: String(belgeNo).trim(),
         stokKodu: stokKodu.trim(),
         stokAdi: stokAdi.trim(),
@@ -139,8 +154,14 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       }
       // Müşteri default'larını güncelle (checkbox açıksa)
       if (saveDefaultsForCustomer && customerCode) {
+        const existing = customerDefaults[customerCode] || {};
         await saveCustomerDefaults(customerCode, {
-          customerName: customerName.trim(),
+          ...existing,
+          customerName: customerName.trim() || existing.customerName || "",
+          address: customerAddress.trim() || existing.address || "",
+          city: customerCity.trim() || existing.city || "",
+          country: customerCountry.trim() || existing.country || "",
+          deliveryTerms: deliveryTerms.trim() || existing.deliveryTerms || "",
           currency,
           paymentPlan: payload.paymentPlan,
         }, { canEdit, userEmail });
@@ -182,10 +203,26 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
             <input value={customerName} onChange={e => setCustomerName(e.target.value)} placeholder="Örn. OFMER SRL." style={inp} />
           </Field>
         </div>
-        {!editingOrder && customerCode && (
+        <div style={{ marginTop: 6 }}>
+          <Field label="Adres (fatura için — opsiyonel)">
+            <input value={customerAddress} onChange={e => setCustomerAddress(e.target.value)}
+              placeholder="Örn. VIA ROMA 45" style={inp} />
+          </Field>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginTop: 6 }}>
+          <Field label="Şehir">
+            <input value={customerCity} onChange={e => setCustomerCity(e.target.value)}
+              placeholder="Örn. 20090 TREZZANO SUL NAVIGLIO (MI)" style={inp} />
+          </Field>
+          <Field label="Ülke">
+            <input value={customerCountry} onChange={e => setCustomerCountry(e.target.value)}
+              placeholder="Örn. ITALY" style={inp} />
+          </Field>
+        </div>
+        {customerCode && (
           <label style={{ fontSize: 10, color: "#57534e", display: "inline-flex", alignItems: "center", gap: 4, marginTop: 6 }}>
             <input type="checkbox" checked={saveDefaultsForCustomer} onChange={e => setSaveDefaultsForCustomer(e.target.checked)} />
-            Bu müşteri için varsayılan para birimi + ödeme planını kaydet (sonraki siparişlerde önerilir)
+            Bu müşteri için varsayılanları kaydet (adres, şehir, ülke, para birimi, teslim şekli, ödeme planı)
           </label>
         )}
       </Section>

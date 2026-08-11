@@ -12,6 +12,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
   getNextInvoiceNumber, saveExportInvoice, subscribeInvoiceSettings,
+  subscribeExportSettings, saveCustomerDefaults,
 } from "./firestore";
 import { generateInvoicePdf } from "./invoicePdf";
 import { computeAllocatedByOrder } from "./allocationCalc";
@@ -63,10 +64,13 @@ export default function InvoiceCreateModal({
   mode = "container", // "container" | "blank" (blank = boş fatura, nakliye vb.)
 }) {
   const [settings, setSettings] = useState({});
+  const [exportSettings, setExportSettings] = useState({});
   useEffect(() => {
-    const u = subscribeInvoiceSettings(d => setSettings(d || {}));
-    return () => u && u();
+    const u1 = subscribeInvoiceSettings(d => setSettings(d || {}));
+    const u2 = subscribeExportSettings(d => setExportSettings(d || {}));
+    return () => { u1 && u1(); u2 && u2(); };
   }, []);
+  const customerDefaults = exportSettings?.customerDefaults || {};
 
   const allocatedByOrder = useMemo(
     () => computeAllocatedByOrder(allocationsData?.allocations || {}),
@@ -121,6 +125,7 @@ export default function InvoiceCreateModal({
         deliveryTermsShort: "",
         paymentPlan: [{ label: "", pct: 100 }],
         orderNr: "",
+        saveToCustomer: false,
       }];
     }
     // container modu
@@ -191,23 +196,27 @@ export default function InvoiceCreateModal({
 
     return allGroups.map((orderIds, idx) => {
       const first = sourceOrderLines[orderIds[0]].order;
+      // Adres/şehir/ülke: önce sipariş kaydından, yoksa customerDefaults'tan çek.
+      const cd = customerDefaults[first.customerCode] || {};
       return {
         key: `grp_${idx + 1}`,
         orderIds,
         extraLines: [],
         customerCode: first.customerCode || "",
-        customerName: first.customerName || "",
-        customerAddress: first.customerAddress || "",
-        customerCity: first.customerCity || "",
-        customerCountry: first.customerCountry || "",
-        currency: first.currency || "EUR",
-        deliveryTerms: first.deliveryTerms || "",
-        deliveryTermsShort: shortDelivery(first.deliveryTerms || ""),
+        customerName: first.customerName || cd.customerName || "",
+        customerAddress: first.customerAddress || cd.address || "",
+        customerCity: first.customerCity || cd.city || "",
+        customerCountry: first.customerCountry || cd.country || "",
+        currency: first.currency || cd.currency || "EUR",
+        deliveryTerms: first.deliveryTerms || cd.deliveryTerms || "",
+        deliveryTermsShort: shortDelivery(first.deliveryTerms || cd.deliveryTerms || ""),
         paymentPlan: Array.isArray(first.paymentPlan) ? first.paymentPlan.map(p => ({ ...p })) : [{ label: "", pct: 100 }],
         orderNr: uniqueBelgeNos(orderIds, sourceOrderLines),
+        // Kaydet checkbox — ilk render'da adres kaynağı customerDefaults değilse dolduran kaydetmek isteyebilir
+        saveToCustomer: false,
       };
     });
-  }, [sourceOrderLines, mode]);
+  }, [sourceOrderLines, mode, customerDefaults]);
 
   const [groups, setGroups] = useState(initialGroups);
   useEffect(() => setGroups(initialGroups), [initialGroups]);
@@ -393,6 +402,26 @@ export default function InvoiceCreateModal({
         };
         await saveExportInvoice(invoiceObj, { canEdit, userEmail });
         created.push({ invoiceNo, invoiceObj });
+        // "Bu müşteriye kaydet" checkbox: adres/şehir/ülke customerDefaults'a eklenir
+        if (g.saveToCustomer && g.customerCode?.trim()) {
+          const existing = customerDefaults[g.customerCode] || {};
+          try {
+            await saveCustomerDefaults(g.customerCode, {
+              ...existing,
+              customerName: g.customerName || existing.customerName || "",
+              address: g.customerAddress || existing.address || "",
+              city: g.customerCity || existing.city || "",
+              country: g.customerCountry || existing.country || "",
+              currency: g.currency || existing.currency || "EUR",
+              deliveryTerms: g.deliveryTerms || existing.deliveryTerms || "",
+              paymentPlan: Array.isArray(g.paymentPlan) && g.paymentPlan.length > 0
+                ? g.paymentPlan.filter(p => (p.label || "").trim() || Number(p.pct) > 0)
+                : (existing.paymentPlan || []),
+            }, { canEdit, userEmail });
+          } catch (defErr) {
+            console.warn("customerDefaults kaydedilemedi:", defErr.message);
+          }
+        }
       }
       setCreatedInvoices(created.map(c => c.invoiceNo));
       // Her fatura için PDF üret + indir
@@ -485,6 +514,16 @@ export default function InvoiceCreateModal({
                   <Field label="Ülke">
                     <input value={g.customerCountry} onChange={e => updateGroupField(g.key, "customerCountry", e.target.value)} style={inp} />
                   </Field>
+                </div>
+                {g.customerCode && (
+                  <div style={{ marginBottom: 8, padding: 6, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 3 }}>
+                    <label style={{ fontSize: 10, display: "inline-flex", alignItems: "center", gap: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                      <input type="checkbox" checked={!!g.saveToCustomer} onChange={e => updateGroupField(g.key, "saveToCustomer", e.target.checked)} disabled={!canEdit} />
+                      💾 Bu müşteri ({g.customerCode}) için adres/teslim/plan varsayılan olarak kaydet — sonraki faturalarda otomatik dolar
+                    </label>
+                  </div>
+                )}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
                   <Field label="Teslim Şekli (uzun)">
                     <input value={g.deliveryTerms} onChange={e => updateGroupField(g.key, "deliveryTerms", e.target.value)} style={inp} />
                   </Field>
