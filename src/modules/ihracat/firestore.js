@@ -515,6 +515,50 @@ export async function saveExportInvoice(invoice, { canEdit, userEmail = "" } = {
   return next;
 }
 
+// Hard delete — fatura kaydı tamamen silinir. Eğer bu numara, ilgili yılın en son
+// verilen numarasıysa (counter[year] === num), sayaç 1 azaltılır — böylece yeniden
+// oluşturulan fatura aynı numarayı alır. Aksi halde numara gap olarak kalır.
+// Kullanım senaryosu: yeni oluşturulmuş bir faturada hata varsa sil ve yeniden yap.
+// Denetim izi gereken iptaller için cancelExportInvoice (VOID) kullanılmalı.
+export async function deleteExportInvoice(invoiceNo, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!invoiceNo) throw new Error("invoiceNo zorunlu");
+  const invRef = doc(db, APP_COL, EXPORT_INVOICES_DOC);
+  const setRef = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  const now = new Date().toISOString();
+
+  // Fatura silinsin
+  const invSnap = await getDoc(invRef);
+  const invMap = invSnap.exists() ? (invSnap.data()?.invoices || {}) : {};
+  if (!invMap[invoiceNo]) throw new Error(`Fatura bulunamadı: ${invoiceNo}`);
+  await updateDoc(invRef, {
+    [`invoices.${invoiceNo}`]: deleteField(),
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  });
+
+  // Counter rollback — sadece bu numara ilgili yılın son numarasıysa
+  let counterRolledBack = false;
+  let newCounterValue = null;
+  const match = String(invoiceNo).match(/^CI(\d{4})(\d+)$/);
+  if (match) {
+    const year = match[1];
+    const num = parseInt(match[2], 10);
+    const setSnap = await getDoc(setRef);
+    const counters = setSnap.exists() ? (setSnap.data()?.counters || {}) : {};
+    if (typeof counters[year] === "number" && counters[year] === num) {
+      newCounterValue = Math.max(0, num - 1);
+      await updateDoc(setRef, {
+        [`counters.${year}`]: newCounterValue,
+        updatedAt: now,
+        updatedBy: userEmail || "",
+      });
+      counterRolledBack = true;
+    }
+  }
+  return { deleted: true, counterRolledBack, newCounterValue };
+}
+
 // İptal (soft) — numara VOID, tekrar kullanılmaz. Kayıt silinmez, status: cancelled.
 export async function cancelExportInvoice(invoiceNo, reason, { canEdit, userEmail = "" } = {}) {
   if (!canEdit) throw new Error("Yetki yok");

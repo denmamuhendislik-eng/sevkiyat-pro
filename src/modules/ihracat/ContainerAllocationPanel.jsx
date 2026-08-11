@@ -14,8 +14,14 @@ import React, { useState, useMemo, useEffect } from "react";
 import {
   computeAllocatedByOrder, computeOrderRemaining, suggestFifoAllocation,
 } from "./allocationCalc";
-import { saveContainerAllocation, deleteContainerAllocation } from "./firestore";
+import {
+  saveContainerAllocation, deleteContainerAllocation,
+  subscribeExportInvoices, subscribeInvoiceSettings,
+  deleteExportInvoice, cancelExportInvoice,
+} from "./firestore";
+import { generateInvoicePdf } from "./invoicePdf";
 import InvoiceCreateModal from "./InvoiceCreateModal";
+import InvoiceEditModal from "./InvoiceEditModal";
 
 export default function ContainerAllocationPanel({
   containerId, year, items, products,
@@ -24,6 +30,23 @@ export default function ContainerAllocationPanel({
   const [expandedPid, setExpandedPid] = useState(null);
   const [collapsed, setCollapsed] = useState(true);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [editInvoice, setEditInvoice] = useState(null);
+  const [invoicesData, setInvoicesData] = useState({ invoices: {} });
+  const [invoiceSettings, setInvoiceSettings] = useState({});
+  const [toast, setToast] = useState(""); // kısa geri bildirim
+
+  useEffect(() => {
+    const u1 = subscribeExportInvoices(d => setInvoicesData(d || { invoices: {} }));
+    const u2 = subscribeInvoiceSettings(d => setInvoiceSettings(d || {}));
+    return () => { u1 && u1(); u2 && u2(); };
+  }, []);
+
+  // Bu konteynere ait faturalar
+  const containerInvoices = useMemo(() => {
+    return Object.values(invoicesData?.invoices || {})
+      .filter(inv => inv.containerId === containerId && Number(inv.year) === Number(year))
+      .sort((a, b) => (a.invoiceNo || "").localeCompare(b.invoiceNo || ""));
+  }, [invoicesData, containerId, year]);
 
   // Konteynerdeki hangi item'lar ihracat siparişinde var? Diğerlerini gösterme.
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
@@ -46,6 +69,47 @@ export default function ContainerAllocationPanel({
   // Hiç ilgili item yok → panel gizli (kartın kalan alanında gürültü yapmasın)
   // Yerel satış konteynerlerinde OFMER ürünü olmadığı için panel görünmez.
   if (relevantItems.length === 0) return null;
+
+  const showToast = (msg) => { setToast(msg); setTimeout(() => setToast(""), 3500); };
+
+  const handleDownloadInvoice = async (inv) => {
+    try { await generateInvoicePdf(inv, invoiceSettings); }
+    catch (e) { alert("PDF üretilemedi: " + e.message); }
+  };
+
+  const handleDeleteInvoice = async (inv) => {
+    if (!canEdit) return;
+    const ok = confirm(
+      `${inv.invoiceNo} numaralı faturayı SİLMEK istediğinden emin misin?\n\n` +
+      `• Kayıt tamamen silinir (kurtarma yok).\n` +
+      `• Bu numara ilgili yılın son numarasıysa sayaç geri alınır — yeni fatura aynı numarayı alabilir.\n` +
+      `• Denetim izi bırakmak istersen SİL yerine 🚫 İPTAL (VOID) kullan.`
+    );
+    if (!ok) return;
+    try {
+      const res = await deleteExportInvoice(inv.invoiceNo, { canEdit, userEmail });
+      if (res.counterRolledBack) {
+        showToast(`✓ ${inv.invoiceNo} silindi. Sayaç ${res.newCounterValue}'e geri alındı — yeni fatura ${inv.invoiceNo}'yi alabilir.`);
+      } else {
+        showToast(`✓ ${inv.invoiceNo} silindi. (Sayaç geri alınmadı — daha sonra basılmış numaralar var.)`);
+      }
+    } catch (e) {
+      alert("Silinemedi: " + e.message);
+    }
+  };
+
+  const handleVoidInvoice = async (inv) => {
+    if (!canEdit) return;
+    if ((inv.status || "issued") === "cancelled") { alert("Zaten iptal"); return; }
+    const reason = prompt(`${inv.invoiceNo} VOID edilecek — numara tekrar kullanılamaz.\n\nİptal sebebi:`);
+    if (reason == null) return;
+    try {
+      await cancelExportInvoice(inv.invoiceNo, reason, { canEdit, userEmail });
+      showToast(`🚫 ${inv.invoiceNo} iptal edildi (VOID)`);
+    } catch (e) {
+      alert("İptal edilemedi: " + e.message);
+    }
+  };
 
   // Özet: kaç item tam tahsis edilmiş
   const summary = relevantItems.map(item => {
@@ -86,6 +150,68 @@ export default function ContainerAllocationPanel({
         )}
       </div>
 
+      {toast && (
+        <div style={{ marginTop: 6, padding: 6, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, fontSize: 10 }}>
+          {toast}
+        </div>
+      )}
+
+      {!collapsed && containerInvoices.length > 0 && (
+        <div style={{ marginTop: 8, padding: 6, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 4 }}>
+          <div style={{ fontSize: 10, fontWeight: 700, color: "#44403c", marginBottom: 4 }}>
+            🧾 Bu Konteynerin Faturaları ({containerInvoices.length})
+          </div>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 10 }}>
+            <thead>
+              <tr style={{ background: "#f5f5f4" }}>
+                <th style={invTh}>Fatura No</th>
+                <th style={invTh}>Tarih</th>
+                <th style={invTh}>Müşteri</th>
+                <th style={invTh}>Order NR.</th>
+                <th style={{ ...invTh, textAlign: "right" }}>Toplam</th>
+                <th style={{ ...invTh, textAlign: "center" }}>Durum</th>
+                <th style={{ ...invTh, textAlign: "center", width: 130 }}>Aksiyon</th>
+              </tr>
+            </thead>
+            <tbody>
+              {containerInvoices.map(inv => {
+                const isVoid = (inv.status || "issued") === "cancelled";
+                return (
+                  <tr key={inv.invoiceNo} style={{ borderTop: "1px solid #f5f5f4", background: isVoid ? "#fafaf9" : "transparent", opacity: isVoid ? 0.7 : 1 }}>
+                    <td style={{ ...invTd, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{inv.invoiceNo}</td>
+                    <td style={invTd}>{inv.invoiceDate || "—"}</td>
+                    <td style={invTd}>{inv.customerName || "—"}</td>
+                    <td style={{ ...invTd, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{inv.orderNr || "—"}</td>
+                    <td style={{ ...invTd, textAlign: "right", fontWeight: 600 }}>
+                      {Number(inv.totalAmount || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {inv.currency}
+                    </td>
+                    <td style={{ ...invTd, textAlign: "center" }}>
+                      {isVoid
+                        ? <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, borderRadius: 2, background: "#fef2f2", color: "#991b1b" }}>VOID</span>
+                        : <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, borderRadius: 2, background: "#dbeafe", color: "#1e40af" }}>Kesildi</span>}
+                    </td>
+                    <td style={{ ...invTd, textAlign: "center" }}>
+                      <button onClick={() => handleDownloadInvoice(inv)} title="PDF indir"
+                        style={{ padding: "1px 5px", fontSize: 9, marginRight: 2, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2, cursor: "pointer" }}>📄</button>
+                      {!isVoid && (
+                        <>
+                          <button onClick={() => setEditInvoice(inv)} disabled={!canEdit} title="Düzenle"
+                            style={{ padding: "1px 5px", fontSize: 9, marginRight: 2, background: "#fefce8", color: "#854d0e", border: "1px solid #fde68a", borderRadius: 2, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
+                          <button onClick={() => handleDeleteInvoice(inv)} disabled={!canEdit} title="Sil (sayaç geri alınır)"
+                            style={{ padding: "1px 5px", fontSize: 9, marginRight: 2, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 2, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
+                          <button onClick={() => handleVoidInvoice(inv)} disabled={!canEdit} title="VOID (numara tutulur)"
+                            style={{ padding: "1px 5px", fontSize: 9, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 2, cursor: canEdit ? "pointer" : "not-allowed" }}>🚫</button>
+                        </>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+
       {!collapsed && (
         <div style={{ marginTop: 8 }}>
           {relevantItems.map(item => (
@@ -121,9 +247,21 @@ export default function ContainerAllocationPanel({
           onCreated={() => setShowInvoiceModal(false)}
         />
       )}
+      {editInvoice && (
+        <InvoiceEditModal
+          invoice={editInvoice}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setEditInvoice(null)}
+          onSaved={() => { /* subscription güncelliyor — modal açık kalsın */ }}
+        />
+      )}
     </div>
   );
 }
+
+const invTh = { padding: "3px 6px", fontWeight: 700, fontSize: 9, textAlign: "left", color: "#44403c" };
+const invTd = { padding: "3px 6px", fontSize: 10, verticalAlign: "middle" };
 
 function ItemAllocation({
   item, containerId, year, products,

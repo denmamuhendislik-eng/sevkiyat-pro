@@ -4,6 +4,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   subscribeExportInvoices, subscribeInvoiceSettings, cancelExportInvoice,
+  deleteExportInvoice,
 } from "./firestore";
 import { generateInvoicePdf } from "./invoicePdf";
 import InvoiceCreateModal from "./InvoiceCreateModal";
@@ -69,6 +70,27 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
       await cancelExportInvoice(inv.invoiceNo, reason, { canEdit, userEmail });
     } catch (e) {
       alert("İptal edilemedi: " + e.message);
+    }
+  };
+
+  const handleDelete = async (inv) => {
+    if (!canEdit) return;
+    const ok = confirm(
+      `${inv.invoiceNo} numaralı faturayı SİLMEK istediğinden emin misin?\n\n` +
+      `• Kayıt tamamen silinir (kurtarma yok).\n` +
+      `• Bu numara yılın son numarasıysa sayaç geri alınır.\n` +
+      `• Denetim izi gerekiyorsa SİL yerine 🚫 İPTAL (VOID) kullan.`
+    );
+    if (!ok) return;
+    try {
+      const res = await deleteExportInvoice(inv.invoiceNo, { canEdit, userEmail });
+      if (res.counterRolledBack) {
+        alert(`✓ ${inv.invoiceNo} silindi.\nSayaç ${res.newCounterValue}'e geri alındı — yeni fatura aynı numarayı alabilir.`);
+      } else {
+        alert(`✓ ${inv.invoiceNo} silindi.\n(Daha sonra basılmış numaralar olduğu için sayaç geri alınmadı.)`);
+      }
+    } catch (e) {
+      alert("Silinemedi: " + e.message);
     }
   };
 
@@ -148,8 +170,13 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
                           style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#fefce8", color: "#854d0e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
                       )}
                       {!isVoid && (
+                        <button onClick={() => handleDelete(i)} disabled={!canEdit}
+                          title="Sil (sayaç geri alınabilir)"
+                          style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
+                      )}
+                      {!isVoid && (
                         <button onClick={() => handleCancel(i)} disabled={!canEdit}
-                          title="İptal (VOID)"
+                          title="İptal (VOID) — numara tutulur"
                           style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🚫</button>
                       )}
                     </td>
