@@ -2991,7 +2991,7 @@ ${el.innerHTML}
               </button>
             </div>
             {importSubTab==="export" && (
-              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={productsForExport} remainingByPid={remainingByPidForExport} syncExportOrderToPlan={syncExportOrderToPlan} />
+              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={productsForExport} remainingByPid={remainingByPidForExport} syncExportOrderToPlan={syncExportOrderToPlan} combRules={combRules} />
             )}
             {importSubTab==="domestic" && <div>
             <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>

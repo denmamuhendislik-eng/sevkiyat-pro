@@ -13,7 +13,7 @@ function buildId(belgeNo, stokKodu, teslimTarihi) {
   return `${String(belgeNo || "").trim()}_${String(stokKodu || "").trim()}_${key}`;
 }
 
-export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync }) {
+export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync, combRules = [], ordersData }) {
   // Alanlar
   const [customerCode, setCustomerCode] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -98,7 +98,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     return Array.from(map, ([code, name]) => ({ code, name }));
   }, [customerDefaults]);
 
-  // Ürün seçici — products.vioCode ile eşleşme
+  // Ürün seçici — products.vioCode ile eşleşme (fiyat auto-fill aşağıda useEffect'te)
   const applyProductByCode = (code) => {
     setStokKodu(code);
     const found = (products || []).find(p => p.vioCode === code);
@@ -108,6 +108,38 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       if (!descriptionEn && found.nameEN) setDescriptionEn(found.nameEN);
     }
   };
+
+  // Fiyat auto-fill: aynı customerCode + aynı pid için önceki siparişin birim fiyatı
+  // Sadece yeni sipariş modunda ve alan boşsa doldurur (elle girdiğin değeri ezmez)
+  useEffect(() => {
+    if (editingOrder) return;
+    if (!customerCode || pid == null) return;
+    if (birimFiyat) return; // elle girildi, dokunma
+    const prior = Object.values(ordersData?.orders || {})
+      .filter(o => o.customerCode === customerCode && Number(o.pid) === Number(pid) && Number(o.birimFiyat) > 0)
+      .sort((a, b) => String(b.updatedAt || b.createdAt || "").localeCompare(String(a.updatedAt || a.createdAt || "")))[0];
+    if (prior) {
+      setBirimFiyat(String(prior.birimFiyat || ""));
+      if (prior.currency) setCurrency(prior.currency);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [customerCode, pid, ordersData]);
+
+  // Cascade preview — pid seçilince combRules'e göre bağlı child ürünleri liste olarak göster
+  const cascadeChildren = useMemo(() => {
+    if (pid == null) return [];
+    const rules = (combRules || []).filter(r => Number(r.parent) === Number(pid));
+    if (rules.length === 0) return [];
+    const childIds = [...new Set(rules.flatMap(r => (r.children || []).map(Number)))];
+    return childIds.map(cid => {
+      const cp = (products || []).find(p => Number(p.id) === cid);
+      return {
+        pid: cid,
+        vioCode: cp?.vioCode || "",
+        nameTR: cp?.nameTR || `pid ${cid}`,
+      };
+    });
+  }, [pid, combRules, products]);
 
   // Ödeme planı satırları
   const addPlanRow = () => setPaymentPlan([...paymentPlan, { label: "", pct: 0 }]);
@@ -327,6 +359,31 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
             </select>
           </Field>
         </div>
+
+        {/* Cascade önizleme — parent seçildiyse bağlı child ürünlerini göster */}
+        {cascadeChildren.length > 0 && (
+          <div style={{ marginTop: 8, padding: 8, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4 }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#1e40af", marginBottom: 4 }}>
+              🔗 Bu ürün kombine parent — kayıt sonrası Sevkiyat Planı'na aşağıdaki bağlı ürünler de aynı miktarda eklenir:
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {cascadeChildren.map(c => (
+                <div key={c.pid} style={{ padding: "3px 8px", fontSize: 10, background: "#fff", border: "1px solid #bfdbfe", borderRadius: 3 }}>
+                  <span style={{ fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{c.vioCode || `#${c.pid}`}</span>
+                  <span style={{ marginLeft: 6, color: "#57534e" }}>{c.nameTR}</span>
+                  {Number(orijinalMiktar) > 0 && (
+                    <span style={{ marginLeft: 6, fontWeight: 700, color: "#166534" }}>
+                      +{(Number(orijinalMiktar) - (Number(sevkedilenBaslangic) || 0)) || 0}
+                    </span>
+                  )}
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: 9, color: "#78716c", marginTop: 4 }}>
+              💡 Not: İhracat sipariş listesinde bu bağlı ürünler görünmez — sadece parent kaydedilir. Bağlı ürünler yalnızca Sevkiyat Planı motor tarafına yansır (cascade rules).
+            </div>
+          </div>
+        )}
       </Section>
 
       {/* Teslim & Ödeme */}

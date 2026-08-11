@@ -19,7 +19,7 @@ import ReconciliationPanel from "./ReconciliationPanel";
 import InvoiceSettingsPanel from "./InvoiceSettingsPanel";
 import InvoiceList from "./InvoiceList";
 
-export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid, syncExportOrderToPlan }) {
+export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid, syncExportOrderToPlan, combRules }) {
   const [subTab, setSubTab] = useState("list");
   const [editingOrder, setEditingOrder] = useState(null); // düzenlemek için seçilen sipariş
 
@@ -95,6 +95,8 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           onSaved={closeForm}
           onCancel={closeForm}
           motorSync={motorSync}
+          combRules={combRules || []}
+          ordersData={ordersData}
         />
       )}
       {subTab === "import" && (
