@@ -47,11 +47,13 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
   const [customFrom, setCustomFrom] = useState("");
   const [customTo, setCustomTo] = useState("");
+  // Sipariş filtresi hangi tarihe göre çalışsın: "orderDate" (sipariş tarihi) | "teslimTarihi"
+  const [orderDateBasis, setOrderDateBasis] = useState("orderDate");
 
   const invoices = useMemo(() => Object.values(invoicesData?.invoices || {}), [invoicesData]);
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
 
-  // Verideki farklı yılların listesi (invoice tarihi + sipariş tarihi)
+  // Verideki farklı yılların listesi (invoice tarihi + sipariş tarihi + teslim tarihi)
   const availableYears = useMemo(() => {
     const set = new Set();
     for (const inv of invoices) {
@@ -59,7 +61,8 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
     }
     for (const o of orders) {
       if (o?.orderDate) set.add(String(o.orderDate).slice(0, 4));
-      else if (o?.createdAt) set.add(String(o.createdAt).slice(0, 4));
+      if (o?.createdAt) set.add(String(o.createdAt).slice(0, 4));
+      if (o?.teslimTarihi) set.add(String(o.teslimTarihi).slice(0, 4));
     }
     // Bugünün yılı hep dahil
     set.add(String(new Date().getFullYear()));
@@ -98,14 +101,19 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
     });
   }, [invoices, fromDate, toDate, period]);
 
-  // Bir siparişin "alım tarihi": öncelik orderDate (VIO import'tan), yoksa createdAt (sisteme giriş)
+  // Bir siparişin filtre tarihi — orderDateBasis'e göre:
+  //  - "orderDate": sipariş tarihi (VIO import) veya createdAt (manuel form)
+  //  - "teslimTarihi": teslim/termin tarihi
   const getOrderFilterDate = (o) => {
+    if (orderDateBasis === "teslimTarihi") {
+      return o?.teslimTarihi ? String(o.teslimTarihi).slice(0, 10) : null;
+    }
     if (o?.orderDate) return String(o.orderDate).slice(0, 10);
     if (o?.createdAt) return String(o.createdAt).slice(0, 10);
     return null;
   };
 
-  // Siparişleri "alım tarihi"ne göre filtrele — bağlı child kayıtları hariç
+  // Siparişleri filtre tarihi seçimine göre filtrele — bağlı child kayıtları hariç
   // Tarihsiz sipariş yoksa dönem seçiminden bağımsız hep dahil edilir.
   const filteredOrders = useMemo(() => {
     return orders.filter(o => {
@@ -117,9 +125,10 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [orders, fromDate, toDate, period]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, fromDate, toDate, period, orderDateBasis]);
 
-  // Tarihsiz sipariş sayısı — bilgi rozeti için
+  // Tarihsiz sipariş sayısı — bilgi rozeti için (basis'e göre değişir)
   const orderStats = useMemo(() => {
     let noDateCount = 0;
     let linkedChildCount = 0;
@@ -128,7 +137,8 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       else if (!getOrderFilterDate(o)) noDateCount++;
     }
     return { noDateCount, linkedChildCount };
-  }, [orders]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, orderDateBasis]);
 
   // Tahsis edilen miktar (order.id → allocated qty)
   const allocatedByOrder = useMemo(
@@ -367,12 +377,31 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       {/* Sipariş KPI bloğu */}
       {orderKpis.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#44403c" }}>📦 Sipariş Özeti</div>
-            <div style={{ fontSize: 9, color: "#78716c" }}>
-              Dönem filtresi <b>sipariş tarihi</b> (orderDate / sisteme giriş) alanına göre çalışır.
+            {/* Basis toggle */}
+            <div style={{ display: "flex", gap: 3, alignItems: "center" }}>
+              <span style={{ fontSize: 9, color: "#78716c" }}>Filtre:</span>
+              {[
+                { key: "orderDate", label: "Sipariş Tarihi" },
+                { key: "teslimTarihi", label: "Teslim Tarihi" },
+              ].map(b => (
+                <button key={b.key} onClick={() => setOrderDateBasis(b.key)}
+                  style={{
+                    padding: "3px 8px", fontSize: 10, fontWeight: 500,
+                    background: orderDateBasis === b.key ? "#7c3aed" : "#fff",
+                    color: orderDateBasis === b.key ? "#fff" : "#44403c",
+                    border: "1px solid " + (orderDateBasis === b.key ? "#7c3aed" : "#d6d3d1"),
+                    borderRadius: 3, cursor: "pointer",
+                  }}>{b.label}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: 9, color: "#78716c", flex: 1 }}>
+              {orderDateBasis === "teslimTarihi"
+                ? "Dönem: siparişin teslim tarihi alanına göre."
+                : "Dönem: sipariş tarihi (orderDate / sisteme giriş) alanına göre."}
               {orderStats.noDateCount > 0 && <> {orderStats.noDateCount} sipariş tarihsiz — her dönemde görünür.</>}
-              {orderStats.linkedChildCount > 0 && <> {orderStats.linkedChildCount} bağlı (cascade) ürün özete dahil değil.</>}
+              {orderStats.linkedChildCount > 0 && <> {orderStats.linkedChildCount} bağlı ürün özete dahil değil.</>}
             </div>
           </div>
           {orderKpis.map(k => (
