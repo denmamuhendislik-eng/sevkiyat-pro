@@ -5,7 +5,7 @@
 // Edit mode: tek kalemi düzenleme (mevcut davranış aynen), lines array tek elemanla başlar
 
 import React, { useState, useEffect, useMemo } from "react";
-import { saveExportOrder, addPaymentLabel, saveCustomerDefaults, addDeliveryTerm } from "./firestore";
+import { saveExportOrder, addPaymentLabel, saveCustomerDefaults, addDeliveryTerm, deleteExportOrder } from "./firestore";
 import { validatePaymentPlan } from "./allocationCalc";
 
 const CURRENCIES = ["EUR", "USD", "TL", "GBP"];
@@ -275,8 +275,29 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           sevkedilenBaslangic: Number(line.sevkedilenBaslangic) || 0,
           birimFiyat: Number(line.birimFiyat) || 0,
         };
+        const oldId = editingOrder.id;
+        const idChanged = oldId && oldId !== id;
+        // Yeni kayıt önce yaz — eski ID kaldıysa altta silinir
         await saveExportOrder(payload, { canEdit, userEmail });
         applyMotorSyncForEdit(payload);
+        // ID değiştiyse (teslim tarihi veya stok kodu değişimi) → eski parent + bağlı child'ları sil
+        // Bu duplicate kayıt oluşmasını engeller
+        if (idChanged && !editingOrder?.isLinkedChild) {
+          // Eski parent'a bağlı child kayıtları: aynı belgeNo + eski teslim tarihi + linkedParentPid=eski parent pid
+          const oldChildren = Object.values(ordersData?.orders || {}).filter(o =>
+            o.isLinkedChild &&
+            o.belgeNo === editingOrder.belgeNo &&
+            o.teslimTarihi === editingOrder.teslimTarihi &&
+            Number(o.linkedParentPid) === Number(editingOrder.pid)
+          );
+          for (const c of oldChildren) {
+            try { await deleteExportOrder(c.id, { canEdit, userEmail }); }
+            catch (e) { console.warn("Eski bağlı child silinemedi:", c.id, e.message); }
+          }
+          // Eski parent kaydını sil
+          try { await deleteExportOrder(oldId, { canEdit, userEmail }); }
+          catch (e) { console.warn("Eski parent silinemedi:", oldId, e.message); }
+        }
         // Bağlı child kayıtlarını senkronla — SADECE parent düzenleniyorsa (child'ın child'ı yok)
         if (!editingOrder?.isLinkedChild) {
           await syncLinkedChildren(payload, line.childPrices || {});
@@ -454,6 +475,40 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           ) kombine bileşenidir. <b>Stok kodu, miktar ve başlangıç sevk</b> parent'a bağlıdır — sadece <b>birim fiyat</b>, <b>ürün adı (İngilizce)</b> ve <b>ödeme/teslim ayarlarını</b> değiştirebilirsin.
         </div>
       )}
+      {(() => {
+        if (!editingOrder) return null;
+        const cy = new Date().getFullYear();
+        const oldYear = editingOrder.teslimTarihi ? Number(String(editingOrder.teslimTarihi).slice(0, 4)) : null;
+        const newYear = teslimTarihi ? Number(String(teslimTarihi).slice(0, 4)) : null;
+        const oldOutOfRange = oldYear != null && (oldYear < cy || oldYear > cy + 1);
+        const newOutOfRange = newYear != null && (newYear < cy || newYear > cy + 1);
+        const yearChanged = oldYear != null && newYear != null && oldYear !== newYear;
+        if (oldOutOfRange || newOutOfRange) {
+          return (
+            <div style={{ padding: 8, marginBottom: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>
+              🚫 <b>Geçmiş / gelecek yıla ait sipariş</b> — motor sync (Sevkiyat Planı yansıması) uygulanmaz.
+              Sadece {cy} ve {cy + 1} yılları senkronize edilir. Değişiklikler ihracat modülünde kayıtlanır ama motor tarafı etkilenmez.
+            </div>
+          );
+        }
+        if (yearChanged) {
+          return (
+            <div style={{ padding: 8, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11 }}>
+              ⚠ <b>Farklı yıla geçiyorsun</b> ({oldYear} → {newYear}). Kaydettiğinde eski kayıt silinip yeni ID ile oluşturulacak (duplicate önlenir). Motor tarafında {oldYear}'dan −miktar düşülür, {newYear}'a +miktar eklenir.
+              {editingOrder.pid && ` Bağlı ürünler (varsa) da yeni tarihe taşınır.`}
+            </div>
+          );
+        }
+        // Aynı yıl içinde ama teslim tarihi değişiyor → duplicate önlenecek
+        if (teslimTarihi && editingOrder.teslimTarihi && teslimTarihi !== editingOrder.teslimTarihi) {
+          return (
+            <div style={{ padding: 8, marginBottom: 10, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 11 }}>
+              ℹ Teslim tarihi değişiyor ({editingOrder.teslimTarihi} → {teslimTarihi}). Kaydettiğinde eski kayıt silinip yeni tarih ile oluşturulacak (duplicate önlenir). Motor sync tetiklenmez (aynı yıl).
+            </div>
+          );
+        }
+        return null;
+      })()}
 
       {/* Müşteri */}
       <Section title="Müşteri">

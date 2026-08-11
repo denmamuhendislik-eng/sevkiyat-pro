@@ -533,6 +533,13 @@ export default function App() {
     const y = Number(year);
     const delta = Number(deltaQty) || 0;
     if (delta === 0) return;
+    // Sadece izin verilen yıllar (bu yıl + gelecek yıl). Geçmiş yıllara (2024, 2023 vb)
+    // dokunulmaz — geçmiş bakiyeler / carryOver bozulmasın.
+    const cy = new Date().getFullYear();
+    if (y < cy || y > cy + 1) {
+      console.warn(`Motor sync — yıl ${y} izin verilen aralık dışında (${cy}-${cy+1}), atlandı`);
+      return;
+    }
     setYearsData(prev => {
       const ydp = { ...(prev[y] || { containers: [], orders: {}, carryOver: {}, quantities: {} }) };
       const orders = { ...ydp.orders };
