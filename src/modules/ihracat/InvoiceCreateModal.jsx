@@ -62,6 +62,14 @@ export default function InvoiceCreateModal({
   onClose,
   onCreated,
   mode = "container", // "container" | "blank" (blank = boş fatura, nakliye vb.)
+  // "blank" moduna ön-doldurma (nakliye faturası akışı için)
+  presetCustomerCode = "",
+  presetCustomerName = "",
+  presetExtraLines = null,    // [{description, qty, unit, unitPrice}]
+  presetPaymentPlan = null,   // [{label, pct}]
+  presetCurrency = "",
+  presetOrderNr = "",
+  presetTitle = "",           // header başlığı override
 }) {
   const [settings, setSettings] = useState({});
   const [exportSettings, setExportSettings] = useState({});
@@ -128,20 +136,23 @@ export default function InvoiceCreateModal({
   // Otomatik grup önerisi: aynı paymentPlan hash olanları birleştir
   const initialGroups = useMemo(() => {
     if (mode === "blank") {
+      const cd = customerDefaults[presetCustomerCode] || {};
       return [{
         key: "blank_1",
         orderIds: [],
-        extraLines: [],
-        customerCode: "",
-        customerName: "",
-        customerAddress: "",
-        customerCity: "",
-        customerCountry: "",
-        currency: "EUR",
-        deliveryTerms: "",
-        deliveryTermsShort: "",
-        paymentPlan: [{ label: "", pct: 100 }],
-        orderNr: "",
+        extraLines: Array.isArray(presetExtraLines) ? presetExtraLines.map(l => ({ ...l })) : [],
+        customerCode: presetCustomerCode || "",
+        customerName: presetCustomerName || cd.customerName || "",
+        customerAddress: cd.address || "",
+        customerCity: cd.city || "",
+        customerCountry: cd.country || "",
+        currency: presetCurrency || cd.currency || "EUR",
+        deliveryTerms: cd.deliveryTerms || "",
+        deliveryTermsShort: cd.deliveryTermsShort || "",
+        paymentPlan: Array.isArray(presetPaymentPlan) && presetPaymentPlan.length > 0
+          ? presetPaymentPlan.map(p => ({ ...p }))
+          : [{ label: "", pct: 100 }],
+        orderNr: presetOrderNr || "",
         saveToCustomer: false,
       }];
     }
@@ -483,7 +494,7 @@ export default function InvoiceCreateModal({
         {/* Header */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 600 }}>🧾 Fatura Oluştur</div>
+            <div style={{ fontSize: 15, fontWeight: 600 }}>{presetTitle || "🧾 Fatura Oluştur"}</div>
             <div style={{ fontSize: 10, color: "#78716c" }}>
               {mode === "container" ? "Konteyner tahsislerinden" : "Boş fatura"} · {totalToCreate} fatura kesilecek
             </div>

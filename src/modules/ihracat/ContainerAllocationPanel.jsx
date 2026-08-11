@@ -30,6 +30,7 @@ export default function ContainerAllocationPanel({
   const [expandedPid, setExpandedPid] = useState(null);
   const [collapsed, setCollapsed] = useState(true);
   const [showInvoiceModal, setShowInvoiceModal] = useState(false);
+  const [showTransportModal, setShowTransportModal] = useState(false);
   const [editInvoice, setEditInvoice] = useState(null);
   const [invoicesData, setInvoicesData] = useState({ invoices: {} });
   const [invoiceSettings, setInvoiceSettings] = useState({});
@@ -48,6 +49,62 @@ export default function ContainerAllocationPanel({
       .sort((a, b) => (a.invoiceNo || "").localeCompare(b.invoiceNo || ""));
   }, [invoicesData, containerId, year]);
   const activeInvoiceCount = containerInvoices.filter(i => (i.status || "issued") !== "cancelled").length;
+
+  // Konteynerdeki ihracat müşterisi (tek müşteri varsayımı — çoklu müşteri gelirse null döner)
+  const containerCustomer = useMemo(() => {
+    const codes = new Map();
+    for (const item of relevantItems) {
+      for (const o of openOrders) {
+        if (Number(o.pid) === Number(item.pid) && o.customerCode) {
+          codes.set(o.customerCode, o.customerName || o.customerCode);
+        }
+      }
+    }
+    if (codes.size !== 1) return null;
+    const [code, name] = [...codes.entries()][0];
+    return { code, name };
+  }, [relevantItems, openOrders]);
+
+  // Toplam yağ miktarı — invoiceSettings.oilRules'a göre
+  const oilCalculation = useMemo(() => {
+    const rules = Array.isArray(invoiceSettings?.oilRules) ? invoiceSettings.oilRules : [];
+    if (rules.length === 0) return { totalOil: 0, breakdown: [] };
+    const ruleMap = new Map(rules.map(r => [Number(r.pid), Number(r.oilPerUnit) || 0]));
+    let total = 0;
+    const breakdown = [];
+    for (const item of (items || [])) {
+      const perUnit = ruleMap.get(Number(item.pid));
+      if (perUnit && Number(item.qty) > 0) {
+        const amt = Number(item.qty) * perUnit;
+        total += amt;
+        breakdown.push({ pid: item.pid, name: item.name, qty: item.qty, perUnit, amount: amt });
+      }
+    }
+    return { totalOil: total, breakdown };
+  }, [items, invoiceSettings]);
+
+  const transportPresets = useMemo(() => {
+    const t = invoiceSettings?.transportDefault || { description: "TRANSPORTATION COST", unit: "AD", unitPrice: 0, currency: "EUR" };
+    const oil = invoiceSettings?.oilProduct || { description: "GEAR OIL", unit: "KG", unitPrice: 0, currency: "EUR" };
+    const extraLines = [
+      { description: t.description, qty: 1, unit: t.unit || "AD", unitPrice: Number(t.unitPrice) || 0 },
+    ];
+    if (oilCalculation.totalOil > 0) {
+      extraLines.push({
+        description: oil.description,
+        qty: Number(oilCalculation.totalOil.toFixed(3)),
+        unit: oil.unit || "KG",
+        unitPrice: Number(oil.unitPrice) || 0,
+      });
+    }
+    return {
+      extraLines,
+      currency: t.currency || "EUR",
+      // Nakliye + yağ genelde peşin ödeme — tek satır %100 CASH IN ADVANCE varsayımı
+      paymentPlan: [{ label: "CASH IN ADVANCE", pct: 100 }],
+      orderNr: containerCustomer ? `TRANSPORT - CONTAINER ${containerId || ""}` : "",
+    };
+  }, [invoiceSettings, oilCalculation, containerCustomer, containerId]);
 
   // Konteynerdeki hangi item'lar ihracat siparişinde var? Diğerlerini gösterme.
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
@@ -156,6 +213,20 @@ export default function ContainerAllocationPanel({
             )}
           </button>
         )}
+        <button onClick={(e) => { e.stopPropagation(); setShowTransportModal(true); }} disabled={!canEdit || !containerCustomer}
+          title={!containerCustomer
+            ? "Müşteri belirlenemedi (konteynerde birden fazla müşteri var veya hiç yok)"
+            : oilCalculation.totalOil > 0
+              ? `Nakliye + ${oilCalculation.totalOil.toFixed(2)} ${invoiceSettings?.oilProduct?.unit || "KG"} yağ ön-dolduruldu`
+              : "Nakliye faturası (yağ hesabına uygun ürün yoksa yalnız nakliye satırı)"}
+          style={{ padding: "3px 10px", fontSize: 10, background: containerCustomer ? "#1e40af" : "#a8a29e", color: "#fff", border: "none", borderRadius: 3, cursor: (canEdit && containerCustomer) ? "pointer" : "not-allowed", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}>
+          🚚 Nakliye Faturası
+          {oilCalculation.totalOil > 0 && (
+            <span style={{ padding: "0 5px", fontSize: 9, fontWeight: 700, background: "#f59e0b", color: "#fff", borderRadius: 2 }}>
+              +🛢 {oilCalculation.totalOil.toFixed(2)}
+            </span>
+          )}
+        </button>
       </div>
 
       {toast && (
@@ -253,6 +324,27 @@ export default function ContainerAllocationPanel({
           userEmail={userEmail}
           onClose={() => setShowInvoiceModal(false)}
           onCreated={() => setShowInvoiceModal(false)}
+        />
+      )}
+      {showTransportModal && containerCustomer && (
+        <InvoiceCreateModal
+          mode="blank"
+          containerId={containerId}
+          year={year}
+          products={products}
+          ordersData={ordersData}
+          allocationsData={allocationsData}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setShowTransportModal(false)}
+          onCreated={() => setShowTransportModal(false)}
+          presetCustomerCode={containerCustomer.code}
+          presetCustomerName={containerCustomer.name}
+          presetExtraLines={transportPresets.extraLines}
+          presetPaymentPlan={transportPresets.paymentPlan}
+          presetCurrency={transportPresets.currency}
+          presetOrderNr={transportPresets.orderNr}
+          presetTitle="🚚 Nakliye Faturası Oluştur"
         />
       )}
       {editInvoice && (

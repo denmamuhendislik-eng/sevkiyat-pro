@@ -112,7 +112,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         />
       )}
       {subTab === "settings" && isAdmin && (
-        <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} />
+        <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} />
       )}
     </div>
   );
