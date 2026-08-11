@@ -3,17 +3,24 @@
 // kullanıcı Gmail/Outlook'a Ctrl+V ile tablo olarak yapıştırır.
 
 import React, { useState, useMemo, useEffect } from "react";
+import { subscribeExportSettings, saveCustomerDefaults } from "./firestore";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, ch => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
 })[ch]);
+
+const DEFAULT_TEMPLATE = `Merhaba,
+
+Aşağıdaki faturalar için teslim şartı gereği ödeme talebimizdir.
+
+Saygılarımızla.`;
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
 // Bir etiketin "teslim" kategorisinde olup olmadığı (case-insensitive DELIVERY substring)
 const isDeliveryLabel = (label) => String(label || "").toUpperCase().includes("DELIVERY");
 
-export default function PaymentRequestModal({ invoices, customerOptions, initialCustomer, onClose }) {
+export default function PaymentRequestModal({ invoices, customerOptions, initialCustomer, canEdit, userEmail, onClose }) {
   const [selectedCustomer, setSelectedCustomer] = useState(
     initialCustomer && initialCustomer !== "all" ? initialCustomer : ""
   );
@@ -21,6 +28,24 @@ export default function PaymentRequestModal({ invoices, customerOptions, initial
   const [rowSelections, setRowSelections] = useState({});
   const [copiedFlash, setCopiedFlash] = useState(false);
   const [error, setError] = useState("");
+  const [exportSettings, setExportSettings] = useState({});
+  const [saveAsDefault, setSaveAsDefault] = useState(false);
+
+  useEffect(() => {
+    const u = subscribeExportSettings(d => setExportSettings(d || {}));
+    return () => u && u();
+  }, []);
+
+  const customerDefaults = exportSettings?.customerDefaults || {};
+
+  // Müşteri değişince: kayıtlı özel metin varsa onu yükle, yoksa default template
+  useEffect(() => {
+    if (!selectedCustomer) { setHeaderText(""); setSaveAsDefault(false); return; }
+    const saved = customerDefaults[selectedCustomer]?.paymentRequestText;
+    setHeaderText(saved != null ? saved : DEFAULT_TEMPLATE);
+    setSaveAsDefault(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedCustomer, exportSettings]);
 
   // Müşteri için "delivery" etiketli fatura satırları
   const rows = useMemo(() => {
@@ -133,6 +158,18 @@ export default function PaymentRequestModal({ invoices, customerOptions, initial
       }
       setCopiedFlash(true);
       setTimeout(() => setCopiedFlash(false), 2500);
+      // "Bu müşteri için varsayılan kaydet" işaretliyse → customerDefaults'a yaz
+      if (saveAsDefault && selectedCustomer && canEdit) {
+        try {
+          const existing = customerDefaults[selectedCustomer] || {};
+          await saveCustomerDefaults(selectedCustomer, {
+            ...existing,
+            paymentRequestText: headerText,
+          }, { canEdit, userEmail });
+        } catch (defErr) {
+          console.warn("paymentRequestText kaydedilemedi:", defErr.message);
+        }
+      }
     } catch (e) {
       setError("Kopyalama başarısız: " + e.message);
     }
@@ -164,10 +201,21 @@ export default function PaymentRequestModal({ invoices, customerOptions, initial
 
         {/* Üst metin */}
         <div style={{ marginBottom: 12 }}>
-          <label style={lbl}>Üst metin (opsiyonel — tablonun üstüne yapıştırılır)</label>
+          <label style={lbl}>
+            Üst metin (opsiyonel — tablonun üstüne yapıştırılır)
+            {selectedCustomer && customerDefaults[selectedCustomer]?.paymentRequestText != null && (
+              <span style={{ marginLeft: 6, fontSize: 9, color: "#166534", fontWeight: 600 }}>✓ bu müşteri için kayıtlı metin yüklendi</span>
+            )}
+          </label>
           <textarea value={headerText} onChange={e => setHeaderText(e.target.value)}
             placeholder="Örn. Merhaba, aşağıdaki faturalar için teslim şartı gereği ödeme talebimizdir. Saygılarımızla."
-            rows={3} style={{ ...inp, resize: "vertical", fontFamily: "inherit" }} />
+            rows={4} style={{ ...inp, resize: "vertical", fontFamily: "inherit" }} />
+          {selectedCustomer && canEdit && (
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 4, marginTop: 4, fontSize: 10, color: "#57534e", cursor: "pointer" }}>
+              <input type="checkbox" checked={saveAsDefault} onChange={e => setSaveAsDefault(e.target.checked)} />
+              💾 Bu müşteri ({selectedCustomer}) için üst metni varsayılan olarak kaydet — sonraki açılışta otomatik yüklenir
+            </label>
+          )}
         </div>
 
         {error && <div style={{ padding: 8, marginBottom: 8, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>⚠ {error}</div>}

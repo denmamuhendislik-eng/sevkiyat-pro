@@ -269,6 +269,8 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
           invoices={invoices}
           customerOptions={customerOptions}
           initialCustomer={customerFilter}
+          canEdit={canEdit}
+          userEmail={userEmail}
           onClose={() => setShowPaymentRequest(false)}
         />
       )}
