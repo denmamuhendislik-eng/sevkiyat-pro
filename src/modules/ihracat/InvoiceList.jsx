@@ -7,6 +7,7 @@ import {
 } from "./firestore";
 import { generateInvoicePdf } from "./invoicePdf";
 import InvoiceCreateModal from "./InvoiceCreateModal";
+import InvoiceEditModal from "./InvoiceEditModal";
 
 const STATUS_META = {
   issued: { label: "Kesildi", bg: "#dbeafe", fg: "#1e40af" },
@@ -21,6 +22,7 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
   const [customerFilter, setCustomerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [detailInvoice, setDetailInvoice] = useState(null);
+  const [editInvoice, setEditInvoice] = useState(null); // ✏ düzenleme modalı
   const [showBlank, setShowBlank] = useState(false); // "Yeni Boş Fatura" modal
 
   useEffect(() => {
@@ -141,6 +143,11 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
                         title="PDF indir"
                         style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📄</button>
                       {!isVoid && (
+                        <button onClick={() => setEditInvoice(i)} disabled={!canEdit}
+                          title="Düzenle"
+                          style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#fefce8", color: "#854d0e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
+                      )}
+                      {!isVoid && (
                         <button onClick={() => handleCancel(i)} disabled={!canEdit}
                           title="İptal (VOID)"
                           style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🚫</button>
@@ -210,6 +217,17 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
             </div>
           </div>
         </div>
+      )}
+
+      {/* Düzenleme */}
+      {editInvoice && (
+        <InvoiceEditModal
+          invoice={editInvoice}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setEditInvoice(null)}
+          onSaved={() => { /* liste subscription ile kendini günceller — modalı açık bırak */ }}
+        />
       )}
 
       {/* Yeni Boş Fatura */}
