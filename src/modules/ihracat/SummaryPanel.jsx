@@ -147,6 +147,12 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
   }, [invoices]);
 
   // Sipariş KPI'ları — currency bazlı gruplu
+  // Tutarları 4 kategoriye ayır:
+  //  1. Önceden Sevk (VIO/dış sistem) = sevkedilenBaslangic × price
+  //  2. Sistem Faturalı = tahsis × price (sipariş invoicedOrderIds'e girmişse)
+  //  3. Fatura Bekliyor = tahsis × price (sevk edildi ama fatura kesilmedi)
+  //  4. Henüz Sevk Yok = kalan miktar × price
+  // toplam = 1 + 2 + 3 + 4 = totalAmount (orij × price)
   const orderKpis = useMemo(() => {
     const byCurrency = new Map();
     for (const o of filteredOrders) {
@@ -155,8 +161,9 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
         byCurrency.set(cur, {
           openCount: 0, closedCount: 0, cancelledCount: 0,
           belgeSet: new Set(),
-          totalQty: 0, shippedQty: 0, allocatedQty: 0, remainingQty: 0,
-          totalAmount: 0, invoicedAmount: 0, notInvoicedAmount: 0,
+          totalQty: 0, priorShippedQty: 0, allocatedQty: 0, remainingQty: 0,
+          totalAmount: 0, priorShippedAmount: 0,
+          systemInvoicedAmount: 0, pendingInvoiceAmount: 0, notShippedAmount: 0,
         });
       }
       const b = byCurrency.get(cur);
@@ -169,16 +176,18 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       const orij = Number(o.orijinalMiktar) || 0;
       const sevkBas = Number(o.sevkedilenBaslangic) || 0;
       const tahsis = allocatedByOrder.get(o.id) || 0;
-      const shipped = sevkBas + tahsis;
-      const remaining = Math.max(0, orij - shipped);
+      const remaining = Math.max(0, orij - sevkBas - tahsis);
       const price = Number(o.birimFiyat) || 0;
       b.totalQty += orij;
-      b.shippedQty += sevkBas;
+      b.priorShippedQty += sevkBas;
       b.allocatedQty += tahsis;
       b.remainingQty += remaining;
       b.totalAmount += orij * price;
-      if (invoicedOrderIds.has(o.id)) b.invoicedAmount += orij * price;
-      else b.notInvoicedAmount += orij * price;
+      b.priorShippedAmount += sevkBas * price;
+      const isInvoicedInSystem = invoicedOrderIds.has(o.id);
+      if (isInvoicedInSystem) b.systemInvoicedAmount += tahsis * price;
+      else b.pendingInvoiceAmount += tahsis * price;
+      b.notShippedAmount += remaining * price;
     }
     return Array.from(byCurrency, ([currency, v]) => ({
       currency,
@@ -188,13 +197,16 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       belgeCount: v.belgeSet.size,
       itemCount: v.openCount + v.closedCount, // aktifler
       totalQty: v.totalQty,
-      shippedQty: v.shippedQty + v.allocatedQty,
+      priorShippedQty: v.priorShippedQty,
+      allocatedQty: v.allocatedQty,
+      shippedQty: v.priorShippedQty + v.allocatedQty,
       remainingQty: v.remainingQty,
-      fillRate: v.totalQty > 0 ? Math.round(((v.shippedQty + v.allocatedQty) / v.totalQty) * 100) : 0,
+      fillRate: v.totalQty > 0 ? Math.round(((v.priorShippedQty + v.allocatedQty) / v.totalQty) * 100) : 0,
       totalAmount: v.totalAmount,
-      invoicedAmount: v.invoicedAmount,
-      notInvoicedAmount: v.notInvoicedAmount,
-      invoicedRate: v.totalAmount > 0 ? Math.round((v.invoicedAmount / v.totalAmount) * 100) : 0,
+      priorShippedAmount: v.priorShippedAmount,
+      systemInvoicedAmount: v.systemInvoicedAmount,
+      pendingInvoiceAmount: v.pendingInvoiceAmount,
+      notShippedAmount: v.notShippedAmount,
     })).sort((a, b) => b.totalAmount - a.totalAmount);
   }, [filteredOrders, allocatedByOrder, invoicedOrderIds]);
 
@@ -369,17 +381,37 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
                 💱 {k.currency} · {k.belgeCount} sipariş / {k.itemCount} aktif kalem
                 {k.cancelledCount > 0 && <span style={{ marginLeft: 6, color: "#dc2626" }}>· {k.cancelledCount} iptal</span>}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
-                <Kpi color="#1e40af" bg="#eff6ff" label="💰 Toplam Sipariş Tutarı" value={`${fmt(k.totalAmount)} ${k.currency}`} sub={`${fmt0(k.totalQty)} adet`} />
+              {/* Miktar bazlı özet */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginBottom: 8 }}>
+                <Kpi color="#1e40af" bg="#eff6ff" label="💰 Toplam Sipariş Tutarı" value={`${fmt(k.totalAmount)} ${k.currency}`} sub={`${fmt0(k.totalQty)} adet · ${k.belgeCount} belge`} />
                 <Kpi color="#166534" bg="#dcfce7" label="✅ Sevk Edilen" value={`${fmt0(k.shippedQty)} adet`} sub={`Fill rate: %${k.fillRate}`} />
                 <Kpi color="#dc2626" bg="#fef2f2" label="🔮 Bekleyen Miktar" value={`${fmt0(k.remainingQty)} adet`} sub={`${k.openCount} açık kalem`} />
-                <Kpi color="#7c3aed" bg="#f5f3ff" label="🧾 Faturalanma" value={`%${k.invoicedRate}`} sub={`${fmt(k.notInvoicedAmount)} ${k.currency} kesilmedi`} />
               </div>
               {k.totalQty > 0 && (
-                <div style={{ marginTop: 8, height: 6, background: "#f5f5f4", borderRadius: 3, overflow: "hidden" }}>
+                <div style={{ marginBottom: 10, height: 6, background: "#f5f5f4", borderRadius: 3, overflow: "hidden" }}>
                   <div style={{ width: `${k.fillRate}%`, height: "100%", background: k.fillRate === 100 ? "#166534" : "#1e40af", transition: "width 0.3s" }} />
                 </div>
               )}
+              {/* Parasal detay — sevk & fatura durumuna göre */}
+              <div style={{ paddingTop: 8, borderTop: "1px dashed #e7e5e4" }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: "#78716c", marginBottom: 6 }}>
+                  Toplam sipariş tutarının dağılımı (sevk & fatura durumu):
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                  <Kpi color="#0e7490" bg="#ecfeff" label="📤 Önceden Sevk (VIO)"
+                    value={`${fmt(k.priorShippedAmount)} ${k.currency}`}
+                    sub={`Dış sistemde faturalandı · ${fmt0(k.priorShippedQty)} adet`} />
+                  <Kpi color="#166534" bg="#dcfce7" label="🧾 Sistem Faturalı"
+                    value={`${fmt(k.systemInvoicedAmount)} ${k.currency}`}
+                    sub="Sevk + fatura kesildi (bu sistemde)" />
+                  <Kpi color="#92400e" bg="#fef3c7" label="⏳ Fatura Bekliyor"
+                    value={`${fmt(k.pendingInvoiceAmount)} ${k.currency}`}
+                    sub="Sevk edildi ama fatura kesilmedi" />
+                  <Kpi color="#78716c" bg="#fafaf9" label="🔮 Henüz Sevk Yok"
+                    value={`${fmt(k.notShippedAmount)} ${k.currency}`}
+                    sub="Tahsis edilmemiş kalan" />
+                </div>
+              </div>
             </div>
           ))}
         </div>
