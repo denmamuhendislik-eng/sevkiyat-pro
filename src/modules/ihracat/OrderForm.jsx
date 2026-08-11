@@ -423,6 +423,23 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     if (!motorSync?.enabled || !motorSync.apply) return;
     // Bağlı child kaydının edit'inde motor sync tetiklenmez (parent cascade'i sağlar)
     if (editingOrder?.isLinkedChild) return;
+    // Yıl bazlı ön kontrol: yıl değişimi durumunda HER İKİ yıl da izin verilen
+    // aralıkta olmalı. Aksi halde asymmetric delta oluşur (bir yıldan düşülmez
+    // ama diğerine eklenir → çift sayım). Bu durumda motor sync tamamen bypass.
+    const cy = new Date().getFullYear();
+    const inRange = (y) => Number.isFinite(y) && y >= cy && y <= cy + 1;
+    const oldYearPre = editingOrder && editingOrder.teslimTarihi
+      ? Number(String(editingOrder.teslimTarihi).slice(0, 4)) : null;
+    const newYearPre = payload.teslimTarihi
+      ? Number(String(payload.teslimTarihi).slice(0, 4))
+      : new Date().getFullYear();
+    if (oldYearPre != null && oldYearPre !== newYearPre) {
+      // Yıl değişimi var. Her iki taraf da in-range olmalı — aksi halde bypass.
+      if (!inRange(oldYearPre) || !inRange(newYearPre)) {
+        console.warn("Motor sync bypass — yıl değişimi + en az bir taraf izin verilen aralık dışı", { oldYear: oldYearPre, newYear: newYearPre });
+        return;
+      }
+    }
     const wasActive = editingOrder ? (editingOrder.status || "open") !== "cancelled" : false;
     const isActive = (payload.status || "open") !== "cancelled";
     const oldPid = editingOrder ? editingOrder.pid : null;
@@ -478,19 +495,29 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       {(() => {
         if (!editingOrder) return null;
         const cy = new Date().getFullYear();
+        const inRange = (y) => y != null && y >= cy && y <= cy + 1;
         const oldYear = editingOrder.teslimTarihi ? Number(String(editingOrder.teslimTarihi).slice(0, 4)) : null;
         const newYear = teslimTarihi ? Number(String(teslimTarihi).slice(0, 4)) : null;
-        const oldOutOfRange = oldYear != null && (oldYear < cy || oldYear > cy + 1);
-        const newOutOfRange = newYear != null && (newYear < cy || newYear > cy + 1);
         const yearChanged = oldYear != null && newYear != null && oldYear !== newYear;
-        if (oldOutOfRange || newOutOfRange) {
+        // Asymmetric: yıl değişimi var + biri in-range biri değil → motor sync bypass
+        if (yearChanged && (!inRange(oldYear) || !inRange(newYear))) {
           return (
             <div style={{ padding: 8, marginBottom: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>
-              🚫 <b>Geçmiş / gelecek yıla ait sipariş</b> — motor sync (Sevkiyat Planı yansıması) uygulanmaz.
-              Sadece {cy} ve {cy + 1} yılları senkronize edilir. Değişiklikler ihracat modülünde kayıtlanır ama motor tarafı etkilenmez.
+              🚫 <b>Yıl değişimi izin verilen aralık dışında</b> ({oldYear} → {newYear}). Motor sync <b>bypass</b> — Sevkiyat Planı tarafı etkilenmez.
+              Sadece {cy}–{cy + 1} arası yıllar birbiriyle senkronize edilir. İhracat kaydı yine güncellenir (duplicate temizlenir), motor tarafını manuel yönetmen gerekebilir.
             </div>
           );
         }
+        // Her iki yıl da out-of-range (örn. 2024 → 2025) → motor sync zaten atlanacak (geçmiş yıllara dokunulmaz)
+        if (!inRange(oldYear) && !inRange(newYear)) {
+          return (
+            <div style={{ padding: 8, marginBottom: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>
+              🚫 <b>Geçmiş / gelecek yıl siparişi</b> ({oldYear || "?"}{newYear && oldYear !== newYear ? ` → ${newYear}` : ""}) — motor sync uygulanmaz.
+              Sadece {cy}–{cy + 1} arası yıllar senkronize edilir. Değişiklikler ihracat modülünde kayıtlanır, motor tarafı etkilenmez.
+            </div>
+          );
+        }
+        // Her iki yıl da in-range + yıl değişimi
         if (yearChanged) {
           return (
             <div style={{ padding: 8, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11 }}>
