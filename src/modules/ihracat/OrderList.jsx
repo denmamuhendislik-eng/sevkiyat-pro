@@ -386,10 +386,9 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                                     ? "Bağlı ürünü düzenle (birim fiyat ve İngilizce ürün adı değiştirilebilir)"
                                     : "Kalem içi bilgileri düzenle (miktar, fiyat, termin)"}
                                   style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
-                                {!isLinked && (
-                                  <button onClick={() => handleDeleteItem(o)} disabled={!canEdit}
-                                    style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
-                                )}
+                                <button onClick={() => handleDeleteItem(o)} disabled={!canEdit}
+                                  title={isLinked ? "Bağlı kaydı sil (geçici olarak aktif)" : "Kalemi sil"}
+                                  style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
                               </td>
                             </tr>
                           );
