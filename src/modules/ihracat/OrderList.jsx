@@ -1,12 +1,16 @@
-// İhracat Sipariş Listesi
-// Kalıcı ana kullanım — müşteri filtre + arama + kalan renk kodlaması
-// Satır tıklanınca detay (ödeme planı, teslim şekli, tahsis geçmişi)
+// İhracat Sipariş Listesi — sipariş bazlı gruplu görünüm
+// Aynı belgeNo + customerCode = tek "sipariş" (11 grup, 68 kalem gibi).
+// Grup başlığında müşteri + belge + tarih + özet (kalem sayısı, kalan toplam, teslim özet)
+// Grup expand → kalemleri liste eder (miktar, sevk, kalan, birim fiyat, termin)
+// "✏ Siparişi Düzenle" → OrderHeaderEditModal (teslim + ödeme + currency toplu)
+// "Durum" dropdown → grup bazlı toplu status değişimi
 
 import React, { useState, useMemo } from "react";
 import {
   computeAllocatedByOrder, computeOrderFillStatus, computeOrderRemaining,
 } from "./allocationCalc";
-import { updateExportOrderStatus, deleteExportOrder } from "./firestore";
+import { updateExportOrderStatus, deleteExportOrder, bulkUpdateOrdersByBelge } from "./firestore";
+import OrderHeaderEditModal from "./OrderHeaderEditModal";
 
 const STATUS_LABELS = {
   open: { label: "Açık", bg: "#dbeafe", fg: "#1e40af" },
@@ -14,11 +18,18 @@ const STATUS_LABELS = {
   cancelled: { label: "İptal", bg: "#fef2f2", fg: "#991b1b" },
 };
 
+// Ödeme planı → kısa özet ("30/70" gibi)
+function summarizePaymentPlan(plan) {
+  if (!Array.isArray(plan) || plan.length === 0) return "—";
+  return plan.map(p => `%${p.pct}`).join(" + ");
+}
+
 export default function OrderList({ ordersData, allocationsData, settings, products, canEdit, userEmail, onEdit }) {
   const [search, setSearch] = useState("");
   const [customerFilter, setCustomerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("open");
-  const [expandedId, setExpandedId] = useState(null);
+  const [expandedBelge, setExpandedBelge] = useState(new Set());
+  const [editingGroup, setEditingGroup] = useState(null); // group obj → OrderHeaderEditModal açar
 
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
   const allocatedByOrder = useMemo(() => computeAllocatedByOrder(allocationsData?.allocations || {}), [allocationsData]);
@@ -32,31 +43,89 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     return Array.from(map, ([code, name]) => ({ code, name }));
   }, [orders]);
 
-  const list = useMemo(() => {
+  // Sipariş bazlı gruplaştırma — belgeNo + customerCode key
+  const groups = useMemo(() => {
     const q = search.trim().toLocaleLowerCase("tr-TR");
-    return orders
-      .filter(o => {
-        if (customerFilter !== "all" && o.customerCode !== customerFilter) return false;
-        if (statusFilter !== "all" && (o.status || "open") !== statusFilter) return false;
-        if (!q) return true;
+    const map = new Map();
+    for (const o of orders) {
+      if (!o) continue;
+      if (customerFilter !== "all" && o.customerCode !== customerFilter) continue;
+      // Grup bazında filtreleme sonrası kalemleri ekle; status filtresi kalem seviyesinde
+      // uygulanır ama gruplama yine belgeNo bazlı — bir belgede karışık status varsa görünür.
+      if (!q) {
+        // filtrasyon yok, direkt ekle
+      } else {
         const hay = `${o.belgeNo || ""} ${o.stokKodu || ""} ${o.stokAdi || ""} ${o.descriptionEn || ""} ${o.customerName || ""}`.toLocaleLowerCase("tr-TR");
-        return hay.includes(q);
-      })
-      .sort((a, b) => (b.teslimTarihi || "").localeCompare(a.teslimTarihi || ""));
+        if (!hay.includes(q)) continue;
+      }
+      const key = `${o.customerCode || ""}__${o.belgeNo || ""}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          key,
+          customerCode: o.customerCode || "",
+          customerName: o.customerName || "",
+          belgeNo: o.belgeNo || "",
+          items: [],
+          // Header alanları — grup içindeki ilk kalemden alınır (toplu güncelleme sonrası hepsi aynı olur)
+          deliveryTerms: o.deliveryTerms || "",
+          paymentPlan: o.paymentPlan || [],
+          currency: o.currency || "",
+          teslimTarihi: o.teslimTarihi || "",
+          orderDate: o.orderDate || "",
+        });
+      }
+      map.get(key).items.push(o);
+    }
+    // Status filtresi grup düzeyine uygulanır: "open" seçildiyse en az bir kalemi açık olan grupları göster.
+    let list = Array.from(map.values());
+    if (statusFilter !== "all") {
+      list = list.filter(g => g.items.some(o => (o.status || "open") === statusFilter));
+    }
+    // Sıralama: en yeni tarihli önce (grup içindeki en geç teslim)
+    list.sort((a, b) => {
+      const at = a.items.reduce((mx, o) => (o.teslimTarihi || "") > mx ? o.teslimTarihi : mx, "");
+      const bt = b.items.reduce((mx, o) => (o.teslimTarihi || "") > mx ? o.teslimTarihi : mx, "");
+      return (bt || "").localeCompare(at || "");
+    });
+    return list;
   }, [orders, search, customerFilter, statusFilter]);
 
   const kpi = useMemo(() => {
     const openOrders = orders.filter(o => (o.status || "open") === "open");
     let toplamKalan = 0;
     for (const o of openOrders) toplamKalan += computeOrderRemaining(o, allocatedByOrder);
+    // Sipariş sayısı = unique (customerCode + belgeNo)
+    const orderKeys = new Set();
+    for (const o of orders) if (o?.customerCode && o?.belgeNo) orderKeys.add(`${o.customerCode}__${o.belgeNo}`);
     return {
-      total: orders.length,
-      open: openOrders.length,
+      totalOrders: orderKeys.size,
+      totalItems: orders.length,
+      openItems: openOrders.length,
       toplamKalan,
     };
   }, [orders, allocatedByOrder]);
 
-  const handleStatusChange = async (order, newStatus) => {
+  const toggleExpand = (key) => setExpandedBelge(prev => {
+    const s = new Set(prev);
+    if (s.has(key)) s.delete(key); else s.add(key);
+    return s;
+  });
+
+  const handleGroupStatusChange = async (group, newStatus) => {
+    if (!canEdit) return;
+    if (!confirm(`${group.items.length} kalemin durumu "${STATUS_LABELS[newStatus]?.label || newStatus}" olarak güncellensin mi?`)) return;
+    try {
+      await bulkUpdateOrdersByBelge({
+        customerCode: group.customerCode,
+        belgeNo: group.belgeNo,
+        patch: { status: newStatus },
+      }, { canEdit, userEmail });
+    } catch (e) {
+      alert("Durum güncellenemedi: " + e.message);
+    }
+  };
+
+  const handleItemStatusChange = async (order, newStatus) => {
     if (!canEdit) return;
     try {
       await updateExportOrderStatus(order.id, newStatus, { canEdit, userEmail });
@@ -65,9 +134,9 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     }
   };
 
-  const handleDelete = async (order) => {
+  const handleDeleteItem = async (order) => {
     if (!canEdit) return;
-    if (!confirm(`Silinsin mi?\n\nBelge ${order.belgeNo} · ${order.stokKodu}`)) return;
+    if (!confirm(`Kalem silinsin mi?\n\nBelge ${order.belgeNo} · ${order.stokKodu}`)) return;
     try {
       await deleteExportOrder(order.id, { canEdit, userEmail });
     } catch (e) {
@@ -79,8 +148,8 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     <div>
       {/* KPI bar */}
       <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
-        <Kpi label="Toplam Sipariş" value={kpi.total} />
-        <Kpi label="Açık" value={kpi.open} color="#1e40af" />
+        <Kpi label="Sipariş" value={kpi.totalOrders} color="#1e40af" sub={`${kpi.totalItems} kalem`} />
+        <Kpi label="Açık Kalem" value={kpi.openItems} color="#166534" />
         <Kpi label="Toplam Kalan Miktar" value={kpi.toplamKalan.toLocaleString("tr-TR")} color="#166534" />
       </div>
 
@@ -111,126 +180,157 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
               }}>{o.label}</button>
           ))}
         </div>
-        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{list.length} kayıt</span>
+        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{groups.length} sipariş</span>
       </div>
 
-      {/* Tablo */}
-      {list.length === 0 ? (
+      {groups.length === 0 ? (
         <div style={{ padding: 30, textAlign: "center", color: "var(--color-text-tertiary)", border: "1px dashed var(--color-border-tertiary)", borderRadius: 8, fontSize: 12 }}>
           {orders.length === 0
             ? "Henüz ihracat siparişi yok. + Yeni Sipariş ile başla veya Excel Import kullan."
-            : "Filtreye uyan kayıt yok."}
+            : "Filtreye uyan sipariş yok."}
         </div>
       ) : (
-        <div style={{ background: "#fff", border: "1px solid var(--color-border-secondary)", borderRadius: 6, overflow: "auto" }}>
-          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
-            <thead style={{ background: "var(--color-background-secondary)" }}>
-              <tr>
-                <th style={{ ...th, width: 30 }}></th>
-                <th style={th}>Müşteri</th>
-                <th style={th}>Belge No</th>
-                <th style={th}>Stok Kodu</th>
-                <th style={{ ...th, minWidth: 220 }}>Ürün (TR / İngilizce)</th>
-                <th style={{ ...th, textAlign: "right" }}>Miktar</th>
-                <th style={{ ...th, textAlign: "right" }}>Tahsis</th>
-                <th style={{ ...th, textAlign: "right", background: "#eff6ff" }}>Kalan</th>
-                <th style={{ ...th, textAlign: "right" }}>Birim Fiyat</th>
-                <th style={th}>Termin</th>
-                <th style={{ ...th, textAlign: "center", width: 90 }}>Durum</th>
-                <th style={{ ...th, textAlign: "center", width: 80 }}>Aksiyon</th>
-              </tr>
-            </thead>
-            <tbody>
-              {list.map(o => {
-                const fill = computeOrderFillStatus(o, allocatedByOrder);
-                const tahsis = allocatedByOrder.get(o.id) || 0;
-                const isExpanded = expandedId === o.id;
-                const rowBg = fill.status === "full" ? "#f5f5f4" : fill.status === "empty" ? "#fff" : "#fefce8";
-                const stMeta = STATUS_LABELS[o.status || "open"];
-                return (
-                  <React.Fragment key={o.id}>
-                    <tr style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
-                      <td style={{ ...td, textAlign: "center", cursor: "pointer" }} onClick={() => setExpandedId(isExpanded ? null : o.id)}>
-                        {isExpanded ? "▼" : "▶"}
-                      </td>
-                      <td style={{ ...td, fontSize: 10 }}>{o.customerName || o.customerCode || "—"}</td>
-                      <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{o.belgeNo || "—"}</td>
-                      <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>{o.stokKodu || "—"}</td>
-                      <td style={td}>
-                        <div>{o.stokAdi || "—"}</div>
-                        {o.descriptionEn && <div style={{ fontSize: 9, color: "#78716c", fontStyle: "italic" }}>{o.descriptionEn}</div>}
-                      </td>
-                      <td style={{ ...td, textAlign: "right" }}>{Number(o.orijinalMiktar || 0).toLocaleString("tr-TR")}</td>
-                      <td style={{ ...td, textAlign: "right", color: tahsis > 0 ? "#166534" : "#a8a29e" }}>
-                        {Number(o.sevkedilenBaslangic || 0) > 0
-                          ? `${Number(o.sevkedilenBaslangic).toLocaleString("tr-TR")}+${tahsis}`
-                          : tahsis.toLocaleString("tr-TR")}
-                      </td>
-                      <td style={{ ...td, textAlign: "right", fontWeight: 700, background: "#eff6ff", color: fill.remaining === 0 ? "#166534" : "#1e40af" }}>
-                        {fill.remaining.toLocaleString("tr-TR")}
-                      </td>
-                      <td style={{ ...td, textAlign: "right" }}>
-                        {o.birimFiyat != null ? `${Number(o.birimFiyat).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${o.currency || ""}` : "—"}
-                      </td>
-                      <td style={{ ...td, fontSize: 10 }}>{o.teslimTarihi || "—"}</td>
-                      <td style={{ ...td, textAlign: "center" }}>
-                        <select value={o.status || "open"} onChange={e => handleStatusChange(o, e.target.value)} disabled={!canEdit}
-                          style={{ padding: "2px 6px", fontSize: 9, fontWeight: 600, border: "1px solid " + stMeta.fg, borderRadius: 3, background: stMeta.bg, color: stMeta.fg, cursor: canEdit ? "pointer" : "not-allowed" }}>
-                          <option value="open">Açık</option>
-                          <option value="closed">Kapalı</option>
-                          <option value="cancelled">İptal</option>
-                        </select>
-                      </td>
-                      <td style={{ ...td, textAlign: "center" }}>
-                        <button onClick={() => onEdit(o)} disabled={!canEdit}
-                          style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
-                        <button onClick={() => handleDelete(o)} disabled={!canEdit}
-                          style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
-                      </td>
-                    </tr>
-                    {isExpanded && (
-                      <tr style={{ background: "#fafaf9" }}>
-                        <td colSpan={12} style={{ padding: 10 }}>
-                          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, fontSize: 11 }}>
-                            <div>
-                              <div style={{ fontWeight: 600, marginBottom: 4 }}>Teslim & Ödeme</div>
-                              <div>Teslim şekli: <b>{o.deliveryTerms || "—"}</b></div>
-                              <div style={{ marginTop: 4 }}>Ödeme planı:</div>
-                              {Array.isArray(o.paymentPlan) && o.paymentPlan.length > 0 ? (
-                                <ul style={{ margin: "4px 0 0 20px", padding: 0, fontSize: 10 }}>
-                                  {o.paymentPlan.map((p, i) => <li key={i}>{p.label} — %{p.pct}</li>)}
-                                </ul>
-                              ) : <div style={{ fontSize: 10, color: "#a8a29e" }}>Plan girilmemiş</div>}
-                            </div>
-                            <div>
-                              <div style={{ fontWeight: 600, marginBottom: 4 }}>Tahsis Geçmişi</div>
-                              {tahsis > 0 ? (
-                                <div style={{ fontSize: 10 }}>Toplam {tahsis} adet — {Number(o.sevkedilenBaslangic || 0) > 0 ? `+ Başlangıç sevk: ${o.sevkedilenBaslangic}` : ""}</div>
-                              ) : <div style={{ fontSize: 10, color: "#a8a29e" }}>Henüz konteynere tahsis edilmedi</div>}
-                              <div style={{ fontSize: 10, color: "#78716c", marginTop: 4 }}>
-                                (Konteyner tahsis paneli sonraki PR'da Sevkiyat Detay ekranına eklenecek)
-                              </div>
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {groups.map(g => {
+            const isExp = expandedBelge.has(g.key);
+            const totalOrij = g.items.reduce((s, o) => s + Number(o.orijinalMiktar || 0), 0);
+            const totalKalan = g.items.reduce((s, o) => s + computeOrderRemaining(o, allocatedByOrder), 0);
+            const openCount = g.items.filter(o => (o.status || "open") === "open").length;
+            // Grup statüsü: hepsi aynı ise onu, karışıksa "mixed"
+            const statuses = new Set(g.items.map(o => o.status || "open"));
+            const groupStatus = statuses.size === 1 ? Array.from(statuses)[0] : "mixed";
+            return (
+              <div key={g.key} style={{ background: "#fff", border: "1px solid var(--color-border-secondary)", borderRadius: 6, overflow: "hidden" }}>
+                {/* Grup başlığı */}
+                <div style={{ padding: "10px 12px", display: "grid", gridTemplateColumns: "auto 1fr auto", gap: 12, alignItems: "center", background: isExp ? "#eff6ff" : "#fafaf9", cursor: "pointer" }}
+                  onClick={() => toggleExpand(g.key)}>
+                  <div style={{ fontSize: 14, color: "#78716c" }}>{isExp ? "▼" : "▶"}</div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 13, fontWeight: 600 }}>Belge #{g.belgeNo}</span>
+                      <span style={{ fontSize: 11, color: "#57534e" }}>{g.customerName}</span>
+                      <span style={{ fontSize: 10, color: "#78716c" }}>
+                        · {g.items.length} kalem · {totalKalan.toLocaleString("tr-TR")}/{totalOrij.toLocaleString("tr-TR")} kalan
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 10, color: "#78716c", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
+                      <span title={g.deliveryTerms}>🚚 {g.deliveryTerms ? (g.deliveryTerms.length > 30 ? g.deliveryTerms.slice(0, 30) + "…" : g.deliveryTerms) : <span style={{ color: "#dc2626" }}>Teslim şekli girilmemiş</span>}</span>
+                      <span>💳 {summarizePaymentPlan(g.paymentPlan)}</span>
+                      <span>💱 {g.currency || "—"}</span>
+                      {g.teslimTarihi && <span>📅 {g.teslimTarihi}</span>}
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 6, alignItems: "center" }} onClick={e => e.stopPropagation()}>
+                    {groupStatus === "mixed" ? (
+                      <span title={`${openCount} açık, ${g.items.length - openCount} diğer`}
+                        style={{ padding: "2px 8px", fontSize: 10, background: "#fef3c7", color: "#92400e", borderRadius: 3, fontWeight: 600 }}>
+                        KARIŞIK
+                      </span>
+                    ) : (
+                      <select value={groupStatus} onChange={e => handleGroupStatusChange(g, e.target.value)} disabled={!canEdit}
+                        style={{ padding: "3px 6px", fontSize: 10, fontWeight: 600, border: "1px solid " + STATUS_LABELS[groupStatus].fg, borderRadius: 3, background: STATUS_LABELS[groupStatus].bg, color: STATUS_LABELS[groupStatus].fg, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                        <option value="open">Açık (toplu)</option>
+                        <option value="closed">Kapalı (toplu)</option>
+                        <option value="cancelled">İptal (toplu)</option>
+                      </select>
                     )}
-                  </React.Fragment>
-                );
-              })}
-            </tbody>
-          </table>
+                    <button onClick={() => setEditingGroup(g)} disabled={!canEdit}
+                      title="Sipariş bazlı düzenle (teslim şekli / ödeme planı / currency — tüm kalemlere yansır)"
+                      style={{ padding: "3px 10px", fontSize: 11, background: "#1e40af", color: "#fff", border: "none", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500 }}>
+                      ✏ Siparişi Düzenle
+                    </button>
+                  </div>
+                </div>
+
+                {/* Kalemler */}
+                {isExp && (
+                  <div style={{ borderTop: "1px solid #e7e5e4" }}>
+                    <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+                      <thead style={{ background: "var(--color-background-secondary)" }}>
+                        <tr>
+                          <th style={th}>Stok Kodu</th>
+                          <th style={{ ...th, minWidth: 200 }}>Ürün (TR / EN)</th>
+                          <th style={{ ...th, textAlign: "right" }}>Miktar</th>
+                          <th style={{ ...th, textAlign: "right" }}>Sevk (VIO)</th>
+                          <th style={{ ...th, textAlign: "right" }}>Tahsis</th>
+                          <th style={{ ...th, textAlign: "right", background: "#eff6ff" }}>Kalan</th>
+                          <th style={{ ...th, textAlign: "right" }}>Birim Fiyat</th>
+                          <th style={th}>Termin</th>
+                          <th style={{ ...th, textAlign: "center", width: 90 }}>Durum</th>
+                          <th style={{ ...th, textAlign: "center", width: 80 }}>Aksiyon</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {g.items.map(o => {
+                          const tahsis = allocatedByOrder.get(o.id) || 0;
+                          const fill = computeOrderFillStatus(o, allocatedByOrder);
+                          const stMeta = STATUS_LABELS[o.status || "open"];
+                          return (
+                            <tr key={o.id} style={{ borderTop: "1px solid #f5f5f4" }}>
+                              <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>{o.stokKodu || "—"}</td>
+                              <td style={td}>
+                                <div>{o.stokAdi || "—"}</div>
+                                {o.descriptionEn && <div style={{ fontSize: 9, color: "#78716c", fontStyle: "italic" }}>{o.descriptionEn}</div>}
+                              </td>
+                              <td style={{ ...td, textAlign: "right" }}>{Number(o.orijinalMiktar || 0).toLocaleString("tr-TR")}</td>
+                              <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{Number(o.sevkedilenBaslangic || 0).toLocaleString("tr-TR")}</td>
+                              <td style={{ ...td, textAlign: "right", color: tahsis > 0 ? "#166534" : "#a8a29e" }}>{tahsis.toLocaleString("tr-TR")}</td>
+                              <td style={{ ...td, textAlign: "right", fontWeight: 700, background: "#eff6ff", color: fill.remaining === 0 ? "#166534" : "#1e40af" }}>
+                                {fill.remaining.toLocaleString("tr-TR")}
+                              </td>
+                              <td style={{ ...td, textAlign: "right" }}>
+                                {o.birimFiyat != null ? `${Number(o.birimFiyat).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${o.currency || ""}` : "—"}
+                              </td>
+                              <td style={{ ...td, fontSize: 10 }}>{o.teslimTarihi || "—"}</td>
+                              <td style={{ ...td, textAlign: "center" }}>
+                                <select value={o.status || "open"} onChange={e => handleItemStatusChange(o, e.target.value)} disabled={!canEdit}
+                                  style={{ padding: "2px 6px", fontSize: 9, fontWeight: 600, border: "1px solid " + stMeta.fg, borderRadius: 3, background: stMeta.bg, color: stMeta.fg, cursor: canEdit ? "pointer" : "not-allowed" }}>
+                                  <option value="open">Açık</option>
+                                  <option value="closed">Kapalı</option>
+                                  <option value="cancelled">İptal</option>
+                                </select>
+                              </td>
+                              <td style={{ ...td, textAlign: "center" }}>
+                                <button onClick={() => onEdit(o)} disabled={!canEdit}
+                                  title="Kalem içi bilgileri düzenle (miktar, fiyat, termin) — teslim şekli / ödeme planı sipariş bazlıdır"
+                                  style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f5f4", border: "1px solid #d6d3d1", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
+                                <button onClick={() => handleDeleteItem(o)} disabled={!canEdit}
+                                  style={{ padding: "2px 6px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🗑</button>
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
+      )}
+
+      {/* Header düzenleme modal */}
+      {editingGroup && (
+        <OrderHeaderEditModal
+          group={editingGroup}
+          settings={settings}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setEditingGroup(null)}
+          onSaved={() => setEditingGroup(null)}
+        />
       )}
     </div>
   );
 }
 
-function Kpi({ label, value, color }) {
+function Kpi({ label, value, color, sub }) {
   return (
     <div style={{ padding: "8px 12px", background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6, minWidth: 130 }}>
       <div style={{ fontSize: 10, color: "#78716c", fontWeight: 600, textTransform: "uppercase" }}>{label}</div>
       <div style={{ fontSize: 18, fontWeight: 700, color: color || "#44403c" }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: "#78716c" }}>{sub}</div>}
     </div>
   );
 }

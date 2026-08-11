@@ -219,6 +219,88 @@ export async function saveCustomerDefaults(customerCode, defaults, { canEdit, us
   }, { merge: true });
 }
 
+// Teslim şekli havuzu — her yeni giriş biriktirilir (unique)
+export async function addDeliveryTerm(term, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit || !term?.trim()) return;
+  const ref = doc(db, APP_COL, EXPORT_SETTINGS_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data() || {}) : {};
+  const list = Array.isArray(current.deliveryTermsList) ? current.deliveryTermsList : [];
+  const trimmed = term.trim();
+  if (list.includes(trimmed)) return;
+  await setDoc(ref, {
+    deliveryTermsList: [...list, trimmed],
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
+// Ödeme planı şablonu (kullanıcı isim verir, planı kaydeder — sonra dropdown'da seçer)
+// name: "Standart 30/70" gibi
+// plan: [{ label, pct }, ...]
+export async function savePaymentPlanTemplate(name, plan, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit || !name?.trim() || !Array.isArray(plan) || plan.length === 0) return;
+  const ref = doc(db, APP_COL, EXPORT_SETTINGS_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data() || {}) : {};
+  const templates = Array.isArray(current.paymentPlanTemplates) ? current.paymentPlanTemplates : [];
+  const trimmed = name.trim();
+  // Aynı isimli şablon varsa üstüne yaz
+  const filtered = templates.filter(t => t?.name !== trimmed);
+  await setDoc(ref, {
+    paymentPlanTemplates: [...filtered, { name: trimmed, plan }],
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
+export async function deletePaymentPlanTemplate(name, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit || !name) return;
+  const ref = doc(db, APP_COL, EXPORT_SETTINGS_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data() || {}) : {};
+  const templates = Array.isArray(current.paymentPlanTemplates) ? current.paymentPlanTemplates : [];
+  await setDoc(ref, {
+    paymentPlanTemplates: templates.filter(t => t?.name !== name),
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
+// Sipariş bazlı toplu güncelleme — aynı belgeNo + customerCode'daki tüm kalemlerin
+// header alanlarına (deliveryTerms, paymentPlan, currency, opsiyonel teslimTarihi/status)
+// aynı patch'i uygular.
+// Dönüş: { updated: N }
+export async function bulkUpdateOrdersByBelge({ customerCode, belgeNo, patch }, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!customerCode || !belgeNo) throw new Error("customerCode ve belgeNo zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_ORDERS_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.orders || {}) : {};
+  const now = new Date().toISOString();
+  const next = { ...current };
+  let count = 0;
+  for (const [id, o] of Object.entries(current)) {
+    if (!o) continue;
+    if (String(o.belgeNo) !== String(belgeNo)) continue;
+    if (o.customerCode !== customerCode) continue;
+    next[id] = {
+      ...o,
+      ...patch,
+      updatedAt: now,
+      updatedBy: userEmail || "",
+    };
+    count++;
+  }
+  if (count === 0) return { updated: 0 };
+  await setDoc(ref, {
+    orders: next,
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+  return { updated: count };
+}
+
 // VIO code → products.id eşleşme haritası (öğrenilir, sonraki import'ta atla)
 export async function saveCodeMapEntry(vioCode, pid, { canEdit, userEmail = "" } = {}) {
   if (!canEdit) return;

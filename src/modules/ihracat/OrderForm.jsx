@@ -3,7 +3,7 @@
 // Ödeme planı satırları serbestçe ekle/çıkar, label + pct.
 
 import React, { useState, useEffect, useMemo } from "react";
-import { saveExportOrder, addPaymentLabel, saveCustomerDefaults } from "./firestore";
+import { saveExportOrder, addPaymentLabel, saveCustomerDefaults, addDeliveryTerm } from "./firestore";
 import { validatePaymentPlan } from "./allocationCalc";
 
 const CURRENCIES = ["EUR", "USD", "TL", "GBP"];
@@ -132,7 +132,8 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         source: editingOrder?.source || "manual",
       };
       await saveExportOrder(payload, { canEdit, userEmail });
-      // Ödeme etiketleri havuzuna ekle
+      // Teslim şekli + ödeme etiketleri havuzuna ekle
+      if (payload.deliveryTerms) await addDeliveryTerm(payload.deliveryTerms, { canEdit, userEmail });
       for (const p of payload.paymentPlan) {
         if (p.label?.trim()) await addPaymentLabel(p.label, { canEdit, userEmail });
       }
@@ -253,17 +254,39 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       {/* Teslim & Ödeme */}
       <Section title="Teslim & Ödeme">
         <Field label="Teslim Şekli">
-          <input value={deliveryTerms} onChange={e => setDeliveryTerms(e.target.value)}
+          <input list="ih-delivery-terms-form" value={deliveryTerms} onChange={e => setDeliveryTerms(e.target.value)}
             placeholder="Örn. DDP / TREZZO SULL / ADDA (MI)" style={inp} />
+          <datalist id="ih-delivery-terms-form">
+            {(settings?.deliveryTermsList || []).map(t => <option key={t} value={t} />)}
+          </datalist>
+          {(settings?.deliveryTermsList || []).length > 0 && (
+            <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>
+              💡 Kayıtlı teslim şekillerinden seçebilirsin ({(settings?.deliveryTermsList || []).length})
+            </div>
+          )}
         </Field>
         <div style={{ marginTop: 6 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 4 }}>
-            Ödeme Planı
-            <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 500,
-              color: paymentValidation.valid ? "#166534" : "#92400e" }}>
-              Toplam: %{paymentValidation.total}
-              {paymentValidation.warning && <> · ⚠ {paymentValidation.warning}</>}
-            </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 11, fontWeight: 600 }}>
+              Ödeme Planı
+              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 500,
+                color: paymentValidation.valid ? "#166534" : "#92400e" }}>
+                Toplam: %{paymentValidation.total}
+                {paymentValidation.warning && <> · ⚠ {paymentValidation.warning}</>}
+              </span>
+            </div>
+            {Array.isArray(settings?.paymentPlanTemplates) && settings.paymentPlanTemplates.length > 0 && (
+              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
+                <label style={{ fontSize: 10, color: "#78716c" }}>Şablondan yükle:</label>
+                <select value="" onChange={e => {
+                  const tpl = (settings?.paymentPlanTemplates || []).find(t => t.name === e.target.value);
+                  if (tpl && Array.isArray(tpl.plan)) setPaymentPlan(tpl.plan.map(p => ({ ...p })));
+                }} style={{ padding: "3px 8px", fontSize: 11, border: "1px solid #d6d3d1", borderRadius: 3 }}>
+                  <option value="">— seç —</option>
+                  {settings.paymentPlanTemplates.map(t => <option key={t.name} value={t.name}>{t.name}</option>)}
+                </select>
+              </div>
+            )}
           </div>
           {paymentPlan.map((p, i) => (
             <div key={i} style={{ display: "grid", gridTemplateColumns: "3fr 80px 30px", gap: 6, marginBottom: 4, alignItems: "center" }}>
