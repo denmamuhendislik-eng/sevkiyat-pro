@@ -78,16 +78,23 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
     });
   }, [invoices, fromDate, toDate, period]);
 
-  // Siparişleri teslim tarihiyle filtrele — bağlı child kayıtları hariç
-  // Teslim tarihi olmayan siparişler dönem seçiminden bağımsız hep dahil edilir
-  // (aksi halde belirsiz kayıtlar tamamen gözden kaybolur).
+  // Bir siparişin "alım tarihi": öncelik orderDate (VIO import'tan), yoksa createdAt (sisteme giriş)
+  const getOrderFilterDate = (o) => {
+    if (o?.orderDate) return String(o.orderDate).slice(0, 10);
+    if (o?.createdAt) return String(o.createdAt).slice(0, 10);
+    return null;
+  };
+
+  // Siparişleri "alım tarihi"ne göre filtrele — bağlı child kayıtları hariç
+  // Tarihsiz sipariş yoksa dönem seçiminden bağımsız hep dahil edilir.
   const filteredOrders = useMemo(() => {
     return orders.filter(o => {
       if (o?.isLinkedChild) return false; // sipariş özetine cascade child'lar sayılmaz
       if (period === "all") return true;
-      if (!o.teslimTarihi) return true; // tarihsiz her dönemde görünür
-      if (fromDate && o.teslimTarihi < fromDate) return false;
-      if (toDate && o.teslimTarihi > toDate) return false;
+      const d = getOrderFilterDate(o);
+      if (!d) return true; // hiç tarih yoksa her dönemde görünür
+      if (fromDate && d < fromDate) return false;
+      if (toDate && d > toDate) return false;
       return true;
     });
   }, [orders, fromDate, toDate, period]);
@@ -98,7 +105,7 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
     let linkedChildCount = 0;
     for (const o of orders) {
       if (o?.isLinkedChild) linkedChildCount++;
-      else if (!o?.teslimTarihi) noDateCount++;
+      else if (!getOrderFilterDate(o)) noDateCount++;
     }
     return { noDateCount, linkedChildCount };
   }, [orders]);
@@ -312,8 +319,8 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
           <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: "#44403c" }}>📦 Sipariş Özeti</div>
             <div style={{ fontSize: 9, color: "#78716c" }}>
-              Dönem filtresi <b>teslim tarihi</b> alanına göre çalışır.
-              {orderStats.noDateCount > 0 && <> {orderStats.noDateCount} sipariş teslim tarihsiz — her dönemde görünür.</>}
+              Dönem filtresi <b>sipariş tarihi</b> (orderDate / sisteme giriş) alanına göre çalışır.
+              {orderStats.noDateCount > 0 && <> {orderStats.noDateCount} sipariş tarihsiz — her dönemde görünür.</>}
               {orderStats.linkedChildCount > 0 && <> {orderStats.linkedChildCount} bağlı (cascade) ürün özete dahil değil.</>}
             </div>
           </div>
