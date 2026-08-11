@@ -9,6 +9,7 @@ import {
 import { generateInvoicePdf } from "./invoicePdf";
 import InvoiceCreateModal from "./InvoiceCreateModal";
 import InvoiceEditModal from "./InvoiceEditModal";
+import PaymentRequestModal from "./PaymentRequestModal";
 
 const STATUS_META = {
   issued: { label: "Kesildi", bg: "#dbeafe", fg: "#1e40af" },
@@ -25,6 +26,7 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
   const [detailInvoice, setDetailInvoice] = useState(null);
   const [editInvoice, setEditInvoice] = useState(null); // ✏ düzenleme modalı
   const [showBlank, setShowBlank] = useState(false); // "Yeni Boş Fatura" modal
+  const [showPaymentRequest, setShowPaymentRequest] = useState(false);
 
   useEffect(() => {
     const u1 = subscribeExportInvoices(d => { setData(d || { invoices: {} }); setLoaded(true); });
@@ -112,8 +114,12 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
           <option value="cancelled">İptal</option>
         </select>
         <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>{list.length} fatura</span>
+        <button onClick={() => setShowPaymentRequest(true)}
+          style={{ marginLeft: "auto", padding: "6px 12px", fontSize: 12, background: "#1e40af", color: "#fff", border: "none", borderRadius: 4, cursor: "pointer", fontWeight: 500 }}>
+          📋 Ödeme Talep Tablosu
+        </button>
         <button onClick={() => setShowBlank(true)} disabled={!canEdit}
-          style={{ marginLeft: "auto", padding: "6px 12px", fontSize: 12, background: "#166534", color: "#fff", border: "none", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500 }}>
+          style={{ padding: "6px 12px", fontSize: 12, background: "#166534", color: "#fff", border: "none", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500 }}>
           + Yeni Boş Fatura
         </button>
       </div>
@@ -254,6 +260,16 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
           userEmail={userEmail}
           onClose={() => setEditInvoice(null)}
           onSaved={() => { /* liste subscription ile kendini günceller — modalı açık bırak */ }}
+        />
+      )}
+
+      {/* Ödeme Talep Tablosu */}
+      {showPaymentRequest && (
+        <PaymentRequestModal
+          invoices={invoices}
+          customerOptions={customerOptions}
+          initialCustomer={customerFilter}
+          onClose={() => setShowPaymentRequest(false)}
         />
       )}
 
