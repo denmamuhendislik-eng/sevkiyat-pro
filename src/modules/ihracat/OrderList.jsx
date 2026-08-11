@@ -75,6 +75,8 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
         });
       }
       map.get(key).items.push(o);
+      // Grup içindeki ilk dolu orderDate'i tut (VIO'dan gelen genelde aynıdır)
+      if (!map.get(key).orderDate && o.orderDate) map.get(key).orderDate = o.orderDate;
     }
     // Status filtresi grup düzeyine uygulanır: "open" seçildiyse en az bir kalemi açık olan grupları göster.
     let list = Array.from(map.values());
@@ -282,7 +284,8 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                       <span title={g.deliveryTerms}>🚚 {g.deliveryTerms ? (g.deliveryTerms.length > 30 ? g.deliveryTerms.slice(0, 30) + "…" : g.deliveryTerms) : <span style={{ color: "#dc2626" }}>Teslim şekli girilmemiş</span>}</span>
                       <span>💳 {summarizePaymentPlan(g.paymentPlan)}</span>
                       <span>💱 {g.currency || "—"}</span>
-                      {g.teslimTarihi && <span>📅 {g.teslimTarihi}</span>}
+                      {g.orderDate && <span title="Sipariş tarihi">📥 {g.orderDate}</span>}
+                      {g.teslimTarihi && <span title="Termin">📅 {g.teslimTarihi}</span>}
                     </div>
                   </div>
                   <div style={{ display: "flex", gap: 6, alignItems: "center" }} onClick={e => e.stopPropagation()}>

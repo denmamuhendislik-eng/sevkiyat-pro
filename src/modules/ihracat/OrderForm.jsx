@@ -28,6 +28,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
   const [customerCity, setCustomerCity] = useState("");
   const [customerCountry, setCustomerCountry] = useState("");
   const [belgeNo, setBelgeNo] = useState("");
+  const [orderDate, setOrderDate] = useState(""); // sipariş alım tarihi (opsiyonel)
   const [teslimTarihi, setTeslimTarihi] = useState("");
   const [currency, setCurrency] = useState("EUR");
   const [deliveryTerms, setDeliveryTerms] = useState("");
@@ -50,6 +51,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       setCustomerCity(editingOrder.customerCity || "");
       setCustomerCountry(editingOrder.customerCountry || "");
       setBelgeNo(editingOrder.belgeNo || "");
+      setOrderDate(editingOrder.orderDate || "");
       setTeslimTarihi(editingOrder.teslimTarihi || "");
       setCurrency(editingOrder.currency || "EUR");
       setDeliveryTerms(editingOrder.deliveryTerms || "");
@@ -69,7 +71,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     } else {
       setCustomerCode(""); setCustomerName("");
       setCustomerAddress(""); setCustomerCity(""); setCustomerCountry("");
-      setBelgeNo(""); setTeslimTarihi("");
+      setBelgeNo(""); setOrderDate(new Date().toISOString().slice(0, 10)); setTeslimTarihi("");
       setCurrency("EUR"); setDeliveryTerms("");
       setPaymentPlan([{ label: "", pct: 100 }]); setStatus("open");
       setLines([newLine()]);
@@ -254,6 +256,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         customerCountry: customerCountry.trim(),
         belgeNo: String(belgeNo).trim(),
         currency,
+        orderDate: orderDate || "",
         teslimTarihi: teslimTarihi || "",
         deliveryTerms: deliveryTerms.trim(),
         paymentPlan: paymentPlan.filter(p => (p.label || "").trim() || (Number(p.pct) || 0) > 0),
@@ -580,9 +583,13 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
 
       {/* Sipariş bilgisi (ortak) */}
       <Section title="Sipariş Bilgisi (tüm kalemler için ortak)">
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr 1fr", gap: 8 }}>
           <Field label="Belge No *">
             <input value={belgeNo} onChange={e => setBelgeNo(e.target.value)} placeholder="Örn. 378" style={{ ...inp, fontFamily: "ui-monospace, monospace" }} />
+          </Field>
+          <Field label="Sipariş Tarihi">
+            <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)}
+              title="Siparişin alındığı tarih (özet filtresi bu tarihe göre çalışır)" style={inp} />
           </Field>
           <Field label="Termin (opsiyonel)">
             <input type="date" value={teslimTarihi} onChange={e => setTeslimTarihi(e.target.value)} style={inp} />
