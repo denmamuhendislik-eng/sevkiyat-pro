@@ -11,14 +11,17 @@
 //   - Bakiye türetilir, saklanmaz: kalan = orijinalMiktar - sevkedilenBaslangic - tahsisEdilen
 
 import {
-  doc, onSnapshot, setDoc, updateDoc, deleteField, getDoc,
+  doc, onSnapshot, setDoc, updateDoc, deleteField, getDoc, runTransaction,
 } from "firebase/firestore";
-import { db } from "../../firebase";
+import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import { db, storage } from "../../firebase";
 
 const APP_COL = "appData";
 const EXPORT_ORDERS_DOC = "exportSalesOrders";
 const ALLOCATIONS_DOC = "containerAllocations";
 const EXPORT_SETTINGS_DOC = "exportSettings";
+const INVOICE_SETTINGS_DOC = "invoiceSettings";
+const EXPORT_INVOICES_DOC = "exportInvoices";
 
 // ============================================================
 // exportSalesOrders — { orders: { [3tupleId]: {...} }, updatedAt }
@@ -309,6 +312,174 @@ export async function saveCodeMapEntry(vioCode, pid, { canEdit, userEmail = "" }
   await setDoc(ref, {
     codeMap: { [vioCode]: pid },
     updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
+// ============================================================
+// Fatura Ayarları — appData/invoiceSettings
+// ============================================================
+// Yapı:
+//   {
+//     counters: { "2026": 77, "2027": 0, ... },  // yıl bazlı, atomik counter
+//     bankInfo: { branchName, iban, swift, currency },
+//     companyInfo: { name, address, phone, taxOffice, website, email },
+//     stampImage: { url, path, uploadedAt },
+//     logoImage: { url, path, uploadedAt },  // opsiyonel — mevcut PDF antet imajı için
+//   }
+
+export function subscribeInvoiceSettings(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("invoiceSettings listener:", err); callback({}); }
+  );
+}
+
+export async function saveInvoiceSettings(patch, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const ref = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  await setDoc(ref, {
+    ...patch,
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
+// Sayacı elle ayarla (kullanıcı bir kez başlangıç değeri gireceği için)
+// counter[year] = son basılan numara; sıradaki = counter+1
+export async function setInvoiceCounter(year, value, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const y = String(year);
+  const n = Number(value) || 0;
+  const ref = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  await setDoc(ref, {
+    counters: { [y]: n },
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
+// Atomik sonraki fatura numarası — Firestore transaction
+// Format: CI + YYYY + NN (2 basamak; 100+ için otomatik genişler)
+// Yıl her Ocak sıfırlanır (counters[yeni_yıl] yoksa 0'dan başlar).
+export async function getNextInvoiceNumber({ canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const year = String(new Date().getFullYear());
+  const ref = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  const result = await runTransaction(db, async (tx) => {
+    const snap = await tx.get(ref);
+    const data = snap.exists() ? (snap.data() || {}) : {};
+    const counters = data.counters || {};
+    const current = Number(counters[year]) || 0;
+    const next = current + 1;
+    tx.set(ref, {
+      counters: { ...counters, [year]: next },
+      updatedAt: new Date().toISOString(),
+      updatedBy: userEmail || "",
+    }, { merge: true });
+    return { year, next };
+  });
+  const nn = String(result.next).padStart(2, "0");
+  return `CI${result.year}${nn}`;
+}
+
+// Kaşe imajı yükle. Dosya: PNG/JPG. Storage yolu: ihracat/stamp/stamp_{ts}.{ext}
+export async function uploadStampImage(file, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!file) throw new Error("Dosya zorunlu");
+  const ext = String(file.name || "png").split(".").pop().toLowerCase();
+  const path = `ihracat/stamp/stamp_${Date.now()}.${ext}`;
+  const r = storageRef(storage, path);
+  await uploadBytes(r, file);
+  const url = await getDownloadURL(r);
+  await saveInvoiceSettings({
+    stampImage: { url, path, uploadedAt: new Date().toISOString() },
+  }, { canEdit, userEmail });
+  return { url, path };
+}
+
+export async function deleteStampImage({ canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const ref = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  const snap = await getDoc(ref);
+  const data = snap.exists() ? (snap.data() || {}) : {};
+  const path = data?.stampImage?.path;
+  if (path) {
+    try { await deleteObject(storageRef(storage, path)); }
+    catch (e) { if (e?.code !== "storage/object-not-found") console.warn("stamp silinemedi:", e.message); }
+  }
+  await updateDoc(ref, {
+    stampImage: deleteField(),
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  });
+}
+
+// ============================================================
+// Fatura Kayıtları — appData/exportInvoices
+// ============================================================
+// Yapı: { invoices: { [invoiceNo]: { ... } } }
+
+export function subscribeExportInvoices(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, EXPORT_INVOICES_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || { invoices: {} }) : { invoices: {} }),
+    (err) => { console.error("exportInvoices listener:", err); callback({ invoices: {} }); }
+  );
+}
+
+// Fatura kaydet (yeni veya güncelle — C7 kararı: düzenlenebilir).
+// invoice.invoiceNo zorunlu (getNextInvoiceNumber ile alınmış olmalı).
+// status: "issued" | "cancelled"
+export async function saveExportInvoice(invoice, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!invoice?.invoiceNo) throw new Error("invoiceNo zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_INVOICES_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.invoices || {}) : {};
+  const existing = current[invoice.invoiceNo] || {};
+  const now = new Date().toISOString();
+  const next = {
+    ...existing,
+    ...invoice,
+    updatedAt: now,
+    updatedBy: userEmail || "",
+    createdAt: existing.createdAt || invoice.createdAt || now,
+    createdBy: existing.createdBy || invoice.createdBy || userEmail || "",
+    status: existing.status === "cancelled" ? "cancelled" : (invoice.status || existing.status || "issued"),
+  };
+  await setDoc(ref, {
+    invoices: { ...current, [invoice.invoiceNo]: next },
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+  return next;
+}
+
+// İptal (soft) — numara VOID, tekrar kullanılmaz. Kayıt silinmez, status: cancelled.
+export async function cancelExportInvoice(invoiceNo, reason, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!invoiceNo) throw new Error("invoiceNo zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_INVOICES_DOC);
+  const now = new Date().toISOString();
+  await setDoc(ref, {
+    invoices: {
+      [invoiceNo]: {
+        status: "cancelled",
+        cancelledAt: now,
+        cancelledBy: userEmail || "",
+        cancelReason: String(reason || "").trim(),
+        updatedAt: now,
+        updatedBy: userEmail || "",
+      },
+    },
+    updatedAt: now,
     updatedBy: userEmail || "",
   }, { merge: true });
 }
