@@ -83,10 +83,12 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     if (statusFilter !== "all") {
       list = list.filter(g => g.items.some(o => (o.status || "open") === statusFilter));
     }
-    // Sıralama: en yeni tarihli önce (grup içindeki en geç teslim)
+    // Sıralama: en yeni sipariş tarihli önce (grup içindeki en geç orderDate)
+    // orderDate yoksa createdAt'e fallback → hiçbir tarih yoksa en sona
     list.sort((a, b) => {
-      const at = a.items.reduce((mx, o) => (o.teslimTarihi || "") > mx ? o.teslimTarihi : mx, "");
-      const bt = b.items.reduce((mx, o) => (o.teslimTarihi || "") > mx ? o.teslimTarihi : mx, "");
+      const pick = (o) => o.orderDate || (o.createdAt ? String(o.createdAt).slice(0, 10) : "") || "";
+      const at = a.items.reduce((mx, o) => { const d = pick(o); return d > mx ? d : mx; }, "");
+      const bt = b.items.reduce((mx, o) => { const d = pick(o); return d > mx ? d : mx; }, "");
       return (bt || "").localeCompare(at || "");
     });
     return list;
