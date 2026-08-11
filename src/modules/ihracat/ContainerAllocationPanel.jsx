@@ -47,6 +47,7 @@ export default function ContainerAllocationPanel({
       .filter(inv => inv.containerId === containerId && Number(inv.year) === Number(year))
       .sort((a, b) => (a.invoiceNo || "").localeCompare(b.invoiceNo || ""));
   }, [invoicesData, containerId, year]);
+  const activeInvoiceCount = containerInvoices.filter(i => (i.status || "issued") !== "cancelled").length;
 
   // Konteynerdeki hangi item'lar ihracat siparişinde var? Diğerlerini gösterme.
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
@@ -143,9 +144,16 @@ export default function ContainerAllocationPanel({
         </div>
         {(completeCount > 0 || partialCount > 0) && (
           <button onClick={(e) => { e.stopPropagation(); setShowInvoiceModal(true); }} disabled={!canEdit}
-            title="Bu konteynerdeki tahsis edilmiş kalemlerden fatura(lar) oluştur"
-            style={{ padding: "3px 10px", fontSize: 10, background: "#166534", color: "#fff", border: "none", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500 }}>
+            title={activeInvoiceCount > 0
+              ? `Bu konteynerde ${activeInvoiceCount} aktif fatura var — modal içinde çift faturalama uyarısı çıkacak`
+              : "Bu konteynerdeki tahsis edilmiş kalemlerden fatura(lar) oluştur"}
+            style={{ padding: "3px 10px", fontSize: 10, background: "#166534", color: "#fff", border: "none", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 500, display: "inline-flex", alignItems: "center", gap: 6 }}>
             🧾 Fatura Oluştur
+            {activeInvoiceCount > 0 && (
+              <span style={{ padding: "0 5px", fontSize: 9, fontWeight: 700, background: "#f59e0b", color: "#fff", borderRadius: 2 }}>
+                {activeInvoiceCount} kesildi
+              </span>
+            )}
           </button>
         )}
       </div>

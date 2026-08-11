@@ -12,7 +12,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import {
   getNextInvoiceNumber, saveExportInvoice, subscribeInvoiceSettings,
-  subscribeExportSettings, saveCustomerDefaults,
+  subscribeExportSettings, saveCustomerDefaults, subscribeExportInvoices,
 } from "./firestore";
 import { generateInvoicePdf } from "./invoicePdf";
 import { computeAllocatedByOrder } from "./allocationCalc";
@@ -65,12 +65,29 @@ export default function InvoiceCreateModal({
 }) {
   const [settings, setSettings] = useState({});
   const [exportSettings, setExportSettings] = useState({});
+  const [existingInvoicesData, setExistingInvoicesData] = useState({ invoices: {} });
   useEffect(() => {
     const u1 = subscribeInvoiceSettings(d => setSettings(d || {}));
     const u2 = subscribeExportSettings(d => setExportSettings(d || {}));
-    return () => { u1 && u1(); u2 && u2(); };
+    const u3 = subscribeExportInvoices(d => setExistingInvoicesData(d || { invoices: {} }));
+    return () => { u1 && u1(); u2 && u2(); u3 && u3(); };
   }, []);
   const customerDefaults = useMemo(() => exportSettings?.customerDefaults || {}, [exportSettings]);
+
+  // orderId → aktif fatura no listesi (VOID hariç). Aynı sipariş için birden fazla
+  // fatura olabilir teoride, bu yüzden array. Kalem satırında ve grup başlığında
+  // uyarı göstermek için kullanılır.
+  const activeInvoicesByOrderId = useMemo(() => {
+    const map = new Map();
+    for (const inv of Object.values(existingInvoicesData?.invoices || {})) {
+      if ((inv.status || "issued") === "cancelled") continue;
+      for (const oid of (inv.linkedOrderIds || [])) {
+        if (!map.has(oid)) map.set(oid, []);
+        map.get(oid).push(inv.invoiceNo);
+      }
+    }
+    return map;
+  }, [existingInvoicesData]);
 
   const allocatedByOrder = useMemo(
     () => computeAllocatedByOrder(allocationsData?.allocations || {}),
@@ -360,6 +377,25 @@ export default function InvoiceCreateModal({
     if (!canEdit) return;
     const bank = bankAccounts.find(a => a.id === selectedBankId);
     if (!bank) { setError("Banka hesabı seçilmedi"); return; }
+    // Çift faturalama uyarısı — kullanıcı onayı gerekli
+    const dupGroups = groups
+      .map((g, gi) => ({ gi, dups: g.orderIds.filter(oid => activeInvoicesByOrderId.has(oid)) }))
+      .filter(x => x.dups.length > 0);
+    if (dupGroups.length > 0) {
+      const detay = dupGroups.map(x => {
+        const items = x.dups.map(oid => {
+          const belge = sourceOrderLines[oid]?.order?.belgeNo || oid;
+          const invNos = activeInvoicesByOrderId.get(oid) || [];
+          return `  Belge #${belge} → ${invNos.join(", ")}`;
+        }).join("\n");
+        return `Fatura #${x.gi + 1}:\n${items}`;
+      }).join("\n\n");
+      const ok = confirm(
+        `⚠ DİKKAT: Bu grup(lar)da zaten fatura kesilmiş sipariş(ler) var:\n\n${detay}\n\n` +
+        `Yine de yeni fatura kesersen sipariş çift faturalanmış olur.\n\nDevam etmek istiyor musun?`
+      );
+      if (!ok) return;
+    }
     setProcessing(true);
     setError("");
     const created = [];
@@ -483,14 +519,25 @@ export default function InvoiceCreateModal({
         ) : (
           groups.map((g, gi) => {
             const totals = groupTotals[gi];
+            const alreadyInvoicedOrderIds = g.orderIds.filter(oid => activeInvoicesByOrderId.has(oid));
+            const duplicateWarnList = alreadyInvoicedOrderIds.map(oid => {
+              const belge = sourceOrderLines[oid]?.order?.belgeNo || oid;
+              const invNos = activeInvoicesByOrderId.get(oid) || [];
+              return `Belge #${belge} → ${invNos.join(", ")}`;
+            });
             return (
-              <div key={g.key} style={{ marginBottom: 12, padding: 10, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6 }}>
+              <div key={g.key} style={{ marginBottom: 12, padding: 10, background: "#fff", border: alreadyInvoicedOrderIds.length > 0 ? "1px solid #f59e0b" : "1px solid #e7e5e4", borderRadius: 6 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div>
                     <span style={{ fontSize: 12, fontWeight: 600 }}>Fatura #{gi + 1}</span>
                     <span style={{ marginLeft: 8, fontSize: 10, color: "#78716c" }}>
                       · {g.orderIds.length} sipariş · {totals.lineCount} kalem · Toplam <b>{totals.total.toLocaleString("tr-TR", { minimumFractionDigits: 2 })} {g.currency}</b>
                     </span>
+                    {alreadyInvoicedOrderIds.length > 0 && (
+                      <span style={{ marginLeft: 8, padding: "1px 6px", fontSize: 9, fontWeight: 700, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 3 }}>
+                        ⚠ {alreadyInvoicedOrderIds.length}/{g.orderIds.length} sipariş zaten faturalı
+                      </span>
+                    )}
                   </div>
                   <div style={{ display: "flex", gap: 3 }}>
                     <button onClick={() => moveGroup(g.key, "up")} disabled={gi === 0}
@@ -501,6 +548,14 @@ export default function InvoiceCreateModal({
                       style={{ padding: "2px 6px", fontSize: 10, background: gi === groups.length - 1 ? "#f5f5f4" : "#eff6ff", color: gi === groups.length - 1 ? "#a8a29e" : "#1e40af", border: `1px solid ${gi === groups.length - 1 ? "#d6d3d1" : "#bfdbfe"}`, borderRadius: 3, cursor: gi === groups.length - 1 ? "not-allowed" : "pointer" }}>↓</button>
                   </div>
                 </div>
+
+                {alreadyInvoicedOrderIds.length > 0 && (
+                  <div style={{ padding: 6, marginBottom: 8, background: "#fef3c7", border: "1px solid #f59e0b", borderRadius: 3, fontSize: 10, color: "#92400e" }}>
+                    <div style={{ fontWeight: 700, marginBottom: 3 }}>⚠ Dikkat — bu grupta zaten fatura kesilmiş sipariş(ler) var:</div>
+                    {duplicateWarnList.map((s, i) => (<div key={i} style={{ fontFamily: "ui-monospace, monospace", fontSize: 9 }}>• {s}</div>))}
+                    <div style={{ marginTop: 4, fontSize: 9 }}>Yine de fatura kesebilirsin ama sipariş çift faturalanır. Eskilerini önce sil/VOID et veya ilgili siparişi "⤴ Ayır" ile bu gruptan çıkar.</div>
+                  </div>
+                )}
 
                 {/* Müşteri + teslim + ödeme */}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 8 }}>
@@ -553,10 +608,19 @@ export default function InvoiceCreateModal({
                     {g.orderIds.map(oid => {
                       const entry = sourceOrderLines[oid];
                       if (!entry) return null;
+                      const existingInvNos = activeInvoicesByOrderId.get(oid) || [];
+                      const hasInvoice = existingInvNos.length > 0;
                       return (
-                        <div key={oid} style={{ padding: 6, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 3, marginBottom: 4 }}>
-                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3 }}>
-                            <div style={{ fontSize: 10, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>Belge #{entry.order.belgeNo}</div>
+                        <div key={oid} style={{ padding: 6, background: hasInvoice ? "#fffbeb" : "#fafaf9", border: hasInvoice ? "1px solid #f59e0b" : "1px solid #e7e5e4", borderRadius: 3, marginBottom: 4 }}>
+                          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 3, gap: 6 }}>
+                            <div style={{ fontSize: 10, fontFamily: "ui-monospace, monospace", fontWeight: 600, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                              <span>Belge #{entry.order.belgeNo}</span>
+                              {hasInvoice && (
+                                <span style={{ padding: "1px 5px", fontSize: 9, fontWeight: 700, background: "#f59e0b", color: "#fff", borderRadius: 2 }}>
+                                  ⚠ Faturalı: {existingInvNos.join(", ")}
+                                </span>
+                              )}
+                            </div>
                             {g.orderIds.length > 1 && (
                               <button onClick={() => splitOrderToOwnGroup(oid, g.key)}
                                 title="Bu siparişi ayrı faturaya çıkar"
