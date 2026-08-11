@@ -24,24 +24,41 @@ export default function ContainerAllocationPanel({
   const [collapsed, setCollapsed] = useState(true);
 
   // Konteynerdeki hangi item'lar ihracat siparişinde var? Diğerlerini gösterme.
+  const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
+  const openOrders = useMemo(() => orders.filter(o => (o.status || "open") === "open"), [orders]);
+
   const relevantItems = useMemo(() => {
-    const orders = Object.values(ordersData?.orders || {});
     return (items || []).filter(item => {
-      return orders.some(o =>
-        (o.status || "open") === "open" &&
+      return openOrders.some(o =>
         o.pid != null &&
         Number(o.pid) === Number(item.pid)
       );
     });
-  }, [items, ordersData]);
+  }, [items, openOrders]);
 
   const allocatedByOrder = useMemo(
     () => computeAllocatedByOrder(allocationsData?.allocations || {}),
     [allocationsData]
   );
 
-  // Hiç ilgili item yok → panel gizli (kartın kalan alanında gürültü yapmasın)
-  if (relevantItems.length === 0) return null;
+  // DEBUG modu — panel her zaman görünsün, veri durumunu raporla. Sorun çözülünce
+  // "if (relevantItems.length === 0) return null" davranışına geri döneriz.
+  if (relevantItems.length === 0) {
+    const itemPids = (items || []).slice(0, 5).map(i => i.pid).join(", ");
+    const orderPids = openOrders.slice(0, 5).map(o => o.pid).join(", ");
+    return (
+      <div style={{ marginTop: 8, marginBottom: 8, padding: 8, background: "#fef3c7", border: "1px solid #fde68a", borderRadius: 6, fontSize: 10, color: "#92400e" }}>
+        <div style={{ fontWeight: 600, marginBottom: 3 }}>🔗 İhracat Tahsis · DEBUG (eşleşme yok)</div>
+        <div>Konteyner item sayısı: <b>{items?.length || 0}</b> · pid'ler: <code>{itemPids || "(yok)"}</code></div>
+        <div>Toplam ihracat siparişi: <b>{orders.length}</b> · Açık (open): <b>{openOrders.length}</b></div>
+        <div>Açık sipariş pid örnekleri: <code>{orderPids || "(yok — pid null olabilir)"}</code></div>
+        <div style={{ marginTop: 4, fontSize: 9 }}>
+          Bu panel geçici debug modunda. Görebiliyorsan, aslında eşleşme yok anlamına gelir.
+          Beklenen: konteynerdeki bir pid (örn. 1=C54ST) açık siparişlerde de olmalı.
+        </div>
+      </div>
+    );
+  }
 
   // Özet: kaç item tam tahsis edilmiş
   const summary = relevantItems.map(item => {
