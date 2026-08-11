@@ -9,7 +9,7 @@
 import React, { useState, useMemo, useRef, useEffect } from "react";
 import * as XLSX from "xlsx";
 import { parseExportOrderExcel, matchProductsToOrders, classifyForImport } from "./importParser";
-import { bulkImportExportOrders } from "./firestore";
+import { bulkImportExportOrders, saveCodeMapEntry } from "./firestore";
 import { computeAllocatedByOrder, computePreviewReconciliation } from "./allocationCalc";
 
 export default function ImportPanel({ ordersData, allocationsData, settings, products, canEdit, userEmail, remainingByPid }) {
@@ -75,7 +75,17 @@ export default function ImportPanel({ ordersData, allocationsData, settings, pro
     setError("");
     try {
       const res = await bulkImportExportOrders(toImport, { canEdit, userEmail, mode });
-      setResult(res);
+      // İsim eşleşenler için codeMap'e öğret — bir sonraki import'ta direkt kod eşleşmesi olur.
+      // Sadece Excel'deki kod ile products.vioCode farklıysa öğretmeye değer.
+      const nameMatchedToLearn = toImport.filter(o =>
+        o.matchType === "name" && o.pid != null && o.stokKodu &&
+        (o.expectedCode ? o.stokKodu !== o.expectedCode : true)
+      );
+      for (const o of nameMatchedToLearn) {
+        try { await saveCodeMapEntry(o.stokKodu, o.pid, { canEdit, userEmail }); }
+        catch (mapErr) { console.warn("codeMap öğretilemedi:", o.stokKodu, mapErr.message); }
+      }
+      setResult({ ...res, nameLearnedCount: nameMatchedToLearn.length });
       setParseState(null);
       setSelectedIds(new Set());
       setMinTermin("");
@@ -112,6 +122,9 @@ export default function ImportPanel({ ordersData, allocationsData, settings, pro
       {result && (
         <div style={{ padding: 12, marginBottom: 12, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 6, fontSize: 12 }}>
           ✓ İçe aktarım tamam — <b>{result.added}</b> yeni · <b>{result.skipped}</b> atlandı (mevcut) · <b>{result.overwritten}</b> üzerine yazıldı
+          {result.nameLearnedCount > 0 && (
+            <span style={{ marginLeft: 8, color: "#7c3aed" }}>· 🏷 <b>{result.nameLearnedCount}</b> isim eşleşmesi kod haritasına öğretildi</span>
+          )}
           <button onClick={handleReset} style={{ marginLeft: 12, padding: "3px 8px", fontSize: 11, background: "#fff", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>
             Yeni İçe Aktarım
           </button>
@@ -244,14 +257,20 @@ function PreviewPanel({
   return (
     <div>
       {/* Özet */}
-      <div style={{ padding: 12, marginBottom: 10, background: "var(--color-background-secondary)", borderRadius: 6, fontSize: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
-        <StatBox label="Excel Toplam" value={parsed.orderCount} sub={`${parsed.customerSet.length} müşteri`} />
-        <StatBox label="Ürün Eşleşen" value={matched.length} color="#166534" />
-        <StatBox label="Eşleşmeyen" value={unmatched.length} color={unmatched.length > 0 ? "#92400e" : "#78716c"} />
-        <StatBox label="Yeni" value={newOnes.length} color="#1e40af" />
-        <StatBox label="Zaten Var" value={duplicates.length} color={duplicates.length > 0 ? "#92400e" : "#78716c"} />
-        <StatBox label="Seçili (import)" value={selectedOrders.length} color="#166534" sub={`${mode === "overwrite" ? "overwrite" : "skip"}`} />
-      </div>
+      {(() => {
+        const codeMatched = matched.filter(o => o.matchType === "code" || o.matchType === "codeMap").length;
+        const nameMatched = matched.filter(o => o.matchType === "name").length;
+        return (
+          <div style={{ padding: 12, marginBottom: 10, background: "var(--color-background-secondary)", borderRadius: 6, fontSize: 12, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(140px, 1fr))", gap: 8 }}>
+            <StatBox label="Excel Toplam" value={parsed.orderCount} sub={`${parsed.customerSet.length} müşteri`} />
+            <StatBox label="Ürün Eşleşen" value={matched.length} color="#166534" sub={nameMatched > 0 ? `${codeMatched} kod · ${nameMatched} isim` : "kod ile"} />
+            <StatBox label="Eşleşmeyen" value={unmatched.length} color={unmatched.length > 0 ? "#92400e" : "#78716c"} />
+            <StatBox label="Yeni" value={newOnes.length} color="#1e40af" />
+            <StatBox label="Zaten Var" value={duplicates.length} color={duplicates.length > 0 ? "#92400e" : "#78716c"} />
+            <StatBox label="Seçili (import)" value={selectedOrders.length} color="#166534" sub={`${mode === "overwrite" ? "overwrite" : "skip"}`} />
+          </div>
+        );
+      })()}
 
       {/* Hızlı Filtre */}
       <div style={{ padding: 10, marginBottom: 10, background: "#fff", border: "1px solid var(--color-border-secondary)", borderRadius: 6, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
@@ -365,6 +384,14 @@ function PreviewPanel({
                   <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
                     {o.stokKodu}
                     {o.pid == null && <span style={{ marginLeft: 4, fontSize: 9, color: "#92400e" }}>⚠</span>}
+                    {o.matchType === "name" && (
+                      <span title={o.expectedCode
+                        ? `İsim eşleşmesi — Excel'deki "${o.stokKodu}" products'ta yok, ama isim "${o.stokAdi}" ile eşleşen ürünün gerçek VIO kodu: "${o.expectedCode}". Import sonrası bu kod eşleşmesi öğretilecek (bir sonraki import'ta otomatik eşleşir).`
+                        : `İsim eşleşmesi — kod farklı ama ürün ismi tutuyor.`}
+                        style={{ marginLeft: 4, fontSize: 9, padding: "1px 4px", borderRadius: 3, background: "#f5f3ff", color: "#7c3aed", fontWeight: 600, cursor: "help" }}>
+                        🏷 isim
+                      </span>
+                    )}
                   </td>
                   <td style={td}>
                     <div>{o.stokAdi}</div>

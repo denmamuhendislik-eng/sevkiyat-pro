@@ -173,7 +173,15 @@ export function parseExportOrderExcel(workbook) {
 // Ürünler ile eşleştir. products: [{ id, vioCode, nameTR, nameEN, ... }]
 // codeMap: settings.codeMap ({ [vioCode]: pid, ... }) — daha önce manuel bağlanmış eşleşmeler
 //
-// Her sipariş için pid + descriptionEn (nameEN fallback) doldurulur.
+// 4 aşamalı eşleştirme (App.jsx VIO Import ile paralel):
+//   1) codeMap (öğrenilmiş)         → matchType: "codeMap"
+//   2) products.vioCode === code   → matchType: "code"
+//   3) İsim token match             → matchType: "name"
+//   4) StartsWith fallback          → matchType: "name"
+//
+// İsim eşleşmesinde matchedVia + expectedCode set edilir; UI kullanıcıya
+// "kod farklı ama isim tutuyor" uyarısı gösterebilir.
+//
 // Dönüş: { matched: [orders], unmatched: [orders] }
 export function matchProductsToOrders(ordersMap, products, codeMap = {}) {
   const productsByVio = new Map();
@@ -181,23 +189,81 @@ export function matchProductsToOrders(ordersMap, products, codeMap = {}) {
     const code = String(p?.vioCode || "").trim();
     if (code) productsByVio.set(code, p);
   }
+
+  // İsim eşleşmesi için token index (App.jsx nameLookup deseni):
+  // - İlk 2 kelime, ilk 1 kelime birleşimleri
+  const nameLookup = {};
+  const normalize = (s) => String(s || "").toUpperCase().replace(/[,]/g, ".");
+  const push = (key, prod) => {
+    if (!key) return;
+    if (!nameLookup[key]) nameLookup[key] = [];
+    nameLookup[key].push(prod);
+  };
+  for (const p of (products || [])) {
+    const nameUp = normalize(p?.nameTR);
+    const tokens = nameUp.split(/\s+/).filter(t => t.length > 0);
+    if (tokens.length >= 2) push(tokens[0] + " " + tokens[1], p);
+    if (tokens.length >= 1) push(tokens[0], p);
+  }
+
   const matched = [];
   const unmatched = [];
   for (const o of Object.values(ordersMap || {})) {
     const code = String(o.stokKodu || "").trim();
-    // Önce codeMap (öğrenilmiş manuel eşleşme)
-    let pid = codeMap?.[code] != null ? Number(codeMap[code]) : null;
+    let pid = null;
     let prod = null;
-    if (pid != null) prod = (products || []).find(p => Number(p.id) === pid) || null;
-    // Yoksa vioCode
+    let matchType = null;
+    let expectedCode = null;
+
+    // 1) codeMap — öğrenilmiş manuel eşleşme
+    if (codeMap?.[code] != null) {
+      pid = Number(codeMap[code]);
+      prod = (products || []).find(p => Number(p.id) === pid) || null;
+      if (prod) matchType = "codeMap";
+    }
+    // 2) products.vioCode
     if (!prod) {
       prod = productsByVio.get(code) || null;
-      if (prod) pid = Number(prod.id);
+      if (prod) { pid = Number(prod.id); matchType = "code"; }
     }
+    // 3-4) İsim eşleşmesi — sadece stokAdi doluysa dene
+    if (!prod && o.stokAdi) {
+      const descUp = normalize(o.stokAdi);
+      const descTokens = descUp.split(/\s+/).filter(t => t.length > 0);
+      let nameMatch = null;
+      // 3a) İlk 2 kelime — unique olmalı
+      if (descTokens.length >= 2) {
+        const key2 = descTokens[0] + " " + descTokens[1];
+        if (nameLookup[key2]?.length === 1) nameMatch = nameLookup[key2][0];
+      }
+      // 3b) İlk 1 kelime — unique olmalı
+      if (!nameMatch && descTokens.length >= 1) {
+        if (nameLookup[descTokens[0]]?.length === 1) nameMatch = nameLookup[descTokens[0]][0];
+      }
+      // 3c) Excel'deki stokKodu ismin ilk kelimesiyle tokenize edilmiş olabilir
+      if (!nameMatch) {
+        const codeToken = code.toUpperCase();
+        if (nameLookup[codeToken]?.length === 1) nameMatch = nameLookup[codeToken][0];
+      }
+      // 4) StartsWith fallback — ilk kelime 4+ karakter, ürün adı bununla başlıyor, tek aday
+      if (!nameMatch && descTokens.length > 0 && descTokens[0].length >= 4) {
+        const candidates = (products || []).filter(p => normalize(p?.nameTR).startsWith(descTokens[0]));
+        if (candidates.length === 1) nameMatch = candidates[0];
+      }
+      if (nameMatch) {
+        prod = nameMatch;
+        pid = Number(prod.id);
+        matchType = "name";
+        expectedCode = String(prod?.vioCode || "").trim() || null;
+      }
+    }
+
     const enriched = {
       ...o,
       pid,
       descriptionEn: prod?.nameEN || "",
+      matchType,       // "code" | "codeMap" | "name" | null
+      expectedCode,    // isim eşleşmesinde: sistemdeki gerçek VIO kodu (Excel'deki farklıysa uyarı için)
     };
     if (prod) matched.push(enriched);
     else unmatched.push(enriched);
