@@ -209,7 +209,8 @@ export default function InvoiceCreateModal({
         customerCountry: first.customerCountry || cd.country || "",
         currency: first.currency || cd.currency || "EUR",
         deliveryTerms: first.deliveryTerms || cd.deliveryTerms || "",
-        deliveryTermsShort: shortDelivery(first.deliveryTerms || cd.deliveryTerms || ""),
+        // Kısa versiyon: önce müşteri varsayılanı, yoksa otomatik kısalt
+        deliveryTermsShort: cd.deliveryTermsShort || shortDelivery(first.deliveryTerms || cd.deliveryTerms || ""),
         paymentPlan: Array.isArray(first.paymentPlan) ? first.paymentPlan.map(p => ({ ...p })) : [{ label: "", pct: 100 }],
         orderNr: uniqueBelgeNos(orderIds, sourceOrderLines),
         // Kaydet checkbox — ilk render'da adres kaynağı customerDefaults değilse dolduran kaydetmek isteyebilir
@@ -414,6 +415,7 @@ export default function InvoiceCreateModal({
               country: g.customerCountry || existing.country || "",
               currency: g.currency || existing.currency || "EUR",
               deliveryTerms: g.deliveryTerms || existing.deliveryTerms || "",
+              deliveryTermsShort: g.deliveryTermsShort || existing.deliveryTermsShort || "",
               paymentPlan: Array.isArray(g.paymentPlan) && g.paymentPlan.length > 0
                 ? g.paymentPlan.filter(p => (p.label || "").trim() || Number(p.pct) > 0)
                 : (existing.paymentPlan || []),

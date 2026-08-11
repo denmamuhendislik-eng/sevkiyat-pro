@@ -103,15 +103,19 @@ function buildInvoiceHtml(invoice, settings) {
       </div>
     </div>
     <!-- Fatura bilgi -->
-    <div style="width:80mm;text-align:right;">
-      <div style="font-size:16pt;font-weight:700;margin-bottom:4mm;">COMMERCIAL INVOICE</div>
-      <div style="font-size:14pt;margin-bottom:3mm;">
-        <span style="font-weight:700;">NR.</span> ${esc(invoice.invoiceNo || "")}
+    <div style="width:85mm;">
+      <div style="font-size:16pt;font-weight:700;margin-bottom:4mm;text-align:right;">COMMERCIAL INVOICE</div>
+      <div style="display:flex;justify-content:flex-end;align-items:center;gap:5mm;">
+        ${stampUrl ? `<div style="flex-shrink:0;"><img src="${stampUrl}" crossorigin="anonymous" style="max-width:38mm;max-height:26mm;object-fit:contain;" /></div>` : ""}
+        <div style="text-align:right;">
+          <div style="font-size:14pt;margin-bottom:3mm;">
+            <span style="font-weight:700;">NR.</span> ${esc(invoice.invoiceNo || "")}
+          </div>
+          <div style="font-size:10pt;">
+            <span style="font-weight:700;">DATE</span> ${esc(invoiceDateFmt)}
+          </div>
+        </div>
       </div>
-      <div style="font-size:10pt;margin-bottom:4mm;">
-        <span style="font-weight:700;">DATE</span> ${esc(invoiceDateFmt)}
-      </div>
-      ${stampUrl ? `<div style="text-align:right;margin-top:4mm;"><img src="${stampUrl}" crossorigin="anonymous" style="max-width:50mm;max-height:25mm;object-fit:contain;" /></div>` : ""}
     </div>
   </div>
 

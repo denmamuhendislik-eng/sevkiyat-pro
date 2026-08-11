@@ -439,6 +439,39 @@ export async function deleteStampImage({ canEdit, userEmail = "" } = {}) {
   });
 }
 
+// Logo imajı yükle (fatura antetinde kullanılır).
+export async function uploadLogoImage(file, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!file) throw new Error("Dosya zorunlu");
+  const ext = String(file.name || "png").split(".").pop().toLowerCase();
+  const path = `ihracat/logo/logo_${Date.now()}.${ext}`;
+  const r = storageRef(storage, path);
+  await uploadBytes(r, file);
+  const url = await getDownloadURL(r);
+  await saveInvoiceSettings({
+    logoImage: { url, path, uploadedAt: new Date().toISOString() },
+  }, { canEdit, userEmail });
+  return { url, path };
+}
+
+export async function deleteLogoImage({ canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  const ref = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  const snap = await getDoc(ref);
+  const data = snap.exists() ? (snap.data() || {}) : {};
+  const path = data?.logoImage?.path;
+  if (path) {
+    try { await deleteObject(storageRef(storage, path)); }
+    catch (e) { if (e?.code !== "storage/object-not-found") console.warn("logo silinemedi:", e.message); }
+  }
+  await updateDoc(ref, {
+    logoImage: deleteField(),
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  });
+}
+
 // ============================================================
 // Fatura Kayıtları — appData/exportInvoices
 // ============================================================

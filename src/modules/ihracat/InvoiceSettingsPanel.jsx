@@ -11,6 +11,7 @@ import React, { useState, useEffect, useRef } from "react";
 import {
   subscribeInvoiceSettings, saveInvoiceSettings, setInvoiceCounter,
   uploadStampImage, deleteStampImage, saveBankAccounts,
+  uploadLogoImage, deleteLogoImage,
 } from "./firestore";
 
 // Denma default bilgileri (referans PDF'ten)
@@ -38,7 +39,9 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const [uploadingStamp, setUploadingStamp] = useState(false);
+  const [uploadingLogo, setUploadingLogo] = useState(false);
   const fileInputRef = useRef(null);
+  const logoInputRef = useRef(null);
 
   // Editable state (form)
   const [company, setCompany] = useState(DEFAULT_COMPANY);
@@ -150,6 +153,25 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
     } catch (e) { setError("Kaşe silinemedi: " + e.message); } finally { setUploadingStamp(false); }
   };
 
+  const handleLogoUpload = async (file) => {
+    if (!file || !canEdit) return;
+    setUploadingLogo(true);
+    setError("");
+    try {
+      await uploadLogoImage(file, { canEdit, userEmail });
+    } catch (e) { setError("Logo yüklenemedi: " + e.message); } finally { setUploadingLogo(false); }
+  };
+
+  const handleLogoDelete = async () => {
+    if (!canEdit) return;
+    if (!confirm("Logo imajı silinsin mi?")) return;
+    setUploadingLogo(true);
+    setError("");
+    try {
+      await deleteLogoImage({ canEdit, userEmail });
+    } catch (e) { setError("Logo silinemedi: " + e.message); } finally { setUploadingLogo(false); }
+  };
+
   if (!loaded) return <div style={{ padding: 30, textAlign: "center", color: "#a8a29e" }}>Yükleniyor…</div>;
 
   const currentCounter = Number(settings?.counters?.[counterYear]) || 0;
@@ -158,6 +180,36 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail }) {
   return (
     <div style={{ maxWidth: 800, margin: "0 auto" }}>
       {error && <div style={{ padding: 8, marginBottom: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>⚠ {error}</div>}
+
+      {/* Logo */}
+      <Section title="🖼 Firma Logosu (fatura antetinde basılır)">
+        <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+          <div style={{ width: 220, height: 90, border: "1px dashed #d6d3d1", borderRadius: 4, background: "#fafaf9", display: "flex", alignItems: "center", justifyContent: "center", overflow: "hidden" }}>
+            {settings?.logoImage?.url ? (
+              <img src={settings.logoImage.url} alt="Logo" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+            ) : (
+              <div style={{ fontSize: 10, color: "#a8a29e", textAlign: "center" }}>Logo yüklü değil<br/>(varsayılan yazı tabelası kullanılır)</div>
+            )}
+          </div>
+          <div style={{ flex: 1 }}>
+            <input ref={logoInputRef} type="file" accept="image/png,image/jpeg,image/svg+xml" onChange={e => handleLogoUpload(e.target.files?.[0])} disabled={!canEdit || uploadingLogo} style={{ display: "none" }} />
+            <button onClick={() => logoInputRef.current?.click()} disabled={!canEdit || uploadingLogo} style={btnPri}>
+              {uploadingLogo ? "Yükleniyor…" : (settings?.logoImage?.url ? "📤 Değiştir" : "📤 Yükle")}
+            </button>
+            {settings?.logoImage?.url && (
+              <button onClick={handleLogoDelete} disabled={!canEdit || uploadingLogo} style={{ ...btnDanger, marginLeft: 6 }}>
+                🗑 Sil
+              </button>
+            )}
+            <div style={{ fontSize: 10, color: "#78716c", marginTop: 8 }}>
+              PNG / JPG / SVG — şeffaf arkaplan (PNG) önerilir. Fatura sol üst köşede maks. 70mm × 22mm alanında basılır.
+              {settings?.logoImage?.uploadedAt && (
+                <div>Son yükleme: {new Date(settings.logoImage.uploadedAt).toLocaleString("tr-TR")}</div>
+              )}
+            </div>
+          </div>
+        </div>
+      </Section>
 
       {/* Kaşe/imza */}
       <Section title="🖋 Kaşe / İmza İmajı">
