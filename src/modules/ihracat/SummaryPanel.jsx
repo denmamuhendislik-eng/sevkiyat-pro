@@ -79,16 +79,29 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
   }, [invoices, fromDate, toDate, period]);
 
   // Siparişleri teslim tarihiyle filtrele — bağlı child kayıtları hariç
+  // Teslim tarihi olmayan siparişler dönem seçiminden bağımsız hep dahil edilir
+  // (aksi halde belirsiz kayıtlar tamamen gözden kaybolur).
   const filteredOrders = useMemo(() => {
     return orders.filter(o => {
       if (o?.isLinkedChild) return false; // sipariş özetine cascade child'lar sayılmaz
       if (period === "all") return true;
-      if (!o.teslimTarihi) return false;
+      if (!o.teslimTarihi) return true; // tarihsiz her dönemde görünür
       if (fromDate && o.teslimTarihi < fromDate) return false;
       if (toDate && o.teslimTarihi > toDate) return false;
       return true;
     });
   }, [orders, fromDate, toDate, period]);
+
+  // Tarihsiz sipariş sayısı — bilgi rozeti için
+  const orderStats = useMemo(() => {
+    let noDateCount = 0;
+    let linkedChildCount = 0;
+    for (const o of orders) {
+      if (o?.isLinkedChild) linkedChildCount++;
+      else if (!o?.teslimTarihi) noDateCount++;
+    }
+    return { noDateCount, linkedChildCount };
+  }, [orders]);
 
   // Tahsis edilen miktar (order.id → allocated qty)
   const allocatedByOrder = useMemo(
@@ -296,7 +309,14 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       {/* Sipariş KPI bloğu */}
       {orderKpis.length > 0 && (
         <div style={{ marginBottom: 14 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#44403c", marginBottom: 8 }}>📦 Sipariş Özeti</div>
+          <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 8, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#44403c" }}>📦 Sipariş Özeti</div>
+            <div style={{ fontSize: 9, color: "#78716c" }}>
+              Dönem filtresi <b>teslim tarihi</b> alanına göre çalışır.
+              {orderStats.noDateCount > 0 && <> {orderStats.noDateCount} sipariş teslim tarihsiz — her dönemde görünür.</>}
+              {orderStats.linkedChildCount > 0 && <> {orderStats.linkedChildCount} bağlı (cascade) ürün özete dahil değil.</>}
+            </div>
+          </div>
           {orderKpis.map(k => (
             <div key={`order_${k.currency}`} style={{ padding: 12, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6, marginBottom: 8 }}>
               <div style={{ fontSize: 11, fontWeight: 700, color: "#57534e", marginBottom: 8 }}>
