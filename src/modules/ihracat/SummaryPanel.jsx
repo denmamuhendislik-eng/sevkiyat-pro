@@ -403,14 +403,16 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
                     sub={`Dış sistemde faturalandı · ${fmt0(k.priorShippedQty)} adet`} />
                   <Kpi color="#166534" bg="#dcfce7" label="🧾 Sistem Faturalı"
                     value={`${fmt(k.systemInvoicedAmount)} ${k.currency}`}
-                    sub="Sevk + fatura kesildi (bu sistemde)" />
-                  <Kpi color="#92400e" bg="#fef3c7" label="⏳ Fatura Bekliyor"
-                    value={`${fmt(k.pendingInvoiceAmount)} ${k.currency}`}
-                    sub="Sevk edildi ama fatura kesilmedi" />
+                    sub="Bu sistemde sevk + fatura kesildi" />
                   <Kpi color="#78716c" bg="#fafaf9" label="🔮 Henüz Sevk Yok"
                     value={`${fmt(k.notShippedAmount)} ${k.currency}`}
                     sub="Tahsis edilmemiş kalan" />
                 </div>
+                {k.pendingInvoiceAmount > 0.005 && (
+                  <div style={{ marginTop: 6, padding: 5, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 3, fontSize: 10 }}>
+                    ⚠ <b>{fmt(k.pendingInvoiceAmount)} {k.currency}</b> tahsis edildi ama fatura kesilmedi — sevkiyat detay'dan fatura oluştur.
+                  </div>
+                )}
               </div>
             </div>
           ))}
