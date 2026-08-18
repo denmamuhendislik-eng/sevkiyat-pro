@@ -264,6 +264,13 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
             const isExp = expandedBelge.has(g.key);
             const totalOrij = g.items.reduce((s, o) => s + Number(o.orijinalMiktar || 0), 0);
             const totalKalan = g.items.reduce((s, o) => s + computeOrderRemaining(o, allocatedByOrder), 0);
+            // Grup için kalan sevk edilecek tutar — kalan miktar × birim fiyat (aktif kalemler)
+            // Bağlı ürünler dahil (birim fiyat 0 olduğu için tutara etkisi yok genelde)
+            const totalKalanTutar = g.items.reduce((s, o) => {
+              if ((o.status || "open") === "cancelled") return s;
+              const kalan = computeOrderRemaining(o, allocatedByOrder);
+              return s + kalan * (Number(o.birimFiyat) || 0);
+            }, 0);
             const openCount = g.items.filter(o => (o.status || "open") === "open").length;
             // Grup statüsü: hepsi aynı ise onu, karışıksa "mixed"
             const statuses = new Set(g.items.map(o => o.status || "open"));
@@ -281,6 +288,11 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                       <span style={{ fontSize: 10, color: "#78716c" }}>
                         · {g.items.length} kalem · {totalKalan.toLocaleString("tr-TR")}/{totalOrij.toLocaleString("tr-TR")} kalan
                       </span>
+                      {totalKalanTutar > 0 && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#166534" }} title="Kalan sevk edilecek tutar (kalan miktar × birim fiyat)">
+                          💰 {totalKalanTutar.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {g.currency || ""}
+                        </span>
+                      )}
                     </div>
                     <div style={{ fontSize: 10, color: "#78716c", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
                       <span title={g.deliveryTerms}>🚚 {g.deliveryTerms ? (g.deliveryTerms.length > 30 ? g.deliveryTerms.slice(0, 30) + "…" : g.deliveryTerms) : <span style={{ color: "#dc2626" }}>Teslim şekli girilmemiş</span>}</span>
