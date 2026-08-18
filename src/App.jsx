@@ -17231,7 +17231,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       {/* Fiyat tarihçesi modal — Products sekmesinde 📊 tıklanınca */}
       {priceHistoryPid != null && (
         <PriceHistoryModal
-          product={products.find(p => p.id === priceHistoryPid)}
+          product={(products || []).find(p => p.id === priceHistoryPid)}
           onClose={() => setPriceHistoryPid(null)}
         />
       )}
