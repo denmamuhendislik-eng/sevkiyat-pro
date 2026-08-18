@@ -356,9 +356,18 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
   // Bağlı child kayıtları oluştur — parent'ın kombine bileşenleri ayrı kalem olarak
   // Motor sync ÇAĞRILMAZ (parent'ın cascade'i zaten yd.orders'a yazıyor — çift sayım önlenir)
   // childPrices: kullanıcının form üzerinden bağlı ürünler için girdiği fiyatlar {pid: string}
+  //
+  // KRİTİK: aşağıdaki durumlarda cascade child kaydı OLUŞTURULMAZ (skip):
+  //   a) Parent VIO-imported ise (source === "import") — VIO'da child'lar
+  //      genelde AYRI belgeNo'larda ayrı sipariş olarak gelir. Cascade sipariş
+  //      bilgisiyle çakışır.
+  //   b) Aynı belgeNo altında child stok koduyla ZATEN bir kayıt varsa
+  //      (isLinkedChild olmayan). Kullanıcı elle girmiş olabilir → duplicate riski.
   const createLinkedChildren = async (parentPayload, childPrices = {}) => {
     if (!parentPayload?.pid) return;
     if ((parentPayload.status || "open") === "cancelled") return;
+    // (a) VIO-imported parent → cascade oluşturma
+    if (parentPayload.source === "import") return;
     const rules = (combRules || []).filter(r => Number(r.parent) === Number(parentPayload.pid));
     if (rules.length === 0) return;
     const childIds = [...new Set(rules.flatMap(r => (r.children || []).map(Number)))];
@@ -367,6 +376,14 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       if (!child) continue;
       const childStokKodu = child.vioCode || "";
       if (!childStokKodu) continue; // vioCode olmayan ürüne kayıt açmayız
+      // (b) Defansif — aynı belgeNo altında bu child stok'un elle/VIO-eklenmiş kaydı varsa
+      // (isLinkedChild olmayan) yeni cascade kaydı OLUŞTURMA
+      const preExisting = Object.values(ordersData?.orders || {}).find(o =>
+        !o.isLinkedChild &&
+        o.belgeNo === parentPayload.belgeNo &&
+        String(o.stokKodu || "").trim() === childStokKodu
+      );
+      if (preExisting) continue;
       const childId = buildId(parentPayload.belgeNo, childStokKodu, parentPayload.teslimTarihi);
       // Mevcut child kaydı varsa (edit senaryosu) description KORUNUR
       const existingChild = ordersData?.orders?.[childId];
