@@ -288,6 +288,18 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                       <span style={{ fontSize: 10, color: "#78716c" }}>
                         · {g.items.length} kalem · {totalKalan.toLocaleString("tr-TR")}/{totalOrij.toLocaleString("tr-TR")} kalan
                       </span>
+                      {totalOrij > 0 && (() => {
+                        const grPct = Math.max(0, Math.min(100, Math.round(((totalOrij - totalKalan) / totalOrij) * 100)));
+                        const barColor = grPct >= 100 ? "#166534" : (grPct > 0 ? "#f59e0b" : "#d6d3d1");
+                        return (
+                          <span title={`Grup fill rate: %${grPct} (sevk edilen / toplam)`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                            <span style={{ display: "inline-block", width: 80, height: 6, background: "#f5f5f4", borderRadius: 3, overflow: "hidden", border: "1px solid #e7e5e4" }}>
+                              <span style={{ display: "block", width: `${grPct}%`, height: "100%", background: barColor, transition: "width 0.3s" }} />
+                            </span>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: barColor }}>%{grPct}</span>
+                          </span>
+                        );
+                      })()}
                       {totalKalanTutar > 0 && (
                         <span style={{ fontSize: 11, fontWeight: 700, color: "#166534" }} title="Kalan sevk edilecek tutar (kalan miktar × birim fiyat)">
                           💰 {totalKalanTutar.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {g.currency || ""}
@@ -357,8 +369,15 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                           const fill = computeOrderFillStatus(o, allocatedByOrder);
                           const stMeta = STATUS_LABELS[o.status || "open"];
                           const isLinked = !!o.isLinkedChild;
+                          // Row background: dolulum durumuna göre çok hafif ton
+                          //   full  → soft green   partial → soft yellow   empty → default
+                          const rowBg = isLinked
+                            ? "#fafaf9"
+                            : fill.status === "full" ? "#f0fdf4"
+                            : fill.status === "partial" ? "#fefce8"
+                            : "transparent";
                           return (
-                            <tr key={o.id} style={{ borderTop: "1px solid #f5f5f4", background: isLinked ? "#fafaf9" : "transparent" }}>
+                            <tr key={o.id} style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
                               <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
                                 {isLinked && <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, background: "rgba(30,64,175,0.12)", color: "#1e40af", borderRadius: 2, marginRight: 4 }}>🔗 BAĞLI</span>}
                                 {o.stokKodu || "—"}
@@ -373,8 +392,21 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                               <td style={{ ...td, textAlign: "right" }}>{Number(o.orijinalMiktar || 0).toLocaleString("tr-TR")}</td>
                               <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{Number(o.sevkedilenBaslangic || 0).toLocaleString("tr-TR")}</td>
                               <td style={{ ...td, textAlign: "right", color: tahsis > 0 ? "#166534" : "#a8a29e" }}>{tahsis.toLocaleString("tr-TR")}</td>
-                              <td style={{ ...td, textAlign: "right", fontWeight: 700, background: "#eff6ff", color: fill.remaining === 0 ? "#166534" : "#1e40af" }}>
-                                {fill.remaining.toLocaleString("tr-TR")}
+                              <td style={{ ...td, textAlign: "right", fontWeight: 700, color: fill.remaining === 0 ? "#166534" : "#1e40af", padding: "5px 8px", position: "relative", minWidth: 80 }}>
+                                <div style={{ position: "relative" }}>
+                                  <div style={{ position: "absolute", inset: 0, background: "#eff6ff", borderRadius: 2, overflow: "hidden" }}>
+                                    <div style={{
+                                      width: `${Math.max(0, Math.min(100, fill.pct))}%`,
+                                      height: "100%",
+                                      background: fill.status === "full" ? "#86efac" : "#fde68a",
+                                      opacity: 0.55,
+                                    }} />
+                                  </div>
+                                  <div style={{ position: "relative", zIndex: 1, display: "flex", justifyContent: "flex-end", alignItems: "baseline", gap: 4, paddingRight: 2 }}>
+                                    <span>{fill.remaining.toLocaleString("tr-TR")}</span>
+                                    <span style={{ fontSize: 8, color: "#78716c", fontWeight: 600 }}>%{fill.pct}</span>
+                                  </div>
+                                </div>
                               </td>
                               <td style={{ ...td, textAlign: "right" }}>
                                 {o.birimFiyat != null ? `${Number(o.birimFiyat).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${o.currency || ""}` : "—"}
