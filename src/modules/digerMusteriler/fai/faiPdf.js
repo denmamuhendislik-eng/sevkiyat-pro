@@ -14,7 +14,7 @@ import {
   CHARACTERISTIC_TYPES, FAI_STATUSES,
 } from "./schema";
 
-const FORM_NO = "FR-57 Rev.Tar./No: 24.04.2026 / 01";
+const FORM_NO = "FR-57 Rev.Tar./No:01.07.2026/2";
 
 function fmtDate(iso) {
   if (!iso) return "";
