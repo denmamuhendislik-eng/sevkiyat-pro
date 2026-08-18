@@ -4160,6 +4160,14 @@ ${el.innerHTML}
         <div style={{fontSize:11,color:"var(--color-text-secondary)",marginBottom:10}}>Veritabanı boş. Excel verilerini Firestore'a yüklemek ister misiniz?</div>
         <button onClick={uploadInitialData} style={{padding:"8px 16px",borderRadius:6,border:"none",background:"#534AB7",color:"#fff",fontSize:12,fontWeight:500,cursor:"pointer",width:"100%"}}>Verileri Yükle</button>
       </div>}
+
+      {/* Fiyat tarihçesi modal — Products sekmesinde 📊 tıklanınca */}
+      {priceHistoryPid != null && (
+        <PriceHistoryModal
+          product={(products || []).find(p => p.id === priceHistoryPid)}
+          onClose={() => setPriceHistoryPid(null)}
+        />
+      )}
     </div>
   );
 }
@@ -17228,13 +17236,6 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           </div>
         );
       })()}
-      {/* Fiyat tarihçesi modal — Products sekmesinde 📊 tıklanınca */}
-      {priceHistoryPid != null && (
-        <PriceHistoryModal
-          product={(products || []).find(p => p.id === priceHistoryPid)}
-          onClose={() => setPriceHistoryPid(null)}
-        />
-      )}
     </div>
   );
 }
