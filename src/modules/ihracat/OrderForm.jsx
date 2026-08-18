@@ -20,7 +20,7 @@ function newLine() {
   return { stokKodu: "", pid: null, stokAdi: "", descriptionEn: "", orijinalMiktar: "", sevkedilenBaslangic: "", birimFiyat: "", childPrices: {} };
 }
 
-export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync, combRules = [], ordersData }) {
+export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync, combRules = [], ordersData, logPriceHistory }) {
   // Header (ortak)
   const [customerCode, setCustomerCode] = useState("");
   const [customerName, setCustomerName] = useState("");
@@ -283,6 +283,17 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         // Yeni kayıt önce yaz — eski ID kaldıysa altta silinir
         await saveExportOrder(payload, { canEdit, userEmail });
         applyMotorSyncForEdit(payload);
+        // Fiyat tarihçesine kaydet — sadece değişim olmuşsa (aynı değeri tekrar loglama)
+        if (logPriceHistory && payload.pid && payload.birimFiyat > 0
+            && Number(editingOrder.birimFiyat || 0) !== payload.birimFiyat) {
+          logPriceHistory(payload.pid, {
+            price: payload.birimFiyat,
+            source: "ihracat-order",
+            customerCode: payload.customerCode,
+            customerName: payload.customerName,
+            orderRef: payload.belgeNo,
+          });
+        }
         // ID değiştiyse (teslim tarihi veya stok kodu değişimi) → eski parent + bağlı child'ları sil
         // Bu duplicate kayıt oluşmasını engeller
         if (idChanged && !editingOrder?.isLinkedChild) {
@@ -322,6 +333,16 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           };
           await saveExportOrder(payload, { canEdit, userEmail });
           applyMotorSyncForNew(payload);
+          // Fiyat tarihçesi — yeni siparişte her kalem için (fiyat > 0)
+          if (logPriceHistory && payload.pid && payload.birimFiyat > 0) {
+            logPriceHistory(payload.pid, {
+              price: payload.birimFiyat,
+              source: "ihracat-order",
+              customerCode: payload.customerCode,
+              customerName: payload.customerName,
+              orderRef: payload.belgeNo,
+            });
+          }
           // Cascade child kayıtları — parent'ın bileşenleri ayrı kalem olarak
           await createLinkedChildren(payload, line.childPrices || {});
         }
@@ -680,6 +701,52 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                       </Field>
                     </div>
                   </>
+                );
+              })()}
+
+              {/* Ürün fiyat geçmişi — pid seçilince gösterilir */}
+              {line.pid != null && (() => {
+                const prod = (products || []).find(p => Number(p.id) === Number(line.pid));
+                const hist = Array.isArray(prod?.priceHistory) ? prod.priceHistory : [];
+                if (hist.length === 0) return null;
+                // Ordena: en yeni önce
+                const sortedAll = [...hist].sort((a, b) => (b.recordedAt || b.date || "").localeCompare(a.recordedAt || a.date || ""));
+                // Aynı müşteri için son 3
+                const sameCustomer = customerCode
+                  ? sortedAll.filter(h => h.customerCode === customerCode).slice(0, 3)
+                  : [];
+                // Genel son 3
+                const recent = sortedAll.slice(0, 3);
+                return (
+                  <div style={{ marginTop: 6, padding: 6, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 3 }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: "#57534e", marginBottom: 4 }}>
+                      📊 Bu ürünün fiyat geçmişi ({hist.length} kayıt)
+                    </div>
+                    {sameCustomer.length > 0 && (
+                      <>
+                        <div style={{ fontSize: 8, color: "#78716c", fontWeight: 600, marginBottom: 2 }}>Bu müşteri için son:</div>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 4 }}>
+                          {sameCustomer.map((h, i) => (
+                            <span key={i} style={{ padding: "2px 6px", fontSize: 9, background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 2 }}>
+                              <b style={{ color: "#1e40af" }}>{Number(h.price).toFixed(2)} EUR</b>
+                              <span style={{ marginLeft: 4, color: "#78716c" }}>· {h.date}</span>
+                              {h.orderRef && <span style={{ marginLeft: 4, color: "#78716c", fontFamily: "ui-monospace, monospace" }}>#{h.orderRef}</span>}
+                            </span>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                    <div style={{ fontSize: 8, color: "#78716c", fontWeight: 600, marginBottom: 2 }}>Genel son kayıtlar:</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {recent.map((h, i) => (
+                        <span key={i} style={{ padding: "2px 6px", fontSize: 9, background: "#fff", border: "1px solid #e7e5e4", borderRadius: 2 }}>
+                          <b>{Number(h.price).toFixed(2)} EUR</b>
+                          <span style={{ marginLeft: 4, color: "#78716c" }}>· {h.date}</span>
+                          {h.customerCode && <span style={{ marginLeft: 4, color: "#78716c" }}>· {h.customerName || h.customerCode}</span>}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
                 );
               })()}
 

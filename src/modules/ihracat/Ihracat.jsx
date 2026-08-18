@@ -21,7 +21,7 @@ import InvoiceSettingsPanel from "./InvoiceSettingsPanel";
 import InvoiceList from "./InvoiceList";
 import SummaryPanel from "./SummaryPanel";
 
-export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid, syncExportOrderToPlan, combRules }) {
+export default function Ihracat({ canEdit, isAdmin, userEmail, products, remainingByPid, syncExportOrderToPlan, combRules, logPriceHistory }) {
   const [subTab, setSubTab] = useState("list");
   const [editingOrder, setEditingOrder] = useState(null); // düzenlemek için seçilen sipariş
 
@@ -103,6 +103,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           motorSync={motorSync}
           combRules={combRules || []}
           ordersData={ordersData}
+          logPriceHistory={logPriceHistory}
         />
       )}
       {subTab === "import" && (

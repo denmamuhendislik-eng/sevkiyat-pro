@@ -14,6 +14,7 @@ import { subscribeFeasibilityForYear, isUserPendingForStudy } from "./modules/ya
 import Maliyet from "./modules/maliyet/Maliyet";
 import Ihracat from "./modules/ihracat/Ihracat";
 import ContainerAllocationPanel from "./modules/ihracat/ContainerAllocationPanel";
+import PriceHistoryModal from "./components/PriceHistoryModal";
 import { subscribeExportSalesOrders, subscribeContainerAllocations } from "./modules/ihracat/firestore";
 import { parseBomExcel as parseBomExcelModule, isFasonOp, getDefaultWC } from "./shared/bomParser";
 import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
@@ -223,6 +224,7 @@ export default function App() {
   const [editVioTemp, setEditVioTemp] = useState("");
   const [editPricePid, setEditPricePid] = useState(null);
   const [editPriceTemp, setEditPriceTemp] = useState("");
+  const [priceHistoryPid, setPriceHistoryPid] = useState(null); // 📊 modal için pid
   const inputRef = useRef(null);
   const saveTimer = useRef(null);
   const firestoreReady = useRef(false);
@@ -559,6 +561,44 @@ export default function App() {
   // Firestore'da p.vioCode alanı boş olsa bile hardcoded VIO_CODES map'inden doldur.
   // Diğer modüller de her yerde `p.vioCode || VIO_CODES[p.id]` fallback pattern'i
   // kullanıyor; ihracat modülünde bu fallback'i tek yerde uygulayıp geçiriyoruz.
+  // v23: Ürün satış fiyatı tarihçesi — her fiyat kaydı hem history'e yazılır
+  // hem salesPriceEur güncellenir (Seçenek A: son fiyat = güncel fiyat).
+  // Kaynaklar: "vio-import" | "manual" | "ihracat-order"
+  const logPriceHistory = useCallback((pid, entry) => {
+    if (pid == null) return;
+    const p = Number(pid);
+    const newPrice = Number(entry?.price) || 0;
+    if (newPrice <= 0) return; // 0 veya negatif kaydı atla
+    const now = new Date().toISOString();
+    setProducts(prev => prev.map(prod => {
+      if (Number(prod.id) !== p) return prod;
+      const currentPrice = Number(prod.salesPriceEur) || 0;
+      // Aynı fiyat + aynı gün + aynı kaynak varsa duplicate atlama
+      const history = Array.isArray(prod.priceHistory) ? prod.priceHistory : [];
+      const dateKey = entry.date ? String(entry.date).slice(0, 10) : now.slice(0, 10);
+      const lastEntry = history[history.length - 1];
+      const isDuplicate = lastEntry && lastEntry.price === newPrice
+        && lastEntry.date === dateKey && lastEntry.source === (entry.source || "manual");
+      const historyEntry = {
+        price: newPrice,
+        date: dateKey,
+        source: entry.source || "manual",
+        by: entry.by || authUser?.email || "",
+        ...(entry.customerCode ? { customerCode: entry.customerCode } : {}),
+        ...(entry.customerName ? { customerName: entry.customerName } : {}),
+        ...(entry.orderRef ? { orderRef: entry.orderRef } : {}),
+        ...(entry.note ? { note: entry.note } : {}),
+        recordedAt: now,
+      };
+      return {
+        ...prod,
+        salesPriceEur: newPrice,
+        salesPriceUpdatedAt: now,
+        priceHistory: isDuplicate ? history : [...history, historyEntry],
+      };
+    }));
+  }, [authUser]);
+
   const productsForExport = useMemo(() => {
     return (products || []).map(p => ({
       ...p,
@@ -1179,7 +1219,21 @@ export default function App() {
           const newPrice = priceUpdates[p.id];
           if (newPrice === undefined) return p;
           if (newPrice === (Number(p.salesPriceEur) || 0)) return p;
-          return { ...p, salesPriceEur: newPrice, salesPriceUpdatedAt: stamp };
+          // History'e ekle (append-only) — VIO import kaynağı
+          const history = Array.isArray(p.priceHistory) ? p.priceHistory : [];
+          const entry = {
+            price: newPrice,
+            date: stamp.slice(0, 10),
+            source: "vio-import",
+            by: authUser?.email || "",
+            recordedAt: stamp,
+          };
+          return {
+            ...p,
+            salesPriceEur: newPrice,
+            salesPriceUpdatedAt: stamp,
+            priceHistory: [...history, entry],
+          };
         }));
       }
     }
@@ -1694,7 +1748,7 @@ ${el.innerHTML}
       return;
     }
     if (newPrice === (oldP.salesPriceEur || 0)) { setEditPricePid(null); return; }
-    setProducts(prev => prev.map(p => p.id === pid ? { ...p, salesPriceEur: newPrice, salesPriceUpdatedAt: new Date().toISOString() } : p));
+    logPriceHistory(pid, { price: newPrice, source: "manual" });
     setEditPricePid(null);
   };
 
@@ -2889,11 +2943,19 @@ ${el.innerHTML}
                           );
                         }
                         if (price > 0) {
+                          const histCount = Array.isArray(p.priceHistory) ? p.priceHistory.length : 0;
                           return (
-                            <div onClick={isAdmin ? () => { setEditPriceTemp(String(price)); setEditPricePid(p.id); } : undefined}
-                                 title={isAdmin ? `Tıkla: satış fiyatı düzenle${p.salesPriceUpdatedAt ? ` · son güncelleme: ${new Date(p.salesPriceUpdatedAt).toLocaleDateString("tr-TR")}` : ""}` : ""}
-                                 style={{fontSize:9,padding:"1px 6px",borderRadius:3,background:"rgba(29,158,117,0.1)",color:"#0F6E56",fontFamily:"monospace",marginTop:3,cursor:isAdmin?"pointer":"default",fontWeight:600}}>
-                              {price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €{isAdmin && <span style={{marginLeft:3,opacity:0.6}}>✎</span>}
+                            <div style={{display:"flex",alignItems:"center",gap:2,marginTop:3,justifyContent:"flex-end"}}>
+                              <div onClick={isAdmin ? () => { setEditPriceTemp(String(price)); setEditPricePid(p.id); } : undefined}
+                                   title={isAdmin ? `Tıkla: satış fiyatı düzenle${p.salesPriceUpdatedAt ? ` · son güncelleme: ${new Date(p.salesPriceUpdatedAt).toLocaleDateString("tr-TR")}` : ""}` : ""}
+                                   style={{fontSize:9,padding:"1px 6px",borderRadius:3,background:"rgba(29,158,117,0.1)",color:"#0F6E56",fontFamily:"monospace",cursor:isAdmin?"pointer":"default",fontWeight:600}}>
+                                {price.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €{isAdmin && <span style={{marginLeft:3,opacity:0.6}}>✎</span>}
+                              </div>
+                              <button onClick={(e) => { e.stopPropagation(); setPriceHistoryPid(p.id); }}
+                                title={`Fiyat tarihçesi (${histCount} kayıt)`}
+                                style={{padding:"1px 4px",borderRadius:3,border:"1px solid #bfdbfe",background:"#eff6ff",color:"#1e40af",fontSize:9,fontWeight:600,cursor:"pointer"}}>
+                                📊{histCount > 0 && <span style={{marginLeft:2}}>{histCount}</span>}
+                              </button>
                             </div>
                           );
                         }
@@ -2998,7 +3060,7 @@ ${el.innerHTML}
               </button>
             </div>
             {importSubTab==="export" && (
-              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={productsForExport} remainingByPid={remainingByPidForExport} syncExportOrderToPlan={syncExportOrderToPlan} combRules={combRules} />
+              <Ihracat canEdit={isAdmin} isAdmin={isAdmin} products={productsForExport} remainingByPid={remainingByPidForExport} syncExportOrderToPlan={syncExportOrderToPlan} combRules={combRules} logPriceHistory={logPriceHistory} />
             )}
             {importSubTab==="domestic" && <div>
             <div style={{marginBottom:16,padding:14,borderRadius:10,background:"var(--color-background-info)",fontSize:12,color:"var(--color-text-info)"}}>
@@ -17166,6 +17228,13 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           </div>
         );
       })()}
+      {/* Fiyat tarihçesi modal — Products sekmesinde 📊 tıklanınca */}
+      {priceHistoryPid != null && (
+        <PriceHistoryModal
+          product={products.find(p => p.id === priceHistoryPid)}
+          onClose={() => setPriceHistoryPid(null)}
+        />
+      )}
     </div>
   );
 }
