@@ -16,8 +16,8 @@ function buildId(belgeNo, stokKodu, teslimTarihi) {
 }
 
 // Yeni boş kalem
-function newLine() {
-  return { stokKodu: "", pid: null, stokAdi: "", descriptionEn: "", orijinalMiktar: "", sevkedilenBaslangic: "", birimFiyat: "", childPrices: {} };
+function newLine(defaultTermin = "") {
+  return { stokKodu: "", pid: null, stokAdi: "", descriptionEn: "", orijinalMiktar: "", sevkedilenBaslangic: "", birimFiyat: "", childPrices: {}, teslimTarihi: defaultTermin };
 }
 
 export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync, combRules = [], ordersData, logPriceHistory }) {
@@ -67,6 +67,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         sevkedilenBaslangic: String(editingOrder.sevkedilenBaslangic || ""),
         birimFiyat: String(editingOrder.birimFiyat || ""),
         childPrices: {},
+        teslimTarihi: editingOrder.teslimTarihi || "",
       }]);
     } else {
       setCustomerCode(""); setCustomerName("");
@@ -106,7 +107,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
   }, [customerDefaults]);
 
   // Kalem operasyonları
-  const addLine = () => setLines(prev => [...prev, newLine()]);
+  const addLine = () => setLines(prev => [...prev, newLine(teslimTarihi || "")]);
   const removeLine = (idx) => setLines(prev => prev.length <= 1 ? prev : prev.filter((_, i) => i !== idx));
   const updateLine = (idx, patch) => setLines(prev => prev.map((l, i) => i === idx ? { ...l, ...patch } : l));
 
@@ -257,7 +258,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         belgeNo: String(belgeNo).trim(),
         currency,
         orderDate: orderDate || "",
-        teslimTarihi: teslimTarihi || "",
+        // teslimTarihi: header'daki değer default, kalem üzerinde override edilebilir (aşağıda)
         deliveryTerms: deliveryTerms.trim(),
         paymentPlan: paymentPlan.filter(p => (p.label || "").trim() || (Number(p.pct) || 0) > 0),
         status,
@@ -266,10 +267,12 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       // Edit mode: eski payload/motor delta hesabı — mevcut tek kalem senaryosu
       if (editingOrder) {
         const line = lines[0];
-        const id = buildId(belgeNo, line.stokKodu, teslimTarihi);
+        const lineTeslim = line.teslimTarihi || teslimTarihi || "";
+        const id = buildId(belgeNo, line.stokKodu, lineTeslim);
         const payload = {
           id,
           ...commonPayload,
+          teslimTarihi: lineTeslim,
           stokKodu: line.stokKodu.trim(),
           stokAdi: line.stokAdi.trim(),
           descriptionEn: line.descriptionEn.trim(),
@@ -318,11 +321,14 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         }
       } else {
         // Yeni sipariş: her geçerli kalem için ayrı kayıt + ayrı motor sync
+        // Her kalemin kendi termin tarihi olabilir — yoksa header'daki genel termin
         for (const line of validLines) {
-          const id = buildId(belgeNo, line.stokKodu, teslimTarihi);
+          const lineTeslim = line.teslimTarihi || teslimTarihi || "";
+          const id = buildId(belgeNo, line.stokKodu, lineTeslim);
           const payload = {
             id,
             ...commonPayload,
+            teslimTarihi: lineTeslim,
             stokKodu: line.stokKodu.trim(),
             stokAdi: line.stokAdi.trim(),
             descriptionEn: line.descriptionEn.trim(),
@@ -636,8 +642,10 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
             <input type="date" value={orderDate} onChange={e => setOrderDate(e.target.value)}
               title="Siparişin alındığı tarih (özet filtresi bu tarihe göre çalışır)" style={inp} />
           </Field>
-          <Field label="Termin (opsiyonel)">
-            <input type="date" value={teslimTarihi} onChange={e => setTeslimTarihi(e.target.value)} style={inp} />
+          <Field label="Genel Termin (opsiyonel)">
+            <input type="date" value={teslimTarihi} onChange={e => setTeslimTarihi(e.target.value)}
+              title="Kalemlere default olarak uygulanır. Kalem üstünde ayrı termin verilebilir."
+              style={inp} />
           </Field>
           <Field label="Para Birimi">
             <select value={currency} onChange={e => setCurrency(e.target.value)} style={{ ...inp, background: "#fff" }}>
@@ -691,7 +699,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                       <input value={line.descriptionEn} onChange={e => updateLine(idx, { descriptionEn: e.target.value })}
                         placeholder="Örn. GEAR SET C54ST" style={inp} />
                     </Field>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr 1fr", gap: 8 }}>
                       <Field label={linkedLock ? "Miktar — 🔒 parent'a bağlı" : "Miktar *"}>
                         <input type="number" value={line.orijinalMiktar}
                           onChange={e => !linkedLock && updateLine(idx, { orijinalMiktar: e.target.value })}
@@ -705,6 +713,12 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                       </Field>
                       <Field label="Birim Fiyat">
                         <input type="number" step="0.01" value={line.birimFiyat} onChange={e => updateLine(idx, { birimFiyat: e.target.value })} style={inp} />
+                      </Field>
+                      <Field label={`Termin ${teslimTarihi && !line.teslimTarihi ? `(genel: ${teslimTarihi})` : ""}`}>
+                        <input type="date" value={line.teslimTarihi || ""}
+                          onChange={e => updateLine(idx, { teslimTarihi: e.target.value })}
+                          title="Kalem için özel termin tarihi. Boş bırakılırsa üstteki 'Genel Termin' kullanılır."
+                          style={inp} />
                       </Field>
                     </div>
                   </>
