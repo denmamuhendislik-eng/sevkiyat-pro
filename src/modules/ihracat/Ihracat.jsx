@@ -56,7 +56,14 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
   };
 
   // Motor sync bağlantı objesi — modüle daha aşağıya prop olarak inecek
-  const motorSync = { enabled: motorSyncEnabled, apply: syncExportOrderToPlan };
+  // v23: motorLinkedCustomers eklendi — sync sadece bu listedeki müşteri
+  // siparişlerinde tetiklenir. Böylece motor dışı müşteriler yd.orders'a yazmaz.
+  const motorLinkedCustomers = Array.isArray(settings?.motorLinkedCustomers) ? settings.motorLinkedCustomers : [];
+  const motorSync = {
+    enabled: motorSyncEnabled,
+    apply: syncExportOrderToPlan,
+    motorLinkedCustomers,
+  };
 
   return (
     <div>

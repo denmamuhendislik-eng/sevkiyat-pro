@@ -126,7 +126,9 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
       }, { canEdit, userEmail });
       // Motor sync — her kalem için open ↔ cancelled geçişi
       // Bağlı (isLinkedChild) kayıtlar atlanır: parent cascade zaten yd.orders'a yazıyor
-      if (motorSync?.enabled && motorSync.apply) {
+      // v23: Motor'a bağlı olmayan müşteri siparişleri motor'a yansımaz
+      const motorLinked = Array.isArray(motorSync?.motorLinkedCustomers) ? motorSync.motorLinkedCustomers : [];
+      if (motorSync?.enabled && motorSync.apply && motorLinked.includes(group.customerCode)) {
         const isActiveNew = newStatus !== "cancelled";
         for (const it of group.items) {
           if (it.pid == null) continue;
@@ -161,7 +163,9 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
         catch (childErr) { console.warn("Bağlı child status güncellenemedi:", child.id, childErr.message); }
       }
       // Motor sync — status open ↔ cancelled geçişi, SADECE parent için (cascade child'ı halleder)
-      if (motorSync?.enabled && motorSync.apply && order.pid != null && !order.isLinkedChild) {
+      // v23: Motor'a bağlı olmayan müşteri siparişleri motor'a yansımaz
+      const motorLinked = Array.isArray(motorSync?.motorLinkedCustomers) ? motorSync.motorLinkedCustomers : [];
+      if (motorSync?.enabled && motorSync.apply && order.pid != null && !order.isLinkedChild && motorLinked.includes(order.customerCode)) {
         const oldStatus = order.status || "open";
         const wasActive = oldStatus !== "cancelled";
         const isActive = newStatus !== "cancelled";
@@ -199,7 +203,9 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
         catch (childErr) { console.warn("Bağlı child silinemedi:", child.id, childErr.message); }
       }
       // Motor sync — sadece parent (isLinkedChild değil) için — cascade otomatik children'a düşer
-      if (motorSync?.enabled && motorSync.apply && order.pid != null && !order.isLinkedChild && (order.status || "open") !== "cancelled") {
+      // v23: Motor'a bağlı olmayan müşteri siparişleri motor'a yansımaz
+      const motorLinkedDel = Array.isArray(motorSync?.motorLinkedCustomers) ? motorSync.motorLinkedCustomers : [];
+      if (motorSync?.enabled && motorSync.apply && order.pid != null && !order.isLinkedChild && (order.status || "open") !== "cancelled" && motorLinkedDel.includes(order.customerCode)) {
         const netQty = Math.max(0, (Number(order.orijinalMiktar) || 0) - (Number(order.sevkedilenBaslangic) || 0));
         const orderYear = order.teslimTarihi
           ? Number(String(order.teslimTarihi).slice(0, 4))

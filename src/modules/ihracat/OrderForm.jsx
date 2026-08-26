@@ -449,6 +449,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     if (!motorSync?.enabled || !motorSync.apply) return;
     if (payload.pid == null) return;
     if ((payload.status || "open") === "cancelled") return;
+    // v23: Motor'a bağlı olmayan müşteri siparişleri motor'a yansımaz
+    const motorLinked = Array.isArray(motorSync.motorLinkedCustomers) ? motorSync.motorLinkedCustomers : [];
+    if (!motorLinked.includes(payload.customerCode)) return;
     const netQty = Math.max(0, (Number(payload.orijinalMiktar) || 0) - (Number(payload.sevkedilenBaslangic) || 0));
     if (netQty <= 0) return;
     const year = payload.teslimTarihi
@@ -464,6 +467,10 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
     if (!motorSync?.enabled || !motorSync.apply) return;
     // Bağlı child kaydının edit'inde motor sync tetiklenmez (parent cascade'i sağlar)
     if (editingOrder?.isLinkedChild) return;
+    // v23: Motor'a bağlı olmayan müşteri siparişleri motor'a yansımaz
+    const motorLinked = Array.isArray(motorSync.motorLinkedCustomers) ? motorSync.motorLinkedCustomers : [];
+    const eitherCustomer = payload.customerCode || editingOrder?.customerCode;
+    if (!motorLinked.includes(eitherCustomer)) return;
     // Yıl bazlı ön kontrol: yıl değişimi durumunda HER İKİ yıl da izin verilen
     // aralıkta olmalı. Aksi halde asymmetric delta oluşur (bir yıldan düşülmez
     // ama diğerine eklenir → çift sayım). Bu durumda motor sync tamamen bypass.
