@@ -223,6 +223,11 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
   // Müşteri bazlı sipariş KPI — motor bağlı olan + olmayan hepsi listelenir
   const motorLinkedCustomers = Array.isArray(exportSettings?.motorLinkedCustomers) ? exportSettings.motorLinkedCustomers : [];
   const customerOrderKpis = useMemo(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const in30 = new Date();
+    in30.setDate(in30.getDate() + 30);
+    const in30Str = in30.toISOString().slice(0, 10);
+
     const map = new Map(); // `${code}_${currency}` → aggregate
     for (const o of filteredOrders) {
       if ((o.status || "open") === "cancelled") continue;
@@ -240,6 +245,10 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
           kalanBedel: 0,
           totalQty: 0,
           kalanQty: 0,
+          overdueCount: 0,
+          overdueQty: 0,
+          upcomingCount: 0,
+          upcomingQty: 0,
         });
       }
       const b = map.get(key);
@@ -254,6 +263,11 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       b.kalanBedel += kalan * price;
       b.totalQty += orij;
       b.kalanQty += kalan;
+      // Geciken / yaklaşan sayacı: sadece açık + kalan > 0 + termini olan
+      if ((o.status || "open") === "open" && kalan > 0 && o.teslimTarihi) {
+        if (o.teslimTarihi < today) { b.overdueCount++; b.overdueQty += kalan; }
+        else if (o.teslimTarihi <= in30Str) { b.upcomingCount++; b.upcomingQty += kalan; }
+      }
     }
     return Array.from(map.values()).map(x => ({
       ...x,
@@ -284,8 +298,14 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       if (o.teslimTarihi < today) overdue.push(o);
       else if (o.teslimTarihi <= in30Str) upcoming.push(o);
     }
-    overdue.sort((a, b) => (a.teslimTarihi || "").localeCompare(b.teslimTarihi || ""));
-    upcoming.sort((a, b) => (a.teslimTarihi || "").localeCompare(b.teslimTarihi || ""));
+    // Sıralama: önce müşteri adı, sonra termin (aynı müşterinin kayıtları peş peşe gelsin)
+    const sortByCustomerThenTermin = (a, b) => {
+      const cn = (a.customerName || a.customerCode || "").localeCompare(b.customerName || b.customerCode || "", "tr");
+      if (cn !== 0) return cn;
+      return (a.teslimTarihi || "").localeCompare(b.teslimTarihi || "");
+    };
+    overdue.sort(sortByCustomerThenTermin);
+    upcoming.sort(sortByCustomerThenTermin);
     return { upcoming, overdue };
   }, [filteredOrders, allocatedByOrder]);
 
@@ -510,6 +530,8 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
                   <th style={{ ...th, textAlign: "right" }}>Kalem</th>
                   <th style={{ ...th, textAlign: "right" }}>Toplam Bedel</th>
                   <th style={{ ...th, textAlign: "right" }}>Kalan Bedel</th>
+                  <th style={{ ...th, textAlign: "center" }}>🔴 Geciken</th>
+                  <th style={{ ...th, textAlign: "center" }}>🕐 Yaklaşan</th>
                   <th style={{ ...th, textAlign: "right" }}>Fill %</th>
                 </tr>
               </thead>
@@ -532,6 +554,22 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
                       <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{fmt0(k.itemCount)}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 600, color: "#1e40af" }}>{fmt(k.totalBedel)}</td>
                       <td style={{ ...td, textAlign: "right", fontWeight: 700, color: k.kalanBedel > 0 ? "#dc2626" : "#a8a29e" }}>{fmt(k.kalanBedel)}</td>
+                      <td style={{ ...td, textAlign: "center" }}>
+                        {k.overdueCount > 0 ? (
+                          <span title={`${fmt0(k.overdueQty)} adet kalan`}
+                            style={{ padding: "1px 6px", fontSize: 10, fontWeight: 700, borderRadius: 2, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca" }}>
+                            {k.overdueCount} · {fmt0(k.overdueQty)}
+                          </span>
+                        ) : <span style={{ color: "#d6d3d1", fontSize: 10 }}>—</span>}
+                      </td>
+                      <td style={{ ...td, textAlign: "center" }}>
+                        {k.upcomingCount > 0 ? (
+                          <span title={`${fmt0(k.upcomingQty)} adet kalan · 30 gün içinde`}
+                            style={{ padding: "1px 6px", fontSize: 10, fontWeight: 700, borderRadius: 2, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a" }}>
+                            {k.upcomingCount} · {fmt0(k.upcomingQty)}
+                          </span>
+                        ) : <span style={{ color: "#d6d3d1", fontSize: 10 }}>—</span>}
+                      </td>
                       <td style={{ ...td, textAlign: "right" }}>
                         <span style={{ padding: "1px 6px", fontSize: 10, fontWeight: 700, borderRadius: 2, background: k.fillRateBedel >= 100 ? "#dcfce7" : "#fef3c7", color: k.fillRateBedel >= 100 ? "#166534" : "#92400e" }}>
                           %{k.fillRateBedel}
@@ -557,13 +595,14 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               <div style={{ maxHeight: 320, overflow: "auto" }}>
                 <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
                   <thead style={{ position: "sticky", top: 0, background: "#fef2f2" }}><tr>
-                    <th style={th}>Belge</th><th style={th}>Stok Kodu</th><th style={th}>Ürün Adı</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                    <th style={th}>Müşteri</th><th style={th}>Belge</th><th style={th}>Stok Kodu</th><th style={th}>Ürün Adı</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
                   </tr></thead>
                   <tbody>
                     {orderTerminAlerts.overdue.map(o => {
                       const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
                       return (
                         <tr key={o.id} style={{ borderTop: "1px solid #fecaca" }}>
+                          <td style={td} title={o.customerCode || ""}>{o.customerName || o.customerCode || "—"}</td>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
                           <td style={td}>{o.stokAdi || "—"}</td>
@@ -585,13 +624,14 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               <div style={{ maxHeight: 320, overflow: "auto" }}>
                 <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
                   <thead style={{ position: "sticky", top: 0, background: "#fef3c7" }}><tr>
-                    <th style={th}>Belge</th><th style={th}>Stok Kodu</th><th style={th}>Ürün Adı</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
+                    <th style={th}>Müşteri</th><th style={th}>Belge</th><th style={th}>Stok Kodu</th><th style={th}>Ürün Adı</th><th style={th}>Termin</th><th style={{ ...th, textAlign: "right" }}>Kalan</th>
                   </tr></thead>
                   <tbody>
                     {orderTerminAlerts.upcoming.map(o => {
                       const rem = Math.max(0, (Number(o.orijinalMiktar) || 0) - (Number(o.sevkedilenBaslangic) || 0) - (allocatedByOrder.get(o.id) || 0));
                       return (
                         <tr key={o.id} style={{ borderTop: "1px solid #fde68a" }}>
+                          <td style={td} title={o.customerCode || ""}>{o.customerName || o.customerCode || "—"}</td>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{o.belgeNo}</td>
                           <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{o.stokKodu}</td>
                           <td style={td}>{o.stokAdi || "—"}</td>
