@@ -94,16 +94,26 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     return list;
   }, [orders, search, customerFilter, statusFilter]);
 
+  // KPI için: customerFilter + statusFilter uygulanmış orders (search filter grup bazlı olduğu için burada uygulanmaz)
+  const kpiFilteredOrders = useMemo(() => {
+    return orders.filter(o => {
+      if (customerFilter !== "all" && o.customerCode !== customerFilter) return false;
+      if (statusFilter !== "all" && (o.status || "open") !== statusFilter) return false;
+      return true;
+    });
+  }, [orders, customerFilter, statusFilter]);
+
   const kpi = useMemo(() => {
-    const openOrders = orders.filter(o => (o.status || "open") === "open");
+    const src = kpiFilteredOrders;
+    const openOrders = src.filter(o => (o.status || "open") === "open");
     let toplamKalan = 0;
     for (const o of openOrders) toplamKalan += computeOrderRemaining(o, allocatedByOrder);
-    // Sipariş sayısı = unique (customerCode + belgeNo)
+    // Sipariş sayısı = unique (customerCode + belgeNo) — filtreli set
     const orderKeys = new Set();
-    for (const o of orders) if (o?.customerCode && o?.belgeNo) orderKeys.add(`${o.customerCode}__${o.belgeNo}`);
-    // Currency bazlı bedel toplamları (aktif kalemler için)
-    const bedelByCurrency = new Map(); // cur → { total, kalan }
-    for (const o of orders) {
+    for (const o of src) if (o?.customerCode && o?.belgeNo) orderKeys.add(`${o.customerCode}__${o.belgeNo}`);
+    // Currency bazlı bedel toplamları — iptal olanlar hariç
+    const bedelByCurrency = new Map();
+    for (const o of src) {
       if ((o.status || "open") === "cancelled") continue;
       const cur = o.currency || "EUR";
       if (!bedelByCurrency.has(cur)) bedelByCurrency.set(cur, { total: 0, kalan: 0 });
@@ -116,12 +126,12 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     }
     return {
       totalOrders: orderKeys.size,
-      totalItems: orders.length,
+      totalItems: src.length,
       openItems: openOrders.length,
       toplamKalan,
       bedelByCurrency: Array.from(bedelByCurrency, ([currency, b]) => ({ currency, ...b })).sort((a, b) => b.total - a.total),
     };
-  }, [orders, allocatedByOrder]);
+  }, [kpiFilteredOrders, allocatedByOrder]);
 
   const toggleExpand = (key) => setExpandedBelge(prev => {
     const s = new Set(prev);
