@@ -322,9 +322,20 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       } else {
         // Yeni sipariş: her geçerli kalem için ayrı kayıt + ayrı motor sync
         // Her kalemin kendi termin tarihi olabilir — yoksa header'daki genel termin
+        // ID çakışma önleme: aynı belge+stok+termin tuple'ı varsa suffix (_2, _3, ...)
+        const existingOrdersMap = ordersData?.orders || {};
+        const usedIds = new Set();
+        const generateUniqueId = (baseId) => {
+          if (!existingOrdersMap[baseId] && !usedIds.has(baseId)) return baseId;
+          let i = 2;
+          while (existingOrdersMap[`${baseId}_${i}`] || usedIds.has(`${baseId}_${i}`)) i++;
+          return `${baseId}_${i}`;
+        };
         for (const line of validLines) {
           const lineTeslim = line.teslimTarihi || teslimTarihi || "";
-          const id = buildId(belgeNo, line.stokKodu, lineTeslim);
+          const baseId = buildId(belgeNo, line.stokKodu, lineTeslim);
+          const id = generateUniqueId(baseId);
+          usedIds.add(id);
           const payload = {
             id,
             ...commonPayload,
