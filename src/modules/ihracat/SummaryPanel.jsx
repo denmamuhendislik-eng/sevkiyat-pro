@@ -42,7 +42,7 @@ function computeInvoiceRemainingByLabel(inv) {
   return out;
 }
 
-export default function SummaryPanel({ invoicesData, ordersData, allocationsData }) {
+export default function SummaryPanel({ invoicesData, ordersData, allocationsData, exportSettings = {} }) {
   const [period, setPeriod] = useState("thisYear"); // "thisMonth" | "thisYear" | "year" | "custom" | "all"
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
   const [customFrom, setCustomFrom] = useState("");
@@ -219,6 +219,51 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       notShippedAmount: v.notShippedAmount,
     })).sort((a, b) => b.totalAmount - a.totalAmount);
   }, [filteredOrders, allocatedByOrder, invoicedOrderIds]);
+
+  // Müşteri bazlı sipariş KPI — motor bağlı olan + olmayan hepsi listelenir
+  const motorLinkedCustomers = Array.isArray(exportSettings?.motorLinkedCustomers) ? exportSettings.motorLinkedCustomers : [];
+  const customerOrderKpis = useMemo(() => {
+    const map = new Map(); // `${code}_${currency}` → aggregate
+    for (const o of filteredOrders) {
+      if ((o.status || "open") === "cancelled") continue;
+      const cur = o.currency || "EUR";
+      const code = o.customerCode || "(bilinmiyor)";
+      const key = `${code}__${cur}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          customerCode: code,
+          customerName: o.customerName || code,
+          currency: cur,
+          belgeSet: new Set(),
+          itemCount: 0,
+          totalBedel: 0,
+          kalanBedel: 0,
+          totalQty: 0,
+          kalanQty: 0,
+        });
+      }
+      const b = map.get(key);
+      if (o.belgeNo) b.belgeSet.add(`${code}__${o.belgeNo}`);
+      b.itemCount++;
+      const orij = Number(o.orijinalMiktar) || 0;
+      const sevkBas = Number(o.sevkedilenBaslangic) || 0;
+      const tahsis = allocatedByOrder.get(o.id) || 0;
+      const kalan = Math.max(0, orij - sevkBas - tahsis);
+      const price = Number(o.birimFiyat) || 0;
+      b.totalBedel += orij * price;
+      b.kalanBedel += kalan * price;
+      b.totalQty += orij;
+      b.kalanQty += kalan;
+    }
+    return Array.from(map.values()).map(x => ({
+      ...x,
+      belgeCount: x.belgeSet.size,
+      fillRateBedel: x.totalBedel > 0 ? Math.round(((x.totalBedel - x.kalanBedel) / x.totalBedel) * 100) : 0,
+      fillRateQty: x.totalQty > 0 ? Math.round(((x.totalQty - x.kalanQty) / x.totalQty) * 100) : 0,
+      isMotorLinked: motorLinkedCustomers.includes(x.customerCode),
+    })).sort((a, b) => b.kalanBedel - a.kalanBedel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [filteredOrders, allocatedByOrder, exportSettings]);
 
   // Termin uyarıları — yaklaşan (30 gün) + geciken
   const orderTerminAlerts = useMemo(() => {
@@ -445,6 +490,59 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
               </div>
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Müşteri bazlı sipariş özeti */}
+      {customerOrderKpis.length > 0 && (
+        <div style={{ marginBottom: 14 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#44403c", marginBottom: 8 }}>
+            🏢 Müşteri Bazlı Sipariş Özeti ({customerOrderKpis.length} satır)
+          </div>
+          <div style={{ background: "#fff", border: "1px solid #e7e5e4", borderRadius: 6, overflow: "auto" }}>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead style={{ background: "#f5f5f4" }}>
+                <tr>
+                  <th style={th}>Müşteri</th>
+                  <th style={{ ...th, textAlign: "center" }}>Motor</th>
+                  <th style={th}>Currency</th>
+                  <th style={{ ...th, textAlign: "right" }}>Belge</th>
+                  <th style={{ ...th, textAlign: "right" }}>Kalem</th>
+                  <th style={{ ...th, textAlign: "right" }}>Toplam Bedel</th>
+                  <th style={{ ...th, textAlign: "right" }}>Kalan Bedel</th>
+                  <th style={{ ...th, textAlign: "right" }}>Fill %</th>
+                </tr>
+              </thead>
+              <tbody>
+                {customerOrderKpis.map((k, i) => {
+                  const rowBg = k.isMotorLinked ? "transparent" : "#eff6ff";
+                  return (
+                    <tr key={`${k.customerCode}_${k.currency}_${i}`} style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
+                      <td style={td}>
+                        <div style={{ fontWeight: 600 }}>{k.customerName}</div>
+                        <div style={{ fontSize: 9, color: "#78716c", fontFamily: "ui-monospace, monospace" }}>{k.customerCode}</div>
+                      </td>
+                      <td style={{ ...td, textAlign: "center" }}>
+                        {k.isMotorLinked
+                          ? <span title="Motor'a bağlı müşteri" style={{ fontSize: 12 }}>🔗</span>
+                          : <span title="Motor'a bağlı değil — yeni müşteri" style={{ padding: "1px 5px", fontSize: 9, fontWeight: 700, background: "#dbeafe", color: "#1e40af", borderRadius: 2 }}>YENİ</span>}
+                      </td>
+                      <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>{k.currency}</td>
+                      <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{fmt0(k.belgeCount)}</td>
+                      <td style={{ ...td, textAlign: "right", color: "#78716c" }}>{fmt0(k.itemCount)}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 600, color: "#1e40af" }}>{fmt(k.totalBedel)}</td>
+                      <td style={{ ...td, textAlign: "right", fontWeight: 700, color: k.kalanBedel > 0 ? "#dc2626" : "#a8a29e" }}>{fmt(k.kalanBedel)}</td>
+                      <td style={{ ...td, textAlign: "right" }}>
+                        <span style={{ padding: "1px 6px", fontSize: 10, fontWeight: 700, borderRadius: 2, background: k.fillRateBedel >= 100 ? "#dcfce7" : "#fef3c7", color: k.fillRateBedel >= 100 ? "#166534" : "#92400e" }}>
+                          %{k.fillRateBedel}
+                        </span>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 

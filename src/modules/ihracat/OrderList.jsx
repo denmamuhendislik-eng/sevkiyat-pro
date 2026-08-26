@@ -270,13 +270,21 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
             const isExp = expandedBelge.has(g.key);
             const totalOrij = g.items.reduce((s, o) => s + Number(o.orijinalMiktar || 0), 0);
             const totalKalan = g.items.reduce((s, o) => s + computeOrderRemaining(o, allocatedByOrder), 0);
+            // Grup için toplam sipariş bedeli — orij × birim fiyat (aktif kalemler)
+            const totalOrijBedel = g.items.reduce((s, o) => {
+              if ((o.status || "open") === "cancelled") return s;
+              return s + (Number(o.orijinalMiktar) || 0) * (Number(o.birimFiyat) || 0);
+            }, 0);
             // Grup için kalan sevk edilecek tutar — kalan miktar × birim fiyat (aktif kalemler)
-            // Bağlı ürünler dahil (birim fiyat 0 olduğu için tutara etkisi yok genelde)
             const totalKalanTutar = g.items.reduce((s, o) => {
               if ((o.status || "open") === "cancelled") return s;
               const kalan = computeOrderRemaining(o, allocatedByOrder);
               return s + kalan * (Number(o.birimFiyat) || 0);
             }, 0);
+            // Bedel bazlı fill rate — sevkedilen bedel / toplam sipariş bedeli
+            const fillRateBedel = totalOrijBedel > 0
+              ? Math.round(((totalOrijBedel - totalKalanTutar) / totalOrijBedel) * 100)
+              : 0;
             const openCount = g.items.filter(o => (o.status || "open") === "open").length;
             // Grup statüsü: hepsi aynı ise onu, karışıksa "mixed"
             const statuses = new Set(g.items.map(o => o.status || "open"));
@@ -295,10 +303,11 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                         · {g.items.length} kalem · {totalKalan.toLocaleString("tr-TR")}/{totalOrij.toLocaleString("tr-TR")} kalan
                       </span>
                       {totalOrij > 0 && (() => {
-                        const grPct = Math.max(0, Math.min(100, Math.round(((totalOrij - totalKalan) / totalOrij) * 100)));
+                        // Bar bedel bazlı fill rate'e göre renklenir
+                        const grPct = Math.max(0, Math.min(100, fillRateBedel));
                         const barColor = grPct >= 100 ? "#166534" : (grPct > 0 ? "#f59e0b" : "#d6d3d1");
                         return (
-                          <span title={`Grup fill rate: %${grPct} (sevk edilen / toplam)`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                          <span title={`Bedel fill rate: %${grPct} (sevkedilen bedel / toplam bedel)`} style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
                             <span style={{ display: "inline-block", width: 80, height: 6, background: "#f5f5f4", borderRadius: 3, overflow: "hidden", border: "1px solid #e7e5e4" }}>
                               <span style={{ display: "block", width: `${grPct}%`, height: "100%", background: barColor, transition: "width 0.3s" }} />
                             </span>
@@ -306,9 +315,10 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                           </span>
                         );
                       })()}
-                      {totalKalanTutar > 0 && (
-                        <span style={{ fontSize: 11, fontWeight: 700, color: "#166534" }} title="Kalan sevk edilecek tutar (kalan miktar × birim fiyat)">
-                          💰 {totalKalanTutar.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {g.currency || ""}
+                      {totalOrijBedel > 0 && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#166534" }}
+                          title={`Kalan: ${totalKalanTutar.toLocaleString("tr-TR", { minimumFractionDigits: 2 })} / Toplam: ${totalOrijBedel.toLocaleString("tr-TR", { minimumFractionDigits: 2 })} ${g.currency}`}>
+                          💰 {totalKalanTutar.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / {totalOrijBedel.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {g.currency || ""} kalan (%{100 - fillRateBedel} bedel)
                         </span>
                       )}
                     </div>
