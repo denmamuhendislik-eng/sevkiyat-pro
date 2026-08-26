@@ -6,8 +6,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   subscribeExportShipments, updateExportShipmentStatus, deleteExportShipment,
+  subscribeInvoiceSettings,
 } from "./firestore";
 import ExportShipmentForm from "./ExportShipmentForm";
+import { generatePackingListPdf, generateShipmentLabelPdf } from "./shipmentPdfs";
 
 const STATUS_META = {
   planned: { label: "Planlandı", bg: "#dbeafe", fg: "#1e40af" },
@@ -27,10 +29,12 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
   const [statusFilter, setStatusFilter] = useState("all");
   const [showForm, setShowForm] = useState(false);
   const [editingShipment, setEditingShipment] = useState(null);
+  const [invoiceSettings, setInvoiceSettings] = useState({});
 
   useEffect(() => {
     const u = subscribeExportShipments(d => { setData(d || { shipments: {} }); setLoaded(true); });
-    return () => u && u();
+    const u2 = subscribeInvoiceSettings(d => setInvoiceSettings(d || {}));
+    return () => { u && u(); u2 && u2(); };
   }, []);
 
   // v23 — Motor'a bağlı müşterileri (OFMER vb) burada gösterme
@@ -82,6 +86,25 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
     }
   };
 
+  const customerDefaults = exportSettings?.customerDefaults || {};
+  const pdfOpts = { products, invoiceSettings, customerDefaults };
+
+  const handleDownloadPackingList = async (s) => {
+    try {
+      await generatePackingListPdf(s, pdfOpts);
+    } catch (e) {
+      alert("Çeki listesi üretilemedi: " + e.message);
+    }
+  };
+
+  const handleDownloadLabel = async (s) => {
+    try {
+      await generateShipmentLabelPdf(s, pdfOpts);
+    } catch (e) {
+      alert("Etiket üretilemedi: " + e.message);
+    }
+  };
+
   return (
     <div>
       {/* Üst araç barı */}
@@ -127,7 +150,7 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
                 <th style={{ ...th, textAlign: "right" }}>Kalem</th>
                 <th style={{ ...th, textAlign: "right" }}>Toplam Adet</th>
                 <th style={{ ...th, textAlign: "center" }}>Durum</th>
-                <th style={{ ...th, textAlign: "center", width: 130 }}>Aksiyon</th>
+                <th style={{ ...th, textAlign: "center", width: 200 }}>Aksiyon</th>
               </tr>
             </thead>
             <tbody>
@@ -160,6 +183,12 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
                       )}
                     </td>
                     <td style={{ ...td, textAlign: "center" }}>
+                      <button onClick={() => handleDownloadPackingList(s)}
+                        title="Çeki Listesi PDF"
+                        style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 3, cursor: "pointer" }}>📋</button>
+                      <button onClick={() => handleDownloadLabel(s)}
+                        title="Sevkiyat Etiketi PDF"
+                        style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>🏷</button>
                       <button onClick={() => openEdit(s)} disabled={!canEdit}
                         title="Detay / Düzenle"
                         style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#fefce8", color: "#854d0e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
