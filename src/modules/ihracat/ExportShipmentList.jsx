@@ -33,7 +33,12 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
     return () => u && u();
   }, []);
 
-  const shipments = useMemo(() => Object.values(data?.shipments || {}), [data]);
+  // v23 — Motor'a bağlı müşterileri (OFMER vb) burada gösterme
+  const motorLinkedCustomers = Array.isArray(exportSettings?.motorLinkedCustomers) ? exportSettings.motorLinkedCustomers : [];
+
+  const shipments = useMemo(() =>
+    Object.values(data?.shipments || {}).filter(s => !motorLinkedCustomers.includes(s.customerCode)),
+  [data, motorLinkedCustomers]);
 
   const customerOptions = useMemo(() => {
     const map = new Map();

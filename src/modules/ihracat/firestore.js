@@ -218,6 +218,20 @@ export async function setMotorSyncEnabled(enabled, { canEdit, userEmail = "" } =
   }, { merge: true });
 }
 
+// v23 Motor'a bağlı müşteri kodları — sevkiyat sekmesinde bunlar hariç
+// tutulur (çünkü OFMER gibi müşteriler motor'un Sevkiyat Detay ekranında
+// zaten yönetiliyor).
+export async function saveMotorLinkedCustomers(codes, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!Array.isArray(codes)) throw new Error("codes array olmalı");
+  const ref = doc(db, APP_COL, EXPORT_SETTINGS_DOC);
+  await setDoc(ref, {
+    motorLinkedCustomers: codes.filter(Boolean),
+    updatedAt: new Date().toISOString(),
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
 export async function saveCustomerDefaults(customerCode, defaults, { canEdit, userEmail = "" } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!customerCode) throw new Error("customerCode zorunlu");

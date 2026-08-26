@@ -46,17 +46,25 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
   }, [editingShipment]);
 
   // Müşteri seçenekleri — ihracat siparişlerinden + customerDefaults
+  // v23: Motor'a bağlı müşteriler HARİÇ (Sevkiyat Detay ekranında yönetilirler)
   const customerDefaults = exportSettings?.customerDefaults || {};
+  const motorLinkedCustomers = Array.isArray(exportSettings?.motorLinkedCustomers) ? exportSettings.motorLinkedCustomers : [];
   const customerOptions = useMemo(() => {
     const map = new Map();
     for (const o of Object.values(ordersData?.orders || {})) {
-      if (o?.customerCode) map.set(o.customerCode, o.customerName || o.customerCode);
+      if (o?.customerCode && !motorLinkedCustomers.includes(o.customerCode)) {
+        map.set(o.customerCode, o.customerName || o.customerCode);
+      }
     }
     for (const [code, d] of Object.entries(customerDefaults)) {
+      if (motorLinkedCustomers.includes(code)) continue;
       if (!map.has(code)) map.set(code, d.customerName || code);
     }
     return Array.from(map, ([code, name]) => ({ code, name }));
-  }, [ordersData, customerDefaults]);
+  }, [ordersData, customerDefaults, motorLinkedCustomers]);
+
+  // Motor'a bağlı müşteri seçilmeye çalışılırsa uyar
+  const isMotorLinked = customerCode && motorLinkedCustomers.includes(customerCode);
 
   // Seçili müşterinin açık sipariş kalemleri (kalan miktar > 0, isLinkedChild dahil)
   const openOrderLines = useMemo(() => {
@@ -133,7 +141,8 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
   };
 
   const canSave = customerCode && customerName && shipmentDate && items.length > 0
-    && items.every(it => Number(it.qty) > 0);
+    && items.every(it => Number(it.qty) > 0)
+    && !isMotorLinked; // motor'a bağlı müşteri kaydı engellenir
 
   const handleSave = async () => {
     if (!canSave) {
@@ -183,6 +192,12 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
         </div>
 
         {error && <div style={{ padding: 8, marginBottom: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, fontSize: 11 }}>⚠ {error}</div>}
+        {isMotorLinked && (
+          <div style={{ padding: 8, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11 }}>
+            ⚠ <b>Bu müşteri motor'a bağlı</b> — Sevkiyat Detay ekranından yönetilmesi gerekiyor. Bu form üzerinden sevkiyat kaydı oluşturmak <b>tavsiye edilmez</b> (yönetim iki ayrı yerde parçalanır).
+            {canEdit && <span style={{ display: "block", marginTop: 4, fontSize: 10 }}>Fatura Ayarları → "Motor'a Bağlı Müşteriler" bölümünden bu bağlantıyı yönetebilirsin.</span>}
+          </div>
+        )}
 
         {/* Header info */}
         <Section title="Sevkiyat Bilgisi">

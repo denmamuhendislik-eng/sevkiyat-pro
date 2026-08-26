@@ -12,6 +12,7 @@ import {
   subscribeInvoiceSettings, saveInvoiceSettings, setInvoiceCounter,
   uploadStampImage, deleteStampImage, saveBankAccounts,
   uploadLogoImage, deleteLogoImage, setMotorSyncEnabled,
+  saveMotorLinkedCustomers,
 } from "./firestore";
 
 // Denma default bilgileri (referans PDF'ten)
@@ -36,7 +37,7 @@ const DEFAULT_BANK_ACCOUNTS = [{
 const DEFAULT_OIL_PRODUCT = { description: "GEAR OIL ISO VG220", unit: "KG", unitPrice: 5, currency: "EUR" };
 const DEFAULT_TRANSPORT = { description: "KONYA MILAN TRANSPORTATION COST", unit: "AD", unitPrice: 3900, currency: "EUR" };
 
-export default function InvoiceSettingsPanel({ canEdit, userEmail, products = [], motorSyncEnabled = true }) {
+export default function InvoiceSettingsPanel({ canEdit, userEmail, products = [], motorSyncEnabled = true, exportSettings = {}, ordersData = { orders: {} } }) {
   const [motorSyncBusy, setMotorSyncBusy] = useState(false);
   const [motorSyncError, setMotorSyncError] = useState("");
   const handleMotorSyncToggle = async (nextEnabled) => {
@@ -53,6 +54,21 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail, products = []
     try {
       await setMotorSyncEnabled(nextEnabled, { canEdit, userEmail });
     } catch (e) { setMotorSyncError(e.message); } finally { setMotorSyncBusy(false); }
+  };
+
+  // v23 — Motor'a bağlı müşteri kodları yönetimi
+  const motorLinkedCustomers = Array.isArray(exportSettings?.motorLinkedCustomers) ? exportSettings.motorLinkedCustomers : [];
+  const [linkedCustomersBusy, setLinkedCustomersBusy] = useState(false);
+  const [linkedCustomersError, setLinkedCustomersError] = useState("");
+
+  const toggleMotorLinkedCustomer = async (code) => {
+    if (!canEdit || !code) return;
+    const isLinked = motorLinkedCustomers.includes(code);
+    const next = isLinked ? motorLinkedCustomers.filter(c => c !== code) : [...motorLinkedCustomers, code];
+    setLinkedCustomersBusy(true); setLinkedCustomersError("");
+    try {
+      await saveMotorLinkedCustomers(next, { canEdit, userEmail });
+    } catch (e) { setLinkedCustomersError(e.message); } finally { setLinkedCustomersBusy(false); }
   };
   const [settings, setSettings] = useState({});
   const [loaded, setLoaded] = useState(false);
@@ -252,6 +268,57 @@ export default function InvoiceSettingsPanel({ canEdit, userEmail, products = []
             </span>
             {motorSyncError && <div style={{ marginTop: 6, color: "#991b1b" }}>⚠ {motorSyncError}</div>}
           </div>
+        </div>
+      </Section>
+
+      {/* Motor'a bağlı müşteriler — Sevkiyat sekmesinde hariç tutulur */}
+      <Section title="🔗 Motor'a Bağlı Müşteriler (İhracat Sevkiyat sekmesinde hariç tutulur)">
+        <div style={{ fontSize: 11, color: "#57534e", lineHeight: 1.5, marginBottom: 8 }}>
+          Bu listedeki müşteriler <b>motor tarafındaki Sevkiyat Detay</b> ekranında yönetildiği için,
+          İhracat modülünün "📦 Sevkiyat" sekmesinde <b>görünmez</b>.
+          Yeni müşteri motor'a bağlandığında burada işaretle.
+        </div>
+        {(() => {
+          // Aday müşteri listesi: ihracat siparişlerinden + customerDefaults'tan
+          const map = new Map();
+          for (const o of Object.values(ordersData?.orders || {})) {
+            if (o?.customerCode) map.set(o.customerCode, o.customerName || o.customerCode);
+          }
+          const cd = exportSettings?.customerDefaults || {};
+          for (const [code, d] of Object.entries(cd)) {
+            if (!map.has(code)) map.set(code, d.customerName || code);
+          }
+          // Motor'a bağlı ama artık siparişte yoksa yine göster (kaydı kaybetmemek için)
+          for (const code of motorLinkedCustomers) {
+            if (!map.has(code)) map.set(code, code);
+          }
+          const list = Array.from(map, ([code, name]) => ({ code, name }))
+            .sort((a, b) => a.name.localeCompare(b.name, "tr"));
+          if (list.length === 0) {
+            return <div style={{ padding: 10, fontSize: 11, color: "#a8a29e", textAlign: "center" }}>Henüz müşteri yok.</div>;
+          }
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(240px, 1fr))", gap: 4, maxHeight: 260, overflow: "auto", padding: 6, background: "#fafaf9", borderRadius: 4 }}>
+              {list.map(c => {
+                const isLinked = motorLinkedCustomers.includes(c.code);
+                return (
+                  <label key={c.code} style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 8px", background: isLinked ? "#eff6ff" : "#fff", border: `1px solid ${isLinked ? "#bfdbfe" : "#e7e5e4"}`, borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed", fontSize: 11 }}>
+                    <input type="checkbox" checked={isLinked}
+                      onChange={() => toggleMotorLinkedCustomer(c.code)}
+                      disabled={!canEdit || linkedCustomersBusy} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 500, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
+                      <div style={{ fontSize: 9, color: "#78716c", fontFamily: "ui-monospace, monospace" }}>{c.code}</div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          );
+        })()}
+        {linkedCustomersError && <div style={{ marginTop: 6, fontSize: 11, color: "#991b1b" }}>⚠ {linkedCustomersError}</div>}
+        <div style={{ marginTop: 6, fontSize: 10, color: "#78716c" }}>
+          Seçili: <b>{motorLinkedCustomers.length}</b> müşteri motor'a bağlı sayılır.
         </div>
       </Section>
 

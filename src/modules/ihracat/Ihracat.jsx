@@ -149,7 +149,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         <SummaryPanel invoicesData={invoicesData} ordersData={ordersData} allocationsData={allocationsData} />
       )}
       {subTab === "settings" && isAdmin && (
-        <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} motorSyncEnabled={motorSyncEnabled} />
+        <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} motorSyncEnabled={motorSyncEnabled} exportSettings={settings} ordersData={ordersData} />
       )}
     </div>
   );
