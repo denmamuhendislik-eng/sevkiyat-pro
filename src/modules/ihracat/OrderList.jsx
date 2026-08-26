@@ -101,11 +101,25 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
     // Sipariş sayısı = unique (customerCode + belgeNo)
     const orderKeys = new Set();
     for (const o of orders) if (o?.customerCode && o?.belgeNo) orderKeys.add(`${o.customerCode}__${o.belgeNo}`);
+    // Currency bazlı bedel toplamları (aktif kalemler için)
+    const bedelByCurrency = new Map(); // cur → { total, kalan }
+    for (const o of orders) {
+      if ((o.status || "open") === "cancelled") continue;
+      const cur = o.currency || "EUR";
+      if (!bedelByCurrency.has(cur)) bedelByCurrency.set(cur, { total: 0, kalan: 0 });
+      const b = bedelByCurrency.get(cur);
+      const orij = Number(o.orijinalMiktar) || 0;
+      const price = Number(o.birimFiyat) || 0;
+      const kalan = computeOrderRemaining(o, allocatedByOrder);
+      b.total += orij * price;
+      b.kalan += kalan * price;
+    }
     return {
       totalOrders: orderKeys.size,
       totalItems: orders.length,
       openItems: openOrders.length,
       toplamKalan,
+      bedelByCurrency: Array.from(bedelByCurrency, ([currency, b]) => ({ currency, ...b })).sort((a, b) => b.total - a.total),
     };
   }, [orders, allocatedByOrder]);
 
@@ -226,6 +240,13 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
         <Kpi label="Sipariş" value={kpi.totalOrders} color="#1e40af" sub={`${kpi.totalItems} kalem`} />
         <Kpi label="Açık Kalem" value={kpi.openItems} color="#166534" />
         <Kpi label="Toplam Kalan Miktar" value={kpi.toplamKalan.toLocaleString("tr-TR")} color="#166534" />
+        {kpi.bedelByCurrency.map(b => (
+          <Kpi key={`total_${b.currency}`}
+            label={`Toplam Bedel (${b.currency})`}
+            value={b.total.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            color="#1e40af"
+            sub={`Kalan: ${b.kalan.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`} />
+        ))}
       </div>
 
       {/* Filtre bar */}
@@ -319,6 +340,13 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
                         <span style={{ fontSize: 11, fontWeight: 700, color: "#166534" }}
                           title={`Kalan: ${totalKalanTutar.toLocaleString("tr-TR", { minimumFractionDigits: 2 })} / Toplam: ${totalOrijBedel.toLocaleString("tr-TR", { minimumFractionDigits: 2 })} ${g.currency}`}>
                           💰 {totalKalanTutar.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} / {totalOrijBedel.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {g.currency || ""} kalan (%{100 - fillRateBedel} bedel)
+                        </span>
+                      )}
+                      {/* Tamamlanmış ama hala "open" status'ta olan gruplar için kapatılabilir uyarısı */}
+                      {totalKalan <= 0 && openCount > 0 && (
+                        <span title="Tüm kalemler sevk edilmiş — grubu Kapalı yapabilirsin (aksiyon dropdown'undan)"
+                          style={{ padding: "2px 8px", fontSize: 9, fontWeight: 700, background: "#dcfce7", color: "#166534", borderRadius: 3, border: "1px solid #86efac" }}>
+                          ✅ Tamamlandı — kapatılabilir
                         </span>
                       )}
                     </div>
