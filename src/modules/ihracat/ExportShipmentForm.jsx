@@ -4,6 +4,7 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import { saveExportShipment } from "./firestore";
+import { computeShipmentAllocatedByOrder } from "./allocationCalc";
 
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR");
 
@@ -12,7 +13,7 @@ function newShipmentId() {
   return `SHP_${Date.now()}_${rand}`;
 }
 
-export default function ExportShipmentForm({ editingShipment, products, ordersData, exportSettings, canEdit, userEmail, onSaved, onCancel }) {
+export default function ExportShipmentForm({ editingShipment, products, ordersData, shipmentsData, exportSettings, canEdit, userEmail, onSaved, onCancel }) {
   const isEdit = !!editingShipment;
 
   const [customerCode, setCustomerCode] = useState("");
@@ -66,6 +67,15 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
   // Motor'a bağlı müşteri seçilmeye çalışılırsa uyar
   const isMotorLinked = customerCode && motorLinkedCustomers.includes(customerCode);
 
+  // Diğer aktif shipmentlarda bu sipariş id'sine tahsis edilmiş miktar
+  // (edit modunda: kendi shipment'ını sayma). Fatura kesilmiş dahil değil — o zaten
+  // computeAllocatedByOrder → sipariş bakiyesine düşmüş oluyor; burada sadece "başka
+  // aktif shipment kaptı ama fatura kesilmedi" senaryosunu ele alıyoruz.
+  const shipmentAllocatedByOrder = useMemo(
+    () => computeShipmentAllocatedByOrder(shipmentsData?.shipments || {}, editingShipment?.id || null),
+    [shipmentsData, editingShipment]
+  );
+
   // Seçili müşterinin açık sipariş kalemleri (kalan miktar > 0, isLinkedChild dahil)
   const openOrderLines = useMemo(() => {
     if (!customerCode) return [];
@@ -75,8 +85,9 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
       .map(o => {
         const orij = Number(o.orijinalMiktar) || 0;
         const sevkBas = Number(o.sevkedilenBaslangic) || 0;
-        // Basit: bu formda tahsis miktarını hesaplamıyoruz — sadece VIO başlangıç sevkini düşüyoruz
-        const remaining = Math.max(0, orij - sevkBas);
+        const otherShipmentUsed = shipmentAllocatedByOrder.get(o.id) || 0;
+        // Kalan = orijinal - VIO başlangıç - diğer aktif shipment tahsisleri
+        const remaining = Math.max(0, orij - sevkBas - otherShipmentUsed);
         // Bu shipment (edit modu) içinde zaten kullanılan miktarı da çıkar
         const usedInThisShipment = items.reduce((sum, it) => {
           const alloc = (it.allocations || []).find(a => a.orderId === o.id);
@@ -87,7 +98,7 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
       })
       .filter(x => x.availableForShipment > 0 || x.usedInThisShipment > 0)
       .sort((a, b) => (a.order.teslimTarihi || "9999").localeCompare(b.order.teslimTarihi || "9999"));
-  }, [customerCode, ordersData, items]);
+  }, [customerCode, ordersData, items, shipmentAllocatedByOrder]);
 
   const applyCustomer = (code) => {
     setCustomerCode(code);

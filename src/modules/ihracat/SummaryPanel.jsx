@@ -42,7 +42,7 @@ function computeInvoiceRemainingByLabel(inv) {
   return out;
 }
 
-export default function SummaryPanel({ invoicesData, ordersData, allocationsData, exportSettings = {} }) {
+export default function SummaryPanel({ invoicesData, ordersData, allocationsData, shipmentsData, exportSettings = {} }) {
   const [period, setPeriod] = useState("thisYear"); // "thisMonth" | "thisYear" | "year" | "custom" | "all"
   const [selectedYear, setSelectedYear] = useState(String(new Date().getFullYear()));
   const [customFrom, setCustomFrom] = useState("");
@@ -142,8 +142,8 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
 
   // Tahsis edilen miktar (order.id → allocated qty)
   const allocatedByOrder = useMemo(
-    () => computeAllocatedByOrder(allocationsData?.allocations || {}),
-    [allocationsData]
+    () => computeAllocatedByOrder(allocationsData?.allocations || {}, shipmentsData?.shipments || {}),
+    [allocationsData, shipmentsData]
   );
 
   // Faturalanmış orderId set — active (VOID hariç) faturalarda linkedOrderIds

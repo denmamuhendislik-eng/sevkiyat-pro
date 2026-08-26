@@ -57,11 +57,12 @@ export default function InvoiceCreateModal({
   products,
   ordersData,
   allocationsData,
+  shipmentsData,     // v23 Faz 3 — kalan bakiye + duplicate fatura tespiti için
   canEdit,
   userEmail,
   onClose,
   onCreated,
-  mode = "container", // "container" | "blank" (blank = boş fatura, nakliye vb.)
+  mode = "container", // "container" | "blank" | "shipment"
   // "blank" moduna ön-doldurma (nakliye faturası akışı için)
   presetCustomerCode = "",
   presetCustomerName = "",
@@ -70,6 +71,9 @@ export default function InvoiceCreateModal({
   presetCurrency = "",
   presetOrderNr = "",
   presetTitle = "",           // header başlığı override
+  // "shipment" moduna girdi (motor dışı sevkiyattan fatura)
+  shipmentId = "",
+  shipmentItems = null,       // shipment.items[] — {pid, stokKodu, stokAdi, descriptionEn, qty, allocations}
 }) {
   const [settings, setSettings] = useState({});
   const [exportSettings, setExportSettings] = useState({});
@@ -98,16 +102,42 @@ export default function InvoiceCreateModal({
   }, [existingInvoicesData]);
 
   const allocatedByOrder = useMemo(
-    () => computeAllocatedByOrder(allocationsData?.allocations || {}),
-    [allocationsData]
+    () => computeAllocatedByOrder(allocationsData?.allocations || {}, shipmentsData?.shipments || {}),
+    [allocationsData, shipmentsData]
   );
 
-  // Kaynak kalemleri hazırla: containerId varsa konteyner tahsislerinden
-  // (order bazlı grupla), yoksa boş başla.
+  // Kaynak kalemleri hazırla:
+  //   mode="container" → konteyner tahsislerinden (yıl_containerId_pid key'i)
+  //   mode="shipment"  → shipment.items[].allocations'tan (motor dışı sevkiyat)
+  //   mode="blank"     → boş
   const sourceOrderLines = useMemo(() => {
-    if (mode !== "container" || !containerId) return {};
     // orderId → { order, lines: [{pid, description, qty, unit, unitPrice}] }
     const byOrder = {};
+
+    if (mode === "shipment" && Array.isArray(shipmentItems)) {
+      for (const item of shipmentItems) {
+        for (const a of (item.allocations || [])) {
+          if (!a?.orderId || !Number(a.qty)) continue;
+          const orderObj = Object.values(ordersData?.orders || {}).find(o => o.id === a.orderId);
+          if (!orderObj) continue;
+          if (!byOrder[a.orderId]) byOrder[a.orderId] = { order: orderObj, lines: [] };
+          const prod = (products || []).find(p => Number(p.id) === Number(item.pid));
+          byOrder[a.orderId].lines.push({
+            pid: item.pid,
+            description: orderObj.descriptionEn || prod?.nameEN || item.descriptionEn || item.stokAdi || "",
+            qty: Number(a.qty) || 0,
+            unit: orderObj.brm || "AD",
+            unitPrice: Number(orderObj.birimFiyat) || 0,
+            amount: (Number(a.qty) || 0) * (Number(orderObj.birimFiyat) || 0),
+            sourceOrderId: a.orderId,
+            sourceShipmentId: shipmentId,
+          });
+        }
+      }
+      return byOrder;
+    }
+
+    if (mode !== "container" || !containerId) return {};
     for (const item of (items || [])) {
       const key = `${year}_${containerId}_${item.pid}`;
       const alloc = allocationsData?.allocations?.[key];
@@ -131,7 +161,7 @@ export default function InvoiceCreateModal({
       }
     }
     return byOrder;
-  }, [mode, containerId, year, items, allocationsData, ordersData, products]);
+  }, [mode, containerId, year, items, allocationsData, ordersData, products, shipmentId, shipmentItems]);
 
   // Otomatik grup önerisi: aynı paymentPlan hash olanları birleştir
   const initialGroups = useMemo(() => {
@@ -186,10 +216,11 @@ export default function InvoiceCreateModal({
       }
     }
 
-    // (c) Konteynerdeki items listesinde her pid'in ilk gelme index'i
-    //     (items prop'u zaten sevkiyat detay kartındaki sıralı listedir)
+    // (c) items listesinde her pid'in ilk gelme index'i
+    //     container mode → prop 'items', shipment mode → shipmentItems
+    const orderingSource = (mode === "shipment" ? shipmentItems : items) || [];
     const pidToItemIdx = new Map();
-    (items || []).forEach((it, idx) => {
+    orderingSource.forEach((it, idx) => {
       const pid = Number(it.pid);
       if (!pidToItemIdx.has(pid)) pidToItemIdx.set(pid, idx);
     });
@@ -435,8 +466,10 @@ export default function InvoiceCreateModal({
           orderNr: g.orderNr,
           containerId: containerId || null,
           year: year || null,
+          shipmentId: shipmentId || null,
           linkedOrderIds: g.orderIds,
           linkedAllocationKeys: g.orderIds.map(oid => sourceOrderLines[oid]?.lines?.[0]?.sourceContainerAllocKey).filter(Boolean),
+          linkedShipmentId: mode === "shipment" ? (shipmentId || null) : null,
           bankAccount: {
             id: bank.id,
             label: bank.label,
@@ -446,7 +479,7 @@ export default function InvoiceCreateModal({
             currency: bank.currency,
           },
           status: "issued",
-          source: mode === "container" ? "container-allocation" : "blank",
+          source: mode === "container" ? "container-allocation" : (mode === "shipment" ? "shipment" : "blank"),
         };
         await saveExportInvoice(invoiceObj, { canEdit, userEmail });
         created.push({ invoiceNo, invoiceObj });
@@ -496,7 +529,7 @@ export default function InvoiceCreateModal({
           <div>
             <div style={{ fontSize: 15, fontWeight: 600 }}>{presetTitle || "🧾 Fatura Oluştur"}</div>
             <div style={{ fontSize: 10, color: "#78716c" }}>
-              {mode === "container" ? "Konteyner tahsislerinden" : "Boş fatura"} · {totalToCreate} fatura kesilecek
+              {mode === "container" ? "Konteyner tahsislerinden" : (mode === "shipment" ? "Sevkiyat kalemlerinden" : "Boş fatura")} · {totalToCreate} fatura kesilecek
             </div>
           </div>
           <button onClick={onClose} disabled={processing} style={{ background: "transparent", border: "none", cursor: "pointer", fontSize: 18 }}>✕</button>
@@ -525,7 +558,9 @@ export default function InvoiceCreateModal({
         {/* Gruplar */}
         {groups.length === 0 ? (
           <div style={{ padding: 20, textAlign: "center", color: "#a8a29e", fontSize: 12 }}>
-            Konteynerde tahsis edilmiş kalem yok. Önce tahsis yap, sonra fatura oluştur.
+            {mode === "shipment"
+              ? "Sevkiyatta faturalanabilir kalem yok (ilgili siparişler silinmiş olabilir)."
+              : "Konteynerde tahsis edilmiş kalem yok. Önce tahsis yap, sonra fatura oluştur."}
           </div>
         ) : (
           groups.map((g, gi) => {

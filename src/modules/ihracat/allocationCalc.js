@@ -9,16 +9,56 @@
 // sevkedilenBaslangic: VIO'dan gelen ilk yükleme sırasında "Sevk Edilen Miktar" değeri.
 // Sisteme ilk giriş anındaki bakiye takip için. Sistem içi tahsisler tahsisEdilen'e yazılır.
 
-export function computeAllocatedByOrder(allocationsMap) {
+// v23: shipmentsMap eklendi — motor dışı müşteri sevkiyatlarında,
+// fatura kesildikten (status === "invoiced") sonra sipariş bakiyesi düşer.
+// Motor tarafı (OFMER) için mevcut mantık: containerAllocations tahsis anında sayılır.
+// İki mekanizma paralel yaşar — OFMER akışı değişmedi.
+export function computeAllocatedByOrder(allocationsMap, shipmentsMap = {}) {
   // allocationsMap: { key: { allocations: [{ orderId, qty }, ...] } }
   const byOrder = new Map(); // orderId → toplam tahsis
   const alloc = allocationsMap || {};
+  // 1) Container allocations — motor akışı (OFMER için tahsis anında düşer)
   for (const rec of Object.values(alloc)) {
     const list = Array.isArray(rec?.allocations) ? rec.allocations : [];
     for (const a of list) {
       if (!a?.orderId) continue;
       const q = Number(a.qty) || 0;
       byOrder.set(a.orderId, (byOrder.get(a.orderId) || 0) + q);
+    }
+  }
+  // 2) Shipment allocations — sadece fatura kesilmiş (invoiced) olanlar
+  //    Motor dışı müşterilerde fatura kesme anahtar olayı → bakiye o zaman düşer.
+  //    Planlanan/paketlenen/sevkedilen ama henüz fatura kesilmemiş sevkiyatlar
+  //    bakiyeye yansımaz (kullanıcı tercihi).
+  const shipments = shipmentsMap || {};
+  for (const s of Object.values(shipments)) {
+    if (s?.status !== "invoiced") continue;
+    for (const it of (s?.items || [])) {
+      for (const a of (it?.allocations || [])) {
+        if (!a?.orderId) continue;
+        const q = Number(a.qty) || 0;
+        byOrder.set(a.orderId, (byOrder.get(a.orderId) || 0) + q);
+      }
+    }
+  }
+  return byOrder;
+}
+
+// Sevkiyat formunda over-allocation önlemek için: TÜM aktif shipmentlar
+// (cancelled hariç) allocations'ı toplanır. Böylece kullanıcı aynı siparişten
+// iki farklı sevkiyata fazla adet giremez.
+export function computeShipmentAllocatedByOrder(shipmentsMap = {}, excludeShipmentId = null) {
+  const byOrder = new Map();
+  for (const s of Object.values(shipmentsMap || {})) {
+    if (!s?.id) continue;
+    if (excludeShipmentId && s.id === excludeShipmentId) continue; // edit modu — kendi shipment'ını sayma
+    if (s.status === "cancelled") continue;
+    for (const it of (s.items || [])) {
+      for (const a of (it.allocations || [])) {
+        if (!a?.orderId) continue;
+        const q = Number(a.qty) || 0;
+        byOrder.set(a.orderId, (byOrder.get(a.orderId) || 0) + q);
+      }
     }
   }
   return byOrder;

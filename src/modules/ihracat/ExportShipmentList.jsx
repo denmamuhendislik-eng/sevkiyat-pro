@@ -6,9 +6,10 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
   subscribeExportShipments, updateExportShipmentStatus, deleteExportShipment,
-  subscribeInvoiceSettings,
+  subscribeInvoiceSettings, attachInvoicesToShipment,
 } from "./firestore";
 import ExportShipmentForm from "./ExportShipmentForm";
+import InvoiceCreateModal from "./InvoiceCreateModal";
 import { generatePackingListPdf, generateShipmentLabelPdf } from "./shipmentPdfs";
 
 const STATUS_META = {
@@ -21,7 +22,7 @@ const STATUS_META = {
 
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR");
 
-export default function ExportShipmentList({ canEdit, userEmail, products, ordersData, exportSettings }) {
+export default function ExportShipmentList({ canEdit, userEmail, products, ordersData, allocationsData, exportSettings }) {
   const [data, setData] = useState({ shipments: {} });
   const [loaded, setLoaded] = useState(false);
   const [search, setSearch] = useState("");
@@ -29,6 +30,7 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
   const [statusFilter, setStatusFilter] = useState("all");
   const [showForm, setShowForm] = useState(false);
   const [editingShipment, setEditingShipment] = useState(null);
+  const [invoicingShipment, setInvoicingShipment] = useState(null); // fatura modal için seçili shipment
   const [invoiceSettings, setInvoiceSettings] = useState({});
 
   useEffect(() => {
@@ -103,6 +105,25 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
     } catch (e) {
       alert("Etiket üretilemedi: " + e.message);
     }
+  };
+
+  const openInvoiceModal = (s) => {
+    if (!canEdit) return;
+    setInvoicingShipment(s);
+  };
+  const closeInvoiceModal = () => setInvoicingShipment(null);
+
+  // Modal başarılı fatura oluşturduğunda: shipment'a linkedInvoiceIds ekle + status → invoiced
+  const handleInvoicesCreated = async (created) => {
+    if (!invoicingShipment) return;
+    const invoiceNos = (created || []).map(c => c.invoiceNo).filter(Boolean);
+    if (invoiceNos.length === 0) { closeInvoiceModal(); return; }
+    try {
+      await attachInvoicesToShipment(invoicingShipment.id, invoiceNos, { canEdit, userEmail });
+    } catch (e) {
+      alert("Sevkiyata fatura bağlanamadı: " + e.message);
+    }
+    closeInvoiceModal();
   };
 
   return (
@@ -189,6 +210,11 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
                       <button onClick={() => handleDownloadLabel(s)}
                         title="Sevkiyat Etiketi PDF"
                         style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f0fdf4", color: "#166534", border: "1px solid #86efac", borderRadius: 3, cursor: "pointer" }}>🏷</button>
+                      {!isCancelled && (s.status || "planned") !== "invoiced" && (
+                        <button onClick={() => openInvoiceModal(s)} disabled={!canEdit}
+                          title="Fatura Oluştur"
+                          style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#f5f3ff", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>🧾</button>
+                      )}
                       <button onClick={() => openEdit(s)} disabled={!canEdit}
                         title="Detay / Düzenle"
                         style={{ padding: "2px 6px", fontSize: 10, marginRight: 3, background: "#fefce8", color: "#854d0e", border: "1px solid #fde68a", borderRadius: 3, cursor: canEdit ? "pointer" : "not-allowed" }}>✏</button>
@@ -210,11 +236,30 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
           editingShipment={editingShipment}
           products={products}
           ordersData={ordersData}
+          shipmentsData={data}
           exportSettings={exportSettings}
           canEdit={canEdit}
           userEmail={userEmail}
           onSaved={closeForm}
           onCancel={closeForm}
+        />
+      )}
+
+      {/* Fatura Oluştur modal — sevkiyat kalemlerinden */}
+      {invoicingShipment && (
+        <InvoiceCreateModal
+          mode="shipment"
+          shipmentId={invoicingShipment.id}
+          shipmentItems={invoicingShipment.items || []}
+          products={products}
+          ordersData={ordersData}
+          allocationsData={allocationsData}
+          shipmentsData={data}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={closeInvoiceModal}
+          onCreated={handleInvoicesCreated}
+          presetTitle={`🧾 Fatura Oluştur — ${invoicingShipment.customerName || ""}`}
         />
       )}
     </div>

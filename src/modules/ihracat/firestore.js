@@ -551,12 +551,17 @@ export async function deleteExportInvoice(invoiceNo, { canEdit, userEmail = "" }
   if (!invoiceNo) throw new Error("invoiceNo zorunlu");
   const invRef = doc(db, APP_COL, EXPORT_INVOICES_DOC);
   const setRef = doc(db, APP_COL, INVOICE_SETTINGS_DOC);
+  const shipRef = doc(db, APP_COL, EXPORT_SHIPMENTS_DOC);
   const now = new Date().toISOString();
 
-  // Fatura silinsin
+  // Silmeden önce faturayı oku (shipment bağı var mı?)
   const invSnap = await getDoc(invRef);
   const invMap = invSnap.exists() ? (invSnap.data()?.invoices || {}) : {};
-  if (!invMap[invoiceNo]) throw new Error(`Fatura bulunamadı: ${invoiceNo}`);
+  const invBefore = invMap[invoiceNo];
+  if (!invBefore) throw new Error(`Fatura bulunamadı: ${invoiceNo}`);
+  const linkedShipmentId = invBefore.linkedShipmentId || invBefore.shipmentId || null;
+
+  // Fatura silinsin
   await updateDoc(invRef, {
     [`invoices.${invoiceNo}`]: deleteField(),
     updatedAt: now,
@@ -582,7 +587,37 @@ export async function deleteExportInvoice(invoiceNo, { canEdit, userEmail = "" }
       counterRolledBack = true;
     }
   }
-  return { deleted: true, counterRolledBack, newCounterValue };
+
+  // v23 Faz 3.3.1 — Shipment rollback: fatura shipment'a bağlıysa
+  // linkedInvoiceIds'ten çıkar; kalan fatura yoksa status "shipped"'a geri döner.
+  // (Fatura kesilirken status "invoiced" olmuştu; iptal edildiğinde kullanıcı
+  // aynı sevkiyat için yeni fatura kesebilmeli.)
+  let shipmentRolledBack = false;
+  if (linkedShipmentId) {
+    const shipSnap = await getDoc(shipRef);
+    const shipMap = shipSnap.exists() ? (shipSnap.data()?.shipments || {}) : {};
+    const ship = shipMap[linkedShipmentId];
+    if (ship) {
+      const prevIds = Array.isArray(ship.linkedInvoiceIds) ? ship.linkedInvoiceIds.map(String) : [];
+      const nextIds = prevIds.filter(x => x !== String(invoiceNo));
+      const shouldRevertStatus = nextIds.length === 0 && ship.status === "invoiced";
+      const nextShip = {
+        ...ship,
+        linkedInvoiceIds: nextIds,
+        ...(shouldRevertStatus ? { status: "shipped" } : {}),
+        updatedAt: now,
+        updatedBy: userEmail || "",
+      };
+      await setDoc(shipRef, {
+        shipments: { ...shipMap, [linkedShipmentId]: nextShip },
+        updatedAt: now,
+        updatedBy: userEmail || "",
+      }, { merge: true });
+      shipmentRolledBack = true;
+    }
+  }
+
+  return { deleted: true, counterRolledBack, newCounterValue, shipmentRolledBack };
 }
 
 // Ödeme kaydı ekle — invoice.paymentHistory'ye push + paidAmount/paymentStatus günceller
@@ -755,4 +790,37 @@ export async function updateExportShipmentStatus(shipmentId, status, { canEdit, 
     updatedAt: now,
     updatedBy: userEmail || "",
   }, { merge: true });
+}
+
+// v23 Faz 3 — Fatura kesildikten sonra shipment'a bağla:
+//   * status → "invoiced"
+//   * linkedInvoiceIds → yeni invoiceNo'ları push (idempotent)
+// Modal onCreated callback'inden çağrılır.
+export async function attachInvoicesToShipment(shipmentId, invoiceNos, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!shipmentId) throw new Error("shipmentId zorunlu");
+  const nos = (Array.isArray(invoiceNos) ? invoiceNos : [invoiceNos]).filter(Boolean).map(String);
+  if (nos.length === 0) return;
+  const ref = doc(db, APP_COL, EXPORT_SHIPMENTS_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.shipments || {}) : {};
+  const existing = current[shipmentId];
+  if (!existing) throw new Error("Sevkiyat bulunamadı: " + shipmentId);
+  const now = new Date().toISOString();
+  const prevIds = Array.isArray(existing.linkedInvoiceIds) ? existing.linkedInvoiceIds.map(String) : [];
+  const merged = [...prevIds];
+  for (const n of nos) if (!merged.includes(n)) merged.push(n);
+  const next = {
+    ...existing,
+    linkedInvoiceIds: merged,
+    status: "invoiced",
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  };
+  await setDoc(ref, {
+    shipments: { ...current, [shipmentId]: next },
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+  return next;
 }

@@ -24,7 +24,7 @@ function summarizePaymentPlan(plan) {
   return plan.map(p => `%${p.pct}`).join(" + ");
 }
 
-export default function OrderList({ ordersData, allocationsData, settings, products, canEdit, userEmail, onEdit, motorSync, combRules = [] }) {
+export default function OrderList({ ordersData, allocationsData, shipmentsData, settings, products, canEdit, userEmail, onEdit, motorSync, combRules = [] }) {
   const [search, setSearch] = useState("");
   const [customerFilter, setCustomerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("open");
@@ -32,7 +32,10 @@ export default function OrderList({ ordersData, allocationsData, settings, produ
   const [editingGroup, setEditingGroup] = useState(null); // group obj → OrderHeaderEditModal açar
 
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
-  const allocatedByOrder = useMemo(() => computeAllocatedByOrder(allocationsData?.allocations || {}), [allocationsData]);
+  const allocatedByOrder = useMemo(
+    () => computeAllocatedByOrder(allocationsData?.allocations || {}, shipmentsData?.shipments || {}),
+    [allocationsData, shipmentsData]
+  );
 
   const customerOptions = useMemo(() => {
     const map = new Map();

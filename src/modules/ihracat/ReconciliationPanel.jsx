@@ -12,8 +12,11 @@
 import React, { useMemo } from "react";
 import { computeAllocatedByOrder, computeReconciliation } from "./allocationCalc";
 
-export default function ReconciliationPanel({ ordersData, allocationsData, products, remainingByPid }) {
-  const allocatedByOrder = useMemo(() => computeAllocatedByOrder(allocationsData?.allocations || {}), [allocationsData]);
+export default function ReconciliationPanel({ ordersData, allocationsData, shipmentsData, products, remainingByPid }) {
+  const allocatedByOrder = useMemo(
+    () => computeAllocatedByOrder(allocationsData?.allocations || {}, shipmentsData?.shipments || {}),
+    [allocationsData, shipmentsData]
+  );
 
   const rows = useMemo(() => {
     return computeReconciliation({

@@ -11,7 +11,7 @@
 import React, { useState, useEffect } from "react";
 import {
   subscribeExportSalesOrders, subscribeContainerAllocations, subscribeExportSettings,
-  subscribeExportInvoices,
+  subscribeExportInvoices, subscribeExportShipments,
 } from "./firestore";
 import OrderList from "./OrderList";
 import OrderForm from "./OrderForm";
@@ -30,6 +30,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
   const [allocationsData, setAllocationsData] = useState({ allocations: {} });
   const [settings, setSettings] = useState({});
   const [invoicesData, setInvoicesData] = useState({ invoices: {} });
+  const [shipmentsData, setShipmentsData] = useState({ shipments: {} });
 
   // v22: Motor sync flag — appData/exportSettings.motorSyncEnabled (default true)
   const motorSyncEnabled = settings?.motorSyncEnabled !== false;
@@ -39,7 +40,8 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
     const u2 = subscribeContainerAllocations(d => setAllocationsData(d || { allocations: {} }));
     const u3 = subscribeExportSettings(d => setSettings(d || {}));
     const u4 = subscribeExportInvoices(d => setInvoicesData(d || { invoices: {} }));
-    return () => { u1(); u2(); u3(); u4(); };
+    const u5 = subscribeExportShipments(d => setShipmentsData(d || { shipments: {} }));
+    return () => { u1(); u2(); u3(); u4(); u5(); };
   }, []);
 
   const openEditForm = (order) => {
@@ -91,6 +93,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         <OrderList
           ordersData={ordersData}
           allocationsData={allocationsData}
+          shipmentsData={shipmentsData}
           settings={settings}
           products={products}
           canEdit={canEdit}
@@ -130,6 +133,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         <ReconciliationPanel
           ordersData={ordersData}
           allocationsData={allocationsData}
+          shipmentsData={shipmentsData}
           products={products}
           remainingByPid={remainingByPid}
         />
@@ -140,6 +144,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
           userEmail={userEmail}
           products={products}
           ordersData={ordersData}
+          allocationsData={allocationsData}
           exportSettings={settings}
         />
       )}
@@ -153,7 +158,7 @@ export default function Ihracat({ canEdit, isAdmin, userEmail, products, remaini
         />
       )}
       {subTab === "summary" && (
-        <SummaryPanel invoicesData={invoicesData} ordersData={ordersData} allocationsData={allocationsData} exportSettings={settings} />
+        <SummaryPanel invoicesData={invoicesData} ordersData={ordersData} allocationsData={allocationsData} shipmentsData={shipmentsData} exportSettings={settings} />
       )}
       {subTab === "settings" && isAdmin && (
         <InvoiceSettingsPanel canEdit={canEdit} userEmail={userEmail} products={products} motorSyncEnabled={motorSyncEnabled} exportSettings={settings} ordersData={ordersData} />
