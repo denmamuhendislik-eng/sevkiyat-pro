@@ -22,6 +22,7 @@ const ALLOCATIONS_DOC = "containerAllocations";
 const EXPORT_SETTINGS_DOC = "exportSettings";
 const INVOICE_SETTINGS_DOC = "invoiceSettings";
 const EXPORT_INVOICES_DOC = "exportInvoices";
+const EXPORT_SHIPMENTS_DOC = "exportShipments"; // v23 — motor dışı sevkiyat kayıtları
 
 // ============================================================
 // exportSalesOrders — { orders: { [3tupleId]: {...} }, updatedAt }
@@ -665,6 +666,78 @@ export async function cancelExportInvoice(invoiceNo, reason, { canEdit, userEmai
         updatedBy: userEmail || "",
       },
     },
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+}
+
+// ============================================================
+// exportShipments — { shipments: { [id]: {...} } }
+// v23: Motor dışı ihracat sevkiyatları (OFMER dışı müşteriler için)
+// ============================================================
+// Yapı:
+//   shipmentId: `SHP_${timestamp}_${random}` (uniq)
+//   customerCode, customerName
+//   shipmentDate: "YYYY-MM-DD" (fiziksel sevk tarihi)
+//   plannedDate: opsiyonel (planlanan tarih)
+//   items: [{ pid, stokKodu, stokAdi, descriptionEn, qty, allocations: [{orderId, belgeNo, qty}], notes }]
+//   status: "planned" | "packed" | "shipped" | "invoiced" | "cancelled"
+//   linkedInvoiceIds: [invoiceNo, ...] (fatura kesildiğinde eklenir)
+//   notes: genel açıklama
+
+export function subscribeExportShipments(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, EXPORT_SHIPMENTS_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || { shipments: {} }) : { shipments: {} }),
+    (err) => { console.error("exportShipments listener:", err); callback({ shipments: {} }); }
+  );
+}
+
+export async function saveExportShipment(shipment, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!shipment?.id) throw new Error("id zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_SHIPMENTS_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.shipments || {}) : {};
+  const existing = current[shipment.id] || {};
+  const now = new Date().toISOString();
+  const next = {
+    ...existing,
+    ...shipment,
+    updatedAt: now,
+    updatedBy: userEmail || "",
+    createdAt: existing.createdAt || shipment.createdAt || now,
+    createdBy: existing.createdBy || shipment.createdBy || userEmail || "",
+  };
+  await setDoc(ref, {
+    shipments: { ...current, [shipment.id]: next },
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+  return next;
+}
+
+export async function deleteExportShipment(shipmentId, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!shipmentId) throw new Error("shipmentId zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_SHIPMENTS_DOC);
+  const now = new Date().toISOString();
+  await updateDoc(ref, {
+    [`shipments.${shipmentId}`]: deleteField(),
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  });
+}
+
+export async function updateExportShipmentStatus(shipmentId, status, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!shipmentId) throw new Error("shipmentId zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_SHIPMENTS_DOC);
+  const now = new Date().toISOString();
+  await setDoc(ref, {
+    shipments: { [shipmentId]: { status, updatedAt: now, updatedBy: userEmail || "" } },
     updatedAt: now,
     updatedBy: userEmail || "",
   }, { merge: true });
