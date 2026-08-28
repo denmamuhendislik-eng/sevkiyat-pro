@@ -169,6 +169,55 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     return monthlyOverheads[selectedMonth];
   }, [monthlyOverheads, overheadAvgMode, overheadAvgWindow, selectedMonth]);
 
+  // Ortak yardımcı map'ler — hem enrichment hem "alım-satım" satırları için lazım.
+  // ProfitabilityTab paterni ile birebir aynı (LEGACY_VIO_CODES fallback dahil).
+  const productByVio = useMemo(() => {
+    const m = new Map();
+    for (const p of (productsList || [])) {
+      const code = ((p?.vioCode || "").trim()) || (LEGACY_VIO_CODES[p?.id] || "").trim();
+      if (code) m.set(code, p);
+    }
+    return m;
+  }, [productsList]);
+
+  const yerliByStock = useMemo(() => {
+    const m = new Map();
+    for (const o of Object.values(salesOrders || {})) {
+      const code = (o?.stokKodu || "").trim();
+      const remaining = Number(o?.kalanMiktar || 0);
+      if (!code || remaining <= 0) continue;
+      let priceTl = Number(o.unitPriceTl || 0);
+      if (!(priceTl > 0)) {
+        const tot = Number(o.toplamBedel || 0);
+        const orig = Number(o.orijinalMiktar || 0);
+        if (tot > 0 && orig > 0) priceTl = tot / orig;
+      }
+      if (!(priceTl > 0)) continue;
+      const orderDate = o.orderDate || "";
+      const existing = m.get(code);
+      if (!existing || (orderDate && orderDate > (existing.orderDate || ""))) {
+        m.set(code, { priceTl, orderDate, customerCode: o.customerCode, customerName: o.customerName, stokAdi: o.stokAdi });
+      }
+    }
+    return m;
+  }, [salesOrders]);
+
+  // unitCosts son alış fiyatı — BOM olmayan alım-satım ürünlerinin maliyeti
+  const lastPurchasePriceByCode = useMemo(() => {
+    const m = new Map();
+    const byStock = unitCosts?.byStock || {};
+    for (const [code, slot] of Object.entries(byStock)) {
+      const parts = slot?.partitions || [];
+      if (parts.length === 0) continue;
+      const sorted = [...parts].sort((a, b) => (a.orderDate || "").localeCompare(b.orderDate || ""));
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const p = Number(sorted[i].unitPriceTl) || 0;
+        if (p > 0) { m.set(code, { priceTl: p, stokAdi: sorted[i].stokAdi || slot.stokAdi || "" }); break; }
+      }
+    }
+    return m;
+  }, [unitCosts]);
+
   const allLoaded = Object.values(loaded).every(Boolean);
   const calc = useMemo(() => {
     if (!allLoaded || !monthData) return null;
@@ -226,6 +275,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           stockName: m.rootStockName || m.modelName || "",
           level: 0,
           isRoot: true,
+          isBuyResell: false,
           parentModel: modelLabel,
           groupModelKey: m.modelKey,
           cost: Number(m.rootCost) || 0,
@@ -258,7 +308,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       }
     } else {
       // "roots" ya da "global" — global (unique) liste
-      // 1) Mamuller
+      // 1) Mamuller (BOM root'ları)
       for (const r of rootByStock.values()) {
         rows.push({
           id: `root:${r.stockCode}`,
@@ -266,12 +316,39 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           stockName: r.stockName,
           level: 0,
           isRoot: true,
+          isBuyResell: false,
           parentModel: null,
           groupModelKey: null,
           cost: r.cost,
           material: r.material,
           labor: r.labor,
           fason: r.fason,
+        });
+      }
+      // 1b) Alım-satım ürünleri — BOM'u yok ama satış fiyatı var
+      // (Sevkiyat Planı veya Diğer Müşteriler kanallarından biri)
+      // Maliyet: unitCosts son alış fiyatı (yoksa 0)
+      const buyResellCodes = new Set();
+      for (const code of productByVio.keys()) if (!rootByStock.has(code)) buyResellCodes.add(code);
+      for (const code of yerliByStock.keys()) if (!rootByStock.has(code)) buyResellCodes.add(code);
+      for (const code of buyResellCodes) {
+        const prod = productByVio.get(code);
+        const yerli = yerliByStock.get(code);
+        const purchase = lastPurchasePriceByCode.get(code);
+        const stockName = prod?.nameTR || yerli?.stokAdi || purchase?.stokAdi || "";
+        rows.push({
+          id: `buy:${code}`,
+          stockCode: code,
+          stockName,
+          level: 0,
+          isRoot: true,      // Toplu marj/override sistemi mamül gibi çalışsın
+          isBuyResell: true, // rozet için
+          parentModel: null,
+          groupModelKey: null,
+          cost: Number(purchase?.priceTl) || 0,
+          material: Number(purchase?.priceTl) || 0, // görsel kırılım — maliyet = alış
+          labor: 0,
+          fason: 0,
         });
       }
       // 2) Global mod: root olmayan stok kodları alt parça olarak
@@ -328,35 +405,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       }
     }
 
-    // Products (vioCode + LEGACY_VIO_CODES fallback → salesPriceEur)
-    // ProfitabilityTab paterni: p.vioCode boşsa LEGACY_VIO_CODES[p.id]'yi kullan.
-    const productByVio = new Map();
-    for (const p of (productsList || [])) {
-      const code = ((p?.vioCode || "").trim()) || (LEGACY_VIO_CODES[p?.id] || "").trim();
-      if (code) productByVio.set(code, p);
-    }
     const eurRate = Number(rates?.eur) || 0;
-
-    // Diğer Müşteriler (salesOrders) → stokKodu → en güncel aktif siparişin unitPriceTl
-    // (ProfitabilityTab paterni ile birebir aynı)
-    const yerliByStock = new Map();
-    for (const o of Object.values(salesOrders || {})) {
-      const code = (o?.stokKodu || "").trim();
-      const remaining = Number(o?.kalanMiktar || 0);
-      if (!code || remaining <= 0) continue;
-      let priceTl = Number(o.unitPriceTl || 0);
-      if (!(priceTl > 0)) {
-        const tot = Number(o.toplamBedel || 0);
-        const orig = Number(o.orijinalMiktar || 0);
-        if (tot > 0 && orig > 0) priceTl = tot / orig;
-      }
-      if (!(priceTl > 0)) continue;
-      const orderDate = o.orderDate || "";
-      const existing = yerliByStock.get(code);
-      if (!existing || (orderDate && orderDate > (existing.orderDate || ""))) {
-        yerliByStock.set(code, { priceTl, orderDate, customerCode: o.customerCode, customerName: o.customerName });
-      }
-    }
 
     // Hesap: satış + kâr + marj% (yeni + mevcut + fark)
     const q = searchText.trim().toLocaleLowerCase("tr-TR");
@@ -445,7 +494,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         if (!a.isRoot && b.isRoot) return 1;
         return b.cost - a.cost;
       });
-  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted, productsList, salesOrders, rates, overrides]);
+  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted, productsList, salesOrders, productByVio, yerliByStock, lastPurchasePriceByCode, rates, overrides]);
 
   const selectedProducts = useMemo(
     () => products.filter(p => selectedIds.has(p.id)),
@@ -976,9 +1025,11 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                 </td>
                 {showSubpartsCols && (
                   <td style={{ ...td, fontSize: 9 }}>
-                    {p.isRoot
-                      ? <span style={{ padding: "1px 5px", background: "#1e40af", color: "#fff", borderRadius: 3, fontWeight: 600 }}>MAMÜL</span>
-                      : <span style={{ padding: "1px 5px", background: "#f5f5f4", color: "#78716c", borderRadius: 3 }}>L{p.level}</span>}
+                    {p.isBuyResell
+                      ? <span title="BOM'u yok — alınıp satılan ürün. Maliyet = son alış fiyatı." style={{ padding: "1px 5px", background: "#c2410c", color: "#fff", borderRadius: 3, fontWeight: 600 }}>🛒 ALIM-SATIM</span>
+                      : p.isRoot
+                        ? <span style={{ padding: "1px 5px", background: "#1e40af", color: "#fff", borderRadius: 3, fontWeight: 600 }}>MAMÜL</span>
+                        : <span style={{ padding: "1px 5px", background: "#f5f5f4", color: "#78716c", borderRadius: 3 }}>L{p.level}</span>}
                   </td>
                 )}
                 {showSubpartsCols && (
@@ -988,6 +1039,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                   </td>
                 )}
                 <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: p.isRoot ? 600 : 500 }}>
+                  {p.isBuyResell && !showSubpartsCols && (
+                    <span title="Alım-satım (BOM'u yok)" style={{ marginRight: 4, fontSize: 10 }}>🛒</span>
+                  )}
                   {p.stockCode}
                 </td>
                 <td style={td}>{p.stockName || "—"}</td>
