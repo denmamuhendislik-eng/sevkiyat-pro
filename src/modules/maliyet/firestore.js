@@ -1,4 +1,4 @@
-import { doc, onSnapshot, setDoc, updateDoc, deleteField } from "firebase/firestore";
+import { doc, onSnapshot, setDoc, updateDoc, deleteField, getDoc } from "firebase/firestore";
 import { db } from "../../firebase";
 
 const APP_COL = "appData";
@@ -505,4 +505,66 @@ export async function savePriceListPolicy(policy, { canEdit, userEmail = "" } = 
     updatedAt: new Date().toISOString(),
     updatedBy: userEmail || "",
   }, { merge: true });
+}
+
+// ============================================================
+// Fiyat Listesi Taslakları — appData/priceListDrafts
+// ============================================================
+// Kullanıcı satır bazlı marj değişikliği çalışmalarını taslak olarak kaydeder.
+// Yapı: { drafts: { [id]: {
+//   id, name, baseMonth, currency, globalMarginPct, rounding,
+//   overrides: { [stockCode]: marginPct },
+//   createdAt, createdBy, updatedAt, updatedBy
+// }}}
+// ÖNEMLİ: Bu taslaklar üretimdeki products.salesPriceEur'a HİÇBİR ŞEY yazmaz.
+// Sadece simülasyon amaçlıdır.
+
+const PRICE_LIST_DRAFTS_DOC = "priceListDrafts";
+
+export function subscribePriceListDrafts(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, PRICE_LIST_DRAFTS_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || { drafts: {} }) : { drafts: {} }),
+    (err) => { console.error("priceListDrafts listener:", err); callback({ drafts: {} }); }
+  );
+}
+
+export async function savePriceListDraft(draft, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!draft?.id) throw new Error("id zorunlu");
+  if (!draft?.name) throw new Error("Taslak adı zorunlu");
+  const ref = doc(db, APP_COL, PRICE_LIST_DRAFTS_DOC);
+  const snap = await getDoc(ref);
+  const current = snap.exists() ? (snap.data()?.drafts || {}) : {};
+  const existing = current[draft.id] || {};
+  const now = new Date().toISOString();
+  const next = {
+    ...existing,
+    ...draft,
+    overrides: draft.overrides || {},
+    updatedAt: now,
+    updatedBy: userEmail || "",
+    createdAt: existing.createdAt || now,
+    createdBy: existing.createdBy || userEmail || "",
+  };
+  await setDoc(ref, {
+    drafts: { ...current, [draft.id]: next },
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  }, { merge: true });
+  return next;
+}
+
+export async function deletePriceListDraft(draftId, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!draftId) throw new Error("draftId zorunlu");
+  const ref = doc(db, APP_COL, PRICE_LIST_DRAFTS_DOC);
+  const now = new Date().toISOString();
+  await updateDoc(ref, {
+    [`drafts.${draftId}`]: deleteField(),
+    updatedAt: now,
+    updatedBy: userEmail || "",
+  });
 }

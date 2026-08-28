@@ -13,6 +13,8 @@ import {
   subscribeBomModels, subscribeWorkCenters, subscribeUnitCosts,
   subscribeLaborCosts, subscribeOverheadPolicy, subscribeFasonRates,
   subscribeUnitConversions, subscribePriceListPolicy, savePriceListPolicy,
+  subscribeProducts,
+  subscribePriceListDrafts, savePriceListDraft, deletePriceListDraft,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS, getOverheadMonthlyAvg } from "./distributionCalc";
@@ -50,7 +52,15 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const [fasonRates, setFasonRates] = useState({});
   const [unitConversions, setUnitConversions] = useState({});
   const [priceListPolicy, setPriceListPolicy] = useState({});
-  const [loaded, setLoaded] = useState({ bom: false, uc: false, wc: false, labor: false, pol: false, fas: false, conv: false, plp: false });
+  const [productsList, setProductsList] = useState([]);
+  const [drafts, setDrafts] = useState({});
+  const [loaded, setLoaded] = useState({ bom: false, uc: false, wc: false, labor: false, pol: false, fas: false, conv: false, plp: false, prod: false, drafts: false });
+
+  // v-draft — satır bazlı marj override (stockCode → marginPct)
+  // Root'lar için aktif; taslak yükleme/kaydetme burayı doldurur/temizler.
+  const [overrides, setOverrides] = useState({}); // { [stockCode]: marginPct }
+  const [selectedDraftId, setSelectedDraftId] = useState("");
+  const [draftDirty, setDraftDirty] = useState(false); // taslak yüklendikten sonra değişim var mı
 
   // Hesap ayı: üst seviyeden paylaşılır
   const [localMonth, setLocalMonth] = useState(todayMonth());
@@ -104,7 +114,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         }
       }
     });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); };
+    const u9 = subscribeProducts(d => { setProductsList(Array.isArray(d) ? d : []); setLoaded(l => ({ ...l, prod: true })); });
+    const u10 = subscribePriceListDrafts(d => { setDrafts(d?.drafts || {}); setLoaded(l => ({ ...l, drafts: true })); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); };
   }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
@@ -291,14 +303,44 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       }
     }
 
-    // Hesap: satış + kâr + marj%
+    // Products (vioCode → salesPriceEur) — mevcut satış fiyatı için index
+    const productByVio = new Map();
+    for (const p of (productsList || [])) {
+      const vio = (p?.vioCode || "").trim();
+      if (vio) productByVio.set(vio, p);
+    }
+    const eurRate = Number(rates?.eur) || 0;
+
+    // Hesap: satış + kâr + marj% (yeni + mevcut + fark)
     const q = searchText.trim().toLocaleLowerCase("tr-TR");
     return rows
       .map(r => {
-        const salesTl = applyRounding(r.cost * (1 + (marginPct || 0) / 100), rounding);
+        // Mevcut fiyat: products.salesPriceEur (EUR) → TL'ye çevir (rates.eur)
+        const prod = productByVio.get(r.stockCode);
+        const existingEur = Number(prod?.salesPriceEur) || 0;
+        const existingTl = existingEur > 0 && eurRate > 0 ? existingEur * eurRate : 0;
+        const existingMarginPct = existingTl > 0 && r.cost > 0
+          ? ((existingTl - r.cost) / r.cost) * 100
+          : null;
+        // Yeni marj: override varsa satır bazlı, yoksa global
+        const overrideVal = Object.prototype.hasOwnProperty.call(overrides, r.stockCode)
+          ? Number(overrides[r.stockCode])
+          : null;
+        const hasOverride = overrideVal !== null && !Number.isNaN(overrideVal);
+        // Alt parçalar için override kullanılmaz (sadece root)
+        const effectiveMargin = (hasOverride && r.isRoot) ? overrideVal : marginPct;
+        const salesTl = applyRounding(r.cost * (1 + (effectiveMargin || 0) / 100), rounding);
         const profitTl = salesTl - r.cost;
         const marginActualPct = r.cost > 0 ? (profitTl / r.cost) * 100 : 0;
-        return { ...r, salesTl, profitTl, marginActualPct };
+        // Fark: yeni fiyat vs mevcut fiyat (TL bazında, ekranda currency'ye çevrilir)
+        const deltaTl = existingTl > 0 ? salesTl - existingTl : 0;
+        const deltaPct = existingTl > 0 ? ((salesTl - existingTl) / existingTl) * 100 : 0;
+        return {
+          ...r, salesTl, profitTl, marginActualPct,
+          existingTl, existingMarginPct,
+          effectiveMargin, hasOverride: hasOverride && r.isRoot,
+          deltaTl, deltaPct,
+        };
       })
       .filter(r => {
         if (onlyCosted && r.cost <= 0) return false;
@@ -327,7 +369,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         if (!a.isRoot && b.isRoot) return 1;
         return b.cost - a.cost;
       });
-  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted]);
+  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted, productsList, rates, overrides]);
 
   const selectedProducts = useMemo(
     () => products.filter(p => selectedIds.has(p.id)),
@@ -366,6 +408,96 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       alert("Kaydedilemedi: " + e.message);
     }
   };
+
+  // ============================================================
+  // Taslak (draft) yönetimi — sadece taslak, prod'a hiçbir şey yazılmaz
+  // ============================================================
+  const setRowOverride = (stockCode, value) => {
+    const v = String(value).trim();
+    setOverrides(prev => {
+      const next = { ...prev };
+      if (v === "" || v === "-") { delete next[stockCode]; }
+      else { const n = Number(v); if (!Number.isNaN(n)) next[stockCode] = n; }
+      return next;
+    });
+    setDraftDirty(true);
+  };
+  const resetRowOverride = (stockCode) => {
+    setOverrides(prev => { const next = { ...prev }; delete next[stockCode]; return next; });
+    setDraftDirty(true);
+  };
+  const resetAllOverrides = () => {
+    if (Object.keys(overrides).length === 0) return;
+    if (!confirm(`${Object.keys(overrides).length} satır bazlı marj değişikliği sıfırlanacak. Devam?`)) return;
+    setOverrides({});
+    setDraftDirty(true);
+  };
+
+  const draftList = useMemo(() =>
+    Object.values(drafts || {}).sort((a, b) => String(b.updatedAt || "").localeCompare(String(a.updatedAt || ""))),
+  [drafts]);
+  const selectedDraft = selectedDraftId ? drafts[selectedDraftId] : null;
+
+  const loadDraft = (draftId) => {
+    setSelectedDraftId(draftId);
+    if (!draftId) { setOverrides({}); setDraftDirty(false); return; }
+    const d = drafts[draftId];
+    if (!d) return;
+    setOverrides(d.overrides || {});
+    if (typeof d.globalMarginPct === "number") setMarginPct(d.globalMarginPct);
+    if (typeof d.rounding === "number") setRounding(d.rounding);
+    setDraftDirty(false);
+  };
+
+  const handleSaveDraft = async () => {
+    if (!canEdit) return;
+    let id = selectedDraftId;
+    let name = selectedDraft?.name || "";
+    if (!id) {
+      name = (prompt("Yeni taslak adı:") || "").trim();
+      if (!name) return;
+      id = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    }
+    const payload = {
+      id, name,
+      baseMonth: selectedMonth,
+      currency,
+      globalMarginPct: marginPct,
+      rounding,
+      overrides,
+    };
+    try {
+      await savePriceListDraft(payload, { canEdit, userEmail });
+      setSelectedDraftId(id);
+      setDraftDirty(false);
+      alert(`Taslak kaydedildi: ${name} ✓`);
+    } catch (e) { alert("Taslak kaydedilemedi: " + e.message); }
+  };
+
+  const handleRenameDraft = async () => {
+    if (!canEdit || !selectedDraft) return;
+    const newName = (prompt("Taslak yeni adı:", selectedDraft.name) || "").trim();
+    if (!newName || newName === selectedDraft.name) return;
+    try {
+      await savePriceListDraft({ ...selectedDraft, name: newName, overrides, globalMarginPct: marginPct, rounding, currency, baseMonth: selectedMonth }, { canEdit, userEmail });
+      setDraftDirty(false);
+    } catch (e) { alert("Ad değiştirilemedi: " + e.message); }
+  };
+
+  const handleDeleteDraft = async () => {
+    if (!canEdit || !selectedDraftId) return;
+    if (!confirm(`"${selectedDraft?.name || selectedDraftId}" taslağı silinecek. Devam?`)) return;
+    try {
+      await deletePriceListDraft(selectedDraftId, { canEdit, userEmail });
+      setSelectedDraftId("");
+      setOverrides({});
+      setDraftDirty(false);
+    } catch (e) { alert("Silinemedi: " + e.message); }
+  };
+
+  const currencyMismatch = selectedDraft && selectedDraft.currency && selectedDraft.currency !== currency;
+  const monthMismatch = selectedDraft && selectedDraft.baseMonth && selectedDraft.baseMonth !== selectedMonth;
+  const overrideCount = Object.keys(overrides).length;
 
   // Para birimi biçim (rootCost TL bazında; kur uygulanır)
   const sym = CURRENCY_SYMBOLS[currency] || "₺";
@@ -641,6 +773,52 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         </button>
       </div>
 
+      {/* Taslak yönetimi — satır bazlı marj değişikliği çalışması */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: "8px 12px", background: "#f5f3ff", border: "1px solid #ddd6fe", borderRadius: 6, marginBottom: 10 }}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: "#5b21b6" }}>📝 Taslak:</span>
+        <select value={selectedDraftId} onChange={e => loadDraft(e.target.value)}
+          style={{ padding: "4px 8px", fontSize: 11, border: "1px solid #ddd6fe", borderRadius: 4, minWidth: 200 }}>
+          <option value="">— Yeni (kaydetmeden çalış) —</option>
+          {draftList.map(d => (
+            <option key={d.id} value={d.id}>
+              {d.name} · {d.baseMonth || "?"} · {d.currency || "?"} · {Object.keys(d.overrides || {}).length} satır
+            </option>
+          ))}
+        </select>
+        <button onClick={handleSaveDraft} disabled={!canEdit}
+          title={selectedDraftId ? "Bu taslağın üzerine yaz" : "Yeni taslak olarak kaydet"}
+          style={{ padding: "4px 10px", fontSize: 11, background: "#5b21b6", color: "#fff", border: "none", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed", fontWeight: 600 }}>
+          💾 {selectedDraftId ? "Kaydet" : "Yeni Kaydet"}
+        </button>
+        {selectedDraftId && (
+          <>
+            <button onClick={handleRenameDraft} disabled={!canEdit}
+              style={{ padding: "4px 10px", fontSize: 11, background: "#fff", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
+              ✏ Ad Değiştir
+            </button>
+            <button onClick={handleDeleteDraft} disabled={!canEdit}
+              style={{ padding: "4px 10px", fontSize: 11, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
+              🗑 Sil
+            </button>
+          </>
+        )}
+        <span style={{ marginLeft: "auto", fontSize: 10, color: "#57534e" }}>
+          {overrideCount > 0 && <span style={{ marginRight: 8, padding: "2px 6px", background: "#fef3c7", color: "#92400e", borderRadius: 3, fontWeight: 600 }}>{overrideCount} satırda özel marj</span>}
+          {draftDirty && selectedDraftId && <span style={{ marginRight: 8, color: "#dc2626", fontWeight: 600 }}>● kaydedilmemiş değişiklik</span>}
+          {overrideCount > 0 && (
+            <button onClick={resetAllOverrides} title="Tüm satır override'larını sıfırla"
+              style={{ padding: "2px 8px", fontSize: 10, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer" }}>
+              🔄 Tümünü Sıfırla
+            </button>
+          )}
+        </span>
+        <div style={{ flexBasis: "100%", fontSize: 10, color: "#78716c" }}>
+          ℹ Taslak değişiklikleri <b>ürün kartındaki satış fiyatına yansımaz</b> — sadece bu ekranda simülasyon. Ürün fiyatı değişimi için ayrı adım gerekir.
+          {currencyMismatch && <span style={{ marginLeft: 8, padding: "1px 5px", background: "#fef2f2", color: "#991b1b", borderRadius: 2, fontWeight: 600 }}>⚠ Taslak {selectedDraft.currency} para biriminde kaydedildi (ekran: {currency})</span>}
+          {monthMismatch && <span style={{ marginLeft: 8, padding: "1px 5px", background: "#fef2f2", color: "#991b1b", borderRadius: 2, fontWeight: 600 }}>⚠ Taslak {selectedDraft.baseMonth} ayında kaydedildi (ekran: {selectedMonth})</span>}
+        </div>
+      </div>
+
       {/* Filtre + Export */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 12 }}>
         <input type="text" placeholder="🔍 Kod / ad / ana mamul ara..." value={searchText} onChange={e => setSearchText(e.target.value)}
@@ -683,14 +861,17 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
               {showDetailCols && <th style={{ ...th, textAlign: "right", background: "#fef3c7" }}>İşçilik</th>}
               {showDetailCols && <th style={{ ...th, textAlign: "right", background: "#fef3c7" }}>Fason</th>}
               <th style={{ ...th, textAlign: "right" }}>Maliyet</th>
-              <th style={{ ...th, textAlign: "right" }}>Marj%</th>
-              <th style={{ ...th, textAlign: "right", background: "#eff6ff" }}>Satış Fiyatı</th>
+              <th style={{ ...th, textAlign: "right", background: "#fafaf9" }} title="Ürün kartındaki mevcut satış fiyatı (products.salesPriceEur → currency)">Mevcut Fiyat</th>
+              <th style={{ ...th, textAlign: "right", background: "#fafaf9" }} title="(Mevcut - Maliyet) / Maliyet">Mevcut Marj%</th>
+              <th style={{ ...th, textAlign: "right", background: "#f5f3ff", width: 90 }} title="Satır bazlı özel marj (sadece mamullerde) — global marj default">Yeni Marj%</th>
+              <th style={{ ...th, textAlign: "right", background: "#eff6ff" }}>Yeni Satış</th>
+              <th style={{ ...th, textAlign: "right" }} title="Yeni - Mevcut">Fark</th>
               <th style={{ ...th, textAlign: "right" }}>Kâr</th>
             </tr>
           </thead>
           <tbody>
             {products.length === 0 ? (
-              <tr><td colSpan={(showSubpartsCols ? 9 : 7) + (showDetailCols ? 3 : 0)} style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)" }}>Eşleşen kayıt yok</td></tr>
+              <tr><td colSpan={(showSubpartsCols ? 12 : 10) + (showDetailCols ? 3 : 0)} style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)" }}>Eşleşen kayıt yok</td></tr>
             ) : products.map(p => (
               <tr key={p.id} style={{
                 borderTop: "1px solid #f5f5f4",
@@ -720,8 +901,43 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                 {showDetailCols && <td style={{ ...td, textAlign: "right", color: "#78716c", background: "#fef3c7" }}>{p.labor > 0 ? fMoneyDisplay(p.labor) : "—"}</td>}
                 {showDetailCols && <td style={{ ...td, textAlign: "right", color: "#78716c", background: "#fef3c7" }}>{p.fason > 0 ? fMoneyDisplay(p.fason) : "—"}</td>}
                 <td style={{ ...td, textAlign: "right", fontWeight: 500 }}>{fMoneyDisplay(p.cost)}</td>
-                <td style={{ ...td, textAlign: "right" }}>%{p.marginActualPct.toFixed(0)}</td>
+                {/* Mevcut Fiyat + Mevcut Marj */}
+                <td style={{ ...td, textAlign: "right", background: "#fafaf9", color: p.existingTl > 0 ? "#44403c" : "#a8a29e" }}>
+                  {p.existingTl > 0 ? fMoneyDisplay(p.existingTl) : "—"}
+                </td>
+                <td style={{ ...td, textAlign: "right", background: "#fafaf9", color: p.existingMarginPct != null ? "#44403c" : "#a8a29e" }}>
+                  {p.existingMarginPct != null ? `%${p.existingMarginPct.toFixed(0)}` : "—"}
+                </td>
+                {/* Yeni Marj% — input sadece root'larda aktif */}
+                <td style={{ ...td, textAlign: "right", background: "#f5f3ff" }}>
+                  {p.isRoot ? (
+                    <div style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
+                      <input type="number" step="1"
+                        value={p.hasOverride ? String(overrides[p.stockCode]) : ""}
+                        placeholder={`%${marginPct}`}
+                        onChange={e => setRowOverride(p.stockCode, e.target.value)}
+                        disabled={!canEdit}
+                        style={{ width: 55, padding: "2px 5px", fontSize: 10, textAlign: "right",
+                          border: `1px solid ${p.hasOverride ? "#5b21b6" : "#e7e5e4"}`,
+                          background: p.hasOverride ? "#ede9fe" : "#fff", borderRadius: 3,
+                          fontWeight: p.hasOverride ? 700 : 400 }} />
+                      {p.hasOverride && (
+                        <button onClick={() => resetRowOverride(p.stockCode)} title="Satır override'ını sıfırla"
+                          style={{ padding: "1px 4px", fontSize: 9, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 2, cursor: "pointer", color: "#78716c" }}>×</button>
+                      )}
+                    </div>
+                  ) : <span style={{ color: "#a8a29e", fontSize: 10 }}>%{p.marginActualPct.toFixed(0)}</span>}
+                </td>
                 <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#166534", background: "#eff6ff" }}>{fMoneyDisplay(p.salesTl)}</td>
+                {/* Fark */}
+                <td style={{ ...td, textAlign: "right" }}>
+                  {p.existingTl > 0 ? (
+                    <div style={{ fontSize: 10, color: p.deltaTl > 0 ? "#166534" : p.deltaTl < 0 ? "#dc2626" : "#78716c" }}>
+                      <div style={{ fontWeight: 700 }}>{p.deltaTl > 0 ? "+" : ""}{fMoneyDisplay(p.deltaTl)}</div>
+                      <div style={{ fontSize: 9 }}>{p.deltaTl > 0 ? "+" : ""}%{p.deltaPct.toFixed(1)}</div>
+                    </div>
+                  ) : <span style={{ color: "#a8a29e" }}>—</span>}
+                </td>
                 <td style={{ ...td, textAlign: "right", color: "#166534" }}>{fMoneyDisplay(p.profitTl)}</td>
               </tr>
             ))}
