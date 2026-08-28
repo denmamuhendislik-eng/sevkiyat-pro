@@ -13,12 +13,13 @@ import {
   subscribeBomModels, subscribeWorkCenters, subscribeUnitCosts,
   subscribeLaborCosts, subscribeOverheadPolicy, subscribeFasonRates,
   subscribeUnitConversions, subscribePriceListPolicy, savePriceListPolicy,
-  subscribeProducts,
+  subscribeProducts, subscribeSalesOrders,
   subscribePriceListDrafts, savePriceListDraft, deletePriceListDraft,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS, getOverheadMonthlyAvg } from "./distributionCalc";
 import { fmtMoneyNum, CURRENCY_SYMBOLS, convertFromTl } from "./currency";
+import { LEGACY_VIO_CODES } from "../../data/legacyVioCodes";
 
 const todayMonth = () => new Date().toISOString().slice(0, 7);
 const monthLabel = (ym) => {
@@ -53,8 +54,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const [unitConversions, setUnitConversions] = useState({});
   const [priceListPolicy, setPriceListPolicy] = useState({});
   const [productsList, setProductsList] = useState([]);
+  const [salesOrders, setSalesOrders] = useState({});
   const [drafts, setDrafts] = useState({});
-  const [loaded, setLoaded] = useState({ bom: false, uc: false, wc: false, labor: false, pol: false, fas: false, conv: false, plp: false, prod: false, drafts: false });
+  const [loaded, setLoaded] = useState({ bom: false, uc: false, wc: false, labor: false, pol: false, fas: false, conv: false, plp: false, prod: false, so: false, drafts: false });
 
   // v-draft — satır bazlı marj override (stockCode → marginPct)
   // Root'lar için aktif; taslak yükleme/kaydetme burayı doldurur/temizler.
@@ -116,7 +118,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     });
     const u9 = subscribeProducts(d => { setProductsList(Array.isArray(d) ? d : []); setLoaded(l => ({ ...l, prod: true })); });
     const u10 = subscribePriceListDrafts(d => { setDrafts(d?.drafts || {}); setLoaded(l => ({ ...l, drafts: true })); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); };
+    const u11 = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(l => ({ ...l, so: true })); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); };
   }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
@@ -303,22 +306,49 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       }
     }
 
-    // Products (vioCode → salesPriceEur) — mevcut satış fiyatı için index
+    // Products (vioCode + LEGACY_VIO_CODES fallback → salesPriceEur)
+    // ProfitabilityTab paterni: p.vioCode boşsa LEGACY_VIO_CODES[p.id]'yi kullan.
     const productByVio = new Map();
     for (const p of (productsList || [])) {
-      const vio = (p?.vioCode || "").trim();
-      if (vio) productByVio.set(vio, p);
+      const code = ((p?.vioCode || "").trim()) || (LEGACY_VIO_CODES[p?.id] || "").trim();
+      if (code) productByVio.set(code, p);
     }
     const eurRate = Number(rates?.eur) || 0;
+
+    // Diğer Müşteriler (salesOrders) → stokKodu → en güncel aktif siparişin unitPriceTl
+    // (ProfitabilityTab paterni ile birebir aynı)
+    const yerliByStock = new Map();
+    for (const o of Object.values(salesOrders || {})) {
+      const code = (o?.stokKodu || "").trim();
+      const remaining = Number(o?.kalanMiktar || 0);
+      if (!code || remaining <= 0) continue;
+      let priceTl = Number(o.unitPriceTl || 0);
+      if (!(priceTl > 0)) {
+        const tot = Number(o.toplamBedel || 0);
+        const orig = Number(o.orijinalMiktar || 0);
+        if (tot > 0 && orig > 0) priceTl = tot / orig;
+      }
+      if (!(priceTl > 0)) continue;
+      const orderDate = o.orderDate || "";
+      const existing = yerliByStock.get(code);
+      if (!existing || (orderDate && orderDate > (existing.orderDate || ""))) {
+        yerliByStock.set(code, { priceTl, orderDate, customerCode: o.customerCode, customerName: o.customerName });
+      }
+    }
 
     // Hesap: satış + kâr + marj% (yeni + mevcut + fark)
     const q = searchText.trim().toLocaleLowerCase("tr-TR");
     return rows
       .map(r => {
-        // Mevcut fiyat: products.salesPriceEur (EUR) → TL'ye çevir (rates.eur)
+        // Mevcut fiyat kaynak zinciri: Sevkiyat Planı EUR → Diğer Müşteriler TL
         const prod = productByVio.get(r.stockCode);
         const existingEur = Number(prod?.salesPriceEur) || 0;
-        const existingTl = existingEur > 0 && eurRate > 0 ? existingEur * eurRate : 0;
+        const sevkTl = existingEur > 0 && eurRate > 0 ? existingEur * eurRate : 0;
+        const yerliEntry = yerliByStock.get(r.stockCode) || null;
+        const yerliTl = Number(yerliEntry?.priceTl) || 0;
+        // Öncelik: Sevkiyat (EUR) > Diğer Müşteriler (TL). İki kanalda da olabilir.
+        const existingTl = sevkTl > 0 ? sevkTl : yerliTl;
+        const existingSource = sevkTl > 0 ? "sevkiyat" : (yerliTl > 0 ? "yerli" : null);
         const existingMarginPct = existingTl > 0 && r.cost > 0
           ? ((existingTl - r.cost) / r.cost) * 100
           : null;
@@ -338,6 +368,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         return {
           ...r, salesTl, profitTl, marginActualPct,
           existingTl, existingMarginPct,
+          existingSource,           // "sevkiyat" | "yerli" | null
+          sevkTl, yerliTl,          // iki kanalı da bilelim (tooltip)
+          yerliCustomer: yerliEntry?.customerName || yerliEntry?.customerCode || null,
           effectiveMargin, hasOverride: hasOverride && r.isRoot,
           deltaTl, deltaPct,
         };
@@ -369,7 +402,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         if (!a.isRoot && b.isRoot) return 1;
         return b.cost - a.cost;
       });
-  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted, productsList, rates, overrides]);
+  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted, productsList, salesOrders, rates, overrides]);
 
   const selectedProducts = useMemo(
     () => products.filter(p => selectedIds.has(p.id)),
@@ -901,9 +934,24 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                 {showDetailCols && <td style={{ ...td, textAlign: "right", color: "#78716c", background: "#fef3c7" }}>{p.labor > 0 ? fMoneyDisplay(p.labor) : "—"}</td>}
                 {showDetailCols && <td style={{ ...td, textAlign: "right", color: "#78716c", background: "#fef3c7" }}>{p.fason > 0 ? fMoneyDisplay(p.fason) : "—"}</td>}
                 <td style={{ ...td, textAlign: "right", fontWeight: 500 }}>{fMoneyDisplay(p.cost)}</td>
-                {/* Mevcut Fiyat + Mevcut Marj */}
-                <td style={{ ...td, textAlign: "right", background: "#fafaf9", color: p.existingTl > 0 ? "#44403c" : "#a8a29e" }}>
-                  {p.existingTl > 0 ? fMoneyDisplay(p.existingTl) : "—"}
+                {/* Mevcut Fiyat + kanal rozeti + tooltip */}
+                <td style={{ ...td, textAlign: "right", background: "#fafaf9", color: p.existingTl > 0 ? "#44403c" : "#a8a29e" }}
+                  title={
+                    p.existingSource === "sevkiyat"
+                      ? `Sevkiyat Planı (products.salesPriceEur)${p.yerliTl > 0 ? ` · Yerli aktif sipariş: ${fMoneyDisplay(p.yerliTl)}${p.yerliCustomer ? ` (${p.yerliCustomer})` : ""}` : ""}`
+                      : p.existingSource === "yerli"
+                        ? `Diğer Müşteriler (aktif sipariş)${p.yerliCustomer ? ` · ${p.yerliCustomer}` : ""}`
+                        : "Mevcut fiyat kaynağı yok"
+                  }>
+                  {p.existingTl > 0 ? (
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 4, justifyContent: "flex-end" }}>
+                      <span style={{ fontSize: 9, opacity: 0.7 }}>{p.existingSource === "sevkiyat" ? "📤" : "🏭"}</span>
+                      {fMoneyDisplay(p.existingTl)}
+                      {p.existingSource === "sevkiyat" && p.yerliTl > 0 && (
+                        <span style={{ fontSize: 8, color: "#a8a29e" }}>+🏭</span>
+                      )}
+                    </span>
+                  ) : "—"}
                 </td>
                 <td style={{ ...td, textAlign: "right", background: "#fafaf9", color: p.existingMarginPct != null ? "#44403c" : "#a8a29e" }}>
                   {p.existingMarginPct != null ? `%${p.existingMarginPct.toFixed(0)}` : "—"}
