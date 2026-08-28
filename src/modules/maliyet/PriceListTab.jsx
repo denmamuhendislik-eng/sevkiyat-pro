@@ -389,7 +389,15 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           effectiveMargin = ov.marginPct;
           salesTl = applyRounding(r.cost * (1 + effectiveMargin / 100), rounding);
           overrideSource = "margin";
+        } else if (r.isRoot && existingTl > 0) {
+          // Default (override yok, mevcut fiyat var): mevcut fiyata sadık kal.
+          // Kullanıcı değişiklik yapmak isterse buradan başlar (delta = 0).
+          // Yuvarlama uygulanmaz — birebir mevcut fiyat.
+          salesTl = existingTl;
+          effectiveMargin = existingMarginPct != null ? existingMarginPct : 0;
+          overrideSource = null;
         } else {
+          // Mevcut fiyat yok (yeni ürün) → global marj × cost + yuvarlama
           effectiveMargin = marginPct;
           salesTl = applyRounding(r.cost * (1 + (effectiveMargin || 0) / 100), rounding);
           overrideSource = null;
