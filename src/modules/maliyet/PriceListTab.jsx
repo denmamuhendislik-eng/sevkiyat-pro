@@ -43,6 +43,28 @@ function applyRounding(value, step) {
   return Math.ceil(value / step) * step;
 }
 
+// Override yapısı iki formatı destekler (backward-compat):
+//   eski: number → { marginPct: n, source: "margin" }
+//   yeni: { marginPct?, salesTl?, source: "margin" | "price" }
+function normalizeOverride(raw) {
+  if (raw == null) return null;
+  if (typeof raw === "number") return { marginPct: raw, source: "margin" };
+  if (typeof raw === "object") {
+    if (raw.source === "price" && Number(raw.salesTl) > 0) return { salesTl: Number(raw.salesTl), source: "price" };
+    if (typeof raw.marginPct === "number") return { marginPct: Number(raw.marginPct), source: "margin" };
+  }
+  return null;
+}
+
+// Aktif currency değerini TL'ye çevir (tersine convertFromTl)
+function convertToTl(value, currency, rates) {
+  const v = Number(value) || 0;
+  if (currency === "TRY" || !rates) return v;
+  if (currency === "USD") return v * (Number(rates.usd) || 0);
+  if (currency === "EUR") return v * (Number(rates.eur) || 0);
+  return v;
+}
+
 export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rates = null, sharedMonth, setSharedMonth }) {
   // Data subscriptions
   const [bomModels, setBomModels] = useState({});
@@ -352,14 +374,26 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         const existingMarginPct = existingTl > 0 && r.cost > 0
           ? ((existingTl - r.cost) / r.cost) * 100
           : null;
-        // Yeni marj: override varsa satır bazlı, yoksa global
-        const overrideVal = Object.prototype.hasOwnProperty.call(overrides, r.stockCode)
-          ? Number(overrides[r.stockCode])
+        // Override iki formda olabilir: marginPct veya salesTl
+        const rawOverride = Object.prototype.hasOwnProperty.call(overrides, r.stockCode)
+          ? overrides[r.stockCode]
           : null;
-        const hasOverride = overrideVal !== null && !Number.isNaN(overrideVal);
-        // Alt parçalar için override kullanılmaz (sadece root)
-        const effectiveMargin = (hasOverride && r.isRoot) ? overrideVal : marginPct;
-        const salesTl = applyRounding(r.cost * (1 + (effectiveMargin || 0) / 100), rounding);
+        const ov = (r.isRoot ? normalizeOverride(rawOverride) : null);
+        let salesTl, effectiveMargin, overrideSource;
+        if (ov?.source === "price" && Number(ov.salesTl) > 0) {
+          // Kullanıcı fiyat girdi → yuvarlama uygulanmaz, marj hesaplanır
+          salesTl = Number(ov.salesTl);
+          effectiveMargin = r.cost > 0 ? ((salesTl - r.cost) / r.cost) * 100 : 0;
+          overrideSource = "price";
+        } else if (ov?.source === "margin" && typeof ov.marginPct === "number") {
+          effectiveMargin = ov.marginPct;
+          salesTl = applyRounding(r.cost * (1 + effectiveMargin / 100), rounding);
+          overrideSource = "margin";
+        } else {
+          effectiveMargin = marginPct;
+          salesTl = applyRounding(r.cost * (1 + (effectiveMargin || 0) / 100), rounding);
+          overrideSource = null;
+        }
         const profitTl = salesTl - r.cost;
         const marginActualPct = r.cost > 0 ? (profitTl / r.cost) * 100 : 0;
         // Fark: yeni fiyat vs mevcut fiyat (TL bazında, ekranda currency'ye çevrilir)
@@ -371,7 +405,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           existingSource,           // "sevkiyat" | "yerli" | null
           sevkTl, yerliTl,          // iki kanalı da bilelim (tooltip)
           yerliCustomer: yerliEntry?.customerName || yerliEntry?.customerCode || null,
-          effectiveMargin, hasOverride: hasOverride && r.isRoot,
+          effectiveMargin, hasOverride: overrideSource != null,
+          overrideSource,           // "margin" | "price" | null
           deltaTl, deltaPct,
         };
       })
@@ -445,12 +480,30 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   // ============================================================
   // Taslak (draft) yönetimi — sadece taslak, prod'a hiçbir şey yazılmaz
   // ============================================================
-  const setRowOverride = (stockCode, value) => {
+  // Marj input handler — override.source = "margin"
+  const setRowMarginOverride = (stockCode, value) => {
     const v = String(value).trim();
     setOverrides(prev => {
       const next = { ...prev };
       if (v === "" || v === "-") { delete next[stockCode]; }
-      else { const n = Number(v); if (!Number.isNaN(n)) next[stockCode] = n; }
+      else { const n = Number(v); if (!Number.isNaN(n)) next[stockCode] = { marginPct: n, source: "margin" }; }
+      return next;
+    });
+    setDraftDirty(true);
+  };
+  // Fiyat input handler — override.source = "price" (currency → TL çevirimi)
+  const setRowPriceOverride = (stockCode, valueInCurrency) => {
+    const v = String(valueInCurrency).trim();
+    setOverrides(prev => {
+      const next = { ...prev };
+      if (v === "" || v === "-") { delete next[stockCode]; }
+      else {
+        const n = Number(v);
+        if (!Number.isNaN(n) && n > 0) {
+          const tl = convertToTl(n, currency, rates);
+          next[stockCode] = { salesTl: tl, source: "price" };
+        }
+      }
       return next;
     });
     setDraftDirty(true);
@@ -956,19 +1009,21 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                 <td style={{ ...td, textAlign: "right", background: "#fafaf9", color: p.existingMarginPct != null ? "#44403c" : "#a8a29e" }}>
                   {p.existingMarginPct != null ? `%${p.existingMarginPct.toFixed(0)}` : "—"}
                 </td>
-                {/* Yeni Marj% — input sadece root'larda aktif */}
+                {/* Yeni Marj% — root'larda input; kaynak fiyat ise hesaplanmış değer gösterilir */}
                 <td style={{ ...td, textAlign: "right", background: "#f5f3ff" }}>
                   {p.isRoot ? (
                     <div style={{ display: "inline-flex", alignItems: "center", gap: 3 }}>
                       <input type="number" step="1"
-                        value={p.hasOverride ? String(overrides[p.stockCode]) : ""}
+                        value={p.overrideSource === "margin" ? String(overrides[p.stockCode]?.marginPct ?? overrides[p.stockCode] ?? "") : (p.overrideSource === "price" ? p.effectiveMargin.toFixed(1) : "")}
                         placeholder={`%${marginPct}`}
-                        onChange={e => setRowOverride(p.stockCode, e.target.value)}
+                        onChange={e => setRowMarginOverride(p.stockCode, e.target.value)}
                         disabled={!canEdit}
+                        title={p.overrideSource === "price" ? "Fiyat üzerinden hesaplanmış marj — yazarsan marj kaynağına döner" : "Marj gir → fiyat hesaplanır"}
                         style={{ width: 55, padding: "2px 5px", fontSize: 10, textAlign: "right",
-                          border: `1px solid ${p.hasOverride ? "#5b21b6" : "#e7e5e4"}`,
-                          background: p.hasOverride ? "#ede9fe" : "#fff", borderRadius: 3,
-                          fontWeight: p.hasOverride ? 700 : 400 }} />
+                          border: `1px solid ${p.overrideSource === "margin" ? "#5b21b6" : "#e7e5e4"}`,
+                          background: p.overrideSource === "margin" ? "#ede9fe" : (p.overrideSource === "price" ? "#fafaf9" : "#fff"),
+                          color: p.overrideSource === "price" ? "#78716c" : "#000",
+                          borderRadius: 3, fontWeight: p.overrideSource === "margin" ? 700 : 400 }} />
                       {p.hasOverride && (
                         <button onClick={() => resetRowOverride(p.stockCode)} title="Satır override'ını sıfırla"
                           style={{ padding: "1px 4px", fontSize: 9, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 2, cursor: "pointer", color: "#78716c" }}>×</button>
@@ -976,7 +1031,19 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                     </div>
                   ) : <span style={{ color: "#a8a29e", fontSize: 10 }}>%{p.marginActualPct.toFixed(0)}</span>}
                 </td>
-                <td style={{ ...td, textAlign: "right", fontWeight: 700, color: "#166534", background: "#eff6ff" }}>{fMoneyDisplay(p.salesTl)}</td>
+                {/* Yeni Satış — root'larda input; kaynak marj ise hesaplanmış değer gösterilir */}
+                <td style={{ ...td, textAlign: "right", background: "#eff6ff" }}>
+                  {p.isRoot ? (
+                    <PriceInput
+                      salesTl={p.salesTl}
+                      currency={currency}
+                      rates={rates}
+                      source={p.overrideSource}
+                      canEdit={canEdit}
+                      onChange={val => setRowPriceOverride(p.stockCode, val)}
+                    />
+                  ) : <span style={{ fontWeight: 700, color: "#166534" }}>{fMoneyDisplay(p.salesTl)}</span>}
+                </td>
                 {/* Fark */}
                 <td style={{ ...td, textAlign: "right" }}>
                   {p.existingTl > 0 ? (
@@ -1001,6 +1068,36 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         {viewMode === "breakdown" && <> · <b>Mamül Kırılımı</b>: her mamul + BOM ağacındaki alt parçalar. Seviye = {maxLevel === 999 ? "tüm seviyeler" : maxLevel === 2 ? "L1-L2 (yarı mamul dahil)" : "L1 (yedek parça)"}. <b>L2+ genelde iç yapıdır</b>, fiyatı L1 içine dahildir; müşteriye yedek parça verirken L1 önerilir. Mamul satırının checkbox'ını tıklarsan alt parçaları da otomatik seçilir.</>}
       </div>
     </div>
+  );
+}
+
+// Fiyat input alt bileşeni — focus sırasında ham metin, blur'da parse.
+// Böylece kullanıcı 1000.50 yazarken cursor sıçraması olmaz, currency dönüşümü
+// blur/enter anında bir kez yapılır.
+function PriceInput({ salesTl, currency, rates, source, canEdit, onChange }) {
+  const displayVal = currency === "TRY" ? salesTl : (currency === "USD" ? (Number(rates?.usd) ? salesTl / rates.usd : 0) : (Number(rates?.eur) ? salesTl / rates.eur : 0));
+  const [text, setText] = useState(String(Number(displayVal.toFixed(2))));
+  const [focused, setFocused] = useState(false);
+  // Focus yokken salesTl/currency değişirse text güncelle
+  useEffect(() => {
+    if (!focused) setText(String(Number(displayVal.toFixed(2))));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [salesTl, currency, focused]);
+  const commit = () => onChange(text);
+  return (
+    <input type="number" step="0.01"
+      value={text}
+      onChange={e => setText(e.target.value)}
+      onFocus={() => setFocused(true)}
+      onBlur={() => { setFocused(false); commit(); }}
+      onKeyDown={e => { if (e.key === "Enter") { e.currentTarget.blur(); } }}
+      disabled={!canEdit}
+      title={source === "margin" ? "Marj üzerinden hesaplanmış fiyat — yazarsan fiyat kaynağına döner (yuvarlama bypass)" : "Fiyat gir → marj hesaplanır (yuvarlama uygulanmaz)"}
+      style={{ width: 90, padding: "2px 5px", fontSize: 10, textAlign: "right",
+        border: `1px solid ${source === "price" ? "#5b21b6" : "#e7e5e4"}`,
+        background: source === "price" ? "#ede9fe" : "#fff",
+        color: source === "margin" ? "#78716c" : "#166534",
+        borderRadius: 3, fontWeight: source === "price" ? 700 : 500 }} />
   );
 }
 
