@@ -3130,6 +3130,8 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
   const vioCurrentWeek = teslim ? getISOWeek(teslim) : '';
   const vioChanged = override && override.origWeek && vioCurrentWeek && vioCurrentWeek !== override.origWeek;
   const bomMissing = bomSet && !bomSet.has(o.stokKodu);
+  const mrpDecision = decideMrp(o.customerCode, o.mrpOverride, mrpDefaults);
+  const hasOrderOverride = o.mrpOverride === "include" || o.mrpOverride === "exclude";
   // NOT: Eskiden COC/toplu seçim yalnız Aselsan (120-0107) + Roketsan (120-116)
   // için açıktı. 2026-07-23'te tüm müşterilere açıldı — Denma dahil.
   const isAR = true;
