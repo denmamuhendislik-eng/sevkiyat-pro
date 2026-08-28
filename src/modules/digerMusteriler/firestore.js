@@ -397,6 +397,73 @@ export async function removePlanOverride(orderId, { canEdit }) {
 }
 
 // ====================================================================
+// MRP Defaults — hangi müşteri/sipariş MRP hesabına dahil olur
+// ====================================================================
+// appData/mrpDefaults doc yapısı:
+//   { customers: { [customerCode]: "exclude" | "include" } }
+//
+// Karar mantığı (App.jsx salesOrdersDemand içinde):
+//   effectiveDecision = order.mrpOverride                      // sipariş bazlı override
+//                     ?? mrpDefaults.customers[customerCode]   // müşteri bazlı ayar
+//                     ?? DEFAULT_MRP_EXCLUDE.includes(code) ? "exclude" : "include"  // kod seed
+//
+// Sipariş bazlı override salesOrders[id].mrpOverride alanına yazılır ("include" veya null).
+// Firestore yazımı: setDoc(merge:true) ile mevcut sipariş kaydına ilave.
+//
+// KRİTİK: Bu ayar sadece MRP hesabına etki eder — sipariş kayıtları SİLİNMEZ,
+// Diğer Müşteriler modülü / raporlar / fiyat listesi görünürlüğü değişmez.
+
+const MRP_DEFAULTS_DOC = "mrpDefaults";
+
+export function subscribeMrpDefaults(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, MRP_DEFAULTS_DOC);
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || { customers: {} }) : { customers: {} }),
+    (err) => { console.error("mrpDefaults listener:", err); callback({ customers: {} }); }
+  );
+}
+
+// Müşteri bazlı ayar: "exclude" | "include" | null (null → doc'tan kaldır, seed'e döner)
+export async function setMrpCustomerDefault(customerCode, decision, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!customerCode) throw new Error("customerCode zorunlu");
+  const ref = doc(db, APP_COL, MRP_DEFAULTS_DOC);
+  if (decision === null) {
+    // Field sil — seed'e ya da default include davranışına dön
+    try {
+      await updateDoc(ref, { [`customers.${customerCode}`]: deleteField() });
+    } catch (e) {
+      if (e?.code === "not-found") return;
+      throw e;
+    }
+  } else {
+    await setDoc(ref, { customers: { [customerCode]: decision } }, { merge: true });
+  }
+}
+
+// Sipariş satır bazlı override — salesOrders[orderId].mrpOverride'ı set eder.
+// decision: "include" | "exclude" | null (null → kayıttan sil, müşteri kararına döner)
+export async function setOrderMrpOverride(orderId, decision, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!db) throw new Error("Firestore bağlantısı hazır değil");
+  if (!orderId) throw new Error("orderId zorunlu");
+  const ref = doc(db, APP_COL, SALES_ORDERS_DOC);
+  if (decision === null) {
+    try {
+      await updateDoc(ref, { [`${orderId}.mrpOverride`]: deleteField() });
+    } catch (e) {
+      if (e?.code === "not-found") return;
+      throw e;
+    }
+  } else {
+    await setDoc(ref, { [orderId]: { mrpOverride: decision } }, { merge: true });
+  }
+}
+
+// ====================================================================
 // COC ATTACHMENT (Doküman) YÖNETİMİ — Firebase Storage + Firestore meta
 // ====================================================================
 //

@@ -15,7 +15,8 @@ import {
   saveDriveConfig, getCocPartDriveAltName, setCocPartDriveAltName,
   COC_ATTACHMENT_CATEGORIES,
 } from './firestore';
-import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments } from './firestore';
+import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments, setMrpCustomerDefault, setOrderMrpOverride } from './firestore';
+import { subscribeMrpDefaults } from './firestore';
 import { generateCocPdf, buildCocPdfBlob } from './cocPdf';
 import { searchCocDrive, importCocDriveFile } from './driveClient';
 import JSZip from 'jszip';
@@ -46,6 +47,20 @@ function shortWeek(isoWeek) {
   return m ? `W${m[1]}` : isoWeek;
 }
 
+// Seed: kod içine gömülü default MRP dışı müşteriler.
+// App.jsx'teki DEFAULT_MRP_EXCLUDE ile senkron olmalı. Kullanıcı Firestore'dan
+// bu müşteriye explicit "include" yazarsa seed baypas edilir.
+// 120-115: DENMA DIŞ TİCARET (OFMER dolaylı sipariş — konteynerlarla duplicate)
+const MRP_EXCLUDE_SEED = ["120-115"];
+
+function decideMrp(customerCode, orderOverride, mrpDefaults) {
+  if (orderOverride === "include" || orderOverride === "exclude") return orderOverride;
+  const cd = mrpDefaults?.customers?.[customerCode];
+  if (cd === "include" || cd === "exclude") return cd;
+  if (MRP_EXCLUDE_SEED.includes(customerCode)) return "exclude";
+  return "include";
+}
+
 export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigateToMrp }) {
   const canEdit = !!(isAdmin || isUretim || isSales);
   const role = isAdmin ? 'admin' : isSales ? 'satis' : (isUretim ? 'üretim' : 'bilinmiyor');
@@ -55,6 +70,63 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
   const { bomModels, loaded: bomLoaded } = useBomModels();
   const { shipments } = useShipments();
   const { automationLog } = useAutomationLog();
+
+  // MRP defaults — hangi müşteri MRP hesabı dışında.
+  // Doc: appData/mrpDefaults = { customers: { [code]: "exclude" | "include" } }
+  const [mrpDefaults, setMrpDefaults] = useState({ customers: {} });
+  useEffect(() => {
+    const u = subscribeMrpDefaults(d => setMrpDefaults(d || { customers: {} }));
+    return u;
+  }, []);
+
+  // Aktif MRP dışı müşteri listesi = seed U firestore.exclude
+  // (firestore.include ile seed baypas edilebilir → o seed müşteri include olur)
+  const excludedCustomers = useMemo(() => {
+    const set = new Set(MRP_EXCLUDE_SEED);
+    const cs = mrpDefaults?.customers || {};
+    for (const [code, decision] of Object.entries(cs)) {
+      if (decision === "exclude") set.add(code);
+      else if (decision === "include") set.delete(code);
+    }
+    // Müşteri adı → salesOrders'tan bul
+    const nameByCode = {};
+    for (const o of Object.values(salesOrders || {})) {
+      if (o?.customerCode && !nameByCode[o.customerCode]) nameByCode[o.customerCode] = o.customerName || '';
+    }
+    return Array.from(set).map(code => ({
+      code,
+      name: nameByCode[code] || '(müşteri adı bulunamadı)',
+      isSeed: MRP_EXCLUDE_SEED.includes(code),
+    }));
+  }, [mrpDefaults, salesOrders]);
+
+  const handleAddMrpExclude = async () => {
+    if (!canEdit) return;
+    const code = (prompt("MRP dışı bırakılacak müşteri kodu (örn. 120-115):") || "").trim();
+    if (!code) return;
+    try {
+      await setMrpCustomerDefault(code, "exclude", { canEdit });
+    } catch (e) { alert("Eklenemedi: " + e.message); }
+  };
+  const handleRemoveMrpExclude = async (code, isSeed) => {
+    if (!canEdit) return;
+    try {
+      // Seed'de ise → include override yaz (seed'i baypas eder)
+      // Firestore exclude ise → field'ı sil (default'a döner)
+      const cs = mrpDefaults?.customers || {};
+      const decision = isSeed ? "include" : null;
+      await setMrpCustomerDefault(code, decision, { canEdit });
+    } catch (e) { alert("Kaldırılamadı: " + e.message); }
+  };
+  const handleToggleOrderMrp = async (order) => {
+    if (!canEdit) return;
+    const current = decideMrp(order.customerCode, order.mrpOverride, mrpDefaults);
+    // Toggle: exclude → include (override yaz), include → null (override kaldır, müşteri kararına dön)
+    const nextDecision = current === "exclude" ? "include" : null;
+    try {
+      await setOrderMrpOverride(order.id, nextDecision, { canEdit });
+    } catch (e) { alert("MRP durumu değiştirilemedi: " + e.message); }
+  };
 
   // COC (Uygunluk Belgesi)
   const currentYearStr = String(new Date().getFullYear());
@@ -1419,6 +1491,31 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                 border: '1px solid #d6d3d1', fontSize: 12, outline: 'none',
               }}
             />
+            {/* MRP Dışı Müşteriler — dolaylı sipariş verenler (ör. Denma Dış Ticaret) MRP hesabını
+                boşuna çift patlatmasın. Sipariş kayıtları BURADA TUTULUR (silinmez), sadece MRP dışı. */}
+            <div style={{ display: 'flex', gap: 4, alignItems: 'center', padding: '4px 8px', background: '#fef2f2', border: '1px solid #fecaca', borderRadius: 6, fontSize: 11 }}
+              title="Bu müşterilerin siparişleri MRP Hesaplama (Brüt/Net Açık) sayfasında sayılmaz. Konteynerlarla duplicate ihtiyacı önler.">
+              <span style={{ color: '#991b1b', fontWeight: 600 }}>🚫 MRP dışı:</span>
+              {excludedCustomers.length === 0 ? (
+                <span style={{ color: '#a8a29e', fontStyle: 'italic' }}>—</span>
+              ) : excludedCustomers.map(c => (
+                <span key={c.code} title={c.name} style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '2px 6px', background: '#fff', border: '1px solid #fecaca', borderRadius: 3, fontFamily: 'ui-monospace, monospace', fontSize: 10 }}>
+                  {c.code}
+                  {c.isSeed && <span style={{ padding: '0 3px', fontSize: 8, background: '#f5f5f4', color: '#78716c', borderRadius: 2, fontFamily: 'inherit' }}>seed</span>}
+                  {canEdit && (
+                    <button onClick={() => handleRemoveMrpExclude(c.code, c.isSeed)}
+                      title={c.isSeed ? "Seed'i baypas et (bu müşteri MRP'ye dahil olsun)" : "MRP dışı listesinden kaldır"}
+                      style={{ padding: '0 3px', border: 'none', background: 'transparent', color: '#991b1b', cursor: 'pointer', fontSize: 11, lineHeight: 1 }}>×</button>
+                  )}
+                </span>
+              ))}
+              {canEdit && (
+                <button onClick={handleAddMrpExclude}
+                  style={{ padding: '2px 6px', fontSize: 10, background: '#fff', border: '1px dashed #fecaca', borderRadius: 3, color: '#991b1b', cursor: 'pointer' }}>
+                  + Ekle
+                </button>
+              )}
+            </div>
             {viewMode === 'orders' && (
               <select
                 value={sortMode}
@@ -2057,7 +2154,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {deferredExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
+                  {renderOrderGroups(grouped.deferred, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge, mrpDefaults, onToggleMrp: handleToggleOrderMrp })}
                 </div>
               )}
             </div>
@@ -2083,7 +2180,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {lateExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
+                  {renderOrderGroups(grouped.late, grouped.currentWeek, true, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge, mrpDefaults, onToggleMrp: handleToggleOrderMrp })}
                 </div>
               )}
             </div>
@@ -2109,7 +2206,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
               </div>
               {noWeekExpanded && (
                 <div style={{ marginTop: 10 }}>
-                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
+                  {renderOrderGroups(grouped.noWeek, grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge, mrpDefaults, onToggleMrp: handleToggleOrderMrp })}
                 </div>
               )}
             </div>
@@ -2177,7 +2274,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
                       {isOpen ? 'gizle ▲' : 'aç ▼'}
                     </span>
                   </div>
-                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge })}
+                  {isOpen && renderOrderGroups(grouped.byWeek[w], grouped.currentWeek, false, { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge, mrpDefaults, onToggleMrp: handleToggleOrderMrp })}
                 </div>
                 );
               })
@@ -3025,7 +3122,7 @@ function renderOrderGroups(orders, currentWeek, isLateContext, ctx) {
 }
 
 function renderOrderRow(o, currentWeek, isLateContext, ctx) {
-  const { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge } = ctx;
+  const { canEdit, openPicker, planOverrides, bomSet, openCocModal, cocCertificates, cocParts, cocSelected, toggleCocSelection, openCocDetailFromBadge, mrpDefaults, onToggleMrp } = ctx;
   const badge = customerBadge(o.customerCode);
   const teslim = o.teslimTarihi ? new Date(o.teslimTarihi + 'T00:00:00Z') : null;
   const lateWeeks = isLateContext && o.effectiveWeek ? weeksBetween(o.effectiveWeek, currentWeek) : 0;
@@ -3068,12 +3165,30 @@ function renderOrderRow(o, currentWeek, isLateContext, ctx) {
           />
         ) : null)}
       </span>
-      {/* 2) Müşteri rozeti */}
-      <span style={{
-        display: 'inline-block', padding: '2px 6px', borderRadius: 4,
-        fontSize: 10, fontWeight: 600, textAlign: 'center',
-        background: badge.bg, color: badge.fg, whiteSpace: 'nowrap',
-      }}>{badge.label}</span>
+      {/* 2) Müşteri rozeti + MRP durumu göstergesi */}
+      <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3 }}>
+        <span style={{
+          display: 'inline-block', padding: '2px 6px', borderRadius: 4,
+          fontSize: 10, fontWeight: 600, textAlign: 'center',
+          background: badge.bg, color: badge.fg, whiteSpace: 'nowrap',
+        }}>{badge.label}</span>
+        {mrpDecision === "exclude" && (
+          <button onClick={(e) => { e.stopPropagation(); onToggleMrp && onToggleMrp(o); }}
+            disabled={!canEdit}
+            title="MRP hesabı DIŞINDA — tıkla → bu siparişi MRP'ye zorla dahil et"
+            style={{ padding: '1px 4px', fontSize: 9, background: '#fef2f2', color: '#991b1b',
+              border: '1px solid #fecaca', borderRadius: 2, cursor: canEdit ? 'pointer' : 'default',
+              fontWeight: 600, lineHeight: 1 }}>🚫 MRP</button>
+        )}
+        {hasOrderOverride && o.mrpOverride === "include" && (
+          <button onClick={(e) => { e.stopPropagation(); onToggleMrp && onToggleMrp(o); }}
+            disabled={!canEdit}
+            title="Bu sipariş müşteri kararına rağmen MRP'ye ZORLA dahil edildi — tıkla → geri al"
+            style={{ padding: '1px 4px', fontSize: 9, background: '#dcfce7', color: '#166534',
+              border: '1px solid #86efac', borderRadius: 2, cursor: canEdit ? 'pointer' : 'default',
+              fontWeight: 600, lineHeight: 1 }}>🎯 MRP</button>
+        )}
+      </span>
       {/* 3) Stok kodu */}
       <span style={{
         fontFamily: 'ui-monospace, monospace', fontWeight: 500, fontSize: 11,

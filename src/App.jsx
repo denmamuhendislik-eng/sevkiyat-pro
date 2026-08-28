@@ -17,7 +17,7 @@ import ContainerAllocationPanel from "./modules/ihracat/ContainerAllocationPanel
 import PriceHistoryModal from "./components/PriceHistoryModal";
 import { subscribeExportSalesOrders, subscribeContainerAllocations } from "./modules/ihracat/firestore";
 import { parseBomExcel as parseBomExcelModule, isFasonOp, getDefaultWC } from "./shared/bomParser";
-import { subscribeSalesOrders, subscribePlanOverrides } from "./modules/digerMusteriler/firestore";
+import { subscribeSalesOrders, subscribePlanOverrides, subscribeMrpDefaults } from "./modules/digerMusteriler/firestore";
 
 // MRP Satınalma ve Sevkiyat Bazlı İhtiyaç panellerinin ortak kategori sistemi.
 // Eskiden MRP IIFE'sinin içindeydi (line ~15452); Sevkiyat panelinden de erişim
@@ -6077,6 +6077,11 @@ function BomModelPicker({ value, onChange, options, hasDirect = true, placeholde
 // ============================================================
 function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts, initialTab, onConsumeInitialTab, onNavigateToPage }) {
   const APP_COL = "appData";
+  // Kod-seed: mrpDefaults doc'unda ayrı override yoksa bu müşteri kodları MRP dışı sayılır.
+  // Kullanıcı isterse Diğer Müşteriler → MRP Dışı Müşteriler ekranından bu müşteriyi
+  // "include" olarak override edebilir (Firestore'a yazar → seed'i baypas eder).
+  // 120-115: DENMA DIŞ TİCARET (OFMER dolaylı sipariş verici — konteynerlarla duplicate)
+  const DEFAULT_MRP_EXCLUDE = ["120-115"];
   const BOM_DOC = "bomModels";
   const WC_DOC = "workCenters";
   const REQ_DOC = "mrpRequirements";
@@ -6187,6 +6192,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   // motor girdisine eklenir. DigerMusteriler'in firestore helper'ları yeniden kullanılır.
   const [salesOrders, setSalesOrders] = useState({});
   const [planOverrides, setPlanOverrides] = useState({});
+  // mrpDefaults — hangi müşteri MRP hesabı dışında (Denma Dış Ticaret gibi dolaylı sipariş
+  // gönderenler duplicate demand oluşturmasın). { customers: { [code]: "exclude" | "include" } }
+  const [mrpDefaults, setMrpDefaults] = useState({ customers: {} });
   // Faz 2.1c: salesOrderStockIndex — products.vioCode ile eşleşmeyen Aselsan stok kodlarına
   // persistent deterministic pseudo-pid atar (500000+). Motor bunları normal pid gibi görür.
   // Doc yapısı: { [stokKodu]: pseudoPid:number }. Yeni stok geldiğinde auto-grow (aşağıda useEffect).
@@ -6245,6 +6253,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     // Faz 2.1: Satış siparişleri + plan override'ları — Diğer Müşteriler modülü üzerinden
     unsubs.push(subscribeSalesOrders(d => setSalesOrders(d || {})));
     unsubs.push(subscribePlanOverrides(d => setPlanOverrides(d || {})));
+    unsubs.push(subscribeMrpDefaults(d => setMrpDefaults(d || { customers: {} })));
     // Faz 2.1c: salesOrderStockIndex — persistent pseudo-pid mapping
     const stokIdxRef = doc(db, APP_COL, "salesOrderStockIndex");
     unsubs.push(onSnapshot(stokIdxRef, snap => {
@@ -6791,14 +6800,25 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   // kullanıcı onayıyla yapılır. unmapped = index henüz atanmamış olanlar (subscribe cycle).
   // Tarih kaynağı: planOverrides.plannedWeek > teslimTarihi (override motora iner).
   const salesOrdersDemand = useMemo(() => {
-    if (!products) return { byProduct: {}, ordersList: [], unmapped: [], totalUnits: 0 };
+    if (!products) return { byProduct: {}, ordersList: [], unmapped: [], totalUnits: 0, mrpSkipped: 0 };
     const vioToPid = {};
     for (const p of products) {
       if (p.vioCode) vioToPid[p.vioCode] = p.id;
     }
+    // MRP filtresi — dolaylı OFMER siparişleri (Denma Dış Ticaret) default hariç.
+    // Karar sırası: (1) sipariş satır override → (2) Firestore mrpDefaults → (3) seed.
+    const customersDefaults = mrpDefaults?.customers || {};
+    const decideMrp = (customerCode, orderOverride) => {
+      if (orderOverride === "include" || orderOverride === "exclude") return orderOverride;
+      const cd = customersDefaults[customerCode];
+      if (cd === "include" || cd === "exclude") return cd;
+      if (DEFAULT_MRP_EXCLUDE.includes(customerCode)) return "exclude";
+      return "include";
+    };
     const byProduct = {};
     const ordersList = [];
     const unmapped = [];
+    let mrpSkipped = 0;
     for (const [id, o] of Object.entries(salesOrders || {})) {
       if (!o || typeof o !== "object") continue;
       // DigerMusteriler parser'ından gelen field adları: kalanMiktar / orijinalMiktar
@@ -6811,6 +6831,9 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       // müşteri net iptal demedi ama işleme almadığı, viodan silinemeyen siparişler.
       // ordersList'e de eklenmez; sadece DigerMusteriler "Belirsiz" sekmesinde görünür.
       if (ov?.status === "deferred") continue;
+      // MRP filtresi — Denma Dış Ticaret gibi dolaylı sipariş gönderenler
+      // duplicate demand oluşturmasın. Sipariş kaydı silinmez, sadece MRP hesabına girmez.
+      if (decideMrp(o.customerCode || "", o.mrpOverride) === "exclude") { mrpSkipped++; continue; }
       const effectiveDate = ov?.plannedWeek || o.teslimTarihi || null;
       const record = {
         id,
@@ -6849,8 +6872,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       ordersList.push(record);
     }
     const totalUnits = Object.values(byProduct).reduce((s, p) => s + p.qty, 0);
-    return { byProduct, ordersList, unmapped, totalUnits };
-  }, [salesOrders, planOverrides, products, salesOrderStockIndex]);
+    return { byProduct, ordersList, unmapped, totalUnits, mrpSkipped };
+  }, [salesOrders, planOverrides, products, salesOrderStockIndex, mrpDefaults]);
 
   // Faz 2.1c: salesPseudoProducts — Aselsan stok kodları için "fake product" listesi.
   // Bu ürünler sadece MRP Hesaplama tab'ında effectiveProducts üzerinden görünür.
