@@ -18,7 +18,9 @@ function buildId(belgeNo, stokKodu, teslimTarihi) {
 
 // Yeni boş kalem
 function newLine(defaultTermin = "") {
-  return { stokKodu: "", pid: null, stokAdi: "", descriptionEn: "", orijinalMiktar: "", sevkedilenBaslangic: "", birimFiyat: "", childPrices: {}, teslimTarihi: defaultTermin };
+  return { stokKodu: "", pid: null, stokAdi: "", descriptionEn: "", orijinalMiktar: "", sevkedilenBaslangic: "", birimFiyat: "", childPrices: {}, teslimTarihi: defaultTermin,
+    // Numune süreci — isteğe bağlı satır bazlı işaret
+    isSample: false, sampleStatus: null, sampleNotes: "" };
 }
 
 export default function OrderForm({ editingOrder, settings, products, canEdit, userEmail, onSaved, onCancel, motorSync, combRules = [], ordersData, logPriceHistory }) {
@@ -73,6 +75,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         birimFiyat: String(editingOrder.birimFiyat || ""),
         childPrices: {},
         teslimTarihi: editingOrder.teslimTarihi || "",
+        isSample: !!editingOrder.isSample,
+        sampleStatus: editingOrder.sampleStatus || (editingOrder.isSample ? "pending" : null),
+        sampleNotes: editingOrder.sampleNotes || "",
       }]);
     } else {
       setCustomerCode(""); setCustomerName("");
@@ -285,6 +290,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           orijinalMiktar: Number(line.orijinalMiktar) || 0,
           sevkedilenBaslangic: Number(line.sevkedilenBaslangic) || 0,
           birimFiyat: Number(line.birimFiyat) || 0,
+          isSample: !!line.isSample,
+          sampleStatus: line.isSample ? (line.sampleStatus || "pending") : null,
+          sampleNotes: line.sampleNotes || "",
         };
         const oldId = editingOrder.id;
         const idChanged = oldId && oldId !== id;
@@ -352,6 +360,9 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
             orijinalMiktar: Number(line.orijinalMiktar) || 0,
             sevkedilenBaslangic: Number(line.sevkedilenBaslangic) || 0,
             birimFiyat: Number(line.birimFiyat) || 0,
+            isSample: !!line.isSample,
+            sampleStatus: line.isSample ? (line.sampleStatus || "pending") : null,
+            sampleNotes: line.sampleNotes || "",
           };
           await saveExportOrder(payload, { canEdit, userEmail });
           applyMotorSyncForNew(payload);
@@ -686,7 +697,7 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           return (
             <div key={idx} style={{ marginBottom: 10, padding: 8, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 4 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c", display: "flex", alignItems: "center", gap: 8 }}>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c", display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <span>Kalem #{idx + 1}</span>
                   {line.stokKodu && (() => {
                     const cnt = getDocCount(line.stokKodu);
@@ -700,6 +711,29 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                       </button>
                     );
                   })()}
+                  {/* Numune checkbox — bu satır numune mi? */}
+                  <label style={{ display: "inline-flex", alignItems: "center", gap: 3, padding: "2px 8px", fontSize: 10, fontWeight: 600,
+                    background: line.isSample ? "#f5f3ff" : "#fafaf9",
+                    color: line.isSample ? "#5b21b6" : "#78716c",
+                    border: `1px solid ${line.isSample ? "#ddd6fe" : "#d6d3d1"}`, borderRadius: 3, cursor: "pointer" }}
+                    title="Bu satır numune siparişi ise işaretle. Aynı müşteri+ürünün seri sipariş sevkiyatında uyarı çıkar.">
+                    <input type="checkbox" checked={!!line.isSample}
+                      onChange={e => updateLine(idx, { isSample: e.target.checked, sampleStatus: e.target.checked ? (line.sampleStatus || "pending") : null })}
+                      style={{ margin: 0 }} />
+                    🔬 Numune
+                  </label>
+                  {/* Edit modunda + numune ise: Onayla butonu + not */}
+                  {editingOrder && line.isSample && (
+                    <>
+                      <select value={line.sampleStatus || "pending"}
+                        onChange={e => updateLine(idx, { sampleStatus: e.target.value })}
+                        style={{ padding: "2px 4px", fontSize: 10, border: "1px solid #ddd6fe", borderRadius: 3, background: "#fff" }}>
+                        <option value="pending">⏳ Onay bekliyor</option>
+                        <option value="approved">✓ Onaylandı</option>
+                        <option value="rejected">✗ Reddedildi</option>
+                      </select>
+                    </>
+                  )}
                 </div>
                 {!editingOrder && lines.length > 1 && (
                   <button onClick={() => removeLine(idx)}
@@ -708,6 +742,15 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                   </button>
                 )}
               </div>
+              {/* Numune notu — sadece isSample true ise */}
+              {line.isSample && (
+                <div style={{ marginBottom: 6, padding: 6, background: "#faf5ff", border: "1px solid #ddd6fe", borderRadius: 3 }}>
+                  <label style={{ display: "block", fontSize: 10, fontWeight: 600, color: "#5b21b6", marginBottom: 2 }}>🔬 Numune Notu (opsiyonel — kabul yazışması, sertifika no vb.)</label>
+                  <input value={line.sampleNotes || ""} onChange={e => updateLine(idx, { sampleNotes: e.target.value })}
+                    placeholder="Örn. QC raporu #123 kabul edildi 2026-09-15"
+                    style={{ width: "100%", padding: "3px 6px", fontSize: 11, border: "1px solid #ddd6fe", borderRadius: 3, boxSizing: "border-box" }} />
+                </div>
+              )}
               {(() => {
                 const linkedLock = !!editingOrder?.isLinkedChild;
                 const disabledStyle = { ...inp, background: linkedLock ? "#f5f5f4" : "#fff", color: linkedLock ? "#78716c" : "inherit", cursor: linkedLock ? "not-allowed" : "text" };

@@ -120,6 +120,24 @@ export async function updateExportOrderStatus(id, status, { canEdit, userEmail =
   });
 }
 
+// Numune onay/red — sipariş satırındaki isSample=true kayıt için.
+// status: "pending" | "approved" | "rejected"
+export async function updateExportOrderSampleStatus(id, sampleStatus, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!id) throw new Error("id zorunlu");
+  const ref = doc(db, APP_COL, EXPORT_ORDERS_DOC);
+  const now = new Date().toISOString();
+  const patch = {
+    [`orders.${id}.sampleStatus`]: sampleStatus,
+    [`orders.${id}.updatedAt`]: now,
+    [`orders.${id}.updatedBy`]: userEmail || "",
+  };
+  if (sampleStatus === "approved") {
+    patch[`orders.${id}.sampleApprovedAt`] = now;
+  }
+  await updateDoc(ref, patch);
+}
+
 // ============================================================
 // containerAllocations — { allocations: { [year_containerId_pid]: {...} } }
 // ============================================================

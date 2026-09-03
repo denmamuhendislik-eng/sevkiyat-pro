@@ -76,6 +76,27 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
     [shipmentsData, editingShipment]
   );
 
+  // Seçili müşteri için stokKodu → bekleyen numune sipariş var mı?
+  // Aynı müşteri + aynı ürün: isSample=true + sampleStatus !== "approved" + status != "cancelled"
+  const pendingSampleByStok = useMemo(() => {
+    if (!customerCode) return new Map();
+    const m = new Map(); // stokKodu → { count, latestBelgeNo }
+    for (const o of Object.values(ordersData?.orders || {})) {
+      if (!o?.isSample) continue;
+      if (o.customerCode !== customerCode) continue;
+      if ((o.status || "open") === "cancelled") continue;
+      const st = o.sampleStatus || "pending";
+      if (st === "approved" || st === "rejected") continue;
+      const code = o.stokKodu || "";
+      if (!code) continue;
+      const cur = m.get(code) || { count: 0, latestBelgeNo: "" };
+      cur.count += 1;
+      cur.latestBelgeNo = o.belgeNo || cur.latestBelgeNo;
+      m.set(code, cur);
+    }
+    return m;
+  }, [customerCode, ordersData]);
+
   // Seçili müşterinin açık sipariş kalemleri (kalan miktar > 0, isLinkedChild dahil)
   const openOrderLines = useMemo(() => {
     if (!customerCode) return [];
@@ -94,11 +115,25 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
           return sum + (alloc?.qty || 0);
         }, 0);
         const availableForShipment = Math.max(0, remaining - usedInThisShipment);
-        return { order: o, remaining, usedInThisShipment, availableForShipment };
+        // Numune uyarısı — bu ürün için aynı müşteride bekleyen numune var mı?
+        // Sadece SERİ sipariş satırlarında uyar (numunenin kendinde uyarma).
+        const isSample = !!o.isSample;
+        const sampleInfo = (!isSample && o.stokKodu) ? (pendingSampleByStok.get(o.stokKodu) || null) : null;
+        return { order: o, remaining, usedInThisShipment, availableForShipment, isSample, sampleWarn: sampleInfo };
       })
       .filter(x => x.availableForShipment > 0 || x.usedInThisShipment > 0)
       .sort((a, b) => (a.order.teslimTarihi || "9999").localeCompare(b.order.teslimTarihi || "9999"));
-  }, [customerCode, ordersData, items, shipmentAllocatedByOrder]);
+  }, [customerCode, ordersData, items, shipmentAllocatedByOrder, pendingSampleByStok]);
+
+  // Bu shipment'ta seçili satırlar arasında bekleyen numune uyarısı olan var mı?
+  const pendingSamplesInSelection = useMemo(() => {
+    const warned = [];
+    for (const it of items) {
+      const info = pendingSampleByStok.get(it.stokKodu);
+      if (info) warned.push({ stokKodu: it.stokKodu, stokAdi: it.stokAdi, ...info });
+    }
+    return warned;
+  }, [items, pendingSampleByStok]);
 
   const applyCustomer = (code) => {
     setCustomerCode(code);
@@ -207,6 +242,17 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
           <div style={{ padding: 8, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #fde68a", borderRadius: 4, fontSize: 11 }}>
             ⚠ <b>Bu müşteri motor'a bağlı</b> — Sevkiyat Detay ekranından yönetilmesi gerekiyor. Bu form üzerinden sevkiyat kaydı oluşturmak <b>tavsiye edilmez</b> (yönetim iki ayrı yerde parçalanır).
             {canEdit && <span style={{ display: "block", marginTop: 4, fontSize: 10 }}>Fatura Ayarları → "Motor'a Bağlı Müşteriler" bölümünden bu bağlantıyı yönetebilirsin.</span>}
+          </div>
+        )}
+        {pendingSamplesInSelection.length > 0 && (
+          <div style={{ padding: 8, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 4, fontSize: 11 }}>
+            ⚠ <b>Numune Onayı Beklenen Ürün(ler)</b> — bu sevkiyattaki {pendingSamplesInSelection.length} kalem için müşteri numune onayı henüz gelmemiş:
+            <ul style={{ margin: "4px 0 0 18px", padding: 0, fontSize: 10 }}>
+              {pendingSamplesInSelection.map((s, i) => (
+                <li key={i}><b>{s.stokKodu}</b>{s.stokAdi ? ` — ${s.stokAdi}` : ""} · numune belge #{s.latestBelgeNo || "?"}</li>
+              ))}
+            </ul>
+            <span style={{ display: "block", marginTop: 4, fontSize: 10 }}>Kaydetmeye devam edebilirsin — bu sadece bilgi amaçlıdır. Numune onaylandığında Sipariş Listesi'nde satırın 🔬 rozetinden ✓ Onaylandı yap.</span>
           </div>
         )}
 
@@ -334,10 +380,20 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
 function OrderLineRow({ entry, onAdd }) {
   const [addQty, setAddQty] = useState(String(entry.availableForShipment));
   useEffect(() => { setAddQty(String(entry.availableForShipment)); }, [entry.availableForShipment]);
-  const { order, remaining, usedInThisShipment, availableForShipment } = entry;
+  const { order, remaining, usedInThisShipment, availableForShipment, isSample, sampleWarn } = entry;
+  const rowBg = isSample ? "#faf5ff" : (sampleWarn ? "#fef3c7" : "transparent");
   return (
-    <tr style={{ borderTop: "1px solid #f5f5f4" }}>
-      <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>#{order.belgeNo}</td>
+    <tr style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
+      <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
+        #{order.belgeNo}
+        {isSample && (
+          <span title="Numune satırı" style={{ marginLeft: 4, padding: "0 4px", fontSize: 8, fontWeight: 700, background: "#f5f3ff", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 2 }}>🔬</span>
+        )}
+        {sampleWarn && !isSample && (
+          <span title={`Aynı ürünün numunesi hâlâ onay bekliyor (belge #${sampleWarn.latestBelgeNo || "?"})`}
+            style={{ marginLeft: 4, padding: "0 4px", fontSize: 8, fontWeight: 700, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 2 }}>⚠ NUMUNE</span>
+        )}
+      </td>
       <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{order.stokKodu}</td>
       <td style={td}>{order.stokAdi || "—"}</td>
       <td style={{ ...td, fontSize: 9, color: "#78716c" }}>{order.teslimTarihi || "—"}</td>

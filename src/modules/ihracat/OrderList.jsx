@@ -9,7 +9,7 @@ import React, { useState, useMemo } from "react";
 import {
   computeAllocatedByOrder, computeOrderFillStatus, computeOrderRemaining,
 } from "./allocationCalc";
-import { updateExportOrderStatus, deleteExportOrder, bulkUpdateOrdersByBelge } from "./firestore";
+import { updateExportOrderStatus, updateExportOrderSampleStatus, deleteExportOrder, bulkUpdateOrdersByBelge } from "./firestore";
 import OrderHeaderEditModal from "./OrderHeaderEditModal";
 import ProductDocumentsModal from "./ProductDocumentsModal";
 
@@ -224,6 +224,15 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
     }
   };
 
+  const handleSampleStatusChange = async (order, newSampleStatus) => {
+    if (!canEdit) return;
+    try {
+      await updateExportOrderSampleStatus(order.id, newSampleStatus, { canEdit, userEmail });
+    } catch (e) {
+      alert("Numune durumu güncellenemedi: " + e.message);
+    }
+  };
+
   const handleDeleteItem = async (order) => {
     if (!canEdit) return;
     // Bağlı child kayıtları — parent'ın silinmesiyle beraber silinir
@@ -385,6 +394,26 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                           </span>
                         );
                       })()}
+                      {/* Grup numune özet — bekleyen/onaylanan */}
+                      {(() => {
+                        const samples = g.items.filter(o => o.isSample);
+                        if (samples.length === 0) return null;
+                        const pending = samples.filter(o => (o.sampleStatus || "pending") === "pending").length;
+                        const approved = samples.filter(o => o.sampleStatus === "approved").length;
+                        const rejected = samples.filter(o => o.sampleStatus === "rejected").length;
+                        const parts = [];
+                        if (pending > 0) parts.push(`⏳ ${pending}`);
+                        if (approved > 0) parts.push(`✓ ${approved}`);
+                        if (rejected > 0) parts.push(`✗ ${rejected}`);
+                        const bg = pending > 0 ? "#f5f3ff" : approved > 0 ? "#dcfce7" : "#fef2f2";
+                        const fg = pending > 0 ? "#5b21b6" : approved > 0 ? "#166534" : "#991b1b";
+                        return (
+                          <span title={`Numune: ${samples.length} adet · ${parts.join(" · ")}`}
+                            style={{ padding: "2px 8px", fontSize: 9, fontWeight: 700, background: bg, color: fg, borderRadius: 3, border: `1px solid ${fg}` }}>
+                            🔬 {parts.join(" · ")}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div style={{ fontSize: 10, color: "#78716c", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
                       <span title={g.deliveryTerms}>🚚 {g.deliveryTerms ? (g.deliveryTerms.length > 30 ? g.deliveryTerms.slice(0, 30) + "…" : g.deliveryTerms) : <span style={{ color: "#dc2626" }}>Teslim şekli girilmemiş</span>}</span>
@@ -460,6 +489,23 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                             <tr key={o.id} style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
                               <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
                                 {isLinked && <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, background: "rgba(30,64,175,0.12)", color: "#1e40af", borderRadius: 2, marginRight: 4 }}>🔗 BAĞLI</span>}
+                                {o.isSample && (() => {
+                                  const st = o.sampleStatus || "pending";
+                                  const meta = st === "approved" ? { bg: "#dcfce7", fg: "#166534", icon: "✓" }
+                                    : st === "rejected" ? { bg: "#fef2f2", fg: "#991b1b", icon: "✗" }
+                                    : { bg: "#f5f3ff", fg: "#5b21b6", icon: "⏳" };
+                                  return (
+                                    <select value={st} onChange={e => handleSampleStatusChange(o, e.target.value)} disabled={!canEdit}
+                                      title={`Numune — ${st === "approved" ? "Onaylandı" : st === "rejected" ? "Reddedildi" : "Onay bekliyor"}${o.sampleNotes ? " · " + o.sampleNotes : ""}`}
+                                      style={{ padding: "1px 4px", fontSize: 8, fontWeight: 700, background: meta.bg, color: meta.fg,
+                                        border: `1px solid ${meta.fg}`, borderRadius: 2, marginRight: 4, cursor: canEdit ? "pointer" : "not-allowed",
+                                        appearance: "none", WebkitAppearance: "none" }}>
+                                      <option value="pending">🔬 {meta.icon}</option>
+                                      <option value="approved">🔬 ✓</option>
+                                      <option value="rejected">🔬 ✗</option>
+                                    </select>
+                                  );
+                                })()}
                                 {o.stokKodu || "—"}
                                 {o.stokKodu && (() => {
                                   const cnt = getDocCount(o.stokKodu);
