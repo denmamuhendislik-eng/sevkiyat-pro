@@ -236,6 +236,7 @@ export default function ExportShipmentList({ canEdit, userEmail, products, order
           editingShipment={editingShipment}
           products={products}
           ordersData={ordersData}
+          allocationsData={allocationsData}
           shipmentsData={data}
           exportSettings={exportSettings}
           canEdit={canEdit}

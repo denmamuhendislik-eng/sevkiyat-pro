@@ -722,17 +722,16 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                       style={{ margin: 0 }} />
                     🔬 Numune
                   </label>
-                  {/* Edit modunda + numune ise: Onayla butonu + not */}
+                  {/* Edit modunda + numune ise: manuel karar dropdown */}
                   {editingOrder && line.isSample && (
-                    <>
-                      <select value={line.sampleStatus || "pending"}
-                        onChange={e => updateLine(idx, { sampleStatus: e.target.value })}
-                        style={{ padding: "2px 4px", fontSize: 10, border: "1px solid #ddd6fe", borderRadius: 3, background: "#fff" }}>
-                        <option value="pending">⏳ Onay bekliyor</option>
-                        <option value="approved">✓ Onaylandı</option>
-                        <option value="rejected">✗ Reddedildi</option>
-                      </select>
-                    </>
+                    <select value={(line.sampleStatus === "approved" || line.sampleStatus === "rejected") ? line.sampleStatus : "auto"}
+                      onChange={e => updateLine(idx, { sampleStatus: e.target.value === "auto" ? null : e.target.value })}
+                      title="Otomatik: sevk/tahsis varsa 📦 Onay Bekliyor, yoksa ⏳ Sevk Bekliyor gösterilir."
+                      style={{ padding: "2px 4px", fontSize: 10, border: "1px solid #ddd6fe", borderRadius: 3, background: "#fff" }}>
+                      <option value="auto">🔄 Otomatik (sevk durumundan)</option>
+                      <option value="approved">✓ Onaylandı</option>
+                      <option value="rejected">✗ Reddedildi</option>
+                    </select>
                   )}
                 </div>
                 {!editingOrder && lines.length > 1 && (

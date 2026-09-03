@@ -73,6 +73,26 @@ export function computeOrderRemaining(order, allocatedByOrderMap) {
   return Math.max(0, remaining);
 }
 
+// ============================================================
+// Numune efektif status hesabı
+// ============================================================
+// Firestore'da sampleStatus sadece manuel karar (approved | rejected | null).
+// Render sırasında bu helper "waiting_shipment" veya "sent" otomatik türetir.
+// Backward-compat: eski "pending" değer de auto hesap devreye girsin diye null gibi davranır.
+//
+// Dönüş: "waiting_shipment" | "sent" | "approved" | "rejected" | null (numune değilse)
+export function getEffectiveSampleStatus(order, allocatedByOrderMap) {
+  if (!order?.isSample) return null;
+  const raw = order.sampleStatus;
+  // Manuel karar öncelikli
+  if (raw === "approved" || raw === "rejected") return raw;
+  // Otomatik: sevk kontrol (VIO başlangıç + tüm tahsisler)
+  const sevkBas = Number(order.sevkedilenBaslangic) || 0;
+  const tahsis = allocatedByOrderMap?.get?.(order.id) || 0;
+  const sent = sevkBas + tahsis;
+  return sent > 0 ? "sent" : "waiting_shipment";
+}
+
 // Bir siparişin doluluk durumu
 export function computeOrderFillStatus(order, allocatedByOrderMap) {
   const orij = Number(order?.orijinalMiktar) || 0;

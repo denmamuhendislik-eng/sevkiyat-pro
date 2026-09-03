@@ -120,20 +120,29 @@ export async function updateExportOrderStatus(id, status, { canEdit, userEmail =
   });
 }
 
-// Numune onay/red — sipariş satırındaki isSample=true kayıt için.
-// status: "pending" | "approved" | "rejected"
+// Numune manuel karar — sipariş satırındaki isSample=true kayıt için.
+// status: "approved" | "rejected" | null (null → field silinir, sistem otomatik hesaplar)
 export async function updateExportOrderSampleStatus(id, sampleStatus, { canEdit, userEmail = "" } = {}) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!id) throw new Error("id zorunlu");
   const ref = doc(db, APP_COL, EXPORT_ORDERS_DOC);
   const now = new Date().toISOString();
   const patch = {
-    [`orders.${id}.sampleStatus`]: sampleStatus,
     [`orders.${id}.updatedAt`]: now,
     [`orders.${id}.updatedBy`]: userEmail || "",
   };
-  if (sampleStatus === "approved") {
-    patch[`orders.${id}.sampleApprovedAt`] = now;
+  if (sampleStatus === null) {
+    // "Otomatik"e dön — manuel karar sil, sampleApprovedAt de temizle
+    patch[`orders.${id}.sampleStatus`] = deleteField();
+    patch[`orders.${id}.sampleApprovedAt`] = deleteField();
+  } else {
+    patch[`orders.${id}.sampleStatus`] = sampleStatus;
+    if (sampleStatus === "approved") {
+      patch[`orders.${id}.sampleApprovedAt`] = now;
+    } else {
+      // Rejected veya diğer — approvedAt varsa temizle
+      patch[`orders.${id}.sampleApprovedAt`] = deleteField();
+    }
   }
   await updateDoc(ref, patch);
 }

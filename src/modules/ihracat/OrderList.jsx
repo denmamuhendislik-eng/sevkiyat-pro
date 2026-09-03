@@ -8,6 +8,7 @@
 import React, { useState, useMemo } from "react";
 import {
   computeAllocatedByOrder, computeOrderFillStatus, computeOrderRemaining,
+  getEffectiveSampleStatus,
 } from "./allocationCalc";
 import { updateExportOrderStatus, updateExportOrderSampleStatus, deleteExportOrder, bulkUpdateOrdersByBelge } from "./firestore";
 import OrderHeaderEditModal from "./OrderHeaderEditModal";
@@ -224,10 +225,12 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
     }
   };
 
-  const handleSampleStatusChange = async (order, newSampleStatus) => {
+  const handleSampleStatusChange = async (order, dropdownValue) => {
     if (!canEdit) return;
+    // "auto" → Firestore'dan sil (null) → sistem otomatik hesaplar
+    const val = dropdownValue === "auto" ? null : dropdownValue;
     try {
-      await updateExportOrderSampleStatus(order.id, newSampleStatus, { canEdit, userEmail });
+      await updateExportOrderSampleStatus(order.id, val, { canEdit, userEmail });
     } catch (e) {
       alert("Numune durumu güncellenemedi: " + e.message);
     }
@@ -394,21 +397,28 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                           </span>
                         );
                       })()}
-                      {/* Grup numune özet — bekleyen/onaylanan */}
+                      {/* Grup numune özet — efektif status */}
                       {(() => {
                         const samples = g.items.filter(o => o.isSample);
                         if (samples.length === 0) return null;
-                        const pending = samples.filter(o => (o.sampleStatus || "pending") === "pending").length;
-                        const approved = samples.filter(o => o.sampleStatus === "approved").length;
-                        const rejected = samples.filter(o => o.sampleStatus === "rejected").length;
+                        let waiting = 0, sent = 0, approved = 0, rejected = 0;
+                        for (const s of samples) {
+                          const eff = getEffectiveSampleStatus(s, allocatedByOrder);
+                          if (eff === "approved") approved++;
+                          else if (eff === "rejected") rejected++;
+                          else if (eff === "sent") sent++;
+                          else waiting++;
+                        }
                         const parts = [];
-                        if (pending > 0) parts.push(`⏳ ${pending}`);
+                        if (waiting > 0) parts.push(`⏳ ${waiting}`);
+                        if (sent > 0) parts.push(`📦 ${sent}`);
                         if (approved > 0) parts.push(`✓ ${approved}`);
                         if (rejected > 0) parts.push(`✗ ${rejected}`);
-                        const bg = pending > 0 ? "#f5f3ff" : approved > 0 ? "#dcfce7" : "#fef2f2";
-                        const fg = pending > 0 ? "#5b21b6" : approved > 0 ? "#166534" : "#991b1b";
+                        // Renk kritiklik sırasına göre: rejected > waiting/sent > approved
+                        const bg = rejected > 0 ? "#fef2f2" : (waiting > 0 || sent > 0) ? "#f5f3ff" : "#dcfce7";
+                        const fg = rejected > 0 ? "#991b1b" : (waiting > 0 || sent > 0) ? "#5b21b6" : "#166534";
                         return (
-                          <span title={`Numune: ${samples.length} adet · ${parts.join(" · ")}`}
+                          <span title={`Numune: ${samples.length} adet · ⏳ Sevk bekliyor ${waiting} · 📦 Onay bekliyor ${sent} · ✓ Onaylandı ${approved} · ✗ Reddedildi ${rejected}`}
                             style={{ padding: "2px 8px", fontSize: 9, fontWeight: 700, background: bg, color: fg, borderRadius: 3, border: `1px solid ${fg}` }}>
                             🔬 {parts.join(" · ")}
                           </span>
@@ -490,17 +500,21 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                               <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
                                 {isLinked && <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, background: "rgba(30,64,175,0.12)", color: "#1e40af", borderRadius: 2, marginRight: 4 }}>🔗 BAĞLI</span>}
                                 {o.isSample && (() => {
-                                  const st = o.sampleStatus || "pending";
-                                  const meta = st === "approved" ? { bg: "#dcfce7", fg: "#166534", icon: "✓" }
-                                    : st === "rejected" ? { bg: "#fef2f2", fg: "#991b1b", icon: "✗" }
-                                    : { bg: "#f5f3ff", fg: "#5b21b6", icon: "⏳" };
+                                  const eff = getEffectiveSampleStatus(o, allocatedByOrder);
+                                  const meta =
+                                    eff === "approved" ? { bg: "#dcfce7", fg: "#166534", icon: "✓", label: "Onaylandı" }
+                                    : eff === "rejected" ? { bg: "#fef2f2", fg: "#991b1b", icon: "✗", label: "Reddedildi" }
+                                    : eff === "sent" ? { bg: "#ffedd5", fg: "#9a3412", icon: "📦", label: "Sevk edildi, onay bekleniyor" }
+                                    : { bg: "#f5f3ff", fg: "#5b21b6", icon: "⏳", label: "Sevk bekliyor" };
+                                  // Dropdown value: manuel kayıt varsa onu göster, yoksa "auto"
+                                  const ddVal = (o.sampleStatus === "approved" || o.sampleStatus === "rejected") ? o.sampleStatus : "auto";
                                   return (
-                                    <select value={st} onChange={e => handleSampleStatusChange(o, e.target.value)} disabled={!canEdit}
-                                      title={`Numune — ${st === "approved" ? "Onaylandı" : st === "rejected" ? "Reddedildi" : "Onay bekliyor"}${o.sampleNotes ? " · " + o.sampleNotes : ""}`}
+                                    <select value={ddVal} onChange={e => handleSampleStatusChange(o, e.target.value)} disabled={!canEdit}
+                                      title={`Numune — ${meta.label}${(eff === "sent" || eff === "waiting_shipment") ? " (otomatik)" : ""}${o.sampleNotes ? " · " + o.sampleNotes : ""}`}
                                       style={{ padding: "1px 4px", fontSize: 8, fontWeight: 700, background: meta.bg, color: meta.fg,
                                         border: `1px solid ${meta.fg}`, borderRadius: 2, marginRight: 4, cursor: canEdit ? "pointer" : "not-allowed",
                                         appearance: "none", WebkitAppearance: "none" }}>
-                                      <option value="pending">🔬 {meta.icon}</option>
+                                      <option value="auto">🔬 {meta.icon}</option>
                                       <option value="approved">🔬 ✓</option>
                                       <option value="rejected">🔬 ✗</option>
                                     </select>

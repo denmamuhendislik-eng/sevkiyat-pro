@@ -4,7 +4,7 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import { saveExportShipment } from "./firestore";
-import { computeShipmentAllocatedByOrder } from "./allocationCalc";
+import { computeShipmentAllocatedByOrder, computeAllocatedByOrder, getEffectiveSampleStatus } from "./allocationCalc";
 
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR");
 
@@ -13,7 +13,7 @@ function newShipmentId() {
   return `SHP_${Date.now()}_${rand}`;
 }
 
-export default function ExportShipmentForm({ editingShipment, products, ordersData, shipmentsData, exportSettings, canEdit, userEmail, onSaved, onCancel }) {
+export default function ExportShipmentForm({ editingShipment, products, ordersData, allocationsData, shipmentsData, exportSettings, canEdit, userEmail, onSaved, onCancel }) {
   const isEdit = !!editingShipment;
 
   const [customerCode, setCustomerCode] = useState("");
@@ -76,26 +76,40 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
     [shipmentsData, editingShipment]
   );
 
+  // Efektif status için allocatedByOrder (container + invoiced shipments)
+  const allocatedByOrder = useMemo(
+    () => computeAllocatedByOrder(allocationsData?.allocations || {}, shipmentsData?.shipments || {}),
+    [allocationsData, shipmentsData]
+  );
+
   // Seçili müşteri için stokKodu → bekleyen numune sipariş var mı?
-  // Aynı müşteri + aynı ürün: isSample=true + sampleStatus !== "approved" + status != "cancelled"
+  // Efektif status ("approved" veya "rejected" ise atlar).
+  //   waiting_shipment → henüz sevk edilmemiş → sarı hafif uyarı
+  //   sent            → sevkedilmiş ama onay yok → sarı uyarı
+  //   rejected        → kırmızı kritik uyarı
   const pendingSampleByStok = useMemo(() => {
     if (!customerCode) return new Map();
-    const m = new Map(); // stokKodu → { count, latestBelgeNo }
+    const m = new Map(); // stokKodu → { severity: "waiting"|"sent"|"rejected", latestBelgeNo, count, latestEff }
     for (const o of Object.values(ordersData?.orders || {})) {
       if (!o?.isSample) continue;
       if (o.customerCode !== customerCode) continue;
       if ((o.status || "open") === "cancelled") continue;
-      const st = o.sampleStatus || "pending";
-      if (st === "approved" || st === "rejected") continue;
+      const eff = getEffectiveSampleStatus(o, allocatedByOrder);
+      if (eff === "approved") continue; // uyarı yok
       const code = o.stokKodu || "";
       if (!code) continue;
-      const cur = m.get(code) || { count: 0, latestBelgeNo: "" };
+      const cur = m.get(code) || { count: 0, latestBelgeNo: "", severity: null, latestEff: null };
       cur.count += 1;
       cur.latestBelgeNo = o.belgeNo || cur.latestBelgeNo;
+      cur.latestEff = eff;
+      // severity öncelik: rejected > sent > waiting
+      const sev = eff === "rejected" ? "rejected" : eff === "sent" ? "sent" : "waiting";
+      const rank = { rejected: 3, sent: 2, waiting: 1 };
+      if (!cur.severity || rank[sev] > rank[cur.severity]) cur.severity = sev;
       m.set(code, cur);
     }
     return m;
-  }, [customerCode, ordersData]);
+  }, [customerCode, ordersData, allocatedByOrder]);
 
   // Seçili müşterinin açık sipariş kalemleri (kalan miktar > 0, isLinkedChild dahil)
   const openOrderLines = useMemo(() => {
@@ -244,17 +258,32 @@ export default function ExportShipmentForm({ editingShipment, products, ordersDa
             {canEdit && <span style={{ display: "block", marginTop: 4, fontSize: 10 }}>Fatura Ayarları → "Motor'a Bağlı Müşteriler" bölümünden bu bağlantıyı yönetebilirsin.</span>}
           </div>
         )}
-        {pendingSamplesInSelection.length > 0 && (
-          <div style={{ padding: 8, marginBottom: 10, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 4, fontSize: 11 }}>
-            ⚠ <b>Numune Onayı Beklenen Ürün(ler)</b> — bu sevkiyattaki {pendingSamplesInSelection.length} kalem için müşteri numune onayı henüz gelmemiş:
-            <ul style={{ margin: "4px 0 0 18px", padding: 0, fontSize: 10 }}>
-              {pendingSamplesInSelection.map((s, i) => (
-                <li key={i}><b>{s.stokKodu}</b>{s.stokAdi ? ` — ${s.stokAdi}` : ""} · numune belge #{s.latestBelgeNo || "?"}</li>
-              ))}
-            </ul>
-            <span style={{ display: "block", marginTop: 4, fontSize: 10 }}>Kaydetmeye devam edebilirsin — bu sadece bilgi amaçlıdır. Numune onaylandığında Sipariş Listesi'nde satırın 🔬 rozetinden ✓ Onaylandı yap.</span>
-          </div>
-        )}
+        {pendingSamplesInSelection.length > 0 && (() => {
+          const hasRejected = pendingSamplesInSelection.some(s => s.severity === "rejected");
+          const bg = hasRejected ? "#fef2f2" : "#fef3c7";
+          const fg = hasRejected ? "#991b1b" : "#92400e";
+          const border = hasRejected ? "#dc2626" : "#f59e0b";
+          const title = hasRejected ? "⛔ REDDEDİLEN Numuneli Ürün(ler) Sevk Ediliyor" : "⚠ Numune Süreci Bekleyen Ürün(ler)";
+          const labelFor = (sev) =>
+            sev === "rejected" ? "✗ REDDEDİLDİ — seri sevki riskli!"
+            : sev === "sent" ? "📦 Numune sevk edildi, onay bekleniyor"
+            : "⏳ Numune henüz gönderilmedi";
+          return (
+            <div style={{ padding: 8, marginBottom: 10, background: bg, color: fg, border: `1px solid ${border}`, borderRadius: 4, fontSize: 11 }}>
+              {hasRejected ? "⛔" : "⚠"} <b>{title}</b> — {pendingSamplesInSelection.length} kalem:
+              <ul style={{ margin: "4px 0 0 18px", padding: 0, fontSize: 10 }}>
+                {pendingSamplesInSelection.map((s, i) => (
+                  <li key={i}>
+                    <b>{s.stokKodu}</b>{s.stokAdi ? ` — ${s.stokAdi}` : ""} · numune belge #{s.latestBelgeNo || "?"} · <b>{labelFor(s.severity)}</b>
+                  </li>
+                ))}
+              </ul>
+              <span style={{ display: "block", marginTop: 4, fontSize: 10 }}>
+                Kaydetmeye devam edebilirsin — bu sadece bilgi amaçlıdır. Numune onaylandığında Sipariş Listesi'nde satırın 🔬 rozetinden ✓ Onaylandı seç.
+              </span>
+            </div>
+          );
+        })()}
 
         {/* Header info */}
         <Section title="Sevkiyat Bilgisi">
@@ -381,7 +410,13 @@ function OrderLineRow({ entry, onAdd }) {
   const [addQty, setAddQty] = useState(String(entry.availableForShipment));
   useEffect(() => { setAddQty(String(entry.availableForShipment)); }, [entry.availableForShipment]);
   const { order, remaining, usedInThisShipment, availableForShipment, isSample, sampleWarn } = entry;
-  const rowBg = isSample ? "#faf5ff" : (sampleWarn ? "#fef3c7" : "transparent");
+  // Uyarı severity'sine göre satır arka planı + rozet metni
+  const warnMeta = sampleWarn ? (
+    sampleWarn.severity === "rejected" ? { rowBg: "#fef2f2", bg: "#fef2f2", fg: "#991b1b", border: "#dc2626", label: "⛔ Numune REDDEDİLDİ" }
+    : sampleWarn.severity === "sent" ? { rowBg: "#fef3c7", bg: "#fef3c7", fg: "#92400e", border: "#f59e0b", label: "📦 Numune onayı bekleniyor" }
+    : { rowBg: "#fefce8", bg: "#fefce8", fg: "#854d0e", border: "#eab308", label: "⏳ Numune henüz gönderilmedi" }
+  ) : null;
+  const rowBg = isSample ? "#faf5ff" : (warnMeta ? warnMeta.rowBg : "transparent");
   return (
     <tr style={{ borderTop: "1px solid #f5f5f4", background: rowBg }}>
       <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
@@ -389,9 +424,11 @@ function OrderLineRow({ entry, onAdd }) {
         {isSample && (
           <span title="Numune satırı" style={{ marginLeft: 4, padding: "0 4px", fontSize: 8, fontWeight: 700, background: "#f5f3ff", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 2 }}>🔬</span>
         )}
-        {sampleWarn && !isSample && (
-          <span title={`Aynı ürünün numunesi hâlâ onay bekliyor (belge #${sampleWarn.latestBelgeNo || "?"})`}
-            style={{ marginLeft: 4, padding: "0 4px", fontSize: 8, fontWeight: 700, background: "#fef3c7", color: "#92400e", border: "1px solid #f59e0b", borderRadius: 2 }}>⚠ NUMUNE</span>
+        {warnMeta && !isSample && (
+          <span title={`Aynı ürünün numunesi ${sampleWarn.severity === "rejected" ? "REDDEDİLDİ" : sampleWarn.severity === "sent" ? "sevk edildi ama onay yok" : "henüz gönderilmedi"} (belge #${sampleWarn.latestBelgeNo || "?"})`}
+            style={{ marginLeft: 4, padding: "0 4px", fontSize: 8, fontWeight: 700, background: warnMeta.bg, color: warnMeta.fg, border: `1px solid ${warnMeta.border}`, borderRadius: 2 }}>
+            {warnMeta.label}
+          </span>
         )}
       </td>
       <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{order.stokKodu}</td>
