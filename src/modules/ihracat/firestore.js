@@ -824,3 +824,89 @@ export async function attachInvoicesToShipment(shipmentId, invoiceNos, { canEdit
   }, { merge: true });
   return next;
 }
+
+// ============================================================
+// Ürün bazlı doküman ekleri (teknik resim, PO, sertifika vb.)
+// ============================================================
+// Storage path: appData/exportProductDocs/{stokKodu}/{ts}_{filename}
+// Firestore path: exportSettings.productDocuments[stokKodu].files[]
+// Aynı stok kodunun tüm siparişleri aynı dosya listesini paylaşır.
+
+const MAX_PRODUCT_DOC_BYTES = 20 * 1024 * 1024; // 20 MB
+
+// Storage'a path-safe stok kodu (slash / boşluk vb. escape) — dosya adı için de
+function sanitizePathSegment(s) {
+  return String(s || "").replace(/[^A-Za-z0-9._-]/g, "_");
+}
+
+export async function uploadProductDocument(stokKodu, file, category, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!stokKodu) throw new Error("stokKodu zorunlu");
+  if (!file) throw new Error("Dosya zorunlu");
+  if (file.size > MAX_PRODUCT_DOC_BYTES) {
+    throw new Error(`Dosya çok büyük (${(file.size / 1024 / 1024).toFixed(1)} MB). Max ${MAX_PRODUCT_DOC_BYTES / 1024 / 1024} MB.`);
+  }
+  const codeSeg = sanitizePathSegment(stokKodu);
+  const nameSeg = sanitizePathSegment(file.name || "file");
+  const ts = Date.now();
+  const path = `appData/exportProductDocs/${codeSeg}/${ts}_${nameSeg}`;
+  const ref = storageRef(storage, path);
+  await uploadBytes(ref, file, { contentType: file.type || "application/octet-stream" });
+  const url = await getDownloadURL(ref);
+
+  // Firestore meta — exportSettings.productDocuments[stokKodu].files array'ine ekle
+  const settingsRef = doc(db, APP_COL, EXPORT_SETTINGS_DOC);
+  const snap = await getDoc(settingsRef);
+  const settings = snap.exists() ? (snap.data() || {}) : {};
+  const productDocs = settings.productDocuments || {};
+  const forStock = productDocs[stokKodu] || { files: [] };
+  const now = new Date().toISOString();
+  const newFile = {
+    fileName: file.name || "file",
+    storagePath: path,
+    url,
+    category: (category || "").trim() || "Diğer",
+    size: file.size,
+    uploadedAt: now,
+    uploadedBy: userEmail || "",
+  };
+  const nextFiles = [...(forStock.files || []), newFile];
+  await setDoc(settingsRef, {
+    productDocuments: {
+      ...productDocs,
+      [stokKodu]: { files: nextFiles, updatedAt: now, updatedBy: userEmail || "" },
+    },
+  }, { merge: true });
+  return newFile;
+}
+
+export async function deleteProductDocument(stokKodu, storagePath, { canEdit, userEmail = "" } = {}) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!stokKodu || !storagePath) throw new Error("stokKodu ve storagePath zorunlu");
+  // Storage sil (yoksa sessiz)
+  try {
+    await deleteObject(storageRef(storage, storagePath));
+  } catch (e) {
+    if (e?.code !== "storage/object-not-found") console.warn("Storage sil hatası:", e.message);
+  }
+  // Firestore meta güncelle
+  const settingsRef = doc(db, APP_COL, EXPORT_SETTINGS_DOC);
+  const snap = await getDoc(settingsRef);
+  if (!snap.exists()) return;
+  const settings = snap.data() || {};
+  const productDocs = settings.productDocuments || {};
+  const forStock = productDocs[stokKodu];
+  if (!forStock) return;
+  const nextFiles = (forStock.files || []).filter(f => f.storagePath !== storagePath);
+  const now = new Date().toISOString();
+  await setDoc(settingsRef, {
+    productDocuments: {
+      ...productDocs,
+      [stokKodu]: nextFiles.length > 0
+        ? { files: nextFiles, updatedAt: now, updatedBy: userEmail || "" }
+        : { files: [], updatedAt: now, updatedBy: userEmail || "" },
+    },
+  }, { merge: true });
+}

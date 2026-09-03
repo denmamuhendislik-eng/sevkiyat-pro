@@ -11,6 +11,7 @@ import {
 } from "./allocationCalc";
 import { updateExportOrderStatus, deleteExportOrder, bulkUpdateOrdersByBelge } from "./firestore";
 import OrderHeaderEditModal from "./OrderHeaderEditModal";
+import ProductDocumentsModal from "./ProductDocumentsModal";
 
 const STATUS_LABELS = {
   open: { label: "Açık", bg: "#dbeafe", fg: "#1e40af" },
@@ -30,6 +31,17 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
   const [statusFilter, setStatusFilter] = useState("open");
   const [expandedBelge, setExpandedBelge] = useState(new Set());
   const [editingGroup, setEditingGroup] = useState(null); // group obj → OrderHeaderEditModal açar
+  const [docsModal, setDocsModal] = useState(null); // { stokKodu, stokAdi }
+
+  // Ürün bazlı dokümanlar — exportSettings.productDocuments[stokKodu].files[]
+  const productDocuments = settings?.productDocuments || {};
+  const getDocCount = (stokKodu) => (productDocuments[stokKodu]?.files || []).length;
+  const getGroupDocCount = (items) => {
+    const codes = new Set(items.map(o => o.stokKodu).filter(Boolean));
+    let total = 0;
+    for (const c of codes) total += getDocCount(c);
+    return total;
+  };
 
   const orders = useMemo(() => Object.values(ordersData?.orders || {}), [ordersData]);
   const allocatedByOrder = useMemo(
@@ -362,6 +374,17 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                           ✅ Tamamlandı — kapatılabilir
                         </span>
                       )}
+                      {/* Grup toplam doküman sayısı */}
+                      {(() => {
+                        const gDocCnt = getGroupDocCount(g.items);
+                        if (gDocCnt === 0) return null;
+                        return (
+                          <span title={`${gDocCnt} doküman (ürün bazlı)`}
+                            style={{ padding: "2px 8px", fontSize: 9, fontWeight: 700, background: "#eff6ff", color: "#1e40af", borderRadius: 3, border: "1px solid #bfdbfe" }}>
+                            📎 {gDocCnt}
+                          </span>
+                        );
+                      })()}
                     </div>
                     <div style={{ fontSize: 10, color: "#78716c", marginTop: 3, display: "flex", gap: 10, flexWrap: "wrap" }}>
                       <span title={g.deliveryTerms}>🚚 {g.deliveryTerms ? (g.deliveryTerms.length > 30 ? g.deliveryTerms.slice(0, 30) + "…" : g.deliveryTerms) : <span style={{ color: "#dc2626" }}>Teslim şekli girilmemiş</span>}</span>
@@ -438,6 +461,18 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                               <td style={{ ...td, fontFamily: "ui-monospace, monospace" }}>
                                 {isLinked && <span style={{ padding: "1px 5px", fontSize: 8, fontWeight: 700, background: "rgba(30,64,175,0.12)", color: "#1e40af", borderRadius: 2, marginRight: 4 }}>🔗 BAĞLI</span>}
                                 {o.stokKodu || "—"}
+                                {o.stokKodu && (() => {
+                                  const cnt = getDocCount(o.stokKodu);
+                                  return (
+                                    <button onClick={(e) => { e.stopPropagation(); setDocsModal({ stokKodu: o.stokKodu, stokAdi: o.stokAdi }); }}
+                                      title={cnt > 0 ? `${cnt} doküman — Görüntüle/Yönet` : "Doküman ekle (teknik resim, PO, sertifika vb.)"}
+                                      style={{ marginLeft: 4, padding: "1px 5px", fontSize: 9, fontWeight: 600,
+                                        background: cnt > 0 ? "#eff6ff" : "#fafaf9", color: cnt > 0 ? "#1e40af" : "#a8a29e",
+                                        border: `1px solid ${cnt > 0 ? "#bfdbfe" : "#e7e5e4"}`, borderRadius: 3, cursor: "pointer" }}>
+                                      📎{cnt > 0 ? ` ${cnt}` : ""}
+                                    </button>
+                                  );
+                                })()}
                               </td>
                               <td style={td}>
                                 <div>{o.stokAdi || "—"}</div>
@@ -514,6 +549,18 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
           userEmail={userEmail}
           onClose={() => setEditingGroup(null)}
           onSaved={() => setEditingGroup(null)}
+        />
+      )}
+
+      {/* Ürün dokümanları modal */}
+      {docsModal && (
+        <ProductDocumentsModal
+          stokKodu={docsModal.stokKodu}
+          stokAdi={docsModal.stokAdi}
+          files={productDocuments[docsModal.stokKodu]?.files || []}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setDocsModal(null)}
         />
       )}
     </div>

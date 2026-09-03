@@ -7,6 +7,7 @@
 import React, { useState, useEffect, useMemo } from "react";
 import { saveExportOrder, addPaymentLabel, saveCustomerDefaults, addDeliveryTerm, deleteExportOrder } from "./firestore";
 import { validatePaymentPlan } from "./allocationCalc";
+import ProductDocumentsModal from "./ProductDocumentsModal";
 
 const CURRENCIES = ["EUR", "USD", "TL", "GBP"];
 
@@ -41,6 +42,10 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
 
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [docsModal, setDocsModal] = useState(null); // { stokKodu, stokAdi }
+  // Ürün bazlı dokümanlar (settings.productDocuments'ten okunur, canlı)
+  const productDocuments = settings?.productDocuments || {};
+  const getDocCount = (stokKodu) => (productDocuments[stokKodu]?.files || []).length;
 
   // Düzenleme modunda alanları doldur
   useEffect(() => {
@@ -681,7 +686,21 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           return (
             <div key={idx} style={{ marginBottom: 10, padding: 8, background: "#fafaf9", border: "1px solid #e7e5e4", borderRadius: 4 }}>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c" }}>Kalem #{idx + 1}</div>
+                <div style={{ fontSize: 11, fontWeight: 600, color: "#44403c", display: "flex", alignItems: "center", gap: 8 }}>
+                  <span>Kalem #{idx + 1}</span>
+                  {line.stokKodu && (() => {
+                    const cnt = getDocCount(line.stokKodu);
+                    return (
+                      <button type="button" onClick={() => setDocsModal({ stokKodu: line.stokKodu, stokAdi: line.stokAdi })}
+                        title={cnt > 0 ? `${cnt} doküman — Görüntüle/Yönet` : "Ürün için doküman ekle (teknik resim, PO, sertifika vb.)"}
+                        style={{ padding: "2px 8px", fontSize: 10, fontWeight: 600,
+                          background: cnt > 0 ? "#eff6ff" : "#fafaf9", color: cnt > 0 ? "#1e40af" : "#78716c",
+                          border: `1px solid ${cnt > 0 ? "#bfdbfe" : "#d6d3d1"}`, borderRadius: 3, cursor: "pointer" }}>
+                        📎 Dokümanlar{cnt > 0 ? ` (${cnt})` : ""}
+                      </button>
+                    );
+                  })()}
+                </div>
                 {!editingOrder && lines.length > 1 && (
                   <button onClick={() => removeLine(idx)}
                     style={{ padding: "2px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>
@@ -888,6 +907,18 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
           {saving ? "Kaydediliyor…" : (editingOrder ? "💾 Güncelle" : `💾 Kaydet (${validLines.length} kalem)`)}
         </button>
       </div>
+
+      {/* Ürün dokümanları modal */}
+      {docsModal && (
+        <ProductDocumentsModal
+          stokKodu={docsModal.stokKodu}
+          stokAdi={docsModal.stokAdi}
+          files={productDocuments[docsModal.stokKodu]?.files || []}
+          canEdit={canEdit}
+          userEmail={userEmail}
+          onClose={() => setDocsModal(null)}
+        />
+      )}
     </div>
   );
 }
