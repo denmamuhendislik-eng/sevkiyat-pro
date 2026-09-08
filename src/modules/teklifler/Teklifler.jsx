@@ -1893,6 +1893,8 @@ function ImportView() {
 function QuoteKpiView() {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
+  const [dateFrom, setDateFrom] = useState(""); // yıl-içi daraltma (quoteDate)
+  const [dateTo, setDateTo] = useState("");
   const [data, setData] = useState({ quotes: {} });
   const [currencyRatesDoc, setCurrencyRatesDoc] = useState({});
 
@@ -1900,6 +1902,9 @@ function QuoteKpiView() {
     const unsub = subscribeQuotesForYear(year, setData, { staging: false });
     return unsub;
   }, [year]);
+
+  // Yıl değişince aralık sıfırlansın (başka yıla ait tarihe kaymasın)
+  useEffect(() => { setDateFrom(""); setDateTo(""); }, [year]);
 
   useEffect(() => {
     const unsub = subscribeCurrencyRates(d => setCurrencyRatesDoc(d || {}));
@@ -1919,8 +1924,21 @@ function QuoteKpiView() {
     return out;
   }, [currencyRatesDoc, latestRates]);
 
-  const quotes = useMemo(() => Object.values(data?.quotes || {}), [data]);
+  const allQuotes = useMemo(() => Object.values(data?.quotes || {}), [data]);
+  // quoteDate bazlı yıl-içi daraltma (opsiyonel)
+  const quotes = useMemo(() => {
+    if (!dateFrom && !dateTo) return allQuotes;
+    return allQuotes.filter(q => {
+      const d = String(q?.quoteDate || "").slice(0, 10);
+      if (!d) return false;
+      if (dateFrom && d < dateFrom) return false;
+      if (dateTo && d > dateTo) return false;
+      return true;
+    });
+  }, [allQuotes, dateFrom, dateTo]);
   const stats = useMemo(() => computeQuoteStats(quotes, ratesByYear), [quotes, ratesByYear]);
+  const hasRangeFilter = !!(dateFrom || dateTo);
+  const filteredOutCount = allQuotes.length - quotes.length;
 
   const fmtTl = (n) => n == null || !Number.isFinite(n) ? "—" : `${Number(n).toLocaleString("tr-TR", { maximumFractionDigits: 0 })} ₺`;
   const fmtDay = (d) => d == null ? "—" : `${d.toFixed(1)} gün`;
@@ -1928,15 +1946,33 @@ function QuoteKpiView() {
 
   return (
     <div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
         <label style={{ fontSize: 12, color: "#57534e" }}>Yıl:</label>
         <select value={year} onChange={e => setYear(e.target.value)}
           style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
           {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
         </select>
+        <label style={{ fontSize: 12, color: "#57534e", marginLeft: 6 }} title="Yıl içinde daraltma (quoteDate) — boş bırakılırsa yıl tamamı">📅 Aralık:</label>
+        <input type="date" value={dateFrom} min={`${year}-01-01`} max={`${year}-12-31`}
+          onChange={e => setDateFrom(e.target.value)}
+          title="Başlangıç (quoteDate)"
+          style={{ padding: "5px 8px", fontSize: 11, border: `1px solid ${hasRangeFilter ? "#534AB7" : "#d6d3d1"}`, borderRadius: 3 }} />
+        <span style={{ fontSize: 10, color: "#78716c" }}>→</span>
+        <input type="date" value={dateTo} min={`${year}-01-01`} max={`${year}-12-31`}
+          onChange={e => setDateTo(e.target.value)}
+          title="Bitiş (quoteDate)"
+          style={{ padding: "5px 8px", fontSize: 11, border: `1px solid ${hasRangeFilter ? "#534AB7" : "#d6d3d1"}`, borderRadius: 3 }} />
+        {hasRangeFilter && (
+          <button onClick={() => { setDateFrom(""); setDateTo(""); }}
+            title="Aralığı temizle — yıl tamamına dön"
+            style={{ padding: "3px 8px", fontSize: 10, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer", color: "#78716c" }}>×</button>
+        )}
         <span style={{ fontSize: 11, color: "#78716c" }}>
           {stats.totalCount} teklif
           {stats.archiveCount > 0 && <span style={{ color: "#a8a29e" }}> ({stats.archiveCount} arşiv + {stats.nonArchiveCount} sistem içi)</span>}
+          {hasRangeFilter && filteredOutCount > 0 && (
+            <span style={{ marginLeft: 6, color: "#534AB7" }}>· aralık dışı {filteredOutCount}</span>
+          )}
         </span>
       </div>
 
@@ -1949,7 +1985,9 @@ function QuoteKpiView() {
 
       {stats.totalCount === 0 ? (
         <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
-          {year} yılında teklif yok.
+          {hasRangeFilter
+            ? `${year} · ${dateFrom || "?"} → ${dateTo || "?"} aralığında teklif yok.`
+            : `${year} yılında teklif yok.`}
         </div>
       ) : (
         <>
