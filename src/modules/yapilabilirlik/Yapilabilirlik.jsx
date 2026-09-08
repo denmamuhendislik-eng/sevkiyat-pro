@@ -1771,6 +1771,8 @@ function TechnicalDrawingUploader({ studyNo, files, onChange, canEdit, readonly 
 function KpiView() {
   const currentYear = new Date().getFullYear();
   const [year, setYear] = useState(String(currentYear));
+  const [dateFrom, setDateFrom] = useState(""); // opsiyonel — yıl içinde daralt
+  const [dateTo, setDateTo] = useState("");     // opsiyonel — yıl içinde daralt
   const [data, setData] = useState({ studies: {} });
   const [staging] = useState(false);
 
@@ -1779,24 +1781,72 @@ function KpiView() {
     return unsub;
   }, [year, staging]);
 
-  const studies = useMemo(() => Object.values(data?.studies || {}), [data]);
+  // Yıl değişince yıl-içi tarih aralığı sıfırlansın (aralık başka yıla ait olamaz)
+  useEffect(() => { setDateFrom(""); setDateTo(""); }, [year]);
+
+  const allStudies = useMemo(() => Object.values(data?.studies || {}), [data]);
+  // createdAt bazlı yıl-içi daraltma (opsiyonel — boşsa yıl tamamı)
+  const studies = useMemo(() => {
+    if (!dateFrom && !dateTo) return allStudies;
+    return allStudies.filter(s => {
+      const c = (s?.createdAt || "").substring(0, 10);
+      if (!c) return false;
+      if (dateFrom && c < dateFrom) return false;
+      if (dateTo && c > dateTo) return false;
+      return true;
+    });
+  }, [allStudies, dateFrom, dateTo]);
   const stats = useMemo(() => computeFeasibilityStats(studies), [studies]);
+  const hasRangeFilter = !!(dateFrom || dateTo);
+  const filteredOutCount = allStudies.length - studies.length;
 
   const fmtDay = (d) => d == null ? "—" : `${d.toFixed(1)} gün`;
   const fmtPct = (p) => p == null ? "—" : `%${p.toFixed(0)}`;
 
+  // Yıl-içi tarih aralığı toolbar bileşeni — hem boş hem dolu state'te kullanılır
+  const RangeToolbar = () => {
+    const yearStart = `${year}-01-01`;
+    const yearEnd = `${year}-12-31`;
+    return (
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14, flexWrap: "wrap" }}>
+        <label style={{ fontSize: 12, color: "#57534e" }}>Yıl:</label>
+        <select value={year} onChange={e => setYear(e.target.value)}
+          style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
+          {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
+        </select>
+        <label style={{ fontSize: 12, color: "#57534e", marginLeft: 6 }} title="Yıl içinde daraltma (createdAt) — boş bırakılırsa yıl tamamı">📅 Aralık:</label>
+        <input type="date" value={dateFrom} min={yearStart} max={yearEnd}
+          onChange={e => setDateFrom(e.target.value)}
+          title="Başlangıç (createdAt)"
+          style={{ padding: "5px 8px", fontSize: 11, border: `1px solid ${hasRangeFilter ? "#534AB7" : "#d6d3d1"}`, borderRadius: 3 }} />
+        <span style={{ fontSize: 10, color: "#78716c" }}>→</span>
+        <input type="date" value={dateTo} min={yearStart} max={yearEnd}
+          onChange={e => setDateTo(e.target.value)}
+          title="Bitiş (createdAt)"
+          style={{ padding: "5px 8px", fontSize: 11, border: `1px solid ${hasRangeFilter ? "#534AB7" : "#d6d3d1"}`, borderRadius: 3 }} />
+        {hasRangeFilter && (
+          <button onClick={() => { setDateFrom(""); setDateTo(""); }}
+            title="Aralığı temizle — yıl tamamına dön"
+            style={{ padding: "3px 8px", fontSize: 10, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer", color: "#78716c" }}>×</button>
+        )}
+        <span style={{ fontSize: 11, color: "#78716c" }}>
+          {stats.total} yapılabilirlik
+          {hasRangeFilter && filteredOutCount > 0 && (
+            <span style={{ marginLeft: 6, color: "#534AB7" }}>· aralık dışı {filteredOutCount}</span>
+          )}
+        </span>
+      </div>
+    );
+  };
+
   if (stats.total === 0) {
     return (
       <div>
-        <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
-          <label style={{ fontSize: 12, color: "#57534e" }}>Yıl:</label>
-          <select value={year} onChange={e => setYear(e.target.value)}
-            style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
-            {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
-          </select>
-        </div>
+        <RangeToolbar />
         <div style={{ padding: 40, textAlign: "center", color: "#a8a29e", border: "1px dashed #d6d3d1", borderRadius: 6 }}>
-          {year} yılında yapılabilirlik yok. KPI'lar veri biriktikçe anlam kazanır.
+          {hasRangeFilter
+            ? `${year} · ${dateFrom || "?"} → ${dateTo || "?"} aralığında yapılabilirlik yok.`
+            : `${year} yılında yapılabilirlik yok. KPI'lar veri biriktikçe anlam kazanır.`}
         </div>
       </div>
     );
@@ -1805,14 +1855,7 @@ function KpiView() {
   return (
     <div>
       {/* Toolbar */}
-      <div style={{ display: "flex", gap: 10, alignItems: "center", marginBottom: 14 }}>
-        <label style={{ fontSize: 12, color: "#57534e" }}>Yıl:</label>
-        <select value={year} onChange={e => setYear(e.target.value)}
-          style={{ padding: "6px 10px", border: "1px solid #d6d3d1", borderRadius: 4, fontSize: 12 }}>
-          {["2024", "2025", "2026"].map(y => <option key={y} value={y}>{y}</option>)}
-        </select>
-        <span style={{ fontSize: 11, color: "#78716c" }}>{stats.total} yapılabilirlik</span>
-      </div>
+      <RangeToolbar />
 
       {/* Üst 4 kart */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14 }}>
