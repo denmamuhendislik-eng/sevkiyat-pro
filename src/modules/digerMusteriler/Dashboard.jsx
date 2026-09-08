@@ -912,6 +912,8 @@ KPI:
           return d.toISOString().substring(0, 10);
         })();
         const currentYear = String(today.getFullYear());
+        const customFrom = shipmentModal.customFrom || '';
+        const customTo = shipmentModal.customTo || '';
         const rows = [];
         for (const r of shipmentPerf.allFlat) {
           const termin = (r.musteriTermin || '').substring(0, 10);
@@ -922,6 +924,9 @@ KPI:
             if (termin < last3MonthsCutoff) continue;
           } else if (shipmentModal.dateRange === 'thisYear') {
             if (!termin.startsWith(currentYear)) continue;
+          } else if (shipmentModal.dateRange === 'custom') {
+            if (customFrom && termin < customFrom) continue;
+            if (customTo && termin > customTo) continue;
           }
           if (shipmentModal.status === 'onTime' && !r.onTime) continue;
           if (shipmentModal.status === 'late' && r.onTime) continue;
@@ -935,7 +940,8 @@ KPI:
 
         const dateLabel = shipmentModal.dateRange === 'thisMonth' ? 'Bu Ay'
           : shipmentModal.dateRange === 'last3Months' ? 'Son 3 Ay'
-          : shipmentModal.dateRange === 'thisYear' ? `${currentYear} Yılı` : 'Tümü';
+          : shipmentModal.dateRange === 'thisYear' ? `${currentYear} Yılı`
+          : shipmentModal.dateRange === 'custom' ? `${customFrom || '?'} → ${customTo || '?'}` : 'Tümü';
 
         return (
           <div
@@ -983,6 +989,7 @@ KPI:
                   { v: 'last3Months', label: 'Son 3 Ay' },
                   { v: 'thisYear', label: `${today.getFullYear()} Yılı` },
                   { v: 'all', label: 'Tümü' },
+                  { v: 'custom', label: '📅 Özel' },
                 ].map(opt => (
                   <button
                     key={opt.v}
@@ -996,6 +1003,24 @@ KPI:
                     }}
                   >{opt.label}</button>
                 ))}
+                {shipmentModal.dateRange === 'custom' && (
+                  <span style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                    <input type="date" value={shipmentModal.customFrom || ''}
+                      onChange={e => setShipmentModal({ ...shipmentModal, customFrom: e.target.value })}
+                      title="Başlangıç termin tarihi"
+                      style={{ padding: '3px 6px', fontSize: 11, border: '1px solid #d6d3d1', borderRadius: 3 }} />
+                    <span style={{ fontSize: 10, color: '#78716c' }}>→</span>
+                    <input type="date" value={shipmentModal.customTo || ''}
+                      onChange={e => setShipmentModal({ ...shipmentModal, customTo: e.target.value })}
+                      title="Bitiş termin tarihi"
+                      style={{ padding: '3px 6px', fontSize: 11, border: '1px solid #d6d3d1', borderRadius: 3 }} />
+                    {(shipmentModal.customFrom || shipmentModal.customTo) && (
+                      <button onClick={() => setShipmentModal({ ...shipmentModal, customFrom: '', customTo: '' })}
+                        title="Temizle"
+                        style={{ padding: '2px 6px', fontSize: 10, background: '#fff', border: '1px solid #d6d3d1', borderRadius: 3, cursor: 'pointer', color: '#78716c' }}>×</button>
+                    )}
+                  </span>
+                )}
                 <span style={{ color: '#57534e', fontWeight: 500, marginLeft: 14 }}>Durum:</span>
                 {[
                   { v: 'all', label: 'Tümü' },
