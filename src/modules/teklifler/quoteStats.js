@@ -27,6 +27,37 @@ function median(arr) {
 
 const isArchive = (q) => q?.source === "excel-archive-import";
 
+// ============================================================
+// Otomatik red (timeout) — passive check
+// ============================================================
+// 90 gün geçtiyse ve status hâlâ "sent" ise → "rejected_auto" olarak gösterilir.
+// Firestore'da status DEĞİŞMEZ; sadece render/hesap sırasında effective status hesaplanır.
+// Kullanıcı elle "sent"/"accepted"/"rejected" işaretlerse Firestore değeri baypas eder.
+//
+// Referans tarihi: quote.quoteDate — revizyon yapıldığında yeni teklif objesi oluşur ve
+// bu objenin quoteDate'i güncel olur (timer sıfırlanmış sayılır). computeQuoteStats
+// grupları en yüksek revNo'lu aktif teklife göre değerlendirir.
+//
+// Arşiv teklifleri (source="excel-archive-import") status'ü güvenilmez olduğu için
+// dokunulmaz — otomatik red devreye girmez.
+export const AUTO_REJECT_DAYS = 90;
+
+export function getEffectiveQuoteStatus(quote, referenceIso = null) {
+  const status = quote?.status || "sent";
+  if (status !== "sent") return status;
+  if (isArchive(quote)) return status;
+  const ref = referenceIso || new Date().toISOString().slice(0, 10);
+  const ageDays = daysBetween(quote?.quoteDate, ref);
+  if (ageDays == null) return status;
+  if (ageDays >= AUTO_REJECT_DAYS) return "rejected_auto";
+  return status;
+}
+
+// Effective status'un "red" ailesinden olup olmadığı (gerçek red + otomatik red)
+export function isEffectiveRejected(eff) {
+  return eff === "rejected" || eff === "rejected_auto";
+}
+
 // Arşiv tekliflerinde totalPriceTl aslında teklifin döviz cinsinde tutar
 // (yanlış adlandırılmış). Sistem içi tekliflerde ise gerçekten TL karşılığı.
 // Arşiv tekliflerini teklif verildiği yılın ortalama TCMB kuruyla TL'ye normalize
@@ -85,28 +116,32 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
   const totalTl = activeQuotes.reduce((s, q) => s + (Number(q.totalPriceTl) || 0), 0);
   const avgQuoteTl = totalCount > 0 ? totalTl / totalCount : 0;
 
-  // Durum sayaçları — SADECE arşiv olmayan tekliflerde (arşiv status'ü güvenilmez)
-  const byStatus = { draft: 0, sent: 0, accepted: 0, rejected: 0 };
+  // Durum sayaçları — SADECE arşiv olmayan tekliflerde (arşiv status'ü güvenilmez).
+  // Effective status kullanılır: 90 gün geçmiş "sent" teklifler "rejected_auto" olarak sayılır.
+  const today = new Date().toISOString().slice(0, 10);
+  const byStatus = { draft: 0, sent: 0, accepted: 0, rejected: 0, rejected_auto: 0 };
   for (const q of nonArchive) {
-    const st = q.status || "sent";
-    byStatus[st] = (byStatus[st] || 0) + 1;
+    const eff = getEffectiveQuoteStatus(q, today);
+    byStatus[eff] = (byStatus[eff] || 0) + 1;
   }
 
   // Dönüşüm metrikleri — arşiv hariç, 3 tamamlayıcı görünüm:
-  //   conversionRate      : accepted / (accepted + rejected) — karar verilenlerin başarı oranı
+  //   conversionRate      : accepted / (accepted + rejected + rejected_auto) — karar verilenlerin başarı oranı
   //   overallConversionRate: accepted / nonArchive.length — genel başarı (bekleyenler dahil paydada)
   //   pendingCount / pendingRate: draft + sent — karar bekleyen yük
   // decidedCount aynı zamanda "sample size"tır — küçük örnekte %100 yanıltıcı olabilir.
-  const decidedCount = byStatus.accepted + byStatus.rejected;
+  const decidedCount = byStatus.accepted + byStatus.rejected + byStatus.rejected_auto;
   const conversionRate = decidedCount > 0 ? (byStatus.accepted / decidedCount) * 100 : null;
   const nonArchiveTotal = nonArchive.length;
   const overallConversionRate = nonArchiveTotal > 0 ? (byStatus.accepted / nonArchiveTotal) * 100 : null;
   const pendingCount = (byStatus.draft || 0) + (byStatus.sent || 0);
   const pendingRate = nonArchiveTotal > 0 ? (pendingCount / nonArchiveTotal) * 100 : null;
 
-  // Aktif teklifler (bekleyen) — arşiv hariç (arşivdekiler zaten kabul/red olmuş varsayılır)
-  const activeStatuses = ["draft", "sent"];
-  const activeQuotesOnly = nonArchive.filter(q => activeStatuses.includes(q.status || "sent"));
+  // Aktif teklifler (bekleyen) — arşiv hariç + effective status "draft" veya "sent" (auto-red HARİÇ)
+  const activeQuotesOnly = nonArchive.filter(q => {
+    const eff = getEffectiveQuoteStatus(q, today);
+    return eff === "draft" || eff === "sent";
+  });
   const activeCount = activeQuotesOnly.length;
   const activeTotalTl = activeQuotesOnly.reduce((s, q) => s + (Number(q.totalPriceTl) || 0), 0);
 
@@ -205,11 +240,12 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
     const cs = customerStats[cName];
     cs.count++;
     cs.tl += Number(q.totalPriceTl) || 0;
-    // Dönüşüm hesabına sadece arşiv olmayan teklifler girer
+    // Dönüşüm hesabına sadece arşiv olmayan teklifler girer (effective status)
     if (!isArchive(q)) {
-      if (q.status === "accepted") { cs.accepted++; cs.decided++; }
-      else if (q.status === "rejected") cs.decided++;
-      else if (q.status === "sent" || q.status === "draft") cs.sent++;
+      const eff = getEffectiveQuoteStatus(q, today);
+      if (eff === "accepted") { cs.accepted++; cs.decided++; }
+      else if (isEffectiveRejected(eff)) cs.decided++;
+      else if (eff === "sent" || eff === "draft") cs.sent++;
     }
   }
   const customerRanking = Object.values(customerStats)
@@ -249,10 +285,11 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
       p.unitTlCount++;
       if (unitPrice > p.maxUnitTl) p.maxUnitTl = unitPrice;
       if (line.stockName && !p.name) p.name = line.stockName;
-      // Dönüşüm hesabına sadece arşiv olmayan teklifler girer
+      // Dönüşüm hesabına sadece arşiv olmayan teklifler girer (effective status)
       if (!isArchive(q)) {
-        if (q.status === "accepted") { p.accepted++; p.decided++; }
-        else if (q.status === "rejected") p.decided++;
+        const eff = getEffectiveQuoteStatus(q, today);
+        if (eff === "accepted") { p.accepted++; p.decided++; }
+        else if (isEffectiveRejected(eff)) p.decided++;
       }
     }
   }
@@ -270,9 +307,8 @@ export function computeQuoteStats(quotes, ratesByYear = null) {
     .sort((a, b) => a.conversionRate - b.conversionRate)
     .slice(0, 5);
 
-  // Aging (aktif teklifler — en eski başta)
+  // Aging (aktif teklifler — en eski başta) — `today` yukarıda tanımlı
   const activeAging = [];
-  const today = new Date().toISOString().slice(0, 10);
   for (const q of activeQuotesOnly) {
     const days = daysBetween(q.quoteDate, today);
     if (days != null && days >= 0) {

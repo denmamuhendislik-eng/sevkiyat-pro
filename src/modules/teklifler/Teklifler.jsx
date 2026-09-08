@@ -11,7 +11,7 @@ import { subscribeUnitCosts, subscribeUnitConversions } from "../maliyet/firesto
 import NewQuoteView from "./NewQuoteView";
 import { generateQuotePdf } from "./quotePdf";
 import { generateQuoteExcel } from "./quoteExcel";
-import { computeQuoteStats } from "./quoteStats";
+import { computeQuoteStats, getEffectiveQuoteStatus, AUTO_REJECT_DAYS } from "./quoteStats";
 import { subscribeCurrencyRates } from "../maliyet/firestore";
 import { getLatestRates, getAverageRatesForYear } from "../maliyet/currency";
 import { calculateQuoteTotal, REVISION_REASONS } from "./quoteCalc";
@@ -611,10 +611,11 @@ function quoteDisplayTotal(quote) {
 // Bir revizyon grubunun render'ı — aktif satır + (expanded ise) geçmiş satırlar
 // Tıklanabilir durum rozeti — draft/sent/accepted/rejected geçişleri.
 const STATUS_META = {
-  draft:    { l: "📝 Taslak",     bg: "#f5f5f4", fg: "#57534e" },
-  sent:     { l: "📤 Gönderildi", bg: "#dbeafe", fg: "#1e40af" },
-  accepted: { l: "✓ Kabul",       bg: "#dcfce7", fg: "#166534" },
-  rejected: { l: "✗ Red",         bg: "#fee2e2", fg: "#991b1b" },
+  draft:         { l: "📝 Taslak",     bg: "#f5f5f4", fg: "#57534e" },
+  sent:          { l: "📤 Gönderildi", bg: "#dbeafe", fg: "#1e40af" },
+  accepted:      { l: "✓ Kabul",       bg: "#dcfce7", fg: "#166534" },
+  rejected:      { l: "✗ Red",         bg: "#fee2e2", fg: "#991b1b" },
+  rejected_auto: { l: "⏰ Red (auto)", bg: "#fef2f2", fg: "#b91c1c" },
 };
 function StatusBadge({ status, onChange, open, setOpen }) {
   const meta = STATUS_META[status] || STATUS_META.draft;
@@ -623,6 +624,11 @@ function StatusBadge({ status, onChange, open, setOpen }) {
   const [menuPos, setMenuPos] = useState(null);
   const MENU_HEIGHT = 4 * 30 + 4; // 4 seçenek × yaklaşık yükseklik
   const MENU_WIDTH = 140;
+  // rejected_auto durumunda Firestore'daki gerçek status "sent" — menüde onu vurgula
+  const menuActiveKey = status === "rejected_auto" ? "sent" : status;
+  const badgeTitle = status === "rejected_auto"
+    ? `⏰ ${AUTO_REJECT_DAYS} gün+ cevap gelmedi — otomatik red sayıldı. Menüden gerçek karara döndür.`
+    : (canChange ? "Durumu değiştir" : "");
 
   useEffect(() => {
     if (!open || !btnRef.current) { setMenuPos(null); return; }
@@ -641,7 +647,7 @@ function StatusBadge({ status, onChange, open, setOpen }) {
         ref={btnRef}
         onClick={(e) => { e.stopPropagation(); if (canChange) setOpen(!open); }}
         disabled={!canChange}
-        title={canChange ? "Durumu değiştir" : ""}
+        title={badgeTitle}
         style={{
           padding: "1px 6px", borderRadius: 3, fontSize: 9, fontWeight: 600,
           background: meta.bg, color: meta.fg, border: "none",
@@ -658,13 +664,15 @@ function StatusBadge({ status, onChange, open, setOpen }) {
             border: "1px solid #e7e5e4", borderRadius: 4, boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
             zIndex: 51, overflow: "hidden",
           }}>
-            {Object.entries(STATUS_META).map(([k, m]) => (
+            {/* rejected_auto sadece görsel — menüde göstermiyoruz. Kullanıcı "rejected"
+                seçerse Firestore'a kesin red yazılır. Elle "sent" seçerse auto baypas olur. */}
+            {Object.entries(STATUS_META).filter(([k]) => k !== "rejected_auto").map(([k, m]) => (
               <button key={k}
                 onClick={(e) => { e.stopPropagation(); onChange(k); }}
                 style={{
                   display: "block", width: "100%", textAlign: "left",
-                  padding: "6px 10px", fontSize: 10, background: k === status ? m.bg : "#fff",
-                  color: m.fg, border: "none", cursor: "pointer", fontWeight: k === status ? 700 : 500,
+                  padding: "6px 10px", fontSize: 10, background: k === menuActiveKey ? m.bg : "#fff",
+                  color: m.fg, border: "none", cursor: "pointer", fontWeight: k === menuActiveKey ? 700 : 500,
                 }}>
                 {m.l}
               </button>
@@ -866,7 +874,20 @@ function QuoteGroupRows({ group, active, hasHistory, isExpanded, onToggleExpand,
         </td>
         <td style={td}>{q.currency || "TL"}</td>
         <td style={td}>
-          <StatusBadge status={q.status || "draft"} onChange={canEdit ? handleStatusChange : null} open={statusMenu} setOpen={setStatusMenu} />
+          {(() => {
+            const eff = getEffectiveQuoteStatus(q);
+            const isAuto = eff === "rejected_auto";
+            // Auto-red durumunda: rozet auto meta ile gösterilir ama dropdown gerçek status
+            // ("sent") üzerinden çalışır — kullanıcı elle sent seçerse auto sıfırlanır.
+            return (
+              <StatusBadge
+                status={eff}
+                onChange={canEdit ? handleStatusChange : null}
+                open={statusMenu}
+                setOpen={setStatusMenu}
+              />
+            );
+          })()}
         </td>
         <td style={td}>
           <div style={{ display: "flex", gap: 4 }}>
@@ -2337,6 +2358,7 @@ function QStatusDonut({ byStatus, archiveCount = 0 }) {
     { key: "accepted", label: "Kabul (sistem)", color: "#16a34a", count: byStatus.accepted },
     { key: "sent", label: "Gönderildi (sistem)", color: "#3b82f6", count: byStatus.sent },
     { key: "rejected", label: "Reddedildi (sistem)", color: "#dc2626", count: byStatus.rejected },
+    { key: "rejected_auto", label: "Red — 90 gün+ cevapsız (auto)", color: "#b91c1c", count: byStatus.rejected_auto || 0 },
     { key: "draft", label: "Taslak (sistem)", color: "#f59e0b", count: byStatus.draft },
     { key: "archive", label: "Arşiv (durum belirsiz)", color: "#a8a29e", count: archiveCount },
   ].filter(it => it.count > 0);
