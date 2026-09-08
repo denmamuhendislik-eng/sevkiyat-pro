@@ -74,6 +74,47 @@ export function computeOrderRemaining(order, allocatedByOrderMap) {
 }
 
 // ============================================================
+// Efektif ödeme (avans otomasyonu)
+// ============================================================
+// Payment plan satırlarında etiket "WITH ORDER" içeriyorsa (case-insensitive)
+// sipariş anında peşin ödendiği varsayılır — fatura kesildiği an otomatik "ödendi"
+// sayılır (calculated field; Firestore'a yazılmaz).
+//
+// Örnekler (auto paid):
+//   "IN ADVANCE WITH ORDER" %100  → tamamı otomatik ödendi
+//   "50% IN ADVANCE WITH ORDER" + "50% WITH DELIVERY" → sadece %50 otomatik
+//
+// Otomatik SAYILMAZ (manuel PaymentModal'dan kaydedilir):
+//   "IN ADVANCE WITH DELIVERY", "WITH DELIVERY", "AT DELIVERY", "T/T 60 GÜN" vb.
+export function isAutoPaidLabel(label) {
+  return String(label || "").toUpperCase().includes("WITH ORDER");
+}
+
+// Faturadaki "WITH ORDER" satırlarının toplam yüzdesine göre otomatik ödendi sayılan tutar.
+export function computeAdvanceAmount(invoice) {
+  const total = Number(invoice?.totalAmount) || 0;
+  const plan = Array.isArray(invoice?.paymentPlan) ? invoice.paymentPlan : [];
+  const autoPct = plan
+    .filter(p => isAutoPaidLabel(p?.label))
+    .reduce((s, p) => s + (Number(p?.pct) || 0), 0);
+  return total * (autoPct / 100);
+}
+
+// Efektif ödeme = manuel (PaymentModal'dan) + otomatik avans (WITH ORDER).
+// Cancelled faturada avans hesaplanmaz (advance=0).
+export function computeEffectivePayment(invoice) {
+  const total = Number(invoice?.totalAmount) || 0;
+  const isCancelled = (invoice?.status || "issued") === "cancelled";
+  const manuelPaid = Number(invoice?.paidAmount) || 0;
+  const advance = isCancelled ? 0 : computeAdvanceAmount(invoice);
+  const effectivePaid = manuelPaid + advance;
+  const remaining = Math.max(0, total - effectivePaid);
+  const status = effectivePaid >= total - 0.005 ? "paid"
+              : (effectivePaid > 0 ? "partial" : "unpaid");
+  return { total, manuelPaid, advance, effectivePaid, remaining, status };
+}
+
+// ============================================================
 // Numune efektif status hesabı
 // ============================================================
 // Firestore'da sampleStatus sadece manuel karar (approved | rejected | null).
@@ -300,9 +341,10 @@ export function forecastContainerBilling({
     }
   }
 
-  // ÖDENEN — aktif ticari faturaların paidAmount'ları payment label'a proportional dağıt
+  // ÖDENEN — aktif ticari faturaların EFEKTİF ödeme (manuel + WITH ORDER avansı)
+  //          payment label'a proportional dağıt
   for (const inv of activeCommercialInvoices) {
-    const paidAmt = Number(inv.paidAmount) || 0;
+    const paidAmt = computeEffectivePayment(inv).effectivePaid;
     if (paidAmt <= 0) continue;
     paidTotal += paidAmt;
     distributePaid(paidAmt, inv.paymentPlan);
@@ -317,8 +359,8 @@ export function forecastContainerBilling({
       distributeAmount(amt, inv.paymentPlan, true);
       grandTotal += amt;
       issuedTotal += amt;
-      // Nakliye faturası ödenmiş mi?
-      const paidAmt = Number(inv.paidAmount) || 0;
+      // Nakliye faturası ödenmiş mi? (efektif: manuel + WITH ORDER avansı)
+      const paidAmt = computeEffectivePayment(inv).effectivePaid;
       if (paidAmt > 0) {
         paidTotal += paidAmt;
         distributePaid(paidAmt, inv.paymentPlan);

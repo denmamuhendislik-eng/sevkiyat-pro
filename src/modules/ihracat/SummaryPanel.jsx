@@ -3,7 +3,7 @@
 // Filtreler: dönem (bu ay / bu yıl / özel aralık / tümü)
 
 import React, { useState, useMemo } from "react";
-import { computeAllocatedByOrder } from "./allocationCalc";
+import { computeAllocatedByOrder, computeEffectivePayment } from "./allocationCalc";
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const fmt0 = (n) => Number(n || 0).toLocaleString("tr-TR", { maximumFractionDigits: 0 });
@@ -12,9 +12,10 @@ const isDeliveryLabel = (label) => String(label || "").toUpperCase().includes("D
 
 // Bir faturanın ödeme etiketi bazlı bekleyen tutarını hesaplar (partial için)
 function computeInvoiceRemainingByLabel(inv) {
-  const total = Number(inv.totalAmount) || 0;
-  const paid = Number(inv.paidAmount) || 0;
-  const remaining = Math.max(0, total - paid);
+  const ep = computeEffectivePayment(inv);
+  const total = ep.total;
+  const paid = ep.effectivePaid; // manuel + WITH ORDER avansı
+  const remaining = ep.remaining;
   const plan = Array.isArray(inv.paymentPlan) ? inv.paymentPlan.filter(p => Number(p?.pct) > 0) : [];
   if (plan.length === 0 || remaining <= 0) return {};
   // Advance önce ödenir varsayımı: non-delivery kısmı önce dolar, sonra delivery
@@ -322,11 +323,12 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
         bucket.voidCount++;
         continue;
       }
-      const total = Number(inv.totalAmount) || 0;
-      const paid = Number(inv.paidAmount) || 0;
+      const ep = computeEffectivePayment(inv);
+      const total = ep.total;
+      const paid = ep.effectivePaid;
       bucket.issued += total;
       bucket.paid += paid;
-      bucket.pending += Math.max(0, total - paid);
+      bucket.pending += ep.remaining;
       bucket.issuedCount++;
       // Bekleyen etiketleri
       const remByLabel = computeInvoiceRemainingByLabel(inv);
@@ -349,11 +351,12 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
       const c = byCustomer.get(code);
       if (!c.currencies.has(cur)) c.currencies.set(cur, { issued: 0, paid: 0, pending: 0, count: 0 });
       const b = c.currencies.get(cur);
-      const total = Number(inv.totalAmount) || 0;
-      const paid = Number(inv.paidAmount) || 0;
+      const ep = computeEffectivePayment(inv);
+      const total = ep.total;
+      const paid = ep.effectivePaid;
       b.issued += total;
       b.paid += paid;
-      b.pending += Math.max(0, total - paid);
+      b.pending += ep.remaining;
       b.count++;
     }
     return Array.from(byCustomer, ([code, v]) => ({
@@ -372,8 +375,9 @@ export default function SummaryPanel({ invoicesData, ordersData, allocationsData
     const today = new Date().toISOString().slice(0, 10);
     for (const inv of filteredInvoices) {
       if ((inv.status || "issued") === "cancelled") continue;
-      if ((inv.paymentStatus || "unpaid") === "paid") continue;
-      const remaining = (Number(inv.totalAmount) || 0) - (Number(inv.paidAmount) || 0);
+      const ep = computeEffectivePayment(inv);
+      if (ep.status === "paid") continue;
+      const remaining = ep.remaining;
       if (remaining <= 0.005) continue;
       // Faturanın en son teslim tarihi kesildikten çok geç ise "geciken"
       // Basit yaklaşım: fatura tarihinden 60+ gün geçmişse geciken

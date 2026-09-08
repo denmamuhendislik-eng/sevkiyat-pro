@@ -7,6 +7,7 @@ import {
   deleteExportInvoice,
 } from "./firestore";
 import { generateInvoicePdf } from "./invoicePdf";
+import { computeEffectivePayment } from "./allocationCalc";
 import InvoiceCreateModal from "./InvoiceCreateModal";
 import InvoiceEditModal from "./InvoiceEditModal";
 import PaymentRequestModal from "./PaymentRequestModal";
@@ -22,7 +23,8 @@ const STATUS_META = {
 
 function derivePaymentStatus(inv) {
   if ((inv.status || "issued") === "cancelled") return "cancelled";
-  return inv.paymentStatus || "unpaid";
+  // Efektif ödeme = manuel + otomatik WITH ORDER avansı
+  return computeEffectivePayment(inv).status;
 }
 
 export default function InvoiceList({ canEdit, userEmail, products, ordersData, allocationsData }) {
@@ -168,9 +170,7 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
                 const derivedStatus = derivePaymentStatus(i);
                 const st = STATUS_META[derivedStatus] || STATUS_META.unpaid;
                 const isVoid = (i.status || "issued") === "cancelled";
-                const total = Number(i.totalAmount || 0);
-                const paid = Number(i.paidAmount || 0);
-                const remaining = Math.max(0, total - paid);
+                const ep = computeEffectivePayment(i);
                 return (
                   <tr key={i.invoiceNo} style={{ borderTop: "1px solid #f5f5f4", background: isVoid ? "#fafaf9" : "transparent", opacity: isVoid ? 0.65 : 1 }}>
                     <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>{i.invoiceNo}</td>
@@ -178,13 +178,23 @@ export default function InvoiceList({ canEdit, userEmail, products, ordersData, 
                     <td style={td}>{i.customerName || "—"}</td>
                     <td style={{ ...td, fontFamily: "ui-monospace, monospace", fontSize: 10 }}>{i.orderNr || "—"}</td>
                     <td style={{ ...td, textAlign: "right", fontWeight: 600 }}>
-                      {total.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      {ep.total.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                     </td>
                     <td style={{ ...td, textAlign: "right", fontSize: 10 }}>
                       {isVoid ? "—" : (
-                        <div>
-                          <div style={{ color: "#166534", fontWeight: 600 }}>{paid.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
-                          <div style={{ color: remaining > 0 ? "#dc2626" : "#a8a29e", fontSize: 9 }}>kalan {remaining.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
+                        <div title={ep.advance > 0 ? `Manuel: ${ep.manuelPaid.toFixed(2)} · Otomatik avans (WITH ORDER): ${ep.advance.toFixed(2)}` : ""}>
+                          <div style={{ color: "#166534", fontWeight: 600 }}>
+                            {ep.effectivePaid.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            {ep.advance > 0 && (
+                              <span style={{ marginLeft: 3, padding: "0 3px", fontSize: 8, fontWeight: 700, background: "#dbeafe", color: "#1e40af", borderRadius: 2 }} title="Sipariş anında peşin ödendi varsayılıyor (WITH ORDER)">auto</span>
+                            )}
+                          </div>
+                          {ep.advance > 0 && (
+                            <div style={{ color: "#78716c", fontSize: 8 }}>
+                              manuel {ep.manuelPaid.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} + avans {ep.advance.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                            </div>
+                          )}
+                          <div style={{ color: ep.remaining > 0 ? "#dc2626" : "#a8a29e", fontSize: 9 }}>kalan {ep.remaining.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</div>
                         </div>
                       )}
                     </td>

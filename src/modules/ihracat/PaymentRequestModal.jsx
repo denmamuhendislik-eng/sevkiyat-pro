@@ -4,6 +4,7 @@
 
 import React, { useState, useMemo, useEffect } from "react";
 import { subscribeExportSettings, saveCustomerDefaults } from "./firestore";
+import { computeEffectivePayment } from "./allocationCalc";
 
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, ch => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
@@ -56,10 +57,12 @@ export default function PaymentRequestModal({ invoices, customerOptions, initial
     for (const inv of (invoices || [])) {
       if (inv.customerCode !== selectedCustomer) continue;
       if ((inv.status || "issued") !== "issued") continue;
-      if ((inv.paymentStatus || "unpaid") === "paid") continue; // tam ödenmiş
+      // Efektif ödeme (manuel + WITH ORDER avansı) — tam ödenmiş kayıtları atla
+      const ep = computeEffectivePayment(inv);
+      if (ep.status === "paid") continue;
       const plan = Array.isArray(inv.paymentPlan) ? inv.paymentPlan : [];
-      const total = Number(inv.totalAmount) || 0;
-      const paid = Number(inv.paidAmount) || 0;
+      const total = ep.total;
+      const paid = ep.effectivePaid;
       // Non-delivery (avans) toplam yüzdesi
       const nonDeliveryPct = plan
         .filter(p => !isDeliveryLabel(p?.label))

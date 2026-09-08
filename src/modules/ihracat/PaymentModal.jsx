@@ -4,6 +4,7 @@
 
 import React, { useState } from "react";
 import { recordPayment, revertPayment } from "./firestore";
+import { computeEffectivePayment } from "./allocationCalc";
 
 const fmt = (n) => Number(n || 0).toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
@@ -16,10 +17,9 @@ export default function PaymentModal({ invoice, canEdit, userEmail, onClose }) {
 
   if (!invoice) return null;
 
-  const total = Number(invoice.totalAmount) || 0;
-  const paid = Number(invoice.paidAmount) || 0;
-  const remaining = Math.max(0, total - paid);
-  const pct = total > 0 ? Math.min(100, (paid / total) * 100) : 0;
+  const ep = computeEffectivePayment(invoice);
+  const { total, manuelPaid, advance, effectivePaid, remaining } = ep;
+  const pct = total > 0 ? Math.min(100, (effectivePaid / total) * 100) : 0;
   const history = Array.isArray(invoice.paymentHistory) ? invoice.paymentHistory : [];
   const currency = invoice.currency || "EUR";
 
@@ -69,8 +69,18 @@ export default function PaymentModal({ invoice, canEdit, userEmail, onClose }) {
               <div style={{ fontSize: 14, fontWeight: 700 }}>{fmt(total)} {currency}</div>
             </div>
             <div>
-              <div style={{ fontSize: 10, color: "#166534" }}>Ödenen</div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#166534" }}>{fmt(paid)} {currency}</div>
+              <div style={{ fontSize: 10, color: "#166534" }}>Ödenen (efektif)</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#166534" }}>
+                {fmt(effectivePaid)} {currency}
+                {advance > 0 && (
+                  <span style={{ marginLeft: 4, padding: "1px 5px", fontSize: 9, fontWeight: 700, background: "#dbeafe", color: "#1e40af", borderRadius: 3 }} title="WITH ORDER satırları otomatik ödendi sayıldı">auto</span>
+                )}
+              </div>
+              {advance > 0 && (
+                <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>
+                  manuel {fmt(manuelPaid)} + avans {fmt(advance)}
+                </div>
+              )}
             </div>
             <div>
               <div style={{ fontSize: 10, color: remaining > 0 ? "#dc2626" : "#166534" }}>Kalan</div>
@@ -81,7 +91,8 @@ export default function PaymentModal({ invoice, canEdit, userEmail, onClose }) {
             <div style={{ width: `${pct}%`, height: "100%", background: pct >= 100 ? "#166534" : "#1e40af", transition: "width 0.3s" }} />
           </div>
           <div style={{ fontSize: 9, color: "#78716c", marginTop: 4 }}>
-            Durum: {invoice.paymentStatus === "paid" ? "✅ Ödendi" : invoice.paymentStatus === "partial" ? "🟡 Kısmi Ödendi" : "🔵 Ödeme Bekliyor"} (%{pct.toFixed(0)})
+            Durum: {ep.status === "paid" ? "✅ Ödendi" : ep.status === "partial" ? "🟡 Kısmi Ödendi" : "🔵 Ödeme Bekliyor"} (%{pct.toFixed(0)})
+            {advance > 0 && <span style={{ marginLeft: 6, color: "#1e40af" }}>· WITH ORDER: {fmt(advance)} {currency} otomatik sayıldı</span>}
           </div>
         </div>
 
