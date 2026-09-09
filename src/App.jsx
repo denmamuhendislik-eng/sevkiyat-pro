@@ -3569,24 +3569,35 @@ ${el.innerHTML}
                   {(()=>{
                     const ys=YEARLY_SALES[selP.id];
                     const yearlyFromContainers={};
+                    const nowYear=new Date().getFullYear();
+                    // Container hesabına sadece sevk edilmiş konteynerler girer
+                    // (planlı ama henüz sevk edilmemiş miktarlar sayılmasın).
                     [2024,2025,2026,2027].forEach(y=>{
                       const yyd=yearsData[y];
                       if(!yyd) return;
                       let total=0;
-                      yyd.containers.forEach(c=>{total+=((yyd.quantities[c.id]||{})[selP.id]||0);});
+                      yyd.containers.forEach(c=>{
+                        if(!isShipped(c)) return;
+                        total+=((yyd.quantities[c.id]||{})[selP.id]||0);
+                      });
                       if(total>0) yearlyFromContainers[y]=total;
                     });
                     const allYears=new Set([...(ys?Object.keys(ys.data).map(Number):[]),...Object.keys(yearlyFromContainers).map(Number)]);
-                    const chartData=[...allYears].sort().filter(y=>y<=2026).map(y=>({
+                    // Cari yıl için containers verisi öncelikli (YEARLY_SALES yıl başında
+                    // elle girilmiş statik değer olabilir; VIO import canlı gerçek sevkiyat).
+                    // Geçmiş yıllarda YEARLY_SALES öncelik (VIO import öncesi yıllar için tek kaynak).
+                    const chartData=[...allYears].sort().filter(y=>y<=nowYear).map(y=>({
                       year:y.toString(),
-                      adet:ys?.data[y]??yearlyFromContainers[y]??0
+                      adet: y===nowYear
+                        ? (yearlyFromContainers[y] ?? ys?.data[y] ?? 0)
+                        : (ys?.data[y] ?? yearlyFromContainers[y] ?? 0)
                     }));
                     if(chartData.length===0) return null;
                     const maxVal=Math.max(...chartData.map(d=>d.adet));
                     const avgVal=Math.round(chartData.filter(d=>d.adet>0).reduce((s,d)=>s+d.adet,0)/Math.max(1,chartData.filter(d=>d.adet>0).length));
                     return <div style={{marginTop:16}}>
                       <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:6}}>
-                        <span style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)"}}>Yıllara göre sevkiyat trendi (2016–2026)</span>
+                        <span style={{fontSize:12,fontWeight:500,color:"var(--color-text-secondary)"}}>Yıllara göre sevkiyat trendi (2016–{nowYear})</span>
                         <span style={{fontSize:10,color:"var(--color-text-tertiary)"}}>Ort: {avgVal} · Max: {maxVal}</span>
                       </div>
                       <ResponsiveContainer width="100%" height={180}>
