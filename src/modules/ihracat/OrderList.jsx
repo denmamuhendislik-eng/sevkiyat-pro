@@ -50,6 +50,46 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
     [allocationsData, shipmentsData]
   );
 
+  // Numune bilgisi lookup — aynı müşteri + aynı stok kodu için tüm numune
+  // satırlarının efektif status özetini tutar. Seri sipariş satırlarında
+  // bilgi rozeti (Sevke Hazır / Onay Bekliyor / Reddedildi) için kullanılır.
+  //
+  // Severity precedence: rejected > pending (waiting_shipment/sent) > approved
+  // — biri reddedildiyse en kritik durum onudur; onaylı da varsa yine bekleyen
+  // uyarısı gösterilir (kullanıcı riskli sevk yapmasın).
+  const sampleInfoByCustomerStok = useMemo(() => {
+    const m = new Map();
+    for (const o of orders) {
+      if (!o?.isSample) continue;
+      if ((o.status || "open") === "cancelled") continue;
+      const eff = getEffectiveSampleStatus(o, allocatedByOrder);
+      if (!eff) continue;
+      const key = `${o.customerCode || ""}__${o.stokKodu || ""}`;
+      const cur = m.get(key) || { count: 0, latestBelgeNo: "", hasRejected: false, hasPending: false, hasApproved: false };
+      cur.count += 1;
+      cur.latestBelgeNo = o.belgeNo || cur.latestBelgeNo;
+      if (eff === "rejected") cur.hasRejected = true;
+      else if (eff === "approved") cur.hasApproved = true;
+      else cur.hasPending = true; // waiting_shipment / sent
+      m.set(key, cur);
+    }
+    // Severity kararı — precedence uygula
+    for (const v of m.values()) {
+      v.severity = v.hasRejected ? "rejected"
+        : v.hasPending ? "pending"
+        : v.hasApproved ? "approved"
+        : null;
+    }
+    return m;
+  }, [orders, allocatedByOrder]);
+
+  // Bir seri sipariş satırı için numune bilgisi (isSample=false olan satırlarda kullanılır)
+  const getSeriSampleInfo = (o) => {
+    if (!o || o.isSample) return null;
+    const key = `${o.customerCode || ""}__${o.stokKodu || ""}`;
+    return sampleInfoByCustomerStok.get(key) || null;
+  };
+
   const customerOptions = useMemo(() => {
     const map = new Map();
     for (const o of orders) {
@@ -474,12 +514,23 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                         </tr>
                       </thead>
                       <tbody>
-                        {/* Kalemler — gerçek + bağlı (isLinkedChild) beraber, bağlılar sonda sıralanır */}
+                        {/* Kalemler — 3 katmanlı sıra:
+                            1) Bağlı child (isLinkedChild) → sona
+                            2) Ana kalemler arasında: kalan > 0 önce (aktif), kalan = 0 sona (tamamlanmış)
+                            3) Aktif olanlar arasında: birim fiyat DESC (pahalı önce) */}
                         {(() => {
                           const sortedItems = [...g.items].sort((a, b) => {
                             const aL = !!a.isLinkedChild;
                             const bL = !!b.isLinkedChild;
-                            if (aL !== bL) return aL ? 1 : -1; // linked'lar sona
+                            if (aL !== bL) return aL ? 1 : -1;
+                            // Bağlı olmayan ana kalemlerin dolulum durumuna göre grupla
+                            if (!aL && !bL) {
+                              const aRem = computeOrderFillStatus(a, allocatedByOrder).remaining > 0 ? 0 : 1;
+                              const bRem = computeOrderFillStatus(b, allocatedByOrder).remaining > 0 ? 0 : 1;
+                              if (aRem !== bRem) return aRem - bRem;
+                              // Aynı grupta (ikisi de aktif ya da ikisi de tamamlanmış): birim fiyat DESC
+                              return (Number(b.birimFiyat) || 0) - (Number(a.birimFiyat) || 0);
+                            }
                             return 0;
                           });
                           return sortedItems;
@@ -518,6 +569,22 @@ export default function OrderList({ ordersData, allocationsData, shipmentsData, 
                                       <option value="approved">🔬 ✓</option>
                                       <option value="rejected">🔬 ✗</option>
                                     </select>
+                                  );
+                                })()}
+                                {/* Seri satır bilgi rozeti — aynı müşteri+stok için numune durumuna göre */}
+                                {!o.isSample && (() => {
+                                  const info = getSeriSampleInfo(o);
+                                  if (!info || !info.severity) return null;
+                                  const meta =
+                                    info.severity === "approved" ? { bg: "#dcfce7", fg: "#166534", label: "🚀 Sevke hazır" }
+                                    : info.severity === "rejected" ? { bg: "#fef2f2", fg: "#991b1b", label: "⛔ Numune reddedildi" }
+                                    : { bg: "#fef3c7", fg: "#92400e", label: "⚠ Numune bekliyor" };
+                                  return (
+                                    <span title={`${info.count} numune satırı · en son belge #${info.latestBelgeNo || "?"} · ${info.severity === "approved" ? "onaylı — seri sevk edilebilir" : info.severity === "rejected" ? "REDDEDİLDİ — seri sevki riskli" : "onay bekliyor — seri sevki erken"}`}
+                                      style={{ marginRight: 4, padding: "1px 5px", fontSize: 8, fontWeight: 700,
+                                        background: meta.bg, color: meta.fg, border: `1px solid ${meta.fg}`, borderRadius: 2 }}>
+                                      {meta.label}
+                                    </span>
                                   );
                                 })()}
                                 {o.stokKodu || "—"}
