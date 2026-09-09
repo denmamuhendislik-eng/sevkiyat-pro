@@ -72,7 +72,12 @@ const parseData = (raw) => {
       quantities[cid] = {};
       for (const [pid, qty] of Object.entries(q)) quantities[cid][Number(pid)] = qty;
     }
-    yearsData[Number(year)] = { containers, orders, carryOver, quantities };
+    // yd[4] — carryOverOut (sonraki yıla devredilen miktar). Eski backup'larda yok, boş kalır.
+    const carryOverOut = {};
+    if (yd[4]) {
+      for (const [k, v] of Object.entries(yd[4])) carryOverOut[Number(k)] = v;
+    }
+    yearsData[Number(year)] = { containers, orders, carryOver, quantities, carryOverOut };
   }
   return { products, yearsData };
 };
@@ -471,7 +476,7 @@ export default function App() {
     })();
   }, [authUser, userRole]);
 
-  const yd = yearsData[selYear] || {containers:[],orders:{},carryOver:{},quantities:{}};
+  const yd = yearsData[selYear] || {containers:[],orders:{},carryOver:{},quantities:{},carryOverOut:{}};
   const visibleContainers = hideShipped ? yd.containers.filter(c=>!isShipped(c)) : yd.containers;
 
   const getCKG = useCallback(cid => {
@@ -498,7 +503,10 @@ export default function App() {
       planned+=q;
       if(isShipped(c)) shipped+=q; else pNotShipped+=q;
     });
-    return {order,planned,shipped,pNotShipped,remaining:order-shipped,toBePlanned:order-planned};
+    // Sonraki yıla devredilmiş miktar — planlanacak kalandan düşülür (0'a gider).
+    // "order" ham kalır (tarihçe/rapor doğru).
+    const carriedOut = (yd.carryOverOut||{})[pid]||0;
+    return {order,planned,shipped,pNotShipped,carriedOut,remaining:order-shipped,toBePlanned:Math.max(0,order-planned-carriedOut)};
   },[yd]);
 
   // v22: Sevkiyat Detay konteyner tahsis paneli için — ihracat orders + allocations
@@ -543,7 +551,7 @@ export default function App() {
       return;
     }
     setYearsData(prev => {
-      const ydp = { ...(prev[y] || { containers: [], orders: {}, carryOver: {}, quantities: {} }) };
+      const ydp = { ...(prev[y] || { containers: [], orders: {}, carryOver: {}, quantities: {}, carryOverOut: {} }) };
       const orders = { ...ydp.orders };
       orders[p] = Math.max(0, (orders[p] || 0) + delta);
       if (cascade) {
@@ -615,7 +623,9 @@ export default function App() {
       const order = (fyd.orders[p.id]||0)+(fyd.carryOver[p.id]||0);
       let planned = 0;
       fyd.containers.forEach(c => { planned += (fyd.quantities[c.id]||{})[p.id]||0; });
-      const remaining = order - planned;
+      // Zaten devredilmiş miktarı düş — kullanıcı tekrar basarsa NO-OP olur.
+      const carriedOut = (fyd.carryOverOut||{})[p.id]||0;
+      const remaining = order - planned - carriedOut;
       if(remaining > 0) co[p.id] = remaining;
     });
     return co;
@@ -625,10 +635,18 @@ export default function App() {
     const co = computeCarryOver(fromYear);
     if(Object.keys(co).length === 0) return;
     setYearsData(prev => {
-      const ty = {...prev[toYear]||{containers:[],orders:{},carryOver:{},quantities:{}}};
+      // Cumulative ekleme — her devir öncekilere eklenir. computeCarryOver
+      // zaten carryOverOut'ı düştüğü için tekrar tıklamada co={} döner, NO-OP.
+      const ty = {...(prev[toYear]||{containers:[],orders:{},carryOver:{},quantities:{},carryOverOut:{}})};
       ty.carryOver = {...ty.carryOver};
-      for(const [pid,qty] of Object.entries(co)) ty.carryOver[Number(pid)] = qty;
-      return {...prev,[toYear]:ty};
+      const fy = {...(prev[fromYear]||{containers:[],orders:{},carryOver:{},quantities:{},carryOverOut:{}})};
+      fy.carryOverOut = {...(fy.carryOverOut||{})};
+      for(const [pid,qty] of Object.entries(co)) {
+        const p = Number(pid);
+        ty.carryOver[p] = (ty.carryOver[p]||0) + qty;
+        fy.carryOverOut[p] = (fy.carryOverOut[p]||0) + qty;
+      }
+      return {...prev,[fromYear]:fy,[toYear]:ty};
     });
   };
 
@@ -1146,7 +1164,7 @@ export default function App() {
   const executeImport = async () => {
     if(!importData||!allowedYears.includes(importYear)) return;
     setYearsData(prev=>{
-      const y={...(prev[importYear]||{containers:[],orders:{},carryOver:{},quantities:{}})};
+      const y={...(prev[importYear]||{containers:[],orders:{},carryOver:{},quantities:{},carryOverOut:{}})};
       const orders={...y.orders};
       // Add matched products
       importData.matched.forEach(m=>{
@@ -1531,7 +1549,7 @@ ${el.innerHTML}
     const pid=Number(orderPid);
     const qty=parseInt(orderQty);
     setYearsData(prev=>{
-      const y={...(prev[orderYear]||{containers:[],orders:{},carryOver:{},quantities:{}})};
+      const y={...(prev[orderYear]||{containers:[],orders:{},carryOver:{},quantities:{},carryOverOut:{}})};
       const orders={...y.orders,[pid]:(y.orders[pid]||0)+qty};
       // Cascade to linked children
       combRules.filter(r=>r.parent===pid).forEach(rule=>{
@@ -2691,7 +2709,7 @@ ${el.innerHTML}
             <table style={{borderCollapse:"separate",borderSpacing:0,fontSize:11,minWidth:"100%"}}>
               <thead>
                 <tr style={{position:"sticky",top:0,zIndex:20,boxShadow:"0 2px 6px rgba(0,0,0,0.08)"}}>
-                  <th colSpan={6} style={{position:"sticky",left:0,zIndex:30,background:"#ffffff",padding:"4px 6px",textAlign:"left",borderBottom:"2px solid var(--color-border-tertiary)",fontSize:10,fontWeight:600,color:"var(--color-text-secondary)",minWidth:528,boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>
+                  <th colSpan={7} style={{position:"sticky",left:0,zIndex:30,background:"#ffffff",padding:"4px 6px",textAlign:"left",borderBottom:"2px solid var(--color-border-tertiary)",fontSize:10,fontWeight:600,color:"var(--color-text-secondary)",minWidth:570,boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>
                     <span>KG </span><span style={{fontSize:9,fontWeight:400,color:"var(--color-text-tertiary)"}}>({minKG.toLocaleString()}–{maxKG.toLocaleString()})</span>
                   </th>
                   {visibleContainers.map((c,ci)=>{
@@ -2711,11 +2729,12 @@ ${el.innerHTML}
                 </tr>
                 <tr style={{position:"sticky",top:46,zIndex:20,boxShadow:"0 2px 6px rgba(0,0,0,0.08)"}}>
                   <th style={{position:"sticky",left:0,zIndex:30,background:"#f7f6f3",padding:"6px 6px",textAlign:"left",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:10,fontWeight:600,minWidth:300}}>ÜRÜN</th>
-                  <th style={{position:"sticky",left:300,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:42,color:"#D85A30"}} title="Önceki Yıldan Devir">DEVİR</th>
-                  <th style={{position:"sticky",left:342,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:42,color:"#534AB7"}} title="Yeni Sipariş">YENİ</th>
-                  <th style={{position:"sticky",left:384,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#0F6E56"}} title="Toplam Planlanan (sevk edilen dahil)">PLANLI</th>
-                  <th style={{position:"sticky",left:432,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#BA7517"}} title="Planlanacak Kalan">P.KALAN</th>
-                  <th style={{position:"sticky",left:480,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#E24B4A",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}} title="Sevk Edilecek Kalan (toplam sipariş - sevk edilen)">S.KALAN</th>
+                  <th style={{position:"sticky",left:300,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:42,color:"#D85A30"}} title="Önceki Yıldan Devir (giriş)">DEVİR ←</th>
+                  <th style={{position:"sticky",left:342,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:42,color:"#9a3412"}} title="Sonraki Yıla Devredilen (çıkış) — Devret butonuyla oluşur">DEVİR ↗</th>
+                  <th style={{position:"sticky",left:384,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:42,color:"#534AB7"}} title="Yeni Sipariş">YENİ</th>
+                  <th style={{position:"sticky",left:426,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#0F6E56"}} title="Toplam Planlanan (sevk edilen dahil)">PLANLI</th>
+                  <th style={{position:"sticky",left:474,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#BA7517"}} title="Planlanacak Kalan (devir çıkışı düşülü)">P.KALAN</th>
+                  <th style={{position:"sticky",left:522,zIndex:30,background:"#f7f6f3",padding:"6px 3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontSize:9,fontWeight:600,minWidth:48,color:"#E24B4A",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}} title="Sevk Edilecek Kalan (toplam sipariş - sevk edilen)">S.KALAN</th>
                   {visibleContainers.map((c,ci)=>(
                     <th key={c.id} style={{background:isShipped(c)?"#e8e8e4":ci%2===0?"#f7f6f3":"#eeeee8",padding:"3px 2px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",minWidth:66,opacity:isShipped(c)?0.7:1}}>
                       {editDateId===c.id?<div>
@@ -2750,7 +2769,7 @@ ${el.innerHTML}
                   const g=getProductGroup(p.id);
                   const prevG=idx>0?getProductGroup(activeProducts[idx-1].id):null;
                   const showGroupHeader=!prevG||prevG.id!==g.id;
-                  const colCount=6+visibleContainers.length+1;
+                  const colCount=7+visibleContainers.length+1;
                   const isSel=selectedRow===p.id;
                   const isZebra=idx%2===1;
                   const rowBg=isSel?g.bgSel:isZebra?g.bgZ:g.bg;
@@ -2775,16 +2794,17 @@ ${el.innerHTML}
                       </div>
                     </td>
                     <td style={{position:"sticky",left:300,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.carryOver[p.id]||0)>0?"#D85A30":"var(--color-text-tertiary)"}}>{yd.carryOver[p.id]||"–"}</td>
-                    <td onClick={(e)=>{e.stopPropagation();if(isAdmin&&allowedYears.includes(selYear)){setEditOrderPid(p.id);setEditOrderVal((yd.orders[p.id]||0).toString());}}} style={{position:"sticky",left:342,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.orders[p.id]||0)>0?"#534AB7":"var(--color-text-tertiary)",cursor:isAdmin&&allowedYears.includes(selYear)?"pointer":"default"}} title={!allowedYears.includes(selYear)?"Geçmiş yıl — sipariş düzenlenemez":""}>
+                    <td style={{position:"sticky",left:342,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(s.carriedOut||0)>0?"#9a3412":"var(--color-text-tertiary)"}} title={(s.carriedOut||0)>0?`${s.carriedOut} adet ${selYear+1}'e devredildi`:""}>{(s.carriedOut||0)>0?s.carriedOut:"–"}</td>
+                    <td onClick={(e)=>{e.stopPropagation();if(isAdmin&&allowedYears.includes(selYear)){setEditOrderPid(p.id);setEditOrderVal((yd.orders[p.id]||0).toString());}}} style={{position:"sticky",left:384,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:(yd.orders[p.id]||0)>0?"#534AB7":"var(--color-text-tertiary)",cursor:isAdmin&&allowedYears.includes(selYear)?"pointer":"default"}} title={!allowedYears.includes(selYear)?"Geçmiş yıl — sipariş düzenlenemez":""}>
                       {editOrderPid===p.id?<div>
                         <input type="number" autoFocus value={editOrderVal} onChange={e=>setEditOrderVal(e.target.value)} onBlur={()=>saveOrder(p.id)} onKeyDown={e=>{if(e.key==="Enter")saveOrder(p.id);if(e.key==="Escape")setEditOrderPid(null);}} style={{width:42,padding:"1px 2px",border:"1px solid #534AB7",borderRadius:3,textAlign:"center",fontSize:10,background:"var(--color-background-primary)",color:"var(--color-text-primary)",outline:"none"}}/>
                         <div style={{fontSize:7,color:"#BA7517"}}>min:{getPStats(p.id).planned}</div>
                       </div>
                       :(yd.orders[p.id]||0)>0?yd.orders[p.id]:"–"}
                     </td>
-                    <td style={{position:"sticky",left:384,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.planned>0?"#0F6E56":"var(--color-text-tertiary)"}}>{s.planned}</td>
-                    <td style={{position:"sticky",left:432,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.toBePlanned>0?"#BA7517":"var(--color-text-tertiary)"}}>{s.toBePlanned}</td>
-                    <td style={{position:"sticky",left:480,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.remaining>0?"#E24B4A":"var(--color-text-tertiary)",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>{s.remaining}</td>
+                    <td style={{position:"sticky",left:426,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.planned>0?"#0F6E56":"var(--color-text-tertiary)"}}>{s.planned}</td>
+                    <td style={{position:"sticky",left:474,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.toBePlanned>0?"#BA7517":"var(--color-text-tertiary)"}}>{s.toBePlanned}</td>
+                    <td style={{position:"sticky",left:522,zIndex:10,background:rowBg,padding:"3px",textAlign:"center",borderBottom:"1px solid var(--color-border-tertiary)",fontWeight:600,fontSize:10,color:s.remaining>0?"#E24B4A":"var(--color-text-tertiary)",boxShadow:"4px 0 8px rgba(0,0,0,0.08)"}}>{s.remaining}</td>
                     {visibleContainers.map((c,ci)=>{
                       const q=(yd.quantities[c.id]||{})[p.id]||0;
                       const isE=editCell?.cid===c.id&&editCell?.pid===p.id;
