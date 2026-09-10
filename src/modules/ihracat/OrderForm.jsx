@@ -332,6 +332,53 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         if (!editingOrder?.isLinkedChild) {
           await syncLinkedChildren(payload, line.childPrices || {});
         }
+        // Edit modunda kullanıcı ek kalem eklediyse (lines[1..N]): yeni sipariş dalı gibi kaydet.
+        // Aynı belgeNo altına yeni ID'lerle eklenir; header alanları commonPayload ile ortak.
+        const extraLines = validLines.slice(1);
+        if (extraLines.length > 0) {
+          const existingOrdersMap = ordersData?.orders || {};
+          const usedIds = new Set([payload.id]);
+          const generateUniqueId = (baseId) => {
+            if (!existingOrdersMap[baseId] && !usedIds.has(baseId)) return baseId;
+            let i = 2;
+            while (existingOrdersMap[`${baseId}_${i}`] || usedIds.has(`${baseId}_${i}`)) i++;
+            return `${baseId}_${i}`;
+          };
+          for (const eLine of extraLines) {
+            const eTeslim = eLine.teslimTarihi || teslimTarihi || "";
+            const eBaseId = buildId(belgeNo, eLine.stokKodu, eTeslim);
+            const eId = generateUniqueId(eBaseId);
+            usedIds.add(eId);
+            const ePayload = {
+              id: eId,
+              ...commonPayload,
+              teslimTarihi: eTeslim,
+              stokKodu: eLine.stokKodu.trim(),
+              stokAdi: eLine.stokAdi.trim(),
+              descriptionEn: eLine.descriptionEn.trim(),
+              pid: Number(eLine.pid),
+              orijinalMiktar: Number(eLine.orijinalMiktar) || 0,
+              sevkedilenBaslangic: Number(eLine.sevkedilenBaslangic) || 0,
+              birimFiyat: Number(eLine.birimFiyat) || 0,
+              isSample: !!eLine.isSample,
+              sampleStatus: eLine.isSample ? (eLine.sampleStatus || "pending") : null,
+              sampleNotes: eLine.sampleNotes || "",
+              source: "manual",
+            };
+            await saveExportOrder(ePayload, { canEdit, userEmail });
+            applyMotorSyncForNew(ePayload);
+            if (logPriceHistory && ePayload.pid && ePayload.birimFiyat > 0) {
+              logPriceHistory(ePayload.pid, {
+                price: ePayload.birimFiyat,
+                source: "ihracat-order",
+                customerCode: ePayload.customerCode,
+                customerName: ePayload.customerName,
+                orderRef: ePayload.belgeNo,
+              });
+            }
+            await createLinkedChildren(ePayload, eLine.childPrices || {});
+          }
+        }
       } else {
         // Yeni sipariş: her geçerli kalem için ayrı kayıt + ayrı motor sync
         // Her kalemin kendi termin tarihi olabilir — yoksa header'daki genel termin
@@ -690,7 +737,13 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
       </Section>
 
       {/* Kalemler */}
-      <Section title={editingOrder ? "Ürün" : `Kalemler (${lines.length})`}>
+      <Section title={
+        editingOrder
+          ? (lines.length > 1
+              ? `Kalemler (${lines.length}) — 1 mevcut + ${lines.length - 1} yeni`
+              : "Ürün")
+          : `Kalemler (${lines.length})`
+      }>
         {lines.map((line, idx) => {
           const cascadeChildren = getCascadeChildren(line.pid);
           const netQty = (Number(line.orijinalMiktar) || 0) - (Number(line.sevkedilenBaslangic) || 0);
@@ -734,7 +787,11 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
                     </select>
                   )}
                 </div>
-                {!editingOrder && lines.length > 1 && (
+                {/* Silme butonu:
+                    - Yeni sipariş modunda: birden fazla kalem varsa hepsinde
+                    - Edit modunda: sadece yeni eklenen kalemlerde (idx > 0);
+                      ilk kalem mevcut kayıt → OrderList → satır 🗑 üzerinden silinir */}
+                {lines.length > 1 && (editingOrder ? idx > 0 : true) && (
                   <button onClick={() => removeLine(idx)}
                     style={{ padding: "2px 8px", fontSize: 10, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 3, cursor: "pointer" }}>
                     🗑 Kalemi Sil
@@ -873,12 +930,17 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
             </div>
           );
         })}
-        {!editingOrder && (
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
           <button onClick={addLine}
             style={{ padding: "5px 12px", fontSize: 11, background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 4, cursor: "pointer" }}>
             + Yeni Kalem Ekle
           </button>
-        )}
+          {editingOrder && (
+            <span style={{ fontSize: 10, color: "#78716c" }}>
+              ℹ Aynı belgeye ek kalem eklenir — header alanları (müşteri/tarih/currency/ödeme) tüm kalemler için ortak olur.
+            </span>
+          )}
+        </div>
         <datalist id="ih-product-list">
           {(products || []).filter(p => p.vioCode).map(p => (
             <option key={p.id} value={p.vioCode}>{p.nameTR}</option>
@@ -946,7 +1008,11 @@ export default function OrderForm({ editingOrder, settings, products, canEdit, u
         </button>
         <button onClick={handleSave} disabled={saving || !canEdit || !canSave}
           style={{ padding: "6px 14px", fontSize: 12, background: canSave ? "#166534" : "#a8a29e", color: "#fff", border: "none", borderRadius: 4, cursor: (saving || !canSave) ? "not-allowed" : "pointer", fontWeight: 500 }}>
-          {saving ? "Kaydediliyor…" : (editingOrder ? "💾 Güncelle" : `💾 Kaydet (${validLines.length} kalem)`)}
+          {saving ? "Kaydediliyor…" : (
+            editingOrder
+              ? (validLines.length > 1 ? `💾 Güncelle + ${validLines.length - 1} Yeni Kalem` : "💾 Güncelle")
+              : `💾 Kaydet (${validLines.length} kalem)`
+          )}
         </button>
       </div>
 
