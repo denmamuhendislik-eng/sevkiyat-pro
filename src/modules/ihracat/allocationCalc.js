@@ -1,6 +1,11 @@
 // İhracat modülü — yardımcı hesaplamalar.
 // Pure fonksiyonlar, Firestore'a dokunmaz. UI bileşenleri bunları çağırır.
 
+// Etiket "teslim anında ödenir" kategorisinde mi (case-insensitive DELIVERY substring).
+// "IN ADVANCE WITH DELIVERY", "WITH DELIVERY", "AT DELIVERY" → true (delivery)
+// "IN ADVANCE WITH ORDER", "T/T 60" → false (avans veya vadeli, delivery değil)
+const isDeliveryLabel = (label) => String(label || "").toUpperCase().includes("DELIVERY");
+
 // ============================================================
 // 1) Bakiye türetme
 // ============================================================
@@ -260,14 +265,46 @@ export function forecastContainerBilling({
     }
   };
 
-  // Ödenen tutarı payment plan etiketleri arasında proportional dağıt
-  const distributePaid = (paidAmt, paymentPlan) => {
+  // Ödenen tutarı payment plan etiketleri arasında dağıt.
+  // Kural: Avans (non-delivery etiketleri, ör. "IN ADVANCE WITH ORDER") ÖNCE doldurulur,
+  // kalan kısım delivery etiketlerine gider. PaymentRequestModal'daki paidTowardsDelivery
+  // mantığının simetriği. Böylece WITH ORDER auto-paid iken WITH DELIVERY yanında
+  // yanlış ✅ görünmez.
+  //
+  // invoiceTotal: bu faturanın toplam tutarı (avans cap hesabı için gerekli).
+  //               Yoksa (0) eski oransal davranış (fallback) devreye girer.
+  const distributePaid = (paidAmt, paymentPlan, invoiceTotal = 0) => {
     if (paidAmt <= 0) return;
     const plan = Array.isArray(paymentPlan) ? paymentPlan.filter(p => Number(p?.pct) > 0) : [];
     if (plan.length === 0) { bumpLabelPaid("(etiketsiz)", paidAmt); return; }
-    const totalPct = plan.reduce((s, p) => s + (Number(p.pct) || 0), 0);
-    for (const p of plan) {
-      bumpLabelPaid(p.label, paidAmt * (Number(p.pct) / (totalPct || 100)));
+    const totalPct = plan.reduce((s, p) => s + (Number(p.pct) || 0), 0) || 100;
+
+    if (!(invoiceTotal > 0)) {
+      // Fallback: eski oransal davranış (invoiceTotal bilinmiyorsa)
+      for (const p of plan) {
+        bumpLabelPaid(p.label, paidAmt * (Number(p.pct) / totalPct));
+      }
+      return;
+    }
+
+    const nonDeliveryPlan = plan.filter(p => !isDeliveryLabel(p.label));
+    const deliveryPlan = plan.filter(p => isDeliveryLabel(p.label));
+    const nonDeliveryPct = nonDeliveryPlan.reduce((s, p) => s + (Number(p.pct) || 0), 0);
+    const deliveryPct = deliveryPlan.reduce((s, p) => s + (Number(p.pct) || 0), 0);
+    const nonDeliveryAmount = invoiceTotal * (nonDeliveryPct / 100);
+    // Avans (non-delivery) tutarı önce doldurulur, aşan kısım delivery'ye
+    const paidTowardsNonDelivery = Math.min(paidAmt, nonDeliveryAmount);
+    const paidTowardsDelivery = Math.max(0, paidAmt - nonDeliveryAmount);
+
+    if (nonDeliveryPct > 0 && paidTowardsNonDelivery > 0) {
+      for (const p of nonDeliveryPlan) {
+        bumpLabelPaid(p.label, paidTowardsNonDelivery * (Number(p.pct) / nonDeliveryPct));
+      }
+    }
+    if (deliveryPct > 0 && paidTowardsDelivery > 0) {
+      for (const p of deliveryPlan) {
+        bumpLabelPaid(p.label, paidTowardsDelivery * (Number(p.pct) / deliveryPct));
+      }
     }
   };
 
@@ -347,7 +384,7 @@ export function forecastContainerBilling({
     const paidAmt = computeEffectivePayment(inv).effectivePaid;
     if (paidAmt <= 0) continue;
     paidTotal += paidAmt;
-    distributePaid(paidAmt, inv.paymentPlan);
+    distributePaid(paidAmt, inv.paymentPlan, Number(inv.totalAmount) || 0);
   }
 
   // TRANSPORT SIDE — kesilmiş nakliye faturaları varsa onları kullan, yoksa ayarlardan öngör
@@ -363,7 +400,7 @@ export function forecastContainerBilling({
       const paidAmt = computeEffectivePayment(inv).effectivePaid;
       if (paidAmt > 0) {
         paidTotal += paidAmt;
-        distributePaid(paidAmt, inv.paymentPlan);
+        distributePaid(paidAmt, inv.paymentPlan, amt);
       }
     }
   } else {
