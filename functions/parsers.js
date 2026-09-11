@@ -309,6 +309,8 @@ function parseAkibetExcel(workbook) {
     const opNo = String(r[cols.opNo] || "").trim();
     const opName = String(r[cols.opName] || "").trim();
     const isMrk = cols.isMrk != null ? String(r[cols.isMrk] || "").trim() : "";
+    // v25: Operasyon başlangıç tarihi — İş Emri Takibi'nde "kaç gündür bu op'ta" hesabı için
+    const opBasTarihi = cols.opBasTarihi != null ? parseEmirTarihi(r[cols.opBasTarihi]) : null;
     if (!opName) continue;
     const isFason = opName.toUpperCase().includes("FASON");
 
@@ -334,6 +336,7 @@ function parseAkibetExcel(workbook) {
       opName,
       isMrk,
       isFason,
+      opBasTarihi,
     });
   }
 
@@ -384,6 +387,7 @@ function parseAkibetExcel(workbook) {
           wcCode: op.isMrk,
           sayaci: op.sayaci,
           uretilen: op.uretilen,
+          opBasTarihi: op.opBasTarihi || null,
           cancelled,
         };
       });
@@ -408,6 +412,9 @@ function parseAkibetExcel(workbook) {
             name: firstActive.name,
             isFason: firstActive.isFason,
             opCode: firstActive.opCode,
+            wcCode: firstActive.wcCode,
+            opBasTarihi: firstActive.opBasTarihi || null,
+            remaining: firstActive.remaining,
           }
         : null;
       const remainingOps = {
