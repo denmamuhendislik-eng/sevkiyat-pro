@@ -8504,6 +8504,8 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
       const opNo = String(r[cols.opNo] || "").trim();
       const opName = String(r[cols.opName] || "").trim();
       const isMrk = cols.isMrk != null ? String(r[cols.isMrk] || "").trim() : "";
+      // v25: Operasyon başlangıç tarihi — "kaç gündür bu op'ta" hesabı için
+      const opBasTarihi = cols.opBasTarihi != null ? parseEmirTarihi(r[cols.opBasTarihi]) : null;
       if (!opName) continue;
       const isFason = opName.toUpperCase().includes("FASON");
 
@@ -8519,7 +8521,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         part.ordersMap[emirNo] = { emirNo, qty: emirQty, openDate, opsRaw: [] };
       }
       part.ordersMap[emirNo].opsRaw.push({
-        sayaci, uretilen, kalan, opNo, opName, isMrk, isFason
+        sayaci, uretilen, kalan, opNo, opName, isMrk, isFason, opBasTarihi
       });
     }
 
@@ -8565,6 +8567,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
             remaining: cancelled ? 0 : op.kalan,
             opCode: op.opNo, wcCode: op.isMrk,
             sayaci: op.sayaci, uretilen: op.uretilen,
+            opBasTarihi: op.opBasTarihi || null,
             cancelled
           };
         });
@@ -8588,7 +8591,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         const firstOpenOp = firstActive ? {
           name: firstActive.name,
           isFason: firstActive.isFason,
-          opCode: firstActive.opCode
+          opCode: firstActive.opCode,
+          wcCode: firstActive.wcCode,
+          opBasTarihi: firstActive.opBasTarihi || null,
+          remaining: firstActive.remaining,
         } : null;
         const remainingOps = {
           total: activeOps.length,
@@ -10583,6 +10589,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
         <button onClick={() => setActiveTab("fason")} style={tabStyle("fason")}>Fason Operasyonlar</button>
         <button onClick={() => setActiveTab("schedule")} style={tabStyle("schedule")}>Kapasite & Çizelge</button>
         <button onClick={() => setActiveTab("explosion")} style={tabStyle("explosion")}>🔥 MRP Hesaplama</button>
+        <button onClick={() => setActiveTab("workOrders")} style={tabStyle("workOrders")}>🏭 İş Emri Takibi</button>
       </div>
 
       {/* ========== VERİ YÖNETİMİ TAB ========== */}
@@ -17290,6 +17297,398 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           </div>
         );
       })()}
+
+      {/* ========== İŞ EMRİ TAKİBİ TAB (v25) ========== */}
+      {activeTab === "workOrders" && (() => {
+        if (!akibet || !akibet.parts || akibet.parts.length === 0) {
+          return (
+            <div style={{ textAlign: "center", padding: 60, color: "var(--color-text-tertiary)" }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>🏭</div>
+              <div style={{ fontSize: 14, fontWeight: 500 }}>İş Emri Takibi</div>
+              <div style={{ fontSize: 12, marginTop: 6, maxWidth: 500, margin: "6px auto 0", lineHeight: 1.6 }}>
+                VIO Akibet raporunu Veri Yönetimi sekmesinden yükleyin — sonrasında her iş emrinin şu anki durumunu, aşamasını ve tahmini süresini burada göreceksiniz.
+              </div>
+            </div>
+          );
+        }
+        return <WorkOrderTrackerPanel
+          akibet={akibet}
+          products={products}
+          workCenters={workCenters}
+          bomModels={bomModels}
+        />;
+      })()}
     </div>
   );
 }
+
+// ============================================================
+// v25 — İş Emri Takibi Paneli
+// ============================================================
+// VIO Akibet raporundaki her iş emrinin şu an hangi operasyonda olduğunu,
+// ne kadar süredir orada beklediğini ve tahmini süresini gösterir.
+// İki görünüm modu:
+//   - Liste: emirler satır satır, sıralama/filtre
+//   - İstasyon: iş merkezine göre gruplu (her tezgahda bekleyen işler)
+function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
+  const [viewMode, setViewMode] = useState("list"); // "list" | "station"
+  const [search, setSearch] = useState("");
+  const [wcFilter, setWcFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("active"); // "active" | "all"
+  const [sortBy, setSortBy] = useState("waitDays"); // "waitDays" | "openDate" | "estMin"
+  const [expandedEmir, setExpandedEmir] = useState(new Set());
+
+  const productByCode = useMemo(() => {
+    const m = {};
+    (products || []).forEach(p => { if (p.vioCode) m[p.vioCode] = p; });
+    return m;
+  }, [products]);
+
+  // BOM lookup — cycleTime/setupTime kaynağı (schedule tabındaki mantıkla aynı)
+  const bomLookup = useMemo(() => {
+    const m = {};
+    Object.keys(bomModels || {}).filter(k => k !== "undefined").forEach(mk => {
+      (bomModels[mk]?.parts || []).forEach((p) => {
+        if (!p.stockCode) return;
+        if (!m[p.stockCode] || (p.operations?.length || 0) > (m[p.stockCode].part.operations?.length || 0)) {
+          m[p.stockCode] = { part: p, modelKey: mk };
+        }
+      });
+    });
+    return m;
+  }, [bomModels]);
+
+  const shiftMin = (workCenters?.shiftHours || 9) * 60 * (workCenters?.efficiency || 0.85);
+  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+  const daysBetweenIso = (a, b) => {
+    if (!a || !b) return null;
+    const ta = new Date(a).getTime(), tb = new Date(b).getTime();
+    if (isNaN(ta) || isNaN(tb)) return null;
+    return Math.floor((tb - ta) / 86400000);
+  };
+  const fmtMin = (m) => {
+    if (m < 60) return `${Math.round(m)} dk`;
+    const h = m / 60;
+    if (h < 24) return `${h.toFixed(1)} sa`;
+    return `${(h / shiftMin * 60).toFixed(1)} iş günü`;
+  };
+
+  // Emirleri düzleştir — her akibet.part.orders.forEach → item
+  const items = useMemo(() => {
+    const list = [];
+    for (const part of akibet.parts) {
+      const prod = productByCode[part.code] || null;
+      const bom = bomLookup[part.code] || null;
+      for (const order of part.orders) {
+        const activeOps = order.ops.filter(op => !op.cancelled && op.remaining > 0);
+        const completedOps = order.ops.filter(op => !op.cancelled && op.remaining === 0);
+        const totalOps = order.ops.filter(op => !op.cancelled).length;
+        // Tahmini toplam dk (iç imalat op'ları); fason op'ları için leadTimeDays ayrı
+        let estMin = 0, estFasonDays = 0;
+        for (const op of activeOps) {
+          if (op.isFason) {
+            const fa = (workCenters?.fason || {})[op.opCode];
+            estFasonDays += fa?.leadTimeDays || 14;
+          } else {
+            let cycleTime = 5, setupTime = 30;
+            if (bom) {
+              const bomOp = bom.part.operations?.find(bo => bo.opCode === op.opCode || bo.opName === op.name);
+              if (bomOp) {
+                if (bomOp.cycleTime != null && bomOp.cycleTime > 0) cycleTime = bomOp.cycleTime;
+                if (bomOp.setupTime != null) setupTime = bomOp.setupTime;
+              }
+            }
+            estMin += setupTime + cycleTime * op.remaining;
+          }
+        }
+        const estInternalDays = Math.max(0, Math.ceil(estMin / shiftMin));
+        const estTotalDays = estInternalDays + estFasonDays;
+        // Kaç gündür bu aşamada
+        const currentOp = order.firstOpenOp;
+        const waitDays = currentOp?.opBasTarihi ? daysBetweenIso(currentOp.opBasTarihi, today) : null;
+        // Progress
+        const progressPct = totalOps > 0 ? Math.round((completedOps.length / totalOps) * 100) : 0;
+        list.push({
+          key: `${part.code}__${order.emirNo}`,
+          code: part.code, name: prod?.nameTR || part.name, emirNo: order.emirNo,
+          openDate: order.openDate, qty: order.qty, rem: order.rem,
+          currentOp, wcCode: currentOp?.wcCode || "", waitDays,
+          completedOps, activeOps, totalOps, progressPct,
+          estMin, estFasonDays, estTotalDays,
+          isFasonBlocked: currentOp?.isFason,
+          isActive: activeOps.length > 0,
+        });
+      }
+    }
+    return list;
+  }, [akibet, productByCode, bomLookup, workCenters, shiftMin, today]);
+
+  // İş merkezi seçenekleri
+  const wcOptions = useMemo(() => {
+    const s = new Set();
+    for (const it of items) if (it.wcCode) s.add(it.wcCode);
+    return Array.from(s).sort();
+  }, [items]);
+
+  // Filtre + sıralama
+  const filtered = useMemo(() => {
+    const q = search.trim().toLocaleLowerCase("tr-TR");
+    let out = items.filter(it => {
+      if (statusFilter === "active" && !it.isActive) return false;
+      if (wcFilter !== "all" && it.wcCode !== wcFilter) return false;
+      if (!q) return true;
+      const hay = `${it.code} ${it.name} ${it.emirNo} ${it.currentOp?.name || ""}`.toLocaleLowerCase("tr-TR");
+      return hay.includes(q);
+    });
+    out.sort((a, b) => {
+      if (sortBy === "waitDays") return (b.waitDays || 0) - (a.waitDays || 0);
+      if (sortBy === "openDate") return String(a.openDate || "").localeCompare(String(b.openDate || ""));
+      if (sortBy === "estMin") return b.estMin - a.estMin;
+      return 0;
+    });
+    return out;
+  }, [items, search, wcFilter, statusFilter, sortBy]);
+
+  // İstasyon bazlı grup
+  const byStation = useMemo(() => {
+    const m = new Map();
+    for (const it of filtered) {
+      if (!it.isActive) continue;
+      const key = it.wcCode || "(atanmamış)";
+      if (!m.has(key)) m.set(key, { wcCode: key, items: [], totalMin: 0 });
+      const g = m.get(key);
+      g.items.push(it);
+      g.totalMin += it.estMin;
+    }
+    return Array.from(m.values()).sort((a, b) => b.items.length - a.items.length);
+  }, [filtered]);
+
+  const toggleExpand = (key) => {
+    setExpandedEmir(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+
+  return (
+    <div>
+      {/* Toolbar */}
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: 10, background: "var(--color-background-secondary)", borderRadius: 6, marginBottom: 12 }}>
+        <div style={{ display: "flex", gap: 0, border: "1px solid var(--color-border-secondary)", borderRadius: 4, overflow: "hidden" }}>
+          <button onClick={() => setViewMode("list")}
+            style={{ padding: "5px 12px", fontSize: 11, border: "none", background: viewMode === "list" ? "#1e40af" : "#fff", color: viewMode === "list" ? "#fff" : "#44403c", cursor: "pointer", fontWeight: 500 }}>📋 Liste</button>
+          <button onClick={() => setViewMode("station")}
+            style={{ padding: "5px 12px", fontSize: 11, border: "none", background: viewMode === "station" ? "#1e40af" : "#fff", color: viewMode === "station" ? "#fff" : "#44403c", cursor: "pointer", fontWeight: 500 }}>🏭 İstasyon Bazlı</button>
+        </div>
+        <input type="text" value={search} onChange={e => setSearch(e.target.value)}
+          placeholder="🔍 Stok kodu / ad / emir / op ara..."
+          style={{ flex: 1, minWidth: 200, padding: "6px 10px", fontSize: 11, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }} />
+        <select value={wcFilter} onChange={e => setWcFilter(e.target.value)}
+          style={{ padding: "6px 10px", fontSize: 11, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
+          <option value="all">Tüm İş Merkezleri</option>
+          {wcOptions.map(w => <option key={w} value={w}>{w}</option>)}
+        </select>
+        <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
+          style={{ padding: "6px 10px", fontSize: 11, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
+          <option value="active">Aktif ({items.filter(i => i.isActive).length})</option>
+          <option value="all">Tümü ({items.length})</option>
+        </select>
+        {viewMode === "list" && (
+          <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+            style={{ padding: "6px 10px", fontSize: 11, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
+            <option value="waitDays">Sırala: Bekleme (uzun önce)</option>
+            <option value="openDate">Sırala: Açılış (eski önce)</option>
+            <option value="estMin">Sırala: Tahmini süre (uzun önce)</option>
+          </select>
+        )}
+        <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+          {filtered.length} emir gösteriliyor
+        </span>
+      </div>
+
+      {/* Liste görünümü */}
+      {viewMode === "list" && (
+        <div style={{ background: "#fff", border: "1px solid var(--color-border-secondary)", borderRadius: 6, overflow: "auto" }}>
+          {filtered.length === 0 ? (
+            <div style={{ padding: 30, textAlign: "center", color: "#a8a29e", fontSize: 12 }}>Bu kriterlere uyan iş emri yok.</div>
+          ) : (
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 11 }}>
+              <thead style={{ background: "#f5f5f4" }}>
+                <tr>
+                  <th style={woth}>Emir No</th>
+                  <th style={woth}>Ürün</th>
+                  <th style={{ ...woth, textAlign: "right" }}>Kalan/Toplam</th>
+                  <th style={woth}>İlerleme</th>
+                  <th style={woth}>Şu anki aşama</th>
+                  <th style={{ ...woth, textAlign: "right" }}>Bekleme</th>
+                  <th style={{ ...woth, textAlign: "right" }}>Tahmini süre</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map(it => {
+                  const isExp = expandedEmir.has(it.key);
+                  const waitBg = it.waitDays == null ? "transparent"
+                    : it.waitDays >= 14 ? "#fef2f2"
+                    : it.waitDays >= 7 ? "#fef3c7" : "transparent";
+                  return (
+                    <React.Fragment key={it.key}>
+                      <tr onClick={() => toggleExpand(it.key)} style={{ borderTop: "1px solid #f5f5f4", cursor: "pointer", background: waitBg }}>
+                        <td style={{ ...wotd, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>
+                          <span style={{ marginRight: 4, color: "#78716c" }}>{isExp ? "▼" : "▶"}</span>
+                          #{it.emirNo}
+                          {it.openDate && <div style={{ fontSize: 9, color: "#78716c", fontWeight: 400 }}>Açılış: {it.openDate}</div>}
+                        </td>
+                        <td style={wotd}>
+                          <div style={{ fontFamily: "ui-monospace, monospace", fontSize: 9, color: "#78716c" }}>{it.code}</div>
+                          <div>{it.name || "—"}</div>
+                        </td>
+                        <td style={{ ...wotd, textAlign: "right", fontWeight: 600 }}>
+                          <span style={{ color: it.rem > 0 ? "#dc2626" : "#166534" }}>{it.rem}</span>
+                          <span style={{ color: "#78716c" }}> / {it.qty}</span>
+                        </td>
+                        <td style={wotd}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                            <div style={{ flex: 1, minWidth: 80, height: 6, background: "#f5f5f4", borderRadius: 3, overflow: "hidden" }}>
+                              <div style={{ width: `${it.progressPct}%`, height: "100%", background: it.progressPct === 100 ? "#166534" : "#1e40af" }} />
+                            </div>
+                            <span style={{ fontSize: 9, color: "#78716c", minWidth: 45 }}>{it.completedOps.length}/{it.totalOps} op</span>
+                          </div>
+                        </td>
+                        <td style={wotd}>
+                          {it.currentOp ? (
+                            <>
+                              <span style={{ display: "inline-block", padding: "1px 6px", fontSize: 9, fontWeight: 700,
+                                background: it.currentOp.isFason ? "#fff7ed" : "#eff6ff",
+                                color: it.currentOp.isFason ? "#c2410c" : "#1e40af",
+                                border: `1px solid ${it.currentOp.isFason ? "#fdba74" : "#bfdbfe"}`, borderRadius: 3 }}>
+                                {it.currentOp.isFason ? "🚚" : "🔧"} {it.currentOp.name}
+                              </span>
+                              {it.wcCode && <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Tezgah: {it.wcCode}</div>}
+                            </>
+                          ) : <span style={{ color: "#a8a29e", fontSize: 10 }}>✓ Tamamlandı</span>}
+                        </td>
+                        <td style={{ ...wotd, textAlign: "right", fontWeight: 600 }}>
+                          {it.waitDays == null ? <span style={{ color: "#a8a29e" }}>—</span>
+                            : <span style={{ color: it.waitDays >= 14 ? "#991b1b" : it.waitDays >= 7 ? "#92400e" : "#44403c" }}>
+                                {it.waitDays} gün
+                              </span>}
+                        </td>
+                        <td style={{ ...wotd, textAlign: "right", fontSize: 10, color: "#44403c" }}>
+                          {it.isActive ? (
+                            <>
+                              <div>{fmtMin(it.estMin)}{it.estFasonDays > 0 && ` + ${it.estFasonDays} fason gün`}</div>
+                              <div style={{ fontSize: 8, color: "#78716c" }}>~{it.estTotalDays} iş günü</div>
+                            </>
+                          ) : "—"}
+                        </td>
+                      </tr>
+                      {isExp && (
+                        <tr style={{ background: "#fafaf9" }}>
+                          <td colSpan={7} style={{ padding: "8px 12px" }}>
+                            <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                              <thead>
+                                <tr style={{ background: "#f5f5f4" }}>
+                                  <th style={{ ...woth, fontSize: 9 }}>Sayacı</th>
+                                  <th style={{ ...woth, fontSize: 9 }}>Op Kodu</th>
+                                  <th style={{ ...woth, fontSize: 9 }}>Op Adı</th>
+                                  <th style={{ ...woth, fontSize: 9 }}>Tezgah</th>
+                                  <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Üretilen</th>
+                                  <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Kalan</th>
+                                  <th style={{ ...woth, fontSize: 9 }}>Başlangıç</th>
+                                  <th style={{ ...woth, fontSize: 9 }}>Durum</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {it.completedOps.concat(it.activeOps).map((op, oi) => {
+                                  const isActive = op.remaining > 0;
+                                  return (
+                                    <tr key={`${it.key}_${oi}`} style={{ borderTop: "1px solid #f5f5f4" }}>
+                                      <td style={{ ...wotd, fontSize: 9 }}>{op.sayaci || "—"}</td>
+                                      <td style={{ ...wotd, fontFamily: "ui-monospace, monospace", fontSize: 9 }}>{op.opCode || "—"}</td>
+                                      <td style={{ ...wotd, fontSize: 9 }}>{op.isFason && "🚚 "}{op.name}</td>
+                                      <td style={{ ...wotd, fontSize: 9, color: "#78716c" }}>{op.wcCode || "—"}</td>
+                                      <td style={{ ...wotd, textAlign: "right", fontSize: 9, color: "#166534", fontWeight: 500 }}>{op.uretilen}</td>
+                                      <td style={{ ...wotd, textAlign: "right", fontSize: 9, color: op.remaining > 0 ? "#dc2626" : "#a8a29e", fontWeight: 500 }}>{op.remaining}</td>
+                                      <td style={{ ...wotd, fontSize: 9, color: "#78716c" }}>{op.opBasTarihi || "—"}</td>
+                                      <td style={{ ...wotd, fontSize: 9 }}>
+                                        {op.cancelled ? <span style={{ color: "#991b1b" }}>❌ İptal</span>
+                                          : isActive ? <span style={{ color: "#1e40af", fontWeight: 600 }}>🔧 Aktif</span>
+                                          : <span style={{ color: "#166534" }}>✓ Bitti</span>}
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
+        </div>
+      )}
+
+      {/* İstasyon bazlı görünüm */}
+      {viewMode === "station" && (
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 10 }}>
+          {byStation.length === 0 ? (
+            <div style={{ gridColumn: "1/-1", padding: 30, textAlign: "center", color: "#a8a29e", fontSize: 12 }}>Bu kriterlere uyan aktif iş yok.</div>
+          ) : byStation.map(g => (
+            <div key={g.wcCode} style={{ background: "#fff", border: "1px solid var(--color-border-secondary)", borderRadius: 6, overflow: "hidden" }}>
+              <div style={{ padding: "8px 12px", background: "#1e40af", color: "#fff", fontSize: 12, fontWeight: 700 }}>
+                🏭 {g.wcCode}
+                <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, opacity: 0.85 }}>
+                  {g.items.length} emir · ~{fmtMin(g.totalMin)}
+                </span>
+              </div>
+              <div style={{ maxHeight: 400, overflow: "auto" }}>
+                <table style={{ width: "100%", fontSize: 10, borderCollapse: "collapse" }}>
+                  <thead style={{ background: "#f5f5f4" }}>
+                    <tr>
+                      <th style={{ ...woth, fontSize: 9 }}>Emir</th>
+                      <th style={{ ...woth, fontSize: 9 }}>Ürün</th>
+                      <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Kalan</th>
+                      <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Bekleme</th>
+                      <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Süre</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {g.items.sort((a, b) => (b.waitDays || 0) - (a.waitDays || 0)).map(it => (
+                      <tr key={it.key} style={{ borderTop: "1px solid #f5f5f4" }}>
+                        <td style={{ ...wotd, fontFamily: "ui-monospace, monospace", fontSize: 9, fontWeight: 600 }}>#{it.emirNo}</td>
+                        <td style={{ ...wotd, fontSize: 9 }}>
+                          <div style={{ fontFamily: "ui-monospace, monospace", color: "#78716c" }}>{it.code}</div>
+                          <div>{(it.name || "").slice(0, 30)}</div>
+                        </td>
+                        <td style={{ ...wotd, textAlign: "right", fontSize: 9, fontWeight: 600, color: "#dc2626" }}>
+                          {it.currentOp?.remaining || it.rem}
+                        </td>
+                        <td style={{ ...wotd, textAlign: "right", fontSize: 9, color: it.waitDays >= 14 ? "#991b1b" : it.waitDays >= 7 ? "#92400e" : "#44403c" }}>
+                          {it.waitDays == null ? "—" : `${it.waitDays}g`}
+                        </td>
+                        <td style={{ ...wotd, textAlign: "right", fontSize: 9 }}>{fmtMin(it.estMin)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Alt not */}
+      <div style={{ marginTop: 12, padding: 10, fontSize: 10, color: "#78716c", background: "#f5f5f4", borderRadius: 4 }}>
+        ℹ️ <b>Kaynak:</b> VIO Akibet raporu (Veri Yönetimi'nden yüklenir). <b>Bekleme süresi</b> = bugün − operasyon başlangıç tarihi. <b>Tahmini süre</b> = kalan iç imalat op'ları için (cycle × kalan) + setup, BOM'da tanımlıysa; yoksa varsayılan (cycle 5 dk, setup 30 dk). Fason op'lar için iş merkezi tanımındaki leadTimeDays. Bu hesap tezgah kuyruğu/paralel iş yükü dikkate almaz — tek-emir varsayımıyla kağıt üzerinde ne kadar sürer gösterir.
+      </div>
+    </div>
+  );
+}
+
+const woth = { padding: "6px 8px", fontWeight: 600, fontSize: 10, textAlign: "left", color: "#44403c", borderBottom: "1px solid #e7e5e4" };
+const wotd = { padding: "5px 8px", fontSize: 11, verticalAlign: "top" };
