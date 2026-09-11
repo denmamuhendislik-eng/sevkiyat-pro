@@ -17334,6 +17334,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
   const [viewMode, setViewMode] = useState("list"); // "list" | "station"
   const [search, setSearch] = useState("");
   const [wcFilter, setWcFilter] = useState("all");
+  const [opNameFilter, setOpNameFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("active"); // "active" | "all"
   const [sortBy, setSortBy] = useState("waitDays"); // "waitDays" | "openDate" | "estMin"
   const [expandedEmir, setExpandedEmir] = useState(new Set());
@@ -17430,12 +17431,25 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
     return Array.from(s).sort();
   }, [items]);
 
+  // Aşama (op adı) seçenekleri — sadece aktif emirlerin şu anki aşamasından
+  const opNameOptions = useMemo(() => {
+    const map = new Map(); // opName → count
+    for (const it of items) {
+      if (!it.isActive || !it.currentOp?.name) continue;
+      const n = it.currentOp.name;
+      map.set(n, (map.get(n) || 0) + 1);
+    }
+    return Array.from(map, ([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [items]);
+
   // Filtre + sıralama
   const filtered = useMemo(() => {
     const q = search.trim().toLocaleLowerCase("tr-TR");
     let out = items.filter(it => {
       if (statusFilter === "active" && !it.isActive) return false;
       if (wcFilter !== "all" && it.wcCode !== wcFilter) return false;
+      if (opNameFilter !== "all" && it.currentOp?.name !== opNameFilter) return false;
       if (!q) return true;
       const hay = `${it.code} ${it.name} ${it.emirNo} ${it.currentOp?.name || ""}`.toLocaleLowerCase("tr-TR");
       return hay.includes(q);
@@ -17447,7 +17461,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
       return 0;
     });
     return out;
-  }, [items, search, wcFilter, statusFilter, sortBy]);
+  }, [items, search, wcFilter, opNameFilter, statusFilter, sortBy]);
 
   // İstasyon bazlı grup
   const byStation = useMemo(() => {
@@ -17488,6 +17502,12 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
           style={{ padding: "6px 10px", fontSize: 11, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
           <option value="all">Tüm İş Merkezleri</option>
           {wcOptions.map(w => <option key={w} value={w}>{w}</option>)}
+        </select>
+        <select value={opNameFilter} onChange={e => setOpNameFilter(e.target.value)}
+          title="Sadece seçili aşamada olan iş emirlerini göster"
+          style={{ padding: "6px 10px", fontSize: 11, border: `1px solid ${opNameFilter !== "all" ? "#1e40af" : "var(--color-border-secondary)"}`, borderRadius: 4, background: opNameFilter !== "all" ? "#eff6ff" : "#fff", fontWeight: opNameFilter !== "all" ? 600 : 400 }}>
+          <option value="all">Tüm Aşamalar</option>
+          {opNameOptions.map(o => <option key={o.name} value={o.name}>{o.name} ({o.count})</option>)}
         </select>
         <select value={statusFilter} onChange={e => setStatusFilter(e.target.value)}
           style={{ padding: "6px 10px", fontSize: 11, border: "1px solid var(--color-border-secondary)", borderRadius: 4 }}>
