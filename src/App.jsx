@@ -17532,7 +17532,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
                     : it.waitDays >= 14 ? "#fef2f2"
                     : it.waitDays >= 7 ? "#fef3c7" : "transparent";
                   return (
-                    <React.Fragment key={it.key}>
+                    <Fragment key={it.key}>
                       <tr onClick={() => toggleExpand(it.key)} style={{ borderTop: "1px solid #f5f5f4", cursor: "pointer", background: waitBg }}>
                         <td style={{ ...wotd, fontFamily: "ui-monospace, monospace", fontWeight: 600 }}>
                           <span style={{ marginRight: 4, color: "#78716c" }}>{isExp ? "▼" : "▶"}</span>
@@ -17624,7 +17624,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
                           </td>
                         </tr>
                       )}
-                    </React.Fragment>
+                    </Fragment>
                   );
                 })}
               </tbody>
