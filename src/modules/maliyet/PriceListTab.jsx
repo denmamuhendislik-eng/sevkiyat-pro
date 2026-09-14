@@ -17,7 +17,7 @@ import {
   subscribePriceListDrafts, savePriceListDraft, deletePriceListDraft,
   subscribeAppState,
 } from "./firestore";
-import { subscribeInvoiceSettings } from "../ihracat/firestore";
+import { subscribeInvoiceSettings, subscribeExportSalesOrders, subscribeExportSettings } from "../ihracat/firestore";
 import OrderConfirmationFormModal from "./OrderConfirmationFormModal";
 import { generateOcfPdf } from "./orderConfirmationPdf";
 import { calculateAllProductCosts } from "./productCostCalc";
@@ -96,6 +96,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const [showOnlySelected, setShowOnlySelected] = useState(false);
   // OCF (Order Confirmation Form) — Müşteri PDF için modal
   const [invoiceSettings, setInvoiceSettings] = useState({});
+  const [exportOrders, setExportOrders] = useState({}); // { [3tupleId]: order }
+  const [exportSettings, setExportSettings] = useState({}); // customerDefaults
   const [ocfModalOpen, setOcfModalOpen] = useState(false);
   const [pdfSettings, setPdfSettings] = useState(null); // taslakta saklanan OCF settings
 
@@ -158,7 +160,10 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     const u12 = subscribeAppState(d => { setAppState(d || {}); });
     // OCF için firma logo/kaşe/banka bilgileri — ihracat/invoiceSettings ile ortak
     const u13 = subscribeInvoiceSettings(d => { setInvoiceSettings(d || {}); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); u13(); };
+    // OCF müşteri seçimi — ihracat siparişleri + customerDefaults
+    const u14 = subscribeExportSalesOrders(d => { setExportOrders(d?.orders || {}); });
+    const u15 = subscribeExportSettings(d => { setExportSettings(d || {}); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); u13(); u14(); u15(); };
   }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
@@ -1429,6 +1434,34 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           };
         });
         const ocfGrand = ocfItems.reduce((s, i) => s + i.lineTotal, 0);
+        // İhracat müşteri listesi — customerDefaults + orders'daki unique kayıtlar
+        // Priorite: customerDefaults (konsolide), yoksa order kaydından
+        const cdefs = exportSettings?.customerDefaults || {};
+        const orderMap = new Map();
+        for (const o of Object.values(exportOrders || {})) {
+          const code = o?.customerCode;
+          if (!code) continue;
+          if (!orderMap.has(code)) {
+            orderMap.set(code, {
+              customerName: o.customerName || "",
+              customerAddress: o.customerAddress || "",
+              customerCity: o.customerCity || "",
+              customerCountry: o.customerCountry || "",
+            });
+          }
+        }
+        const codes = new Set([...Object.keys(cdefs), ...orderMap.keys()]);
+        const customerOptions = Array.from(codes).map(code => {
+          const d = cdefs[code] || {};
+          const o = orderMap.get(code) || {};
+          return {
+            code,
+            name: (d.customerName || o.customerName || code).trim(),
+            address: (d.address || o.customerAddress || "").trim(),
+            city: (d.city || o.customerCity || "").trim(),
+            country: (d.country || o.customerCountry || "").trim(),
+          };
+        }).filter(c => c.name).sort((a, b) => a.name.localeCompare(b.name, "tr-TR"));
         return (
           <OrderConfirmationFormModal
             initial={pdfSettings}
@@ -1436,6 +1469,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
             itemCount={ocfItems.length}
             grandTotal={ocfGrand}
             fmtMoney={(n) => fMoneyDisplay(n)}
+            customerOptions={customerOptions}
             onCancel={() => setOcfModalOpen(false)}
             onSubmit={async (settings) => {
               setPdfSettings(settings);

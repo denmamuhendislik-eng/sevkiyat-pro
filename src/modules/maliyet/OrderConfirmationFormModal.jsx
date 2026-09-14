@@ -10,6 +10,7 @@ export default function OrderConfirmationFormModal({
   itemCount,     // adet > 0 kalem sayısı
   grandTotal,    // toplam bedel (aktif currency'de)
   fmtMoney,      // format helper — sayı görüntüsü için
+  customerOptions = [], // ihracat müşteri listesi (opsiyonel)
   onCancel,
   onSubmit,      // (settings) => void
 }) {
@@ -32,6 +33,7 @@ export default function OrderConfirmationFormModal({
   const [customerAddress, setCustomerAddress] = useState(initial?.customerAddress || "");
   const [customerCity, setCustomerCity] = useState(initial?.customerCity || "");
   const [customerCountry, setCustomerCountry] = useState(initial?.customerCountry || "");
+  const [selectedCustomerCode, setSelectedCustomerCode] = useState("");
   const [payment, setPayment] = useState(initial?.payment || "");
   const [delivery, setDelivery] = useState(initial?.delivery || "");
   const [deliveryTime, setDeliveryTime] = useState(initial?.deliveryTime || "");
@@ -40,6 +42,17 @@ export default function OrderConfirmationFormModal({
   const [notes, setNotes] = useState(initial?.notes || "");
 
   const canSubmit = customerName.trim() && docNo.trim() && docDate;
+
+  const handleCustomerPick = (code) => {
+    setSelectedCustomerCode(code);
+    if (!code) return; // "manuel giriş" seçildi → alanları temizleme, kullanıcı düzenlesin
+    const c = customerOptions.find(x => x.code === code);
+    if (!c) return;
+    setCustomerName(c.name || "");
+    setCustomerAddress(c.address || "");
+    setCustomerCity(c.city || "");
+    setCustomerCountry(c.country || "");
+  };
 
   const handleSubmit = () => {
     if (!canSubmit) return;
@@ -90,6 +103,16 @@ export default function OrderConfirmationFormModal({
         </Section>
 
         <Section title="Müşteri Bilgisi">
+          {customerOptions.length > 0 && (
+            <Field label={`🔍 Kayıtlı müşteriden seç (${customerOptions.length} müşteri) — veya boş bırakıp elle yazın`}>
+              <select value={selectedCustomerCode} onChange={e => handleCustomerPick(e.target.value)} style={inp}>
+                <option value="">— Manuel giriş —</option>
+                {customerOptions.map(c => (
+                  <option key={c.code} value={c.code}>{c.name} {c.city ? `· ${c.city}` : ""} {c.country ? `· ${c.country}` : ""}</option>
+                ))}
+              </select>
+            </Field>
+          )}
           <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 8 }}>
             <Field label="Firma Adı *">
               <input value={customerName} onChange={e => setCustomerName(e.target.value)}
