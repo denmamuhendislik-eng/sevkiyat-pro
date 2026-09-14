@@ -823,6 +823,40 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     } catch (e) { alert("Silinemedi: " + e.message); }
   };
 
+  // Taslağı kopyala — mevcut ekran state'i (kaydedilmemiş değişiklikler dahil)
+  // yeni bir taslak olarak kaydedilir. Böylece "A" taslağı bozulmaz, üstünde
+  // yeni bir "A - Kopya" ile çalışılır.
+  const handleDuplicateDraft = async () => {
+    if (!canEdit) return;
+    const baseName = selectedDraft?.name || "Yeni";
+    const suggested = `${baseName} - Kopya`;
+    const newName = (prompt("Yeni taslak adı:", suggested) || "").trim();
+    if (!newName) return;
+    const newId = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    // v26: mevcut ekran state'inden payload çıkar (handleSaveDraft ile aynı mantık)
+    const selectedStockCodesList = Array.from(new Set(
+      products.filter(p => selectedIds.has(p.id) || selectedIds.has(p.stockCode)).map(p => p.stockCode).filter(Boolean)
+    ));
+    const payload = {
+      id: newId,
+      name: newName,
+      baseMonth: selectedMonth,
+      currency,
+      globalMarginPct: marginPct,
+      rounding,
+      overrides: { ...overrides },
+      estimatedQuantities: { ...estimatedQuantities },
+      selectedStockCodes: selectedStockCodesList,
+      pdfSettings: pdfSettings ? { ...pdfSettings } : null,
+    };
+    try {
+      await savePriceListDraft(payload, { canEdit, userEmail });
+      setSelectedDraftId(newId);
+      setDraftDirty(false);
+      alert(`Taslak kopyalandı: ${newName} ✓`);
+    } catch (e) { alert("Kopyalanamadı: " + e.message); }
+  };
+
   const currencyMismatch = selectedDraft && selectedDraft.currency && selectedDraft.currency !== currency;
   const monthMismatch = selectedDraft && selectedDraft.baseMonth && selectedDraft.baseMonth !== selectedMonth;
   const overrideCount = Object.keys(overrides).length;
@@ -1159,6 +1193,11 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
             <button onClick={handleRenameDraft} disabled={!canEdit}
               style={{ padding: "4px 10px", fontSize: 11, background: "#fff", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
               ✏ Ad Değiştir
+            </button>
+            <button onClick={handleDuplicateDraft} disabled={!canEdit}
+              title="Bu taslağı yeni bir taslak olarak kopyala (mevcut değişiklikler dahil)"
+              style={{ padding: "4px 10px", fontSize: 11, background: "#fff", color: "#5b21b6", border: "1px solid #ddd6fe", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
+              📋 Kopyala
             </button>
             <button onClick={handleDeleteDraft} disabled={!canEdit}
               style={{ padding: "4px 10px", fontSize: 11, background: "#fef2f2", color: "#991b1b", border: "1px solid #fecaca", borderRadius: 4, cursor: canEdit ? "pointer" : "not-allowed" }}>
