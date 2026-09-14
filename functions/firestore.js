@@ -84,6 +84,60 @@ function transformAkibetForFirestore(parserResult) {
 }
 
 /**
+ * WIP operasyon giriş tarihleri — sistemin kendi tuttuğu snapshot.
+ * VIO'nun opBasTarihi güvenilmez (emir açılışıyla aynı geliyor). Bu yüzden
+ * sistem her akibet yüklemesinde şu an aktif olan (stokKodu, emirNo, opName)
+ * key'lerini tespit eder:
+ *   - Mevcut key + yeni yükleme'de var → tarih korunur (o gün geldi, hâlâ orada)
+ *   - Yeni key (yeni op'a geçti) → bugünün tarihi yazılır
+ *   - Kayıp key (op tamamlandı) → siliniyor
+ * Bekleme süresi = bugün − snapshot tarihi.
+ * Doc: appData/wipOpEntryDates = { entries: { key: "YYYY-MM-DD" }, updatedAt }
+ */
+const WIP_ENTRIES_DOC = "wipOpEntryDates";
+
+function computeActiveWipKeys(akibetResult) {
+  const keys = new Set();
+  if (!akibetResult?.parts) return keys;
+  for (const p of akibetResult.parts) {
+    for (const o of (p.orders || [])) {
+      const fo = o.firstOpenOp;
+      if (!fo || !fo.name) continue;
+      const key = `${p.code}__${o.emirNo}__${fo.name}`;
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
+async function reconcileWipEntries(db, akibetResult, todayIso) {
+  const activeKeys = computeActiveWipKeys(akibetResult);
+  const ref = db.collection(APP_COL).doc(WIP_ENTRIES_DOC);
+  const snap = await ref.get();
+  const existing = snap.exists ? (snap.data() || {}) : {};
+  const existingEntries = existing.entries || {};
+  const now = todayIso || new Date().toISOString().slice(0, 10);
+  const next = {};
+  let newKeys = 0, keptKeys = 0;
+  for (const key of activeKeys) {
+    if (existingEntries[key]) {
+      next[key] = existingEntries[key];
+      keptKeys++;
+    } else {
+      next[key] = now;
+      newKeys++;
+    }
+  }
+  const droppedKeys = Object.keys(existingEntries).length - keptKeys;
+  await ref.set({
+    entries: next,
+    updatedAt: new Date().toISOString(),
+    lastReconcileAt: new Date().toISOString(),
+  });
+  return { newKeys, keptKeys, droppedKeys, totalActive: activeKeys.size };
+}
+
+/**
  * Purchase parser zaten doğru formatta, doğrudan yazılır
  */
 function transformPurchaseForFirestore(parserResult) {
@@ -101,6 +155,16 @@ async function saveReport(db, type, parserResult, fileName, opts = {}) {
   } else if (type === "akibet") {
     docId = AKIBET_DOC;
     payload = transformAkibetForFirestore(parserResult);
+    // Ana akibet doc'unu yazdıktan sonra WIP op giriş tarihlerini reconcile et
+    // (aşağıda db.collection().doc().set() çağrısı sonrası çalışacak — burada meta tut)
+    await db.collection(APP_COL).doc(docId).set(payload);
+    let wipMeta = null;
+    try {
+      wipMeta = await reconcileWipEntries(db, parserResult);
+    } catch (e) {
+      console.error("[akibet] wipOpEntryDates reconcile hatası:", e.message);
+    }
+    return { docId, payload, wipMeta };
   } else if (type === "purchase") {
     docId = PURCH_DOC;
     payload = transformPurchaseForFirestore(parserResult);
@@ -1297,6 +1361,8 @@ module.exports = {
   APP_COL,
   STOCK_DOC,
   AKIBET_DOC,
+  WIP_ENTRIES_DOC,
+  reconcileWipEntries,
   PURCH_DOC,
   SALES_ORDERS_DOC,
   SHIPMENTS_DOC,

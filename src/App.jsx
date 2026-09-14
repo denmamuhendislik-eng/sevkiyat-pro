@@ -6189,8 +6189,10 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   // Adım 4 — Kapasite & Çizelge State
   const SCHED_DOC = "mrpSchedule";
   const AKIBET_DOC = "mrpAkibet";
+  const WIP_ENTRIES_DOC = "wipOpEntryDates";
   const [schedule, setSchedule] = useState(null);
   const [akibet, setAkibet] = useState(null);
+  const [wipOpEntryDates, setWipOpEntryDates] = useState({}); // { key: "YYYY-MM-DD" }
   const [akibetImporting, setAkibetImporting] = useState(false);
   const [akibetImportResult, setAkibetImportResult] = useState(null);
   const [calculating, setCalculating] = useState(false);
@@ -6275,6 +6277,11 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
     const akibetRef = doc(db, APP_COL, AKIBET_DOC);
     unsubs.push(onSnapshot(akibetRef, snap => {
       if (snap.exists()) setAkibet(snap.data());
+    }, () => {}));
+    // WIP op giriş tarihleri (sistem snapshot — bekleme hesabı için)
+    const wipEntriesRef = doc(db, APP_COL, WIP_ENTRIES_DOC);
+    unsubs.push(onSnapshot(wipEntriesRef, snap => {
+      if (snap.exists()) setWipOpEntryDates((snap.data() || {}).entries || {});
     }, () => {}));
     // VIO Stok Raporu
     const stockRef = doc(db, APP_COL, STOCK_DOC);
@@ -6371,6 +6378,33 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const saveAkibet = async (data) => {
     if (!db || !canEdit) return;
     await setDoc(doc(db, APP_COL, AKIBET_DOC), data);
+    // WIP op giriş tarihleri — sistem snapshot reconcile
+    // (VIO opBasTarihi güvenilmez olduğu için sistem kendi tuttuğu tarih ile bekleme hesabı)
+    try {
+      const activeKeys = new Set();
+      for (const p of (data?.parts || [])) {
+        for (const o of (p.orders || [])) {
+          const fo = o.firstOpenOp;
+          if (!fo?.name) continue;
+          activeKeys.add(`${p.code}__${o.emirNo}__${fo.name}`);
+        }
+      }
+      const wipRef = doc(db, APP_COL, WIP_ENTRIES_DOC);
+      const snap = await getDoc(wipRef);
+      const existingEntries = snap.exists() ? ((snap.data() || {}).entries || {}) : {};
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const next = {};
+      for (const key of activeKeys) {
+        next[key] = existingEntries[key] || todayIso;
+      }
+      await setDoc(wipRef, {
+        entries: next,
+        updatedAt: new Date().toISOString(),
+        lastReconcileAt: new Date().toISOString(),
+      });
+    } catch (e) {
+      console.warn("wipOpEntryDates reconcile hatası:", e.message);
+    }
   };
   const saveStock = async (data) => {
     if (!db || !canEdit) return;
@@ -17316,6 +17350,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
           products={products}
           workCenters={workCenters}
           bomModels={bomModels}
+          wipOpEntryDates={wipOpEntryDates}
         />;
       })()}
     </div>
@@ -17330,7 +17365,7 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
 // İki görünüm modu:
 //   - Liste: emirler satır satır, sıralama/filtre
 //   - İstasyon: iş merkezine göre gruplu (her tezgahda bekleyen işler)
-function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
+function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOpEntryDates = {} }) {
   const [viewMode, setViewMode] = useState("list"); // "list" | "station"
   const [search, setSearch] = useState("");
   const [wcFilter, setWcFilter] = useState("all");
@@ -17405,9 +17440,17 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
         }
         const estInternalDays = Math.max(0, Math.ceil(estMin / shiftMin));
         const estTotalDays = estInternalDays + estFasonDays;
-        // Kaç gündür bu aşamada
+        // Kaç gündür bu aşamada — öncelik zinciri:
+        //   1) Sistem snapshot (wipOpEntryDates) — akibet yüklendikçe biriktirilen
+        //      "bu op'ta ilk gördüğüm gün" tarihi. VIO opBasTarihi güvenilmez (emir
+        //      açılışıyla aynı geliyor), bu yüzden sistem kendi tarihini tutar.
+        //   2) VIO opBasTarihi — fallback (nadiren doğru)
         const currentOp = order.firstOpenOp;
-        const waitDays = currentOp?.opBasTarihi ? daysBetweenIso(currentOp.opBasTarihi, today) : null;
+        const wipKey = currentOp?.name ? `${part.code}__${order.emirNo}__${currentOp.name}` : null;
+        const snapshotDate = wipKey ? wipOpEntryDates[wipKey] : null;
+        const waitSource = snapshotDate ? "system" : (currentOp?.opBasTarihi ? "vio" : null);
+        const waitRefDate = snapshotDate || currentOp?.opBasTarihi;
+        const waitDays = waitRefDate ? daysBetweenIso(waitRefDate, today) : null;
         // Progress
         const progressPct = totalOps > 0 ? Math.round((completedOps.length / totalOps) * 100) : 0;
         // Fason gecikme kontrolü — currentOp fason ise ve waitDays > leadTimeDays × 1.2 ise gecikti
@@ -17422,7 +17465,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
           key: `${part.code}__${order.emirNo}`,
           code: part.code, name: prod?.nameTR || part.name, emirNo: order.emirNo,
           openDate: order.openDate, qty: order.qty, rem: order.rem,
-          currentOp, wcCode: currentOp?.wcCode || "", waitDays,
+          currentOp, wcCode: currentOp?.wcCode || "", waitDays, waitSource,
           completedOps, activeOps, totalOps, progressPct,
           estMin, estFasonDays, estTotalDays,
           isFasonBlocked: currentOp?.isFason,
@@ -17432,7 +17475,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
       }
     }
     return list;
-  }, [akibet, productByCode, bomLookup, workCenters, shiftMin, today]);
+  }, [akibet, productByCode, bomLookup, workCenters, shiftMin, today, wipOpEntryDates]);
 
   // İş merkezi seçenekleri
   const wcOptions = useMemo(() => {
@@ -17626,6 +17669,15 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
                                   {it.waitDays} gün
                                 </span>
                               )}
+                              {it.waitDays === 0 && it.waitSource === "system" && (
+                                <div style={{ marginTop: 2 }}>
+                                  <span title="Sistem bu op'u ilk kez bugün gördü — bekleme günleri buradan biriktirilecek"
+                                    style={{ display: "inline-block", padding: "1px 5px", fontSize: 8, fontWeight: 600,
+                                      background: "#eff6ff", color: "#1e40af", border: "1px solid #bfdbfe", borderRadius: 2 }}>
+                                    🆕 yeni takip
+                                  </span>
+                                </div>
+                              )}
                               {it.fasonOverdue && (
                                 <div style={{ marginTop: 2 }}>
                                   <span title={`Beklenen: ${it.currentFasonLeadDays} gün · %20 buffer aşıldı`}
@@ -17740,7 +17792,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels }) {
 
       {/* Alt not */}
       <div style={{ marginTop: 12, padding: 10, fontSize: 10, color: "#78716c", background: "#f5f5f4", borderRadius: 4 }}>
-        ℹ️ <b>Kaynak:</b> VIO Akibet raporu (Veri Yönetimi'nden yüklenir). <b>Bekleme süresi</b> = bugün − operasyon başlangıç tarihi. <b>Tahmini süre</b> = kalan iç imalat op'ları için (cycle × kalan) + setup, BOM'da tanımlıysa; yoksa varsayılan (cycle 5 dk, setup 30 dk). Fason op'lar için iş merkezi tanımındaki leadTimeDays. Bu hesap tezgah kuyruğu/paralel iş yükü dikkate almaz — tek-emir varsayımıyla kağıt üzerinde ne kadar sürer gösterir.
+        ℹ️ <b>Kaynak:</b> VIO Akibet raporu (Veri Yönetimi'nden yüklenir). <b>Bekleme süresi</b> = bugün − sistemin bu op'u ilk gördüğü gün. Her akibet yüklemesinde (cron veya manuel) sistem her aktif op için snapshot tutar — op'a giriş = snapshot günü, op değişince snapshot yenilenir. Yeni op'lar "🆕 yeni takip" rozetiyle 0 gün başlar, günler geçtikçe biriktirir. <b>Tahmini süre</b> = kalan iç imalat op'ları için (cycle × kalan) + setup (BOM'dan; yoksa cycle 5 dk / setup 30 dk). Fason op'lar için iş merkezi tanımındaki leadTimeDays. Bu hesap tezgah kuyruğu/paralel iş yükü dikkate almaz — tek-emir varsayımıyla kağıt üzerinde ne kadar sürer gösterir.
       </div>
     </div>
   );
