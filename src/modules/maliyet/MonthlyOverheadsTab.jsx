@@ -244,6 +244,54 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     };
   }, [laborData]);
 
+  // Trend etkisi — hangi kategori(ler) son 3 ay ort. vs önceki 3 ay ort. farkını sürüklüyor
+  // Aynı normalize (trim + upper tr-TR) — Top 5 ile tutarlı
+  const trendImpact = useMemo(() => {
+    if (!overallSummary.trend || overallSummary.trend.direction === "flat") return null;
+    const mo = laborData?.monthlyOverheads || {};
+    const entries = Object.entries(mo).sort((a, b) => a[0].localeCompare(b[0]));
+    if (entries.length < 4) return null;
+    const last3 = entries.slice(-3);
+    const prev3 = entries.slice(-6, -3);
+    if (prev3.length === 0) return null;
+    const sumByCat = (list) => {
+      const map = new Map(); // key = normalized, val = { display, sum }
+      for (const [, data] of list) {
+        for (const it of (data?.items || [])) {
+          const raw = (it?.category || "").trim();
+          if (!raw) continue;
+          const key = raw.toLocaleUpperCase("tr-TR");
+          const prev = map.get(key) || { display: raw, sum: 0 };
+          prev.sum += Number(it.amount) || 0;
+          map.set(key, prev);
+        }
+      }
+      return map;
+    };
+    const lastMap = sumByCat(last3);
+    const prevMap = sumByCat(prev3);
+    const allKeys = new Set([...lastMap.keys(), ...prevMap.keys()]);
+    const impact = [];
+    for (const key of allKeys) {
+      const l = lastMap.get(key) || { display: prevMap.get(key)?.display || key, sum: 0 };
+      const p = prevMap.get(key) || { display: l.display, sum: 0 };
+      const lastAvg = l.sum / last3.length;
+      const prevAvg = p.sum / prev3.length;
+      const delta = lastAvg - prevAvg;
+      if (Math.abs(delta) < 1) continue; // gürültü filtresi
+      const pct = prevAvg > 0 ? (delta / prevAvg) * 100 : null; // yeni kalem → pct=null
+      impact.push({
+        category: l.display || p.display || key,
+        prevAvg, lastAvg, delta, pct,
+        isNew: prevAvg === 0 && lastAvg > 0,
+        isDropped: lastAvg === 0 && prevAvg > 0,
+      });
+    }
+    const risers = impact.filter(x => x.delta > 0).sort((a, b) => b.delta - a.delta).slice(0, 3);
+    const fallers = impact.filter(x => x.delta < 0).sort((a, b) => a.delta - b.delta).slice(0, 3);
+    return { risers, fallers };
+  }, [laborData, overallSummary.trend]);
+
   // Top 5 gider kalemi — kategori adına göre normalize edilir (trim + upper tr-TR)
   // Sonuç: [{ category, totalTl, avgPerMonth, pct }]
   const topCategories = useMemo(() => {
@@ -310,6 +358,56 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
           />
         )}
       </div>
+
+      {/* Trend etkisi — hangi kategori(ler) trendi sürüklüyor */}
+      {trendImpact && (trendImpact.risers.length > 0 || trendImpact.fallers.length > 0) && (
+        <div style={{ marginBottom: 14, padding: "10px 14px", border: "1px solid var(--color-border-tertiary)", borderRadius: 8, background: "var(--color-background-primary)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>📈 Trendi Etkileyen Kalemler</span>
+            <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+              son 3 ay ort. vs önceki 3 ay ort. · en büyük fark ilk sırada
+            </span>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            {/* Artış */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "#B91C1C", marginBottom: 4 }}>▲ Artış (trendi yukarı çeken)</div>
+              {trendImpact.risers.length === 0 ? (
+                <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontStyle: "italic", padding: "4px 0" }}>—</div>
+              ) : trendImpact.risers.map((r, i) => (
+                <div key={r.category + i} style={{ display: "grid", gridTemplateColumns: "1fr 100px", gap: 6, padding: "4px 0", alignItems: "center", fontSize: 11, borderTop: i === 0 ? "none" : "0.5px dashed var(--color-border-tertiary)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }} title={r.category}>{r.category}</span>
+                    {r.isNew && <span style={{ fontSize: 9, padding: "1px 5px", background: "#FEE2E2", color: "#991B1B", borderRadius: 3, fontWeight: 600, flexShrink: 0 }}>yeni</span>}
+                    <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", flexShrink: 0 }}>{fmt(r.prevAvg)} → {fmt(r.lastAvg)}</span>
+                  </div>
+                  <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: "#B91C1C" }}>
+                    +{fmt(r.delta)} ₺{r.pct !== null && ` (%${r.pct.toFixed(0)})`}
+                  </span>
+                </div>
+              ))}
+            </div>
+            {/* Düşüş */}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "#166534", marginBottom: 4 }}>▼ Düşüş (trendi aşağı çeken)</div>
+              {trendImpact.fallers.length === 0 ? (
+                <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontStyle: "italic", padding: "4px 0" }}>—</div>
+              ) : trendImpact.fallers.map((r, i) => (
+                <div key={r.category + i} style={{ display: "grid", gridTemplateColumns: "1fr 100px", gap: 6, padding: "4px 0", alignItems: "center", fontSize: 11, borderTop: i === 0 ? "none" : "0.5px dashed var(--color-border-tertiary)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                    <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }} title={r.category}>{r.category}</span>
+                    {r.isDropped && <span style={{ fontSize: 9, padding: "1px 5px", background: "#DCFCE7", color: "#166534", borderRadius: 3, fontWeight: 600, flexShrink: 0 }}>kalktı</span>}
+                    <span style={{ fontSize: 9, color: "var(--color-text-tertiary)", flexShrink: 0 }}>{fmt(r.prevAvg)} → {fmt(r.lastAvg)}</span>
+                  </div>
+                  <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: "#166534" }}>
+                    {fmt(r.delta)} ₺{r.pct !== null && ` (%${r.pct.toFixed(0)})`}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Top 5 gider kalemi */}
       {topCategories.length > 0 && (
