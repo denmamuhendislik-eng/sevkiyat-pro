@@ -17,6 +17,9 @@ import {
   subscribePriceListDrafts, savePriceListDraft, deletePriceListDraft,
   subscribeAppState,
 } from "./firestore";
+import { subscribeInvoiceSettings } from "../ihracat/firestore";
+import OrderConfirmationFormModal from "./OrderConfirmationFormModal";
+import { generateOcfPdf } from "./orderConfirmationPdf";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS, getOverheadMonthlyAvg } from "./distributionCalc";
 import { fmtMoneyNum, CURRENCY_SYMBOLS, convertFromTl } from "./currency";
@@ -91,6 +94,10 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   // v26: Muhtemel sipariş simülasyonu — muhtemel adet + seçili ürünler
   const [estimatedQuantities, setEstimatedQuantities] = useState({}); // { stockCode: number }
   const [showOnlySelected, setShowOnlySelected] = useState(false);
+  // OCF (Order Confirmation Form) — Müşteri PDF için modal
+  const [invoiceSettings, setInvoiceSettings] = useState({});
+  const [ocfModalOpen, setOcfModalOpen] = useState(false);
+  const [pdfSettings, setPdfSettings] = useState(null); // taslakta saklanan OCF settings
 
   // Hesap ayı: üst seviyeden paylaşılır
   const [localMonth, setLocalMonth] = useState(todayMonth());
@@ -149,7 +156,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     const u11 = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(l => ({ ...l, so: true })); });
     // v26: appData/state — combRules (cascade) + minKG/maxKG (konteyner cap)
     const u12 = subscribeAppState(d => { setAppState(d || {}); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); };
+    // OCF için firma logo/kaşe/banka bilgileri — ihracat/invoiceSettings ile ortak
+    const u13 = subscribeInvoiceSettings(d => { setInvoiceSettings(d || {}); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); u13(); };
   }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
@@ -602,13 +611,30 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       return next;
     });
     setDraftDirty(true);
-    // Adet girilirse ürün otomatik seçilir (checkbox işaretlenir)
-    const prod = products.find(x => x.stockCode === stockCode);
-    if (prod && v && v !== "0") {
+    // Adet girilirse ürün otomatik seçilir (checkbox işaretlenir) —
+    // ayrıca combRules üzerinde parent'sa child'ların stockCode'larını da seçer
+    // (cascade auto-select — kullanıcı "sadece seçili" ile hepsini birden görsün).
+    if (v && v !== "0") {
+      const prodForCode = (productsList || []).find(p =>
+        ((p.vioCode || "").trim() || (LEGACY_VIO_CODES[p.id] || "").trim()) === stockCode
+      );
+      const rules = Array.isArray(appState?.combRules) ? appState.combRules : [];
+      const rule = prodForCode ? rules.find(r => Number(r.parent) === Number(prodForCode.id)) : null;
       setSelectedIds(prev => {
-        if (prev.has(prod.id)) return prev;
         const next = new Set(prev);
-        next.add(prod.id);
+        // Kendi row.id'sini (products memo'sundan) veya stockCode'unu ekle
+        const rowMatch = products.find(x => x.stockCode === stockCode);
+        if (rowMatch) next.add(rowMatch.id);
+        next.add(stockCode); // stockCode fallback (filter iki tipi de kontrol ediyor)
+        // Cascade children
+        if (rule && Array.isArray(rule.children)) {
+          for (const childPid of rule.children) {
+            const childProd = (productsList || []).find(p => Number(p.id) === Number(childPid));
+            if (!childProd) continue;
+            const childCode = ((childProd.vioCode || "").trim()) || ((LEGACY_VIO_CODES[childProd.id] || "").trim());
+            if (childCode) next.add(childCode);
+          }
+        }
         return next;
       });
     }
@@ -700,6 +726,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       setOverrides({});
       setEstimatedQuantities({});
       setSelectedIds(new Set());
+      setPdfSettings(null);
       setDraftDirty(false);
       return;
     }
@@ -710,6 +737,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     if (typeof d.rounding === "number") setRounding(d.rounding);
     // v26: yeni field'ları restore et (backward-compat: yoksa boş)
     setEstimatedQuantities(d.estimatedQuantities || {});
+    setPdfSettings(d.pdfSettings || null);
     // selectedStockCodes → selectedIds (Set) — productsList üzerinden lookup
     const codes = Array.isArray(d.selectedStockCodes) ? d.selectedStockCodes : [];
     if (codes.length > 0) {
@@ -759,6 +787,7 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       // v26
       estimatedQuantities,
       selectedStockCodes: selectedStockCodesList,
+      pdfSettings: pdfSettings || null,
     };
     try {
       await savePriceListDraft(payload, { canEdit, userEmail });
@@ -805,21 +834,37 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   // Excel Export
   // ============================================================
   const exportExcel = (variant /* "internal" | "customer" */) => {
-    const list = selectedProducts.length > 0 ? selectedProducts : products;
-    if (list.length === 0) { alert("Listede ürün yok"); return; }
     const isInternal = variant === "internal";
+    // Müşteri Excel'i sadece adet > 0 olan satırları alır (simülasyon çıktısı)
+    // Dahili Excel'de seçili varsa seçililer, yoksa tüm görünen
+    let list = selectedProducts.length > 0 ? selectedProducts : products;
+    if (!isInternal) {
+      list = list.filter(p => (Number(p.estQty) || 0) > 0);
+    }
+    if (list.length === 0) {
+      alert(isInternal ? "Listede ürün yok" : "Muhtemel adet girilmiş ürün yok — önce Muhtemel Adet kolonundan giriş yapın");
+      return;
+    }
     // Header
     // Dahili modda showDetailCols açıksa Malzeme/İşçilik/Fason kolonları eklenir
     const detailHeader = showDetailCols ? ["Malzeme", "İşçilik", "Fason"] : [];
     const header = isInternal
       ? (showSubpartsCols
-          ? ["Seviye", "Ana Mamul", "Stok Kodu", "Ad", ...detailHeader, "Maliyet", "Marj %", "Satış Fiyatı", "Kâr"]
-          : ["Stok Kodu", "Ad", ...detailHeader, "Maliyet", "Marj %", "Satış Fiyatı", "Kâr"])
+          ? ["Seviye", "Ana Mamul", "Stok Kodu", "Ad", ...detailHeader,
+             "Maliyet", "Mevcut Fiyat", "Mevcut Marj %", "Yeni Marj %", "Yeni Satış", "Fark", "Kâr",
+             "Muhtemel Adet", "Satır Bedeli"]
+          : ["Stok Kodu", "Ad", ...detailHeader,
+             "Maliyet", "Mevcut Fiyat", "Mevcut Marj %", "Yeni Marj %", "Yeni Satış", "Fark", "Kâr",
+             "Muhtemel Adet", "Satır Bedeli"])
       : (showSubpartsCols
-          ? ["Seviye", "Ana Mamul", "Stok Kodu", "Ad", "Satış Fiyatı"]
-          : ["Stok Kodu", "Ad", "Satış Fiyatı"]);
+          ? ["Seviye", "Ana Mamul", "Stok Kodu", "Ad", "Mevcut Fiyat", "Yeni Satış", "Muhtemel Adet", "Toplam Bedel"]
+          : ["Stok Kodu", "Ad", "Mevcut Fiyat", "Yeni Satış", "Muhtemel Adet", "Toplam Bedel"]);
     const rows = [header];
+    let totalRowsCurrency = 0;
     for (const p of list) {
+      const estQty = Number(p.estQty) || 0;
+      const lineTotal = estQty * (Number(p.salesTl) || 0);
+      totalRowsCurrency += lineTotal;
       if (isInternal) {
         const detailVals = showDetailCols
           ? [Number(convVal(p.material).toFixed(2)), Number(convVal(p.labor).toFixed(2)), Number(convVal(p.fason).toFixed(2))]
@@ -828,9 +873,14 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           p.stockCode, p.stockName,
           ...detailVals,
           Number(convVal(p.cost).toFixed(2)),
+          p.existingTl > 0 ? Number(convVal(p.existingTl).toFixed(2)) : "",
+          p.existingMarginPct != null ? Number(p.existingMarginPct.toFixed(1)) : "",
           Number(p.marginActualPct.toFixed(1)),
           Number(convVal(p.salesTl).toFixed(2)),
+          p.existingTl > 0 ? Number(convVal(p.deltaTl).toFixed(2)) : "",
           Number(convVal(p.profitTl).toFixed(2)),
+          estQty > 0 ? estQty : "",
+          estQty > 0 ? Number(convVal(lineTotal).toFixed(2)) : "",
         ];
         if (showSubpartsCols) {
           rows.push([p.isRoot ? "MAMÜL" : `L${p.level}`, p.parentModel || "-", ...baseRow]);
@@ -838,13 +888,24 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           rows.push(baseRow);
         }
       } else {
-        const baseRow = [p.stockCode, p.stockName, Number(convVal(p.salesTl).toFixed(2))];
+        const baseRow = [
+          p.stockCode, p.stockName,
+          p.existingTl > 0 ? Number(convVal(p.existingTl).toFixed(2)) : "",
+          Number(convVal(p.salesTl).toFixed(2)),
+          estQty,
+          Number(convVal(lineTotal).toFixed(2)),
+        ];
         if (showSubpartsCols) {
           rows.push([p.isRoot ? "MAMÜL" : `L${p.level}`, p.parentModel || "-", ...baseRow]);
         } else {
           rows.push(baseRow);
         }
       }
+    }
+    // Müşteri Excel'inde alt toplam satırı
+    if (!isInternal) {
+      const emptyPre = showSubpartsCols ? ["", "", "", "", "", ""] : ["", "", "", ""];
+      rows.push([...emptyPre.slice(0, showSubpartsCols ? 5 : 3), "TOPLAM", Number(convVal(totalRowsCurrency).toFixed(2))]);
     }
     const meta = [
       [`Fiyat Listesi — ${monthLabel(selectedMonth)} (${currency})`],
@@ -856,16 +917,20 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     ];
     const finalRows = [...meta, ...rows];
     const ws = XLSX.utils.aoa_to_sheet(finalRows);
-    // Kolon genişlikleri
+    // Kolon genişlikleri — güncellendi (yeni kolonlar için)
     if (isInternal) {
       const detailWch = showDetailCols ? [{ wch: 12 }, { wch: 12 }, { wch: 12 }] : [];
+      // Stok, Ad, [detail], Maliyet, MevFiy, MevMarj, YenMarj, YenSat, Fark, Kâr, Adet, Bedel
+      const baseWch = [{ wch: 14 }, { wch: 14 }, { wch: 10 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 12 }, { wch: 12 }, { wch: 14 }];
       ws["!cols"] = showSubpartsCols
-        ? [{ wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 44 }, ...detailWch, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 12 }]
-        : [{ wch: 16 }, { wch: 44 }, ...detailWch, { wch: 14 }, { wch: 8 }, { wch: 14 }, { wch: 12 }];
+        ? [{ wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 44 }, ...detailWch, ...baseWch]
+        : [{ wch: 16 }, { wch: 44 }, ...detailWch, ...baseWch];
     } else {
+      // Stok, Ad, Mevcut, Yeni, Adet, Toplam
+      const baseWch = [{ wch: 14 }, { wch: 14 }, { wch: 12 }, { wch: 14 }];
       ws["!cols"] = showSubpartsCols
-        ? [{ wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 44 }, { wch: 14 }]
-        : [{ wch: 16 }, { wch: 44 }, { wch: 14 }];
+        ? [{ wch: 10 }, { wch: 18 }, { wch: 16 }, { wch: 44 }, ...baseWch]
+        : [{ wch: 16 }, { wch: 44 }, ...baseWch];
     }
     const wb = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(wb, ws, "Fiyat Listesi");
@@ -1165,7 +1230,11 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           <button onClick={() => exportExcel("internal")} style={btnExportBlue} title="Maliyet + marj + kâr görünür (dahili)">📥 Excel (Dahili)</button>
           <button onClick={() => exportExcel("customer")} style={btnExportGreen} title="Sadece kod, ad, satış fiyatı">📥 Excel (Müşteri)</button>
           <button onClick={() => exportPdf("internal")} style={btnExportBlueOutline}>📄 PDF (Dahili)</button>
-          <button onClick={() => exportPdf("customer")} style={btnExportGreenOutline}>📄 PDF (Müşteri)</button>
+          <button onClick={() => {
+            const items = products.filter(p => (Number(p.estQty) || 0) > 0);
+            if (items.length === 0) { alert("Muhtemel adet girilmiş ürün yok — önce Muhtemel Adet kolonundan giriş yapın"); return; }
+            setOcfModalOpen(true);
+          }} style={btnExportGreenOutline} title="Order Confirmation Form — müşteri bilgisi + teklif şartları modal'ı">📄 OCF (Müşteri)</button>
         </div>
       </div>
 
@@ -1343,6 +1412,65 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         {viewMode === "global" && <> · <b>Global Alt Parçalar</b>: mamüller + hiçbir mamul olarak hesaplanmayan alt parçalar (BUY hammaddeler, yarı mamuller). Her stok tek satır.</>}
         {viewMode === "breakdown" && <> · <b>Mamül Kırılımı</b>: her mamul + BOM ağacındaki alt parçalar. Seviye = {maxLevel === 999 ? "tüm seviyeler" : maxLevel === 2 ? "L1-L2 (yarı mamul dahil)" : "L1 (yedek parça)"}. <b>L2+ genelde iç yapıdır</b>, fiyatı L1 içine dahildir; müşteriye yedek parça verirken L1 önerilir. Mamul satırının checkbox'ını tıklarsan alt parçaları da otomatik seçilir.</>}
       </div>
+
+      {/* v26: Order Confirmation Form modal — Müşteri PDF için müşteri bilgisi + teklif şartları */}
+      {ocfModalOpen && (() => {
+        const ocfItems = products.filter(p => (Number(p.estQty) || 0) > 0).map(p => ({
+          stockCode: p.stockCode,
+          name: p.stockName,
+          descriptionEn: p.stockName, // İngilizce ayrı alan yoksa aynı
+          qty: p.estQty,
+          unit: "PCS",
+          unitPrice: convVal(p.salesTl),
+          lineTotal: convVal(p.salesTl * p.estQty),
+        }));
+        const ocfGrand = ocfItems.reduce((s, i) => s + i.lineTotal, 0);
+        return (
+          <OrderConfirmationFormModal
+            initial={pdfSettings}
+            currency={currency}
+            itemCount={ocfItems.length}
+            grandTotal={ocfGrand}
+            fmtMoney={(n) => fMoneyDisplay(n)}
+            onCancel={() => setOcfModalOpen(false)}
+            onSubmit={async (settings) => {
+              setPdfSettings(settings);
+              setDraftDirty(true);
+              const ocf = {
+                header: {
+                  docNo: settings.docNo,
+                  docDate: settings.docDate,
+                  validityDays: settings.validityDays,
+                  currency,
+                },
+                customer: {
+                  name: settings.customerName,
+                  attention: settings.customerAttention,
+                  address: settings.customerAddress,
+                  city: settings.customerCity,
+                  country: settings.customerCountry,
+                },
+                items: ocfItems,
+                totals: { grandTotal: ocfGrand },
+                terms: {
+                  payment: settings.payment,
+                  delivery: settings.delivery,
+                  deliveryTime: settings.deliveryTime,
+                  packing: settings.packing,
+                  shipping: settings.shipping,
+                  notes: settings.notes,
+                },
+              };
+              try {
+                await generateOcfPdf(ocf, invoiceSettings);
+                setOcfModalOpen(false);
+              } catch (e) {
+                alert("PDF üretilemedi: " + e.message);
+              }
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

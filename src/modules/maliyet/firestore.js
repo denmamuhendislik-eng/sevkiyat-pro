@@ -547,9 +547,11 @@ export async function savePriceListDraft(draft, { canEdit, userEmail = "" } = {}
     // Yeni field'lar — v26 "muhtemel sipariş simülasyonu":
     //   estimatedQuantities: { [stockCode]: number } — kullanıcının girdiği muhtemel adet
     //   selectedStockCodes: string[] — taslak kapsamındaki ürünler (checkbox seçimleri)
+    //   pdfSettings: OCF (Order Confirmation Form) için müşteri + şart bilgileri
     // Backward-compat: eski taslaklarda undefined → default olarak boş kabul edilir
     estimatedQuantities: draft.estimatedQuantities || {},
     selectedStockCodes: Array.isArray(draft.selectedStockCodes) ? draft.selectedStockCodes : [],
+    pdfSettings: draft.pdfSettings || null,
     updatedAt: now,
     updatedBy: userEmail || "",
     createdAt: existing.createdAt || now,
