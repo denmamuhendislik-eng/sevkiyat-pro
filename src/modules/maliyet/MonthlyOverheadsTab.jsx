@@ -206,22 +206,72 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
     return { state, ageDays, lastReceivedAt, monthCount, lastSource, lastMonth };
   }, [laborData]);
 
-  // Tüm aylar üzerinden özet (sayım + toplam + aylık ortalama)
+  // Tüm aylar üzerinden özet (sayım + toplam + aylık ortalama + en pahalı ay + trend)
   // SuppliesTab pattern'iyle tutarlı — kullanıcı sekmeye girer girmez fotoğrafı görür
   const overallSummary = useMemo(() => {
     const mo = laborData?.monthlyOverheads || {};
+    const entries = Object.entries(mo).sort((a, b) => a[0].localeCompare(b[0])); // ay artan
     let monthCount = 0, totalTl = 0, totalItems = 0;
-    for (const data of Object.values(mo)) {
+    let mostExpensive = { ym: "", totalTl: 0 };
+    for (const [ym, data] of entries) {
       monthCount++;
-      totalTl += Number(data?.totalTl || 0);
+      const t = Number(data?.totalTl || 0);
+      totalTl += t;
       totalItems += (data?.items || []).length;
+      if (t > mostExpensive.totalTl) mostExpensive = { ym, totalTl: t };
+    }
+    // Trend (son 3 ay ort. vs önceki 3 ay ort.)
+    let trend = null;
+    if (entries.length >= 4) {
+      const last3 = entries.slice(-3);
+      const prev3 = entries.slice(-6, -3);
+      if (prev3.length > 0) {
+        const lastAvg = last3.reduce((s, [, d]) => s + Number(d?.totalTl || 0), 0) / last3.length;
+        const prevAvg = prev3.reduce((s, [, d]) => s + Number(d?.totalTl || 0), 0) / prev3.length;
+        if (prevAvg > 0) {
+          const pct = ((lastAvg - prevAvg) / prevAvg) * 100;
+          trend = { pct, lastAvg, prevAvg, direction: pct > 0.5 ? "up" : pct < -0.5 ? "down" : "flat" };
+        }
+      }
     }
     return {
       monthCount,
       totalTl,
       totalItems,
       avgPerMonth: monthCount > 0 ? totalTl / monthCount : 0,
+      mostExpensive: mostExpensive.ym ? mostExpensive : null,
+      trend,
     };
+  }, [laborData]);
+
+  // Top 5 gider kalemi — kategori adına göre normalize edilir (trim + upper tr-TR)
+  // Sonuç: [{ category, totalTl, avgPerMonth, pct }]
+  const topCategories = useMemo(() => {
+    const mo = laborData?.monthlyOverheads || {};
+    const monthCount = Object.keys(mo).length;
+    if (monthCount === 0) return [];
+    const grandTotal = Object.values(mo).reduce((s, d) => s + Number(d?.totalTl || 0), 0);
+    const byCat = new Map(); // key = normalized, val = { display, totalTl }
+    for (const data of Object.values(mo)) {
+      for (const it of (data?.items || [])) {
+        const raw = (it?.category || "").trim();
+        if (!raw) continue;
+        const key = raw.toLocaleUpperCase("tr-TR");
+        const prev = byCat.get(key) || { display: raw, totalTl: 0 };
+        prev.totalTl += Number(it.amount) || 0;
+        byCat.set(key, prev);
+      }
+    }
+    const arr = Array.from(byCat.values())
+      .map(x => ({
+        category: x.display,
+        totalTl: x.totalTl,
+        avgPerMonth: monthCount > 0 ? x.totalTl / monthCount : 0,
+        pct: grandTotal > 0 ? (x.totalTl / grandTotal) * 100 : 0,
+      }))
+      .sort((a, b) => b.totalTl - a.totalTl)
+      .slice(0, 5);
+    return arr;
   }, [laborData]);
 
   if (!loaded) {
@@ -239,9 +289,53 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
       {/* Özet KPI'lar — tüm aylar üzerinden (SuppliesTab pattern'iyle tutarlı) */}
       <div style={{ display: "flex", gap: 12, marginBottom: 12, flexWrap: "wrap" }}>
         <KPI label="Yüklü ay" value={overallSummary.monthCount} sub="Tam aylar (kısmi atlanır)" />
-        <KPI label="Toplam gider" value={overallSummary.totalTl.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺"} sub={`${overallSummary.totalItems} kalem`} />
-        <KPI label="Aylık ortalama" value={overallSummary.avgPerMonth.toLocaleString("tr-TR", { minimumFractionDigits: 2, maximumFractionDigits: 2 }) + " ₺"} sub={overallSummary.monthCount > 0 ? `${overallSummary.monthCount} ay üzerinden` : "veri yok"} />
+        <KPI label="Toplam gider" value={fmt(overallSummary.totalTl) + " ₺"} sub={`${overallSummary.totalItems} kalem`} />
+        <KPI label="Aylık ortalama" value={fmt(overallSummary.avgPerMonth) + " ₺"} sub={overallSummary.monthCount > 0 ? `${overallSummary.monthCount} ay üzerinden` : "veri yok"} />
+        {overallSummary.mostExpensive && (
+          <KPI
+            label="En pahalı ay"
+            value={fmt(overallSummary.mostExpensive.totalTl) + " ₺"}
+            sub={monthLabel(overallSummary.mostExpensive.ym)}
+          />
+        )}
+        {overallSummary.trend && (
+          <KPI
+            label="Trend (son 3 ay ort.)"
+            value={
+              <span style={{ color: overallSummary.trend.direction === "up" ? "#B91C1C" : overallSummary.trend.direction === "down" ? "#166534" : "var(--color-text-primary)" }}>
+                {overallSummary.trend.direction === "up" ? "▲" : overallSummary.trend.direction === "down" ? "▼" : "▬"} %{Math.abs(overallSummary.trend.pct).toFixed(1)}
+              </span>
+            }
+            sub={`önceki 3 ay ort. ${fmt(overallSummary.trend.prevAvg)} ₺`}
+          />
+        )}
       </div>
+
+      {/* Top 5 gider kalemi */}
+      {topCategories.length > 0 && (
+        <div style={{ marginBottom: 14, padding: "10px 14px", border: "1px solid var(--color-border-tertiary)", borderRadius: 8, background: "var(--color-background-primary)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 600 }}>🏆 Top 5 Gider Kalemi</span>
+            <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
+              {overallSummary.monthCount} ay boyunca · toplam bazında · kategori adı ile birleştirildi
+            </span>
+          </div>
+          {topCategories.map((c, i) => (
+            <div key={c.category + i} style={{ display: "grid", gridTemplateColumns: "24px 1fr 120px 130px 60px", gap: 8, padding: "5px 0", alignItems: "center", fontSize: 11, borderTop: i === 0 ? "none" : "0.5px dashed var(--color-border-tertiary)" }}>
+              <span style={{ fontWeight: 700, color: i === 0 ? "#B45309" : "var(--color-text-secondary)" }}>{i + 1}.</span>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
+                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontWeight: 500 }} title={c.category}>{c.category}</span>
+                <div style={{ flex: 1, minWidth: 40, height: 6, background: "var(--color-background-secondary)", borderRadius: 3, overflow: "hidden" }}>
+                  <div style={{ width: `${Math.min(100, c.pct)}%`, height: "100%", background: i === 0 ? "#F59E0B" : i === 1 ? "#EAB308" : "#A3A3A3" }} />
+                </div>
+              </div>
+              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600 }}>{fmt(c.totalTl)} ₺</span>
+              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-tertiary)" }}>ort. {fmt(c.avgPerMonth)} ₺/ay</span>
+              <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", fontWeight: 600, color: i < 2 ? "#B45309" : "var(--color-text-secondary)" }}>%{c.pct.toFixed(1)}</span>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Accordion ay listesi — SuppliesTab pattern (kapalı başlar, ok ile aç) */}
       {loadedMonthsList.length > 0 && (
@@ -288,24 +382,33 @@ export default function MonthlyOverheadsTab({ canEdit, isAdmin }) {
                     </button>
                   )}
                 </div>
-                {isExpanded && (
-                  <div style={{ background: "var(--color-background-primary)", padding: "8px 16px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-                    <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 140px", padding: "4px 0", fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", borderBottom: "1px solid var(--color-border-tertiary)", gap: 6 }}>
-                      <span>Kod</span>
-                      <span>Kategori</span>
-                      <span style={{ textAlign: "right" }}>Tutar (₺)</span>
-                    </div>
-                    {(m?.items || []).length === 0 ? (
-                      <div style={{ padding: "8px 0", fontSize: 10, color: "var(--color-text-tertiary)", textAlign: "center" }}>Bu ayda kategori yok</div>
-                    ) : (m?.items || []).map((it, i) => (
-                      <div key={i} style={{ display: "grid", gridTemplateColumns: "120px 1fr 140px", padding: "3px 0", fontSize: 10, gap: 6, borderTop: "0.5px solid var(--color-border-tertiary)" }}>
-                        <span style={{ fontFamily: "var(--font-mono)" }}>{it.id || "—"}</span>
-                        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.category}>{it.category || "—"}</span>
-                        <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(it.amount)}</span>
+                {isExpanded && (() => {
+                  const items = [...(m?.items || [])].sort((a, b) => (Number(b.amount) || 0) - (Number(a.amount) || 0));
+                  const monthTotal = items.reduce((s, it) => s + (Number(it.amount) || 0), 0);
+                  return (
+                    <div style={{ background: "var(--color-background-primary)", padding: "8px 16px", borderTop: "0.5px solid var(--color-border-tertiary)" }}>
+                      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr 140px 60px", padding: "4px 0", fontSize: 9, fontWeight: 500, color: "var(--color-text-secondary)", borderBottom: "1px solid var(--color-border-tertiary)", gap: 6 }}>
+                        <span>Kod</span>
+                        <span>Kategori (çoktan aza)</span>
+                        <span style={{ textAlign: "right" }}>Tutar (₺)</span>
+                        <span style={{ textAlign: "right" }}>Pay</span>
                       </div>
-                    ))}
-                  </div>
-                )}
+                      {items.length === 0 ? (
+                        <div style={{ padding: "8px 0", fontSize: 10, color: "var(--color-text-tertiary)", textAlign: "center" }}>Bu ayda kategori yok</div>
+                      ) : items.map((it, i) => {
+                        const pct = monthTotal > 0 ? ((Number(it.amount) || 0) / monthTotal) * 100 : 0;
+                        return (
+                          <div key={i} style={{ display: "grid", gridTemplateColumns: "120px 1fr 140px 60px", padding: "3px 0", fontSize: 10, gap: 6, borderTop: "0.5px solid var(--color-border-tertiary)", alignItems: "center" }}>
+                            <span style={{ fontFamily: "var(--font-mono)" }}>{it.id || "—"}</span>
+                            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={it.category}>{it.category || "—"}</span>
+                            <span style={{ textAlign: "right", fontFamily: "var(--font-mono)" }}>{fmt(it.amount)}</span>
+                            <span style={{ textAlign: "right", fontFamily: "var(--font-mono)", color: pct >= 15 ? "#B45309" : "var(--color-text-tertiary)", fontWeight: pct >= 15 ? 600 : 400 }}>%{pct.toFixed(1)}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
               </div>
             );
           })}
