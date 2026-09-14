@@ -220,14 +220,43 @@ export async function generateOcfPdf(ocf, settings) {
     if (imgHeightMm <= pdfHeight + SINGLE_PAGE_TOLERANCE_MM) {
       pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, pdfWidth, Math.min(imgHeightMm, pdfHeight));
     } else {
-      // Multi-page slicing
+      // Multi-page slicing — satır sınırında akıllı kesme (beyaz şerit ara)
       const pxPerMm = canvasWidth / pdfWidth;
-      const firstPageContentPx = pdfHeight * pxPerMm;
+      const pageContentPx = pdfHeight * pxPerMm;
+      // Beyaz şerit arama penceresi: ideal kesme noktasından geriye doğru maks 30mm
+      const searchWindowPx = Math.round(30 * pxPerMm);
+      const ctxFull = canvas.getContext("2d");
+      const isWhiteRow = (y) => {
+        // Bir yatay pikseli tara: tüm px >=240 (beyaz sayılır) ise true
+        // Performans için her 4. pikselde bir örnekleme yeterli
+        const data = ctxFull.getImageData(0, y, canvasWidth, 1).data;
+        for (let x = 0; x < canvasWidth; x += 4) {
+          const r = data[x * 4], g = data[x * 4 + 1], b = data[x * 4 + 2];
+          if (r < 240 || g < 240 || b < 240) return false;
+        }
+        return true;
+      };
+      const findBreak = (targetY) => {
+        // targetY'den geriye doğru arayıp beyaz şerit (üst üste 2+ beyaz satır) bul
+        const minY = Math.max(targetY - searchWindowPx, 0);
+        for (let y = targetY; y >= minY; y--) {
+          if (isWhiteRow(y) && isWhiteRow(y - 1)) return y;
+        }
+        return targetY; // fallback: hard-split
+      };
       let offset = 0;
       let pageIdx = 0;
       while (offset < canvasHeight) {
         if (pageIdx > 0) pdf.addPage();
-        const sliceHeight = Math.min(firstPageContentPx, canvasHeight - offset);
+        const remaining = canvasHeight - offset;
+        let sliceHeight;
+        if (remaining <= pageContentPx) {
+          sliceHeight = remaining;
+        } else {
+          const targetEnd = offset + pageContentPx;
+          const breakY = findBreak(targetEnd);
+          sliceHeight = Math.max(breakY - offset, Math.round(pageContentPx * 0.5));
+        }
         const sliceCanvas = document.createElement("canvas");
         sliceCanvas.width = canvasWidth;
         sliceCanvas.height = sliceHeight;
