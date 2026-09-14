@@ -2,14 +2,9 @@
 // Fiyat Listesi taslak simülasyonundan → müşteriye gönderilecek teklif dokümanı.
 // HTML template → html2canvas → jsPDF (ihracat/invoicePdf.js ile aynı pattern).
 //
-// Girdiler:
-//   ocf.header: { docNo, docDate, validityDays, currency }
-//   ocf.customer: { name, address, attention, city, country }
-//   ocf.items: [{ stockCode, name, descriptionEn, qty, unit, unitPrice, lineTotal }]
-//   ocf.totals: { subtotal, grandTotal }
-//   ocf.terms: { payment, delivery, deliveryTime, packing, shipping, notes }
-//   settings (invoiceSettings): logo, companyName, address, taxOffice, taxNo, phone, email,
-//                                bankAccounts, kase (kaşe/imza görüntüsü)
+// A4 dikey (210 × 297 mm). CSS mm cinsinden — jsPDF ile uyumlu.
+// Multi-page slicing: content 297mm'i aşarsa canvas dilimlenip birden fazla sayfa üretilir.
+// İnvoicePdf paterni birebir — logoImage/stampImage nested URL yapısı + await img load.
 
 import jsPDF from "jspdf";
 import html2canvas from "html2canvas";
@@ -27,29 +22,41 @@ function fmt0(n) {
 }
 
 function buildOcfHtml(ocf, settings) {
-  const cur = ocf.header?.currency || "EUR";
-  const logoImg = settings?.logo ? `<img src="${esc(settings.logo)}" style="max-height:60px;max-width:180px;" />` : "";
-  const company = {
-    name: settings?.companyName || "DENMA MÜHENDİSLİK LTD. ŞTİ.",
-    address: settings?.address || "",
-    taxOffice: settings?.taxOffice || "",
-    taxNo: settings?.taxNo || "",
-    phone: settings?.phone || "",
-    email: settings?.email || "",
+  const cur = (ocf.header?.currency || "EUR").toUpperCase();
+  const currencySymbol = (() => {
+    switch (cur) {
+      case "EUR": return "€";
+      case "USD": return "$";
+      case "GBP": return "£";
+      case "TL": case "TRY": return "₺";
+      default: return cur;
+    }
+  })();
+  // Firma bilgisi — invoicePdf.js ile birebir aynı (hardcoded DENMA)
+  const company = settings?.companyInfo || {
+    name: "DENMA DIŞ TİCARET LTD.ŞTİ.",
+    address: "Fevzi Çakmak Mah. 10670 Sk. No:31/B Karatay - KONYA / TURKEY",
+    phone: "+90 332 606 29 83",
+    taxOffice: "Selçuk V.D. 292 139 2109",
+    website: "www.denma.com.tr",
+    email: "bilgi@denma.com.tr",
   };
+  // Nested URL yapısı — invoiceSettings'te logoImage.url ve stampImage.url
+  const logoUrl = settings?.logoImage?.url || "";
+  const stampUrl = settings?.stampImage?.url || "";
+  // Banka bilgisi — invoiceSettings.bankAccounts ilk kayıt (varsa)
   const banks = Array.isArray(settings?.bankAccounts) ? settings.bankAccounts : [];
-  const bankRow = banks.length > 0 ? banks[0] : null; // ilk banka hesabı (default)
-  const kase = settings?.kase || settings?.signature || "";
+  const bankRow = banks.find(b => b.isDefault) || banks[0] || null;
 
   const itemRows = ocf.items.map((it, i) => `
     <tr>
-      <td style="border:1px solid #ccc;padding:5px 6px;text-align:center;">${i + 1}</td>
-      <td style="border:1px solid #ccc;padding:5px 6px;font-family:Consolas,monospace;">${esc(it.stockCode)}</td>
-      <td style="border:1px solid #ccc;padding:5px 6px;">${esc(it.descriptionEn || it.name)}</td>
-      <td style="border:1px solid #ccc;padding:5px 6px;text-align:right;">${fmt0(it.qty)}</td>
-      <td style="border:1px solid #ccc;padding:5px 6px;text-align:center;">${esc(it.unit || "PCS")}</td>
-      <td style="border:1px solid #ccc;padding:5px 6px;text-align:right;">${fmt2(it.unitPrice)}</td>
-      <td style="border:1px solid #ccc;padding:5px 6px;text-align:right;font-weight:600;">${fmt2(it.lineTotal)}</td>
+      <td style="border:0.5px solid #000;padding:1.5mm 2mm;font-size:8pt;text-align:center;">${i + 1}</td>
+      <td style="border:0.5px solid #000;padding:1.5mm 2mm;font-size:8pt;font-family:Consolas,monospace;">${esc(it.stockCode)}</td>
+      <td style="border:0.5px solid #000;padding:1.5mm 2mm;font-size:8pt;">${esc(it.descriptionEn || it.name)}</td>
+      <td style="border:0.5px solid #000;padding:1.5mm 2mm;font-size:8pt;text-align:right;">${fmt0(it.qty)}</td>
+      <td style="border:0.5px solid #000;padding:1.5mm 2mm;font-size:8pt;text-align:center;">${esc(it.unit || "PCS")}</td>
+      <td style="border:0.5px solid #000;padding:1.5mm 2mm;font-size:8pt;text-align:right;">${fmt2(it.unitPrice)} ${currencySymbol}</td>
+      <td style="border:0.5px solid #000;padding:1.5mm 2mm;font-size:8pt;text-align:right;font-weight:600;">${fmt2(it.lineTotal)} ${currencySymbol}</td>
     </tr>
   `).join("");
 
@@ -63,70 +70,78 @@ function buildOcfHtml(ocf, settings) {
   ].filter(t => t.value && String(t.value).trim());
   const termsHtml = termsRows.map(t => `
     <tr>
-      <td style="padding:4px 8px;font-weight:600;color:#333;width:150px;vertical-align:top;">${esc(t.label)}:</td>
-      <td style="padding:4px 8px;color:#333;">${esc(t.value)}</td>
+      <td style="padding:1mm 2mm 1mm 0;font-weight:600;color:#000;width:35mm;vertical-align:top;font-size:9pt;">${esc(t.label)}:</td>
+      <td style="padding:1mm 2mm;color:#000;font-size:9pt;">${esc(t.value)}</td>
     </tr>
   `).join("");
 
   const notesBlock = ocf.terms?.notes ? `
-    <div style="margin-top:12px;padding:8px;background:#fafaf9;border-left:3px solid #666;font-size:10pt;color:#333;">
-      <div style="font-weight:600;margin-bottom:4px;">Notes:</div>
+    <div style="margin-top:3mm;padding:2mm 3mm;background:#fafaf9;border-left:1mm solid #666;font-size:9pt;color:#333;">
+      <div style="font-weight:600;margin-bottom:1mm;">Notes:</div>
       ${esc(ocf.terms.notes).replace(/\n/g, "<br>")}
     </div>
   ` : "";
 
   const bankBlock = bankRow ? `
-    <div style="margin-top:14px;font-size:9pt;color:#555;">
-      <div style="font-weight:600;color:#333;">Bank Details:</div>
+    <div style="margin-top:3mm;font-size:8pt;color:#333;">
+      <b>Bank Details:</b>
       ${bankRow.branchName ? `${esc(bankRow.branchName)} · ` : ""}${bankRow.iban ? `IBAN: ${esc(bankRow.iban)}` : ""}${bankRow.swift ? ` · SWIFT: ${esc(bankRow.swift)}` : ""}
     </div>
   ` : "";
 
   return `
-<div style="font-family:Arial,Helvetica,sans-serif;width:794px;padding:30px;color:#222;background:#fff;box-sizing:border-box;">
-  <!-- Header: logo + firma + doküman bilgisi -->
-  <table style="width:100%;border-collapse:collapse;margin-bottom:16px;">
-    <tr>
-      <td style="vertical-align:top;width:60%;">
-        ${logoImg}
-        <div style="margin-top:6px;font-size:14pt;font-weight:700;color:#1a1a1a;">${esc(company.name)}</div>
-        <div style="font-size:9pt;color:#555;line-height:1.4;margin-top:4px;">
-          ${esc(company.address)}<br>
-          ${company.taxOffice ? `Tax Office: ${esc(company.taxOffice)} · ` : ""}${company.taxNo ? `VAT: ${esc(company.taxNo)}` : ""}<br>
-          ${company.phone ? `Tel: ${esc(company.phone)}` : ""}${company.email ? ` · ${esc(company.email)}` : ""}
-        </div>
-      </td>
-      <td style="vertical-align:top;width:40%;text-align:right;">
-        <div style="font-size:18pt;font-weight:700;color:#1a1a1a;letter-spacing:1px;">ORDER CONFIRMATION</div>
-        <table style="margin-left:auto;margin-top:8px;font-size:10pt;border-collapse:collapse;">
-          <tr><td style="padding:2px 8px 2px 0;color:#666;">Ref. No:</td><td style="font-weight:600;">${esc(ocf.header?.docNo || "")}</td></tr>
-          <tr><td style="padding:2px 8px 2px 0;color:#666;">Date:</td><td>${esc(ocf.header?.docDate || "")}</td></tr>
-          <tr><td style="padding:2px 8px 2px 0;color:#666;">Currency:</td><td>${esc(cur)}</td></tr>
-        </table>
-      </td>
-    </tr>
-  </table>
+<div id="ocf-pdf-root" style="width:210mm;padding:12mm 15mm;box-sizing:border-box;background:#fff;font-family:Arial,Helvetica,sans-serif;color:#000;">
+  <!-- Antet -->
+  <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:5mm;">
+    <div style="width:80mm;">
+      ${logoUrl
+        ? `<img src="${logoUrl}" crossorigin="anonymous" style="max-width:70mm;max-height:22mm;object-fit:contain;" />`
+        : `<div style="font-size:20pt;font-weight:700;letter-spacing:2px;">DENMA</div>
+           <div style="font-size:6pt;letter-spacing:3px;color:#666;">P O W E R &nbsp; F O R &nbsp; M E T A L W O R K I N G</div>`}
+    </div>
+    <div style="text-align:right;font-size:8pt;line-height:1.35;">
+      <div style="font-weight:700;">${esc(company.name)}</div>
+      <div>${esc(company.address)}</div>
+      <div>Phone: ${esc(company.phone)}</div>
+      <div>${esc(company.taxOffice)}</div>
+      <div>${esc(company.website)} &nbsp; ${esc(company.email)}</div>
+    </div>
+  </div>
+  <hr style="border:none;border-top:0.5px solid #666;margin-bottom:6mm;" />
 
-  <!-- Müşteri bilgisi -->
-  <div style="border:1px solid #ccc;padding:10px 12px;margin-bottom:14px;background:#fafafa;">
-    <div style="font-size:9pt;color:#666;font-weight:600;margin-bottom:4px;">TO:</div>
-    <div style="font-size:11pt;font-weight:700;color:#1a1a1a;">${esc(ocf.customer?.name || "")}</div>
-    ${ocf.customer?.attention ? `<div style="font-size:9pt;color:#555;margin-top:2px;">Attention: ${esc(ocf.customer.attention)}</div>` : ""}
-    ${ocf.customer?.address ? `<div style="font-size:9pt;color:#555;margin-top:2px;">${esc(ocf.customer.address).replace(/\n/g, "<br>")}</div>` : ""}
-    ${(ocf.customer?.city || ocf.customer?.country) ? `<div style="font-size:9pt;color:#555;">${esc(ocf.customer.city || "")}${ocf.customer.city && ocf.customer.country ? " · " : ""}${esc(ocf.customer.country || "")}</div>` : ""}
+  <!-- Başlık + Müşteri kutusu -->
+  <div style="display:flex;justify-content:space-between;margin-bottom:6mm;">
+    <div style="width:100mm;border:0.5px solid #000;padding:4mm 5mm;box-sizing:border-box;">
+      <div style="font-size:8pt;color:#666;font-weight:600;margin-bottom:2mm;">TO:</div>
+      <div style="font-weight:700;font-size:10pt;margin-bottom:2mm;">${esc(ocf.customer?.name || "")}</div>
+      ${ocf.customer?.attention ? `<div style="font-size:9pt;margin-bottom:1mm;">Attention: ${esc(ocf.customer.attention)}</div>` : ""}
+      <div style="font-size:9pt;line-height:1.4;">
+        ${ocf.customer?.address ? `<div>${esc(ocf.customer.address).replace(/\n/g, "<br>")}</div>` : ""}
+        ${ocf.customer?.city ? `<div>${esc(ocf.customer.city)}</div>` : ""}
+        ${ocf.customer?.country ? `<div>${esc(ocf.customer.country)}</div>` : ""}
+      </div>
+    </div>
+    <div style="width:75mm;text-align:right;">
+      <div style="font-size:14pt;font-weight:700;margin-bottom:4mm;letter-spacing:1px;">ORDER CONFIRMATION</div>
+      <table style="margin-left:auto;font-size:9pt;border-collapse:collapse;">
+        <tr><td style="padding:1mm 4mm 1mm 0;color:#666;text-align:right;">Ref. No:</td><td style="font-weight:700;">${esc(ocf.header?.docNo || "")}</td></tr>
+        <tr><td style="padding:1mm 4mm 1mm 0;color:#666;text-align:right;">Date:</td><td>${esc(ocf.header?.docDate || "")}</td></tr>
+        <tr><td style="padding:1mm 4mm 1mm 0;color:#666;text-align:right;">Currency:</td><td>${esc(cur)}</td></tr>
+      </table>
+    </div>
   </div>
 
   <!-- Ürün tablosu -->
-  <table style="width:100%;border-collapse:collapse;font-size:10pt;margin-bottom:10px;">
+  <table style="width:100%;border-collapse:collapse;margin-bottom:4mm;">
     <thead>
       <tr style="background:#e5e7eb;">
-        <th style="border:1px solid #999;padding:6px 8px;text-align:center;width:30px;">#</th>
-        <th style="border:1px solid #999;padding:6px 8px;text-align:left;">Stock Code</th>
-        <th style="border:1px solid #999;padding:6px 8px;text-align:left;">Description</th>
-        <th style="border:1px solid #999;padding:6px 8px;text-align:right;width:60px;">Qty</th>
-        <th style="border:1px solid #999;padding:6px 8px;text-align:center;width:50px;">Unit</th>
-        <th style="border:1px solid #999;padding:6px 8px;text-align:right;width:90px;">Unit Price</th>
-        <th style="border:1px solid #999;padding:6px 8px;text-align:right;width:100px;">Total</th>
+        <th style="border:0.5px solid #000;padding:2mm;text-align:center;width:8mm;font-size:8pt;">#</th>
+        <th style="border:0.5px solid #000;padding:2mm;text-align:left;width:26mm;font-size:8pt;">Stock Code</th>
+        <th style="border:0.5px solid #000;padding:2mm;text-align:left;font-size:8pt;">Description</th>
+        <th style="border:0.5px solid #000;padding:2mm;text-align:right;width:14mm;font-size:8pt;">Qty</th>
+        <th style="border:0.5px solid #000;padding:2mm;text-align:center;width:12mm;font-size:8pt;">Unit</th>
+        <th style="border:0.5px solid #000;padding:2mm;text-align:right;width:24mm;font-size:8pt;">Unit Price</th>
+        <th style="border:0.5px solid #000;padding:2mm;text-align:right;width:28mm;font-size:8pt;">Total</th>
       </tr>
     </thead>
     <tbody>
@@ -134,17 +149,17 @@ function buildOcfHtml(ocf, settings) {
     </tbody>
     <tfoot>
       <tr>
-        <td colspan="6" style="border:1px solid #999;padding:8px 10px;text-align:right;font-weight:700;background:#f5f5f4;">GRAND TOTAL (${esc(cur)})</td>
-        <td style="border:1px solid #999;padding:8px 10px;text-align:right;font-weight:700;font-size:12pt;background:#f5f5f4;color:#1a1a1a;">${fmt2(ocf.totals?.grandTotal || 0)}</td>
+        <td colspan="6" style="border:0.5px solid #000;padding:2mm 3mm;text-align:right;font-weight:700;background:#f5f5f4;font-size:10pt;">GRAND TOTAL</td>
+        <td style="border:0.5px solid #000;padding:2mm 3mm;text-align:right;font-weight:700;font-size:11pt;background:#f5f5f4;">${fmt2(ocf.totals?.grandTotal || 0)} ${currencySymbol}</td>
       </tr>
     </tfoot>
   </table>
 
   <!-- Şartlar -->
   ${termsRows.length > 0 ? `
-    <div style="margin-top:14px;">
-      <div style="font-size:11pt;font-weight:700;color:#1a1a1a;margin-bottom:6px;border-bottom:2px solid #333;padding-bottom:3px;">TERMS & CONDITIONS</div>
-      <table style="width:100%;border-collapse:collapse;font-size:10pt;">
+    <div style="margin-top:5mm;">
+      <div style="font-size:10pt;font-weight:700;color:#000;margin-bottom:2mm;border-bottom:0.5px solid #333;padding-bottom:1mm;">TERMS &amp; CONDITIONS</div>
+      <table style="width:100%;border-collapse:collapse;">
         ${termsHtml}
       </table>
     </div>
@@ -154,17 +169,20 @@ function buildOcfHtml(ocf, settings) {
   ${bankBlock}
 
   <!-- İmza + kaşe -->
-  <table style="width:100%;border-collapse:collapse;margin-top:30px;">
+  <table style="width:100%;border-collapse:collapse;margin-top:10mm;">
     <tr>
       <td style="width:50%;vertical-align:bottom;">
-        <div style="font-size:9pt;color:#666;font-weight:600;margin-bottom:6px;">On behalf of Seller:</div>
-        <div style="font-size:10pt;font-weight:600;color:#1a1a1a;">${esc(company.name)}</div>
-        ${kase ? `<img src="${esc(kase)}" style="max-height:80px;max-width:200px;margin-top:6px;" />` : `<div style="height:60px;border-bottom:1px solid #999;margin-top:20px;"></div>`}
+        <div style="font-size:8pt;color:#666;font-weight:600;margin-bottom:2mm;">On behalf of Seller:</div>
+        <div style="font-size:9pt;font-weight:600;">${esc(company.name)}</div>
+        ${stampUrl
+          ? `<div style="margin-top:2mm;"><img src="${stampUrl}" crossorigin="anonymous" style="max-width:50mm;max-height:26mm;object-fit:contain;" /></div>`
+          : `<div style="height:20mm;border-bottom:0.5px solid #999;margin-top:6mm;"></div>
+             <div style="font-size:8pt;color:#666;margin-top:1mm;">Authorized Signature</div>`}
       </td>
       <td style="width:50%;vertical-align:bottom;">
-        <div style="font-size:9pt;color:#666;font-weight:600;margin-bottom:6px;">Approved by Buyer:</div>
-        <div style="height:60px;border-bottom:1px solid #999;margin-top:20px;"></div>
-        <div style="font-size:9pt;color:#666;margin-top:4px;">Signature / Stamp / Date</div>
+        <div style="font-size:8pt;color:#666;font-weight:600;margin-bottom:2mm;">Approved by Buyer:</div>
+        <div style="height:20mm;border-bottom:0.5px solid #999;margin-top:6mm;"></div>
+        <div style="font-size:8pt;color:#666;margin-top:1mm;">Signature / Stamp / Date</div>
       </td>
     </tr>
   </table>
@@ -177,38 +195,50 @@ export async function generateOcfPdf(ocf, settings) {
   // Off-screen render
   const container = document.createElement("div");
   container.style.position = "fixed";
-  container.style.top = "-10000px";
-  container.style.left = "0";
+  container.style.top = "0";
+  container.style.left = "-9999px";
   container.innerHTML = html;
   document.body.appendChild(container);
 
   try {
-    const target = container.firstElementChild;
-    const canvas = await html2canvas(target, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
+    const root = container.querySelector("#ocf-pdf-root");
+    // KRİTİK: imajların (logo + kaşe) yüklenmesini bekle — aksi halde boş çıkar
+    const imgs = root.querySelectorAll("img");
+    await Promise.all([...imgs].map(img => {
+      if (img.complete && img.naturalHeight > 0) return Promise.resolve();
+      return new Promise(resolve => { img.onload = resolve; img.onerror = resolve; });
+    }));
+    const canvas = await html2canvas(root, { scale: 2, useCORS: true, backgroundColor: "#ffffff" });
     const pdf = new jsPDF({ orientation: "portrait", unit: "mm", format: "a4" });
-    const pdfWidth = 210;
-    const pdfHeight = 297;
-    const imgHeightMm = (canvas.height * pdfWidth) / canvas.width;
-    if (imgHeightMm <= pdfHeight) {
-      pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, pdfWidth, imgHeightMm);
+    const pdfWidth = pdf.internal.pageSize.getWidth();   // 210mm
+    const pdfHeight = pdf.internal.pageSize.getHeight(); // 297mm
+    const canvasWidth = canvas.width;
+    const canvasHeight = canvas.height;
+    const imgHeightMm = (canvasHeight * pdfWidth) / canvasWidth;
+    // Tek sayfa toleransı (küçük taşma A4'e sığdırılır) — invoicePdf.js paterni
+    const SINGLE_PAGE_TOLERANCE_MM = 8;
+    if (imgHeightMm <= pdfHeight + SINGLE_PAGE_TOLERANCE_MM) {
+      pdf.addImage(canvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, pdfWidth, Math.min(imgHeightMm, pdfHeight));
     } else {
-      // Çok uzun → sayfa böl
-      let pos = 0;
-      const pxPerMm = canvas.width / pdfWidth;
-      const pageHeightPx = Math.floor(pdfHeight * pxPerMm);
-      while (pos < canvas.height) {
+      // Multi-page slicing
+      const pxPerMm = canvasWidth / pdfWidth;
+      const firstPageContentPx = pdfHeight * pxPerMm;
+      let offset = 0;
+      let pageIdx = 0;
+      while (offset < canvasHeight) {
+        if (pageIdx > 0) pdf.addPage();
+        const sliceHeight = Math.min(firstPageContentPx, canvasHeight - offset);
         const sliceCanvas = document.createElement("canvas");
-        sliceCanvas.width = canvas.width;
-        sliceCanvas.height = Math.min(pageHeightPx, canvas.height - pos);
-        const ctx = sliceCanvas.getContext("2d");
-        ctx.drawImage(canvas, 0, pos, canvas.width, sliceCanvas.height, 0, 0, sliceCanvas.width, sliceCanvas.height);
-        const sliceHeightMm = (sliceCanvas.height * pdfWidth) / canvas.width;
-        if (pos > 0) pdf.addPage();
+        sliceCanvas.width = canvasWidth;
+        sliceCanvas.height = sliceHeight;
+        sliceCanvas.getContext("2d").drawImage(canvas, 0, offset, canvasWidth, sliceHeight, 0, 0, canvasWidth, sliceHeight);
+        const sliceHeightMm = sliceHeight / pxPerMm;
         pdf.addImage(sliceCanvas.toDataURL("image/jpeg", 0.95), "JPEG", 0, 0, pdfWidth, sliceHeightMm);
-        pos += pageHeightPx;
+        offset += sliceHeight;
+        pageIdx++;
       }
     }
-    const fileName = `OCF_${ocf.header?.docNo || Date.now()}.pdf`;
+    const fileName = `OCF_${(ocf.header?.docNo || Date.now()).toString().replace(/[\\/:*?"<>|]/g, "_")}.pdf`;
     pdf.save(fileName);
   } finally {
     document.body.removeChild(container);

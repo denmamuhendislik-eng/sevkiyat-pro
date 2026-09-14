@@ -1415,15 +1415,19 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
 
       {/* v26: Order Confirmation Form modal — Müşteri PDF için müşteri bilgisi + teklif şartları */}
       {ocfModalOpen && (() => {
-        const ocfItems = products.filter(p => (Number(p.estQty) || 0) > 0).map(p => ({
-          stockCode: p.stockCode,
-          name: p.stockName,
-          descriptionEn: p.stockName, // İngilizce ayrı alan yoksa aynı
-          qty: p.estQty,
-          unit: "PCS",
-          unitPrice: convVal(p.salesTl),
-          lineTotal: convVal(p.salesTl * p.estQty),
-        }));
+        const ocfItems = products.filter(p => (Number(p.estQty) || 0) > 0).map(p => {
+          const prodForEn = productByVio.get(p.stockCode);
+          const enName = (prodForEn?.nameEN || "").trim();
+          return {
+            stockCode: p.stockCode,
+            name: p.stockName,
+            descriptionEn: enName || p.stockName, // EN yoksa TR fallback
+            qty: p.estQty,
+            unit: "PCS",
+            unitPrice: convVal(p.salesTl),
+            lineTotal: convVal(p.salesTl * p.estQty),
+          };
+        });
         const ocfGrand = ocfItems.reduce((s, i) => s + i.lineTotal, 0);
         return (
           <OrderConfirmationFormModal
