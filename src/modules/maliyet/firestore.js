@@ -544,6 +544,12 @@ export async function savePriceListDraft(draft, { canEdit, userEmail = "" } = {}
     ...existing,
     ...draft,
     overrides: draft.overrides || {},
+    // Yeni field'lar — v26 "muhtemel sipariş simülasyonu":
+    //   estimatedQuantities: { [stockCode]: number } — kullanıcının girdiği muhtemel adet
+    //   selectedStockCodes: string[] — taslak kapsamındaki ürünler (checkbox seçimleri)
+    // Backward-compat: eski taslaklarda undefined → default olarak boş kabul edilir
+    estimatedQuantities: draft.estimatedQuantities || {},
+    selectedStockCodes: Array.isArray(draft.selectedStockCodes) ? draft.selectedStockCodes : [],
     updatedAt: now,
     updatedBy: userEmail || "",
     createdAt: existing.createdAt || now,
@@ -555,6 +561,19 @@ export async function savePriceListDraft(draft, { canEdit, userEmail = "" } = {}
     updatedBy: userEmail || "",
   }, { merge: true });
   return next;
+}
+
+// v26 — appData/state doc: combRules + minKG/maxKG için (Sevkiyat Planı ile paylaşılan).
+// Sadece OKU — App.jsx tek yazan (kırmızı çizgi). PriceListTab bunu cascade + konteyner
+// kapasitesi hesabı için kullanır.
+export function subscribeAppState(callback) {
+  if (!db) return () => {};
+  const ref = doc(db, APP_COL, "state");
+  return onSnapshot(
+    ref,
+    (snap) => callback(snap.exists() ? (snap.data() || {}) : {}),
+    (err) => { console.error("appState listener:", err); callback({}); }
+  );
 }
 
 export async function deletePriceListDraft(draftId, { canEdit, userEmail = "" } = {}) {

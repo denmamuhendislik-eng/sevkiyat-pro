@@ -15,6 +15,7 @@ import {
   subscribeUnitConversions, subscribePriceListPolicy, savePriceListPolicy,
   subscribeProducts, subscribeSalesOrders,
   subscribePriceListDrafts, savePriceListDraft, deletePriceListDraft,
+  subscribeAppState,
 } from "./firestore";
 import { calculateAllProductCosts } from "./productCostCalc";
 import { DEFAULT_WEIGHTS, getOverheadMonthlyAvg } from "./distributionCalc";
@@ -78,6 +79,8 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const [productsList, setProductsList] = useState([]);
   const [salesOrders, setSalesOrders] = useState({});
   const [drafts, setDrafts] = useState({});
+  // v26: appData/state — combRules (cascade için) + minKG/maxKG (konteyner kapasitesi)
+  const [appState, setAppState] = useState({});
   const [loaded, setLoaded] = useState({ bom: false, uc: false, wc: false, labor: false, pol: false, fas: false, conv: false, plp: false, prod: false, so: false, drafts: false });
 
   // v-draft — satır bazlı marj override (stockCode → marginPct)
@@ -85,6 +88,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
   const [overrides, setOverrides] = useState({}); // { [stockCode]: marginPct }
   const [selectedDraftId, setSelectedDraftId] = useState("");
   const [draftDirty, setDraftDirty] = useState(false); // taslak yüklendikten sonra değişim var mı
+  // v26: Muhtemel sipariş simülasyonu — muhtemel adet + seçili ürünler
+  const [estimatedQuantities, setEstimatedQuantities] = useState({}); // { stockCode: number }
+  const [showOnlySelected, setShowOnlySelected] = useState(false);
 
   // Hesap ayı: üst seviyeden paylaşılır
   const [localMonth, setLocalMonth] = useState(todayMonth());
@@ -141,7 +147,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     const u9 = subscribeProducts(d => { setProductsList(Array.isArray(d) ? d : []); setLoaded(l => ({ ...l, prod: true })); });
     const u10 = subscribePriceListDrafts(d => { setDrafts(d?.drafts || {}); setLoaded(l => ({ ...l, drafts: true })); });
     const u11 = subscribeSalesOrders(d => { setSalesOrders(d || {}); setLoaded(l => ({ ...l, so: true })); });
-    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); };
+    // v26: appData/state — combRules (cascade) + minKG/maxKG (konteyner cap)
+    const u12 = subscribeAppState(d => { setAppState(d || {}); });
+    return () => { u1(); u2(); u3(); u4(); u5(); u6(); u7(); u8(); u9(); u10(); u11(); u12(); };
   }, []);
 
   const monthlyOverheads = laborData?.monthlyOverheads || {};
@@ -179,6 +187,47 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
     }
     return m;
   }, [productsList]);
+
+  // v26: pid → stockCode ve stockCode → parent stockCode mapping (cascade için)
+  const productById = useMemo(() => {
+    const m = new Map();
+    for (const p of (productsList || [])) {
+      if (p?.id != null) m.set(Number(p.id), p);
+    }
+    return m;
+  }, [productsList]);
+
+  // combRules: [{ parent: pid, children: [pid, pid] }]
+  // Bir child stockCode için parent stockCode'u döner (yoksa null)
+  const parentStockByChild = useMemo(() => {
+    const m = new Map();
+    const rules = Array.isArray(appState?.combRules) ? appState.combRules : [];
+    for (const rule of rules) {
+      const parentProd = productById.get(Number(rule.parent));
+      if (!parentProd) continue;
+      const parentCode = ((parentProd.vioCode || "").trim()) || (LEGACY_VIO_CODES[parentProd.id] || "").trim();
+      if (!parentCode) continue;
+      for (const childPid of (rule.children || [])) {
+        const childProd = productById.get(Number(childPid));
+        if (!childProd) continue;
+        const childCode = ((childProd.vioCode || "").trim()) || (LEGACY_VIO_CODES[childProd.id] || "").trim();
+        if (childCode) m.set(childCode, parentCode);
+      }
+    }
+    return m;
+  }, [appState, productById]);
+
+  // Muhtemel adet — manuel > 0 varsa onu; yoksa parent varsa cascade
+  const getEstimatedQty = (stockCode) => {
+    const direct = Number(estimatedQuantities[stockCode]) || 0;
+    if (direct > 0) return { qty: direct, source: "manual" };
+    const parentCode = parentStockByChild.get(stockCode);
+    if (parentCode) {
+      const parentQty = Number(estimatedQuantities[parentCode]) || 0;
+      if (parentQty > 0) return { qty: parentQty, source: "cascade", parentCode };
+    }
+    return { qty: 0, source: null };
+  };
 
   const yerliByStock = useMemo(() => {
     const m = new Map();
@@ -456,6 +505,10 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         // Fark: yeni fiyat vs mevcut fiyat (TL bazında, ekranda currency'ye çevrilir)
         const deltaTl = existingTl > 0 ? salesTl - existingTl : 0;
         const deltaPct = existingTl > 0 ? ((salesTl - existingTl) / existingTl) * 100 : 0;
+        // v26: Muhtemel adet (manuel veya cascade) + birim kg
+        const estQ = getEstimatedQty(r.stockCode);
+        const prodForKg = productByVio.get(r.stockCode);
+        const unitKg = Number(prodForKg?.kg) || 0;
         return {
           ...r, salesTl, profitTl, marginActualPct,
           existingTl, existingMarginPct,
@@ -465,10 +518,16 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
           effectiveMargin, hasOverride: overrideSource != null,
           overrideSource,           // "margin" | "price" | null
           deltaTl, deltaPct,
+          // v26 sipariş simülasyonu
+          estQty: estQ.qty, estQtySource: estQ.source, estQtyParentCode: estQ.parentCode || null,
+          unitKg,
         };
       })
       .filter(r => {
         if (onlyCosted && r.cost <= 0) return false;
+        // v26: Sadece seçili göster — id veya stockCode selectedIds'te yoksa gizle
+        // (taslak yüklendiğinde stockCode Set'i yazılır; runtime seçimde row.id yazılır)
+        if (showOnlySelected && !(selectedIds.has(r.id) || selectedIds.has(r.stockCode))) return false;
         if (!q) return true;
         return r.stockCode.toLocaleLowerCase("tr-TR").includes(q)
             || (r.stockName || "").toLocaleLowerCase("tr-TR").includes(q)
@@ -494,12 +553,66 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         if (!a.isRoot && b.isRoot) return 1;
         return b.cost - a.cost;
       });
-  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted, productsList, salesOrders, productByVio, yerliByStock, lastPurchasePriceByCode, rates, overrides]);
+  }, [calc, marginPct, rounding, viewMode, maxLevel, searchText, onlyCosted, productsList, salesOrders, productByVio, yerliByStock, lastPurchasePriceByCode, rates, overrides, estimatedQuantities, parentStockByChild, showOnlySelected, selectedIds]);
 
   const selectedProducts = useMemo(
     () => products.filter(p => selectedIds.has(p.id)),
     [products, selectedIds]
   );
+
+  // ============================================================
+  // v26 Muhtemel Sipariş KPI hesabı
+  // ============================================================
+  // Adet > 0 olan tüm satırlar KPI'ya dahil (seçim durumundan bağımsız).
+  // Cascade child'lar da otomatik hesaba katılır (getEstimatedQty içinde).
+  const simKpi = useMemo(() => {
+    let totalQty = 0, totalKg = 0;
+    let totalRevenueTl = 0, totalProfitTl = 0;
+    let items = 0;
+    for (const p of products) {
+      const q = Number(p.estQty) || 0;
+      if (q <= 0) continue;
+      items++;
+      totalQty += q;
+      totalKg += q * (Number(p.unitKg) || 0);
+      totalRevenueTl += q * (Number(p.salesTl) || 0);
+      totalProfitTl += q * (Number(p.profitTl) || 0);
+    }
+    // Konteyner kapasitesi — appState.minKG / maxKG (Sevkiyat Planı'yla ortak)
+    const minKGCap = Number(appState?.minKG) || 22000;
+    const maxKGCap = Number(appState?.maxKG) || 26000;
+    const avgKGCap = (minKGCap + maxKGCap) / 2;
+    const containerCount = totalKg > 0 && avgKGCap > 0 ? Math.ceil(totalKg / avgKGCap) : 0;
+    const avgTlPerUnit = totalQty > 0 ? totalRevenueTl / totalQty : 0;
+    return { items, totalQty, totalKg, totalRevenueTl, totalProfitTl, containerCount, minKGCap, maxKGCap, avgKGCap, avgTlPerUnit };
+  }, [products, appState]);
+
+  const anyEstQty = simKpi.items > 0;
+
+  // Muhtemel adet güncelleme
+  const setRowEstimatedQty = (stockCode, value) => {
+    const v = String(value).trim();
+    setEstimatedQuantities(prev => {
+      const next = { ...prev };
+      if (v === "" || v === "0") { delete next[stockCode]; }
+      else {
+        const n = Number(v);
+        if (!Number.isNaN(n) && n > 0) next[stockCode] = n;
+      }
+      return next;
+    });
+    setDraftDirty(true);
+    // Adet girilirse ürün otomatik seçilir (checkbox işaretlenir)
+    const prod = products.find(x => x.stockCode === stockCode);
+    if (prod && v && v !== "0") {
+      setSelectedIds(prev => {
+        if (prev.has(prod.id)) return prev;
+        const next = new Set(prev);
+        next.add(prod.id);
+        return next;
+      });
+    }
+  };
 
   // Breakdown modunda mamul seçildiğinde/kaldırıldığında aynı grubun tüm alt
   // parçalarını da otomatik seç/kaldır. Kullanıcı isteği: yedek parça listesinde
@@ -583,12 +696,43 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
 
   const loadDraft = (draftId) => {
     setSelectedDraftId(draftId);
-    if (!draftId) { setOverrides({}); setDraftDirty(false); return; }
+    if (!draftId) {
+      setOverrides({});
+      setEstimatedQuantities({});
+      setSelectedIds(new Set());
+      setDraftDirty(false);
+      return;
+    }
     const d = drafts[draftId];
     if (!d) return;
     setOverrides(d.overrides || {});
     if (typeof d.globalMarginPct === "number") setMarginPct(d.globalMarginPct);
     if (typeof d.rounding === "number") setRounding(d.rounding);
+    // v26: yeni field'ları restore et (backward-compat: yoksa boş)
+    setEstimatedQuantities(d.estimatedQuantities || {});
+    // selectedStockCodes → selectedIds (Set) — productsList üzerinden lookup
+    const codes = Array.isArray(d.selectedStockCodes) ? d.selectedStockCodes : [];
+    if (codes.length > 0) {
+      // Kayıtlı stockCode'lar tabloda birden fazla row id'ye karşılık gelebilir
+      // (roots / breakdown modu). Row id = "root:CODE" | "sub:CODE" | "bd:MK:root" | "bd:MK:idx"
+      // Basit yaklaşım: taslak yüklendiğinde sadece stockCode üzerinden filtreleyeceğiz.
+      // Filter ise showOnlySelected için row.id kullanır → row'un id'sini Set'e ekle.
+      // productsList (raw) yerine oluşturulan products (enrichment) üzerinden mapping
+      // hemen mevcut değil (useMemo). Bu yüzden ilk yüklemede selectedIds'i codeSet
+      // olarak tutmak yerine sonraki render'da senkronize edilir — burada Set of codes
+      // olarak yaklaşımı basitleştirir. Ancak filter row.id kullanıyor → kod-bazlı
+      // filter için ayrı bir yol lazım. Şimdilik: her row.id için stockCode'u karşılaştır.
+      // → selectedIds "codeSet" olarak tutulur ama filter'da id yerine stockCode kullanılır.
+      // Basit çözüm: showOnlySelected açık iken products'ta id.has yerine
+      // selectedStockCodes.includes kontrolü. Ama refactor büyük.
+      // Alternatif: taslak yüklemesi sırasında products memo henüz güncel değil,
+      // bir sonraki render'da bir useEffect selectedIds'i selectedStockCodes'a göre günceller.
+      // Şimdi basitçe: id yerine stockCode Set'i tut → filter'da stockCode kontrol edilir.
+      // (Refactor: selectedIds → selectedStockCodesSet)
+      setSelectedIds(new Set(codes));
+    } else {
+      setSelectedIds(new Set());
+    }
     setDraftDirty(false);
   };
 
@@ -601,6 +745,10 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       if (!name) return;
       id = `draft_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
     }
+    // v26: seçili stockCode'ları çıkar (selectedIds → row.stockCode)
+    const selectedStockCodesList = Array.from(new Set(
+      products.filter(p => selectedIds.has(p.id) || selectedIds.has(p.stockCode)).map(p => p.stockCode).filter(Boolean)
+    ));
     const payload = {
       id, name,
       baseMonth: selectedMonth,
@@ -608,6 +756,9 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
       globalMarginPct: marginPct,
       rounding,
       overrides,
+      // v26
+      estimatedQuantities,
+      selectedStockCodes: selectedStockCodesList,
     };
     try {
       await savePriceListDraft(payload, { canEdit, userEmail });
@@ -962,6 +1113,30 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         </div>
       </div>
 
+      {/* v26: Muhtemel Sipariş KPI paneli — adet girildiğinde canlı özet */}
+      {anyEstQty && (
+        <div style={{ marginBottom: 12, padding: "10px 12px", background: "#f0fdf4", border: "1px solid #86efac", borderRadius: 6 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: "#166534" }}>🧮 Muhtemel Sipariş Simülasyonu</span>
+            <span style={{ fontSize: 10, color: "#57534e" }}>
+              {simKpi.items} kalem · {sym} cinsinden · Konteyner ort. {simKpi.avgKGCap.toLocaleString("tr-TR", { maximumFractionDigits: 0 })} kg
+            </span>
+            <button onClick={() => { if (confirm("Tüm muhtemel adetler sıfırlansın mı?")) { setEstimatedQuantities({}); setDraftDirty(true); } }}
+              style={{ marginLeft: "auto", padding: "3px 8px", fontSize: 10, background: "#fff", border: "1px solid #d6d3d1", borderRadius: 3, cursor: "pointer", color: "#78716c" }}>
+              🔄 Adetleri Temizle
+            </button>
+          </div>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(150px, 1fr))", gap: 8 }}>
+            <SimKpi label="📦 Toplam Adet" value={simKpi.totalQty.toLocaleString("tr-TR")} sub={`${simKpi.items} kalem`} color="#166534" />
+            <SimKpi label="💰 Toplam Bedel" value={fMoneyDisplay(simKpi.totalRevenueTl)} sub={`ort ${fMoneyDisplay(simKpi.avgTlPerUnit)}/adet`} color="#1e40af" />
+            <SimKpi label="⚖️ Toplam Ağırlık" value={`${simKpi.totalKg.toLocaleString("tr-TR", { maximumFractionDigits: 0 })} kg`} color="#c2410c" />
+            <SimKpi label="🚢 Konteyner Sayısı" value={simKpi.containerCount} sub={`~${simKpi.avgKGCap.toLocaleString("tr-TR", { maximumFractionDigits: 0 })} kg/konteyner`} color="#5b21b6" />
+            <SimKpi label="💵 Toplam Kâr" value={fMoneyDisplay(simKpi.totalProfitTl)} sub={simKpi.totalRevenueTl > 0 ? `%${((simKpi.totalProfitTl / simKpi.totalRevenueTl) * 100).toFixed(1)} marj` : "—"} color="#166534" />
+            <SimKpi label="📊 Adet Başına" value={fMoneyDisplay(simKpi.avgTlPerUnit)} sub={`ort satış fiyatı`} color="#78716c" />
+          </div>
+        </div>
+      )}
+
       {/* Filtre + Export */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 12 }}>
         <input type="text" placeholder="🔍 Kod / ad / ana mamul ara..." value={searchText} onChange={e => setSearchText(e.target.value)}
@@ -969,6 +1144,14 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
         <label style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4 }}>
           <input type="checkbox" checked={onlyCosted} onChange={e => setOnlyCosted(e.target.checked)} />
           Sadece maliyeti hesaplananlar
+        </label>
+        <label style={{ fontSize: 11, display: "inline-flex", alignItems: "center", gap: 4, padding: "3px 8px",
+          background: showOnlySelected ? "#eff6ff" : "transparent",
+          border: `1px solid ${showOnlySelected ? "#1e40af" : "transparent"}`, borderRadius: 3,
+          fontWeight: showOnlySelected ? 600 : 400, color: showOnlySelected ? "#1e40af" : "inherit" }}
+          title="Sadece seçili ürünleri göster (taslak kapsamı)">
+          <input type="checkbox" checked={showOnlySelected} onChange={e => setShowOnlySelected(e.target.checked)} />
+          🎯 Sadece seçili
         </label>
         <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
           {products.length} kayıt · {selectedIds.size} seçili
@@ -1010,11 +1193,13 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
               <th style={{ ...th, textAlign: "right", background: "#eff6ff" }}>Yeni Satış</th>
               <th style={{ ...th, textAlign: "right" }} title="Yeni - Mevcut">Fark</th>
               <th style={{ ...th, textAlign: "right" }}>Kâr</th>
+              <th style={{ ...th, textAlign: "right", background: "#f0fdf4", width: 90 }} title="Muhtemel sipariş adedi — root için girilirse bağlı ürünler otomatik cascade">🧮 Muhtemel Adet</th>
+              <th style={{ ...th, textAlign: "right", background: "#f0fdf4" }} title="Adet × Yeni Satış — seçili currency'de">Satır Bedeli</th>
             </tr>
           </thead>
           <tbody>
             {products.length === 0 ? (
-              <tr><td colSpan={(showSubpartsCols ? 12 : 10) + (showDetailCols ? 3 : 0)} style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)" }}>Eşleşen kayıt yok</td></tr>
+              <tr><td colSpan={(showSubpartsCols ? 14 : 12) + (showDetailCols ? 3 : 0)} style={{ padding: 20, textAlign: "center", color: "var(--color-text-tertiary)" }}>Eşleşen kayıt yok</td></tr>
             ) : products.map(p => (
               <tr key={p.id} style={{
                 borderTop: "1px solid #f5f5f4",
@@ -1116,6 +1301,35 @@ export default function PriceListTab({ canEdit, userEmail, currency = "TRY", rat
                   ) : <span style={{ color: "#a8a29e" }}>—</span>}
                 </td>
                 <td style={{ ...td, textAlign: "right", color: "#166534" }}>{fMoneyDisplay(p.profitTl)}</td>
+                {/* v26: Muhtemel Adet input — cascade değer soluk, manuel değer koyu */}
+                <td style={{ ...td, textAlign: "right", background: "#f0fdf4" }}>
+                  {(() => {
+                    const isCascade = p.estQtySource === "cascade";
+                    const isManual = p.estQtySource === "manual";
+                    return (
+                      <div style={{ display: "inline-flex", alignItems: "center", gap: 3, justifyContent: "flex-end" }}>
+                        {isCascade && (
+                          <span title={`Parent ${p.estQtyParentCode} için girilen adet`} style={{ fontSize: 9, color: "#78716c" }}>🔗</span>
+                        )}
+                        <input type="number" min="0" step="1"
+                          value={isManual ? String(p.estQty) : (isCascade ? "" : "")}
+                          placeholder={isCascade ? String(p.estQty) : "0"}
+                          onChange={e => setRowEstimatedQty(p.stockCode, e.target.value)}
+                          disabled={!canEdit}
+                          title={isCascade ? `Cascade: ${p.estQty} adet (parent ${p.estQtyParentCode}). Elle yazarsan bu satır için ayrı değer girer.` : "Muhtemel sipariş adedi"}
+                          style={{ width: 65, padding: "2px 5px", fontSize: 10, textAlign: "right",
+                            border: `1px solid ${isManual ? "#166534" : (isCascade ? "#86efac" : "#e7e5e4")}`,
+                            background: isManual ? "#dcfce7" : "#fff",
+                            color: isManual ? "#166534" : (isCascade ? "#78716c" : "#000"),
+                            borderRadius: 3, fontWeight: isManual ? 700 : 400 }} />
+                      </div>
+                    );
+                  })()}
+                </td>
+                {/* Satır bedeli — adet × yeni satış */}
+                <td style={{ ...td, textAlign: "right", background: "#f0fdf4", fontWeight: p.estQty > 0 ? 700 : 400, color: p.estQty > 0 ? "#166534" : "#a8a29e" }}>
+                  {p.estQty > 0 ? fMoneyDisplay(p.salesTl * p.estQty) : "—"}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -1160,6 +1374,17 @@ function PriceInput({ salesTl, currency, rates, source, canEdit, onChange }) {
         background: source === "price" ? "#ede9fe" : "#fff",
         color: source === "margin" ? "#78716c" : "#166534",
         borderRadius: 3, fontWeight: source === "price" ? 700 : 500 }} />
+  );
+}
+
+// v26 KPI kartı — muhtemel sipariş simülasyon paneli için
+function SimKpi({ label, value, sub, color }) {
+  return (
+    <div style={{ padding: "8px 10px", background: "#fff", border: `1px solid ${color}`, borderRadius: 4 }}>
+      <div style={{ fontSize: 9, color: "#57534e", fontWeight: 600 }}>{label}</div>
+      <div style={{ fontSize: 15, fontWeight: 700, color, marginTop: 1 }}>{value}</div>
+      {sub && <div style={{ fontSize: 8, color: "#78716c", marginTop: 1 }}>{sub}</div>}
+    </div>
   );
 }
 
