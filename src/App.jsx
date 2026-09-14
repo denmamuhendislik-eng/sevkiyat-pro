@@ -17461,11 +17461,21 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
           currentFasonLeadDays = fa?.leadTimeDays || 14;
           if (waitDays != null && waitDays > currentFasonLeadDays * 1.2) fasonOverdue = true;
         }
+        // İş merkezi adı — iç imalat için centers[], fason için fason[]
+        let wcName = "";
+        if (currentOp?.isFason) {
+          const fa = (workCenters?.fason || {})[currentOp.opCode];
+          wcName = fa?.name || "";
+        } else if (currentOp?.wcCode) {
+          const wc = (workCenters?.centers || {})[currentOp.wcCode];
+          wcName = wc?.name || "";
+        }
         list.push({
           key: `${part.code}__${order.emirNo}`,
           code: part.code, name: prod?.nameTR || part.name, emirNo: order.emirNo,
           openDate: order.openDate, qty: order.qty, rem: order.rem,
-          currentOp, wcCode: currentOp?.wcCode || "", waitDays, waitSource,
+          currentOp, wcCode: currentOp?.wcCode || "", wcName,
+          waitDays, waitSource,
           completedOps, activeOps, totalOps, progressPct,
           estMin, estFasonDays, estTotalDays,
           isFasonBlocked: currentOp?.isFason,
@@ -17522,8 +17532,21 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
     const m = new Map();
     for (const it of filtered) {
       if (!it.isActive) continue;
-      const key = it.wcCode || "(atanmamış)";
-      if (!m.has(key)) m.set(key, { wcCode: key, items: [], totalMin: 0, isFason: it.isFasonBlocked });
+      // İç imalat: wcCode bazında grupla; Fason: opName bazında grupla
+      // (Fason emirlerinin wcCode'u genelde boş/tekdüze — op adı gerçek ayrımı verir)
+      const isFason = !!it.isFasonBlocked;
+      const key = isFason
+        ? (it.currentOp?.name || "(fason op adı yok)")
+        : (it.wcCode || "(atanmamış)");
+      if (!m.has(key)) {
+        m.set(key, {
+          key, isFason,
+          wcCode: isFason ? "" : (it.wcCode || ""),
+          wcName: isFason ? "" : (it.wcName || ""),
+          opName: isFason ? (it.currentOp?.name || "") : "",
+          items: [], totalMin: 0,
+        });
+      }
       const g = m.get(key);
       g.items.push(it);
       g.totalMin += it.estMin;
@@ -17535,6 +17558,52 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
   const byStationInternal = useMemo(() => byStation.filter(g => !g.isFason), [byStation]);
   const byStationFason = useMemo(() => byStation.filter(g => g.isFason), [byStation]);
 
+  // ============================================================
+  // KPI göstergeleri — üst kartlar (aktif emir bazlı hesap)
+  // ============================================================
+  const IDLE_THRESHOLD_DAYS = 60;
+  const kpis = useMemo(() => {
+    const activeItems = items.filter(i => i.isActive);
+    const totalActive = activeItems.length;
+    const totalRemaining = activeItems.reduce((s, i) => s + (Number(i.rem) || 0), 0);
+    // En uzun bekleyen
+    const sorted = [...activeItems]
+      .filter(i => i.waitDays != null && i.waitDays > 0)
+      .sort((a, b) => (b.waitDays || 0) - (a.waitDays || 0));
+    const longest = sorted[0] || null;
+    // 60+ gün hareketsiz (muhtemelen unutulmuş)
+    const idle = activeItems.filter(i => (i.waitDays || 0) >= IDLE_THRESHOLD_DAYS);
+    // Fason'da bekleyen + gecikmiş
+    const fasonItems = activeItems.filter(i => i.isFasonBlocked);
+    const fasonOverdue = fasonItems.filter(i => i.fasonOverdue).length;
+    // Ortalama bekleme + en yavaş aşama
+    const withWait = activeItems.filter(i => i.waitDays != null && i.waitDays > 0);
+    const avgWait = withWait.length > 0
+      ? withWait.reduce((s, i) => s + i.waitDays, 0) / withWait.length
+      : 0;
+    // Aşama bazlı ortalama bekleme
+    const stageMap = new Map(); // opName → { sum, count }
+    for (const i of withWait) {
+      const on = i.currentOp?.name || "(bilinmiyor)";
+      const g = stageMap.get(on) || { sum: 0, count: 0 };
+      g.sum += i.waitDays; g.count += 1;
+      stageMap.set(on, g);
+    }
+    let slowestStage = null;
+    for (const [name, g] of stageMap.entries()) {
+      const avg = g.sum / g.count;
+      if (g.count >= 2 && (!slowestStage || avg > slowestStage.avg)) {
+        slowestStage = { name, avg, count: g.count };
+      }
+    }
+    return {
+      totalActive, totalRemaining,
+      longest, idle, idleCount: idle.length,
+      fasonCount: fasonItems.length, fasonOverdue,
+      avgWait, slowestStage,
+    };
+  }, [items]);
+
   const toggleExpand = (key) => {
     setExpandedEmir(prev => {
       const next = new Set(prev);
@@ -17545,6 +17614,35 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
 
   return (
     <div>
+      {/* KPI kartları — üst özet göstergeler */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8, marginBottom: 10 }}>
+        <WoKpi label="📦 Toplam Aktif" value={kpis.totalActive} sub={`${kpis.totalRemaining} kalan parça`} color="#1e40af" bg="#eff6ff" />
+        <WoKpi label="⏰ En Uzun Bekleyen"
+          value={kpis.longest ? `${kpis.longest.waitDays} gün` : "—"}
+          sub={kpis.longest ? `#${kpis.longest.emirNo} · ${kpis.longest.currentOp?.name || "?"}` : "aktif iş yok"}
+          color="#92400e" bg="#fef3c7"
+          onClick={() => { setSortBy("waitDays"); setStatusFilter("active"); setWcFilter("all"); setOpNameFilter("all"); setFasonOnly(false); setSearch(""); setViewMode("list"); }}
+          title="Tıkla — bekleme desc sıralı liste görünümü" />
+        <WoKpi label={`🐢 ${IDLE_THRESHOLD_DAYS}+ Gün Hareketsiz`}
+          value={kpis.idleCount}
+          sub={kpis.idleCount > 0 ? "yanlışlıkla kapatılmamış olabilir" : "temiz ✓"}
+          color={kpis.idleCount > 0 ? "#991b1b" : "#166534"}
+          bg={kpis.idleCount > 0 ? "#fef2f2" : "#f0fdf4"}
+          onClick={kpis.idleCount > 0 ? () => { setSortBy("waitDays"); setStatusFilter("active"); setWcFilter("all"); setOpNameFilter("all"); setFasonOnly(false); setSearch(""); setViewMode("list"); } : null}
+          title="Tıkla — bekleme desc sıralı liste (60+ gün üstte)" />
+        <WoKpi label="🚚 Fason'da Bekleyen"
+          value={kpis.fasonCount}
+          sub={kpis.fasonOverdue > 0 ? `⚠ ${kpis.fasonOverdue} gecikmiş` : "gecikme yok"}
+          color={kpis.fasonOverdue > 0 ? "#991b1b" : "#c2410c"}
+          bg={kpis.fasonOverdue > 0 ? "#fef2f2" : "#fff7ed"}
+          onClick={kpis.fasonCount > 0 ? () => { setFasonOnly(true); setStatusFilter("active"); setWcFilter("all"); setOpNameFilter("all"); setSearch(""); setViewMode("list"); } : null}
+          title="Tıkla — sadece fason emirleri" />
+        <WoKpi label="📊 Ortalama Bekleme"
+          value={kpis.avgWait > 0 ? `${kpis.avgWait.toFixed(1)} gün` : "—"}
+          sub={kpis.slowestStage ? `En yavaş: ${kpis.slowestStage.name} (${kpis.slowestStage.avg.toFixed(0)}g)` : "veri yeterli değil"}
+          color="#5b21b6" bg="#f5f3ff" />
+      </div>
+
       {/* Toolbar */}
       <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", padding: 10, background: "var(--color-background-secondary)", borderRadius: 6, marginBottom: 12 }}>
         <div style={{ display: "flex", gap: 0, border: "1px solid var(--color-border-secondary)", borderRadius: 4, overflow: "hidden" }}>
@@ -17652,7 +17750,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                                 border: `1px solid ${it.currentOp.isFason ? "#fdba74" : "#bfdbfe"}`, borderRadius: 3 }}>
                                 {it.currentOp.isFason ? "🚚" : "🔧"} {it.currentOp.name}
                               </span>
-                              {it.wcCode && <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Tezgah: {it.wcCode}</div>}
+                              {it.wcCode && <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Tezgah: {it.wcCode}{it.wcName ? ` · ${it.wcName}` : ""}</div>}
                             </>
                           ) : <span style={{ color: "#a8a29e", fontSize: 10 }}>✓ Tamamlandı</span>}
                         </td>
@@ -17766,7 +17864,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 10 }}>
                 {byStationInternal.map(g => (
-                  <StationCard key={g.wcCode} g={g} accentBg="#1e40af" icon="🏭" fmtMin={fmtMin} />
+                  <StationCard key={g.key} g={g} accentBg="#1e40af" icon="🏭" fmtMin={fmtMin} />
                 ))}
               </div>
             </div>
@@ -17782,7 +17880,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 10 }}>
                 {byStationFason.map(g => (
-                  <StationCard key={g.wcCode} g={g} accentBg="#c2410c" icon="🚚" fmtMin={fmtMin} />
+                  <StationCard key={g.key} g={g} accentBg="#c2410c" icon="🚚" fmtMin={fmtMin} />
                 ))}
               </div>
             </div>
@@ -17801,12 +17899,36 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
 const woth = { padding: "6px 8px", fontWeight: 600, fontSize: 10, textAlign: "left", color: "#44403c", borderBottom: "1px solid #e7e5e4" };
 const wotd = { padding: "5px 8px", fontSize: 11, verticalAlign: "top" };
 
+// İş Emri Takibi KPI kartı — tıklanabilir (onClick verilirse hover efekti + cursor)
+function WoKpi({ label, value, sub, color, bg, onClick, title }) {
+  const clickable = typeof onClick === "function";
+  return (
+    <div onClick={clickable ? onClick : undefined}
+      title={title || ""}
+      style={{
+        padding: "10px 12px", background: bg, borderRadius: 6,
+        border: `1px solid ${color}`,
+        cursor: clickable ? "pointer" : "default",
+        transition: "transform 0.1s",
+      }}
+      onMouseEnter={clickable ? (e) => e.currentTarget.style.transform = "translateY(-1px)" : undefined}
+      onMouseLeave={clickable ? (e) => e.currentTarget.style.transform = "translateY(0)" : undefined}>
+      <div style={{ fontSize: 10, color: color, fontWeight: 600, textTransform: "uppercase" }}>{label}</div>
+      <div style={{ fontSize: 20, fontWeight: 700, color, marginTop: 2 }}>{value}</div>
+      {sub && <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>{sub}</div>}
+    </div>
+  );
+}
+
 // İstasyon bazlı görünüm kart bileşeni — İç İmalat (mavi) ve Fason (turuncu) grupları paylaşır
 function StationCard({ g, accentBg, icon, fmtMin }) {
+  // Başlık: iç imalatta "T-04 · CNC TALAŞLI İMALAT", fasonda opName ("FASON KAPLAMA")
+  const titleMain = g.isFason ? g.opName : g.wcCode;
+  const titleSub = g.isFason ? "" : g.wcName;
   return (
     <div style={{ background: "#fff", border: "1px solid var(--color-border-secondary)", borderRadius: 6, overflow: "hidden" }}>
       <div style={{ padding: "8px 12px", background: accentBg, color: "#fff", fontSize: 12, fontWeight: 700 }}>
-        {icon} {g.wcCode}
+        {icon} {titleMain}{titleSub ? <span style={{ opacity: 0.85, fontWeight: 500 }}> · {titleSub}</span> : null}
         <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, opacity: 0.85 }}>
           {g.items.length} emir · ~{fmtMin(g.totalMin)}
         </span>
