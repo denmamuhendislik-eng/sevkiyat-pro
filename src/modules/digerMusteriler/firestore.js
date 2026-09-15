@@ -194,13 +194,39 @@ export async function updateCocCertificate(cert, { canEdit }) {
   return { id, year };
 }
 
+// Revizyon backward-compat normalize helper.
+// Eski: revisions = ["A", "AB"]  (string array)
+// Yeni: revisions = [{ rev, releaseDate, notes, isActive, addedBy, addedAt, technicalDrawing }]
+export function normalizeRevisions(revisions) {
+  if (!Array.isArray(revisions)) return [];
+  return revisions.map(r => {
+    if (typeof r === "string") {
+      return { rev: r, releaseDate: null, notes: "", addedBy: "", addedAt: "", technicalDrawing: null };
+    }
+    if (r && typeof r === "object") {
+      return {
+        rev: r.rev || r.code || "",
+        releaseDate: r.releaseDate || null,
+        notes: r.notes || "",
+        addedBy: r.addedBy || "",
+        addedAt: r.addedAt || "",
+        technicalDrawing: r.technicalDrawing || null,
+      };
+    }
+    return null;
+  }).filter(x => x && x.rev);
+}
+
 // COC parça master upsert — yeni parça ekler veya mevcut revizyonları günceller.
 // stokKodu top-level key olarak appData/cocParts.parts içine yazılır.
+// revisions daima obj array olarak yazılır (backward-compat için normalize).
 export async function saveCocPart(part, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!db) throw new Error("Firestore bağlantısı hazır değil");
   if (!part.stokKodu) throw new Error("stokKodu zorunlu");
   if (!part.customerCode) throw new Error("customerCode zorunlu");
+  const revs = normalizeRevisions(part.revisions);
+  const activeRevision = part.activeRevision || (revs.length > 0 ? revs[revs.length - 1].rev : "");
   const ref = doc(db, APP_COL, COC_PARTS_DOC);
   await setDoc(ref, {
     parts: {
@@ -208,13 +234,60 @@ export async function saveCocPart(part, { canEdit }) {
         stokKodu: part.stokKodu,
         description: part.description || '',
         faiNo: part.faiNo || null,
-        revisions: Array.isArray(part.revisions) ? part.revisions : [],
+        revisions: revs,
+        activeRevision,
         customerCode: part.customerCode,
         updatedAt: new Date().toISOString(),
       },
     },
   }, { merge: true });
   return { stokKodu: part.stokKodu };
+}
+
+// Parça revizyonuna teknik resim upload.
+// path: appData/cocParts/{stokKodu}/{rev}/drawing_{timestamp}_{filename}
+// Dönen obj revizyon.technicalDrawing alanına yazılır (saveCocPart aracılığıyla).
+const PART_ATTACH_MAX_BYTES = 20 * 1024 * 1024; // 20 MB
+const PART_ATTACH_ALLOWED_EXT = ["pdf", "png", "jpg", "jpeg"];
+export async function uploadPartTechnicalDrawing(stokKodu, revKod, file, opts = {}) {
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!stokKodu || !revKod || !file) throw new Error("stokKodu, revKod ve file zorunlu");
+  if (file.size > PART_ATTACH_MAX_BYTES) {
+    throw new Error(`Dosya çok büyük (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 20 MB.`);
+  }
+  const ext = String(file.name || "").split(".").pop().toLowerCase();
+  if (!PART_ATTACH_ALLOWED_EXT.includes(ext)) {
+    throw new Error(`Desteklenmeyen dosya türü .${ext} — sadece: ${PART_ATTACH_ALLOWED_EXT.join(", ")}`);
+  }
+  const safeStok = String(stokKodu).replace(/[^\w.\-]/g, "_");
+  const safeRev = String(revKod).replace(/[^\w.\-]/g, "_");
+  const timestamp = Date.now();
+  const filename = safeFilename(file.name);
+  const path = `appData/cocParts/${safeStok}/${safeRev}/drawing_${timestamp}_${filename}`;
+  const ref = storageRef(storage, path);
+  await uploadBytes(ref, file, { contentType: file.type || "application/octet-stream" });
+  const url = await getDownloadURL(ref);
+  return {
+    url,
+    path,
+    filename: file.name,
+    size: file.size,
+    contentType: file.type || "application/octet-stream",
+    uploadedAt: new Date().toISOString(),
+    uploadedBy: opts.userEmail || "",
+  };
+}
+
+// Teknik resmi Storage'dan sil (Firestore field'ı çağıran tarafta temizler).
+export async function deletePartTechnicalDrawing(storagePath, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!storagePath) return;
+  try {
+    await deleteObject(storageRef(storage, storagePath));
+  } catch (e) {
+    if (e?.code !== "storage/object-not-found") throw e;
+  }
 }
 
 // COC parça master'ında requiresCoc override — bir stok kodu için

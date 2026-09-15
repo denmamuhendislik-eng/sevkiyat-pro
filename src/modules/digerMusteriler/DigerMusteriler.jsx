@@ -14,6 +14,7 @@ import {
   getReusableAttachmentList, getCocAttachmentList,
   saveDriveConfig, getCocPartDriveAltName, setCocPartDriveAltName,
   COC_ATTACHMENT_CATEGORIES,
+  normalizeRevisions, uploadPartTechnicalDrawing, deletePartTechnicalDrawing,
 } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments, setMrpCustomerDefault, setOrderMrpOverride } from './firestore';
 import { subscribeMrpDefaults } from './firestore';
@@ -5212,6 +5213,9 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
 
   // Iskelet/Tam tespiti: revisions boş = iskelet (auto-from-salesOrders eklenmiş ama henüz revizyon yok)
   const isSkeleton = (p) => !p.revisions || p.revisions.length === 0;
+  // Backward-compat: revision string veya obj olabilir
+  const revCode = (r) => typeof r === 'string' ? r : (r?.rev || '');
+  const hasDrawingInAnyRev = (p) => Array.isArray(p?.revisions) && p.revisions.some(r => r && typeof r === 'object' && r.technicalDrawing?.url);
 
   const filtered = useMemo(() => {
     const qMain = (searchText || '').trim().toLocaleLowerCase('tr-TR');
@@ -5226,7 +5230,8 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
       const skel = isSkeleton(p);
       if (completionFilter === 'complete' && skel) return false;
       if (completionFilter === 'skeleton' && !skel) return false;
-      const hay = `${p.stokKodu} ${p.description || ''} ${p.faiNo || ''} ${(p.revisions || []).join(' ')}`.toLocaleLowerCase('tr-TR');
+      const revStr = (p.revisions || []).map(revCode).join(' ');
+      const hay = `${p.stokKodu} ${p.description || ''} ${p.faiNo || ''} ${revStr}`.toLocaleLowerCase('tr-TR');
       if (qMain && !hay.includes(qMain)) return false;
       if (qLocal && !hay.includes(qLocal)) return false;
       return true;
@@ -5336,18 +5341,29 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
                     {skel && <span title="Revizyon eksik — sipariş raporundan otomatik eklenmiş iskelet" style={{ marginLeft: 6, padding: '1px 4px', borderRadius: 3, fontSize: 8, fontWeight: 600, background: '#fef3c7', color: '#92400e' }}>⚠ EKSİK</span>}
                   </td>
                   <td style={{ ...cocTd, color: '#44403c' }} title={p.description}>{p.description || '—'}</td>
-                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>{p.faiNo || '—'}</td>
+                  <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>
+                    {p.faiNo || '—'}
+                    {hasDrawingInAnyRev(p) && <span title="Teknik resim ekli" style={{ marginLeft: 6, color: '#1e40af' }}>📎</span>}
+                  </td>
                   <td style={cocTd}>
                     {(p.revisions || []).length === 0 ? (
                       <span style={{ color: '#a8a29e' }}>—</span>
                     ) : (
                       <div style={{ display: 'flex', gap: 3, flexWrap: 'wrap' }}>
-                        {p.revisions.map(r => (
-                          <span key={r} style={{
-                            padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 600,
-                            background: '#eff6ff', color: '#1e40af', fontFamily: 'ui-monospace, monospace',
-                          }}>{r}</span>
-                        ))}
+                        {p.revisions.map(r => {
+                          const code = revCode(r);
+                          const isActive = p.activeRevision === code;
+                          const hasImg = typeof r === 'object' && r?.technicalDrawing?.url;
+                          return (
+                            <span key={code} title={isActive ? `Aktif revizyon${hasImg ? ' · teknik resim ekli' : ''}` : (hasImg ? 'Teknik resim ekli' : code)} style={{
+                              padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 600,
+                              background: isActive ? '#dcfce7' : '#eff6ff',
+                              color: isActive ? '#166534' : '#1e40af',
+                              border: isActive ? '1px solid #16a34a' : 'none',
+                              fontFamily: 'ui-monospace, monospace',
+                            }}>{isActive && '🟢 '}{code}{hasImg && ' 📎'}</span>
+                          );
+                        })}
                       </div>
                     )}
                   </td>
@@ -5383,21 +5399,27 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
   );
 }
 
-// COC Parça Düzenle/Yeni Ekle Modal
+// COC Parça Düzenle/Yeni Ekle Modal — Faz 1 Konfigürasyon Yönetimi
+// Revizyonlar obj yapısında: { rev, releaseDate, notes, addedBy, addedAt, technicalDrawing }
+// Her revizyona teknik resim (PDF/PNG/JPG max 20MB) yüklenebilir.
 function CocPartModal({ part, canEdit, onClose }) {
   const isNew = !part;
   const [stokKodu, setStokKodu] = useState(part?.stokKodu || '');
   const [customerCode, setCustomerCode] = useState(part?.customerCode || '120-0107');
   const [description, setDescription] = useState(part?.description || '');
   const [faiNo, setFaiNo] = useState(part?.faiNo || '');
-  const [revisions, setRevisions] = useState(part?.revisions || []);
+  // Backward-compat: string array → obj array
+  const [revisions, setRevisions] = useState(() => normalizeRevisions(part?.revisions || []));
+  const [activeRevision, setActiveRevision] = useState(part?.activeRevision || (part?.revisions && part.revisions.length > 0 ? (typeof part.revisions[part.revisions.length - 1] === 'string' ? part.revisions[part.revisions.length - 1] : part.revisions[part.revisions.length - 1].rev) : ''));
   const [newRev, setNewRev] = useState('');
+  const [expandedRev, setExpandedRev] = useState(part?.activeRevision || null);
+  const [uploadingRev, setUploadingRev] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState('');
 
-  const busy = saving || deleting;
+  const busy = saving || deleting || !!uploadingRev;
 
   useEffect(() => {
     const onKey = (e) => { if (e.key === 'Escape' && !busy) onClose(); };
@@ -5408,13 +5430,95 @@ function CocPartModal({ part, canEdit, onClose }) {
   const addRevision = () => {
     const v = newRev.trim();
     if (!v) return;
-    if (revisions.includes(v)) { setError(`Revizyon "${v}" zaten var`); return; }
-    setRevisions([...revisions, v]);
+    if (revisions.some(r => r.rev === v)) { setError(`Revizyon "${v}" zaten var`); return; }
+    const newObj = {
+      rev: v, releaseDate: null, notes: '',
+      addedBy: '', addedAt: new Date().toISOString(),
+      technicalDrawing: null,
+    };
+    setRevisions([...revisions, newObj]);
+    setActiveRevision(v); // yeni eklenen otomatik aktif
+    setExpandedRev(v);    // ve accordion açılır
     setNewRev('');
     setError('');
   };
 
-  const removeRevision = (r) => setRevisions(revisions.filter(x => x !== r));
+  const removeRevision = async (revKod) => {
+    // Attachment varsa Storage'dan sil (kaybetmemek için önce sil, sonra state güncelle)
+    const target = revisions.find(r => r.rev === revKod);
+    if (target?.technicalDrawing?.path) {
+      try {
+        await deletePartTechnicalDrawing(target.technicalDrawing.path, { canEdit });
+      } catch (e) {
+        setError(`Teknik resim silinemedi: ${e.message}`);
+        return;
+      }
+    }
+    const remaining = revisions.filter(r => r.rev !== revKod);
+    setRevisions(remaining);
+    // Aktif olan silinirse en son eklenen aktif olsun
+    if (activeRevision === revKod) {
+      setActiveRevision(remaining.length > 0 ? remaining[remaining.length - 1].rev : '');
+    }
+    if (expandedRev === revKod) setExpandedRev(null);
+  };
+
+  const updateRev = (revKod, patch) => {
+    setRevisions(revisions.map(r => r.rev === revKod ? { ...r, ...patch } : r));
+  };
+
+  const handleUploadDrawing = async (revKod, file) => {
+    if (!canEdit || !file) return;
+    if (isNew || !stokKodu.trim()) {
+      setError('Teknik resim yüklemek için önce parçayı kaydet (Ekle butonu).');
+      return;
+    }
+    setUploadingRev(revKod);
+    setError('');
+    try {
+      const meta = await uploadPartTechnicalDrawing(stokKodu.trim(), revKod, file);
+      updateRev(revKod, { technicalDrawing: meta });
+      // Firestore'a hemen yaz — yükleme başarılı ama modal kapatılırsa kayıp olmasın
+      const updatedRevisions = revisions.map(r => r.rev === revKod ? { ...r, technicalDrawing: meta } : r);
+      await saveCocPart({
+        stokKodu: stokKodu.trim(),
+        customerCode, description: description.trim(),
+        faiNo: faiNo.trim() || null,
+        revisions: updatedRevisions,
+        activeRevision,
+      }, { canEdit });
+    } catch (e) {
+      setError(e.message || 'Yükleme hatası');
+    } finally {
+      setUploadingRev(null);
+    }
+  };
+
+  const handleDeleteDrawing = async (revKod) => {
+    if (!canEdit) return;
+    const target = revisions.find(r => r.rev === revKod);
+    if (!target?.technicalDrawing?.path) return;
+    if (!confirm(`Rev ${revKod} teknik resmi silinecek. Devam?`)) return;
+    setUploadingRev(revKod);
+    setError('');
+    try {
+      await deletePartTechnicalDrawing(target.technicalDrawing.path, { canEdit });
+      const updatedRevisions = revisions.map(r => r.rev === revKod ? { ...r, technicalDrawing: null } : r);
+      setRevisions(updatedRevisions);
+      // Firestore'da field'ı da temizle
+      await saveCocPart({
+        stokKodu: stokKodu.trim(),
+        customerCode, description: description.trim(),
+        faiNo: faiNo.trim() || null,
+        revisions: updatedRevisions,
+        activeRevision,
+      }, { canEdit });
+    } catch (e) {
+      setError(e.message || 'Silme hatası');
+    } finally {
+      setUploadingRev(null);
+    }
+  };
 
   const handleSave = async () => {
     if (!canEdit) return;
@@ -5430,6 +5534,7 @@ function CocPartModal({ part, canEdit, onClose }) {
         description: description.trim(),
         faiNo: faiNo.trim() || null,
         revisions,
+        activeRevision: activeRevision || revisions[revisions.length - 1].rev,
       }, { canEdit });
       onClose();
     } catch (e) {
@@ -5443,6 +5548,12 @@ function CocPartModal({ part, canEdit, onClose }) {
     setDeleting(true);
     setError('');
     try {
+      // Tüm revizyonların attachment'larını Storage'dan sil
+      for (const r of revisions) {
+        if (r.technicalDrawing?.path) {
+          try { await deletePartTechnicalDrawing(r.technicalDrawing.path, { canEdit }); } catch (_) {}
+        }
+      }
       await deleteCocPart(part.stokKodu, { canEdit });
       onClose();
     } catch (e) {
@@ -5465,13 +5576,13 @@ function CocPartModal({ part, canEdit, onClose }) {
     >
       <div style={{
         background: '#fff', borderRadius: 10, padding: 0,
-        maxWidth: 560, width: '100%', maxHeight: '90vh', overflowY: 'auto',
+        maxWidth: 720, width: '100%', maxHeight: '92vh', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
       }}>
         <div style={{ padding: '14px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
           <span style={{ fontSize: 22 }}>🔧</span>
           <h3 style={{ margin: 0, fontSize: 16, fontWeight: 600, color: '#1e40af' }}>
-            {isNew ? 'Yeni Parça Ekle' : `Parça Düzenle — ${part.stokKodu}`}
+            {isNew ? 'Yeni Parça Ekle' : `Parça Master — ${part.stokKodu}`}
           </h3>
           <button onClick={() => !busy && onClose()} disabled={busy} style={{
             marginLeft: 'auto', padding: '4px 10px', borderRadius: 4, fontSize: 12,
@@ -5479,7 +5590,8 @@ function CocPartModal({ part, canEdit, onClose }) {
           }}>Kapat ✕</button>
         </div>
 
-        <div style={{ padding: 20, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+        {/* Üst kısım — sabit alanlar */}
+        <div style={{ padding: '16px 20px 0', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>Müşteri *</label>
             <select value={customerCode} onChange={(e) => setCustomerCode(e.target.value)} disabled={!isNew || busy} style={inp}>
@@ -5499,53 +5611,171 @@ function CocPartModal({ part, canEdit, onClose }) {
             <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>FAİ No</label>
             <input type="text" value={faiNo} onChange={(e) => setFaiNo(e.target.value)} disabled={busy} placeholder="opsiyonel" style={{ ...inp, fontFamily: 'ui-monospace, monospace' }} />
           </div>
-          <div>
-            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 4 }}>Yeni Revizyon Ekle</label>
-            <div style={{ display: 'flex', gap: 4 }}>
-              <input type="text" value={newRev} onChange={(e) => setNewRev(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRevision(); } }} disabled={busy} placeholder="örn. AB, D02" style={{ ...inp, fontFamily: 'ui-monospace, monospace' }} />
-              <button onClick={addRevision} disabled={busy || !newRev.trim()} style={{
-                padding: '6px 10px', borderRadius: 4, fontSize: 12, cursor: busy ? 'not-allowed' : 'pointer',
-                border: '1px solid #1e40af', background: '#1e40af', color: '#fff', whiteSpace: 'nowrap',
-              }}>+</button>
-            </div>
-          </div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <label style={{ fontSize: 11, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 6 }}>
-              Revizyonlar ({revisions.length}) {revisions.length === 0 && <span style={{ color: '#dc2626', fontWeight: 400 }}>— en az 1 gerekli</span>}
+        </div>
+
+        {/* Revizyonlar bölümü — accordion */}
+        <div style={{ padding: '16px 20px 4px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+            <label style={{ fontSize: 12, color: '#44403c', fontWeight: 600 }}>
+              📋 Revizyonlar ({revisions.length})
+              {revisions.length === 0 && <span style={{ color: '#dc2626', fontWeight: 400, marginLeft: 6 }}>— en az 1 gerekli</span>}
             </label>
-            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5, minHeight: 36, padding: 8, border: '1px solid #e7e5e4', borderRadius: 4, background: '#fafaf9' }}>
-              {revisions.length === 0 ? (
-                <span style={{ fontSize: 11, color: '#a8a29e', alignSelf: 'center' }}>Yukarıdan revizyon ekle</span>
-              ) : revisions.map(r => (
-                <span key={r} style={{
-                  display: 'inline-flex', alignItems: 'center', gap: 4,
-                  padding: '3px 4px 3px 8px', borderRadius: 4, fontSize: 11, fontWeight: 600,
-                  background: '#eff6ff', color: '#1e40af', fontFamily: 'ui-monospace, monospace',
-                }}>
-                  {r}
-                  {!busy && (
-                    <button onClick={() => removeRevision(r)} title="Kaldır" style={{
-                      border: 'none', background: 'transparent', cursor: 'pointer', padding: 0,
-                      fontSize: 12, color: '#dc2626', lineHeight: 1, fontWeight: 700,
-                    }}>×</button>
-                  )}
-                </span>
-              ))}
-            </div>
+            <span style={{ marginLeft: 'auto', fontSize: 10, color: '#78716c' }}>
+              Her revizyona teknik resim yüklenebilir (PDF/PNG/JPG, max 20MB)
+            </span>
           </div>
+
+          {/* Yeni revizyon ekleme satırı */}
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            <input type="text" value={newRev}
+              onChange={(e) => setNewRev(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addRevision(); } }}
+              disabled={busy}
+              placeholder="+ Yeni revizyon kodu (örn. AB, D02)"
+              style={{ ...inp, fontFamily: 'ui-monospace, monospace' }} />
+            <button onClick={addRevision} disabled={busy || !newRev.trim()} style={{
+              padding: '6px 14px', borderRadius: 4, fontSize: 12, cursor: busy ? 'not-allowed' : 'pointer',
+              border: '1px solid #1e40af', background: '#1e40af', color: '#fff', whiteSpace: 'nowrap', fontWeight: 600,
+            }}>+ Ekle</button>
+          </div>
+
+          {/* Revizyon accordion kartları */}
+          {revisions.length === 0 ? (
+            <div style={{ padding: 16, textAlign: 'center', color: '#a8a29e', fontSize: 11, background: '#fafaf9', borderRadius: 6, border: '1px dashed #d6d3d1' }}>
+              Henüz revizyon eklenmedi
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+              {revisions.map((r) => {
+                const isActive = activeRevision === r.rev;
+                const isExpanded = expandedRev === r.rev;
+                const hasDrawing = !!r.technicalDrawing?.url;
+                const isUploading = uploadingRev === r.rev;
+                return (
+                  <div key={r.rev} style={{
+                    border: '1px solid ' + (isActive ? '#16a34a' : '#e7e5e4'),
+                    borderRadius: 6,
+                    background: isActive ? '#f0fdf4' : '#fff',
+                    overflow: 'hidden',
+                  }}>
+                    {/* Header — tıklanır */}
+                    <div
+                      onClick={() => !busy && setExpandedRev(isExpanded ? null : r.rev)}
+                      style={{ padding: '8px 12px', display: 'flex', alignItems: 'center', gap: 10, cursor: busy ? 'default' : 'pointer' }}
+                    >
+                      <span style={{ fontSize: 11, color: '#78716c' }}>{isExpanded ? '▼' : '▶'}</span>
+                      <span style={{ fontFamily: 'ui-monospace, monospace', fontWeight: 700, fontSize: 13, color: '#1e40af', minWidth: 60 }}>{r.rev}</span>
+                      {isActive && <span style={{ padding: '1px 6px', borderRadius: 3, fontSize: 9, fontWeight: 700, background: '#16a34a', color: '#fff' }}>🟢 AKTİF</span>}
+                      {r.releaseDate && <span style={{ fontSize: 11, color: '#57534e' }}>· {r.releaseDate}</span>}
+                      {hasDrawing && <span title={r.technicalDrawing.filename} style={{ fontSize: 12, color: '#1e40af' }}>📎</span>}
+                      {r.notes && <span style={{ fontSize: 10, color: '#78716c', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 240 }} title={r.notes}>· {r.notes}</span>}
+                      <div style={{ marginLeft: 'auto', display: 'flex', gap: 4 }}>
+                        {!isActive && canEdit && !busy && (
+                          <button onClick={(e) => { e.stopPropagation(); setActiveRevision(r.rev); }}
+                            title="Aktif revizyon yap"
+                            style={{ padding: '2px 8px', fontSize: 10, background: '#fff', border: '1px solid #16a34a', color: '#166534', borderRadius: 3, cursor: 'pointer', fontWeight: 500 }}>
+                            Aktif yap
+                          </button>
+                        )}
+                        {canEdit && !busy && (
+                          <button onClick={(e) => { e.stopPropagation(); removeRevision(r.rev); }}
+                            title="Bu revizyonu sil"
+                            style={{ padding: '2px 8px', fontSize: 10, background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 3, cursor: 'pointer' }}>
+                            🗑
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Expanded body */}
+                    {isExpanded && (
+                      <div style={{ padding: '10px 14px', borderTop: '1px solid #e7e5e4', background: '#fafaf9' }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 3 }}>Yayın Tarihi</label>
+                            <input type="date" value={r.releaseDate || ''}
+                              onChange={(e) => updateRev(r.rev, { releaseDate: e.target.value || null })}
+                              disabled={busy}
+                              style={{ ...inp, fontSize: 11 }} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 3 }}>Değişim Notu</label>
+                            <input type="text" value={r.notes || ''}
+                              onChange={(e) => updateRev(r.rev, { notes: e.target.value })}
+                              disabled={busy}
+                              placeholder="örn. Delik toleransı ±0.05 → ±0.02"
+                              style={{ ...inp, fontSize: 11 }} />
+                          </div>
+                        </div>
+                        {/* Teknik Resim */}
+                        <div style={{ padding: 10, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 5 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: '#44403c', marginBottom: 6 }}>📐 Teknik Resim</div>
+                          {hasDrawing ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 11, fontFamily: 'ui-monospace, monospace' }}>📄 {r.technicalDrawing.filename}</span>
+                              <span style={{ fontSize: 10, color: '#78716c' }}>{(r.technicalDrawing.size / 1024 / 1024).toFixed(2)} MB</span>
+                              <a href={r.technicalDrawing.url} target="_blank" rel="noopener noreferrer"
+                                style={{ fontSize: 11, padding: '3px 10px', background: '#1e40af', color: '#fff', borderRadius: 3, textDecoration: 'none', fontWeight: 500 }}>
+                                Görüntüle
+                              </a>
+                              {canEdit && (
+                                <label style={{ fontSize: 11, padding: '3px 10px', background: '#fff', border: '1px solid #d6d3d1', color: '#44403c', borderRadius: 3, cursor: busy ? 'not-allowed' : 'pointer' }}>
+                                  Değiştir
+                                  <input type="file" accept=".pdf,.png,.jpg,.jpeg" disabled={busy}
+                                    onChange={(e) => { if (e.target.files?.[0]) handleUploadDrawing(r.rev, e.target.files[0]); e.target.value = ''; }}
+                                    style={{ display: 'none' }} />
+                                </label>
+                              )}
+                              {canEdit && (
+                                <button onClick={() => handleDeleteDrawing(r.rev)} disabled={busy}
+                                  style={{ fontSize: 11, padding: '3px 10px', background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 3, cursor: busy ? 'not-allowed' : 'pointer' }}>
+                                  Sil
+                                </button>
+                              )}
+                              {isUploading && <span style={{ fontSize: 10, color: '#1e40af' }}>Yükleniyor...</span>}
+                            </div>
+                          ) : (
+                            <div>
+                              {canEdit ? (
+                                isNew ? (
+                                  <span style={{ fontSize: 11, color: '#92400e', fontStyle: 'italic' }}>
+                                    💡 Teknik resim yüklemek için önce parçayı kaydet (aşağıdaki "Ekle" butonu).
+                                  </span>
+                                ) : (
+                                  <label style={{ fontSize: 11, padding: '5px 14px', background: '#1e40af', color: '#fff', borderRadius: 4, cursor: busy ? 'not-allowed' : 'pointer', display: 'inline-block', fontWeight: 500 }}>
+                                    📤 Teknik Resim Yükle (PDF/PNG/JPG max 20MB)
+                                    <input type="file" accept=".pdf,.png,.jpg,.jpeg" disabled={busy}
+                                      onChange={(e) => { if (e.target.files?.[0]) handleUploadDrawing(r.rev, e.target.files[0]); e.target.value = ''; }}
+                                      style={{ display: 'none' }} />
+                                  </label>
+                                )
+                              ) : (
+                                <span style={{ fontSize: 11, color: '#a8a29e', fontStyle: 'italic' }}>Teknik resim yok</span>
+                              )}
+                              {isUploading && <span style={{ fontSize: 10, color: '#1e40af', marginLeft: 8 }}>Yükleniyor...</span>}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
 
         {error && (
-          <div style={{ margin: '0 20px 12px', padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
+          <div style={{ margin: '10px 20px 0', padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
             ⚠ {error}
           </div>
         )}
 
         {confirmDelete && (
-          <div style={{ margin: '0 20px 12px', padding: 12, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 12 }}>
+          <div style={{ margin: '10px 20px 0', padding: 12, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 12 }}>
             <div style={{ color: '#991b1b', fontWeight: 600, marginBottom: 8 }}>⚠ Parça master kaydını silmek istediğine emin misin?</div>
             <div style={{ color: '#7f1d1d', marginBottom: 10 }}>
-              <b>{part?.stokKodu}</b> — bu parça için yeni COC oluştururken master verisi olmayacak (manuel girersin). Geçmiş sertifikalar etkilenmez.
+              <b>{part?.stokKodu}</b> — bu parça için yeni COC oluştururken master verisi olmayacak (manuel girersin). Tüm revizyonlara ait teknik resimler de Storage'dan silinecek. Geçmiş sertifikalar etkilenmez.
             </div>
             <div style={{ display: 'flex', gap: 8 }}>
               <button onClick={() => setConfirmDelete(false)} disabled={deleting} style={{
@@ -5561,7 +5791,7 @@ function CocPartModal({ part, canEdit, onClose }) {
           </div>
         )}
 
-        <div style={{ padding: '12px 20px', borderTop: '1px solid #e7e5e4', display: 'flex', justifyContent: 'flex-end', gap: 8 }}>
+        <div style={{ padding: '12px 20px', borderTop: '1px solid #e7e5e4', display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
           {!isNew && canEdit && (
             <button onClick={() => setConfirmDelete(true)} disabled={busy} style={{
               padding: '8px 16px', borderRadius: 6, fontSize: 13, fontWeight: 500,
