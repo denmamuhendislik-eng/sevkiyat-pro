@@ -2342,7 +2342,7 @@ export default function DigerMusteriler({ isAdmin, isUretim, isSales, onNavigate
 
           {viewMode === 'coc' && (
             <CocArchiveView searchText={searchText} customerFilter={customerFilter} canEdit={canEdit} cocParts={cocParts}
-              onOpenFaiForPart={openFaiForPart} />
+              bomModels={bomModels} onOpenFaiForPart={openFaiForPart} />
           )}
 
           {viewMode === 'fai' && (
@@ -4555,7 +4555,7 @@ function CocModal({ orders, cocParts, cocCertificates, bomModels, canEdit, onClo
 // Filtreler: müşteri (DigerMusteriler üst filtresinden), yıl, arama (certNo/orderNo/stokKodu/desc).
 // Tıkla → detay modal + PDF tekrar üret.
 // ====================================================================
-function CocArchiveView({ searchText, customerFilter, canEdit, cocParts, onOpenFaiForPart }) {
+function CocArchiveView({ searchText, customerFilter, canEdit, cocParts, bomModels, onOpenFaiForPart }) {
   const currentYear = new Date().getFullYear();
   const yearList = useMemo(() => {
     return [currentYear - 4, currentYear - 3, currentYear - 2, currentYear - 1, currentYear].map(String);
