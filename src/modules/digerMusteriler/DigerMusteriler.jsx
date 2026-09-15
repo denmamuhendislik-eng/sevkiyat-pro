@@ -15,6 +15,7 @@ import {
   saveDriveConfig, getCocPartDriveAltName, setCocPartDriveAltName,
   COC_ATTACHMENT_CATEGORIES,
   normalizeRevisions, uploadPartTechnicalDrawing, deletePartTechnicalDrawing,
+  uploadPartCamProgram, deletePartCamProgram, uploadPartModel3d, deletePartModel3d,
 } from './firestore';
 import { saveSalesOrders, savePlanOverride, savePlanOverrides, removePlanOverride, saveShipments, setMrpCustomerDefault, setOrderMrpOverride } from './firestore';
 import { subscribeMrpDefaults } from './firestore';
@@ -4671,7 +4672,7 @@ function CocArchiveView({ searchText, customerFilter, canEdit, cocParts, onOpenF
       </div>
 
       {subTab === 'parts' && (
-        <CocPartsView cocParts={cocParts} customerFilter={customerFilter} searchText={searchText} canEdit={canEdit} />
+        <CocPartsView cocParts={cocParts} customerFilter={customerFilter} searchText={searchText} canEdit={canEdit} bomModels={bomModels} />
       )}
 
       {subTab === 'certificates' && (<>
@@ -5206,7 +5207,7 @@ function CocDetailModal({ cert: initialCert, canEdit, onClose }) {
 // COC Parça Master Yönetimi — KONF Excel'den gelen parçalar + UI'dan eklenen.
 // Yeni revizyon geldiğinde Excel re-import beklemeden buradan ekle/güncelle.
 // ====================================================================
-function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
+function CocPartsView({ cocParts, customerFilter, searchText, canEdit, bomModels }) {
   const [partsSearch, setPartsSearch] = useState('');
   const [editingPart, setEditingPart] = useState(null); // obj veya {new:true}
   const [completionFilter, setCompletionFilter] = useState('all'); // 'all' | 'complete' | 'skeleton'
@@ -5216,6 +5217,8 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
   // Backward-compat: revision string veya obj olabilir
   const revCode = (r) => typeof r === 'string' ? r : (r?.rev || '');
   const hasDrawingInAnyRev = (p) => Array.isArray(p?.revisions) && p.revisions.some(r => r && typeof r === 'object' && r.technicalDrawing?.url);
+  const hasCamInAnyRev = (p) => Array.isArray(p?.revisions) && p.revisions.some(r => r && typeof r === 'object' && (r.camPrograms || []).length > 0);
+  const has3dInAnyRev = (p) => Array.isArray(p?.revisions) && p.revisions.some(r => r && typeof r === 'object' && r.model3d?.url);
 
   const filtered = useMemo(() => {
     const qMain = (searchText || '').trim().toLocaleLowerCase('tr-TR');
@@ -5344,6 +5347,8 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
                   <td style={{ ...cocTd, fontFamily: 'ui-monospace, monospace' }}>
                     {p.faiNo || '—'}
                     {hasDrawingInAnyRev(p) && <span title="Teknik resim ekli" style={{ marginLeft: 6, color: '#1e40af' }}>📎</span>}
+                    {hasCamInAnyRev(p) && <span title="CAM programı ekli" style={{ marginLeft: 4, color: '#1e40af' }}>⚙</span>}
+                    {has3dInAnyRev(p) && <span title="3D model ekli" style={{ marginLeft: 4, color: '#1e40af' }}>🎲</span>}
                   </td>
                   <td style={cocTd}>
                     {(p.revisions || []).length === 0 ? (
@@ -5392,6 +5397,7 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
         <CocPartModal
           part={editingPart.new ? null : editingPart}
           canEdit={canEdit}
+          bomModels={bomModels}
           onClose={() => setEditingPart(null)}
         />
       )}
@@ -5399,10 +5405,12 @@ function CocPartsView({ cocParts, customerFilter, searchText, canEdit }) {
   );
 }
 
-// COC Parça Düzenle/Yeni Ekle Modal — Faz 1 Konfigürasyon Yönetimi
-// Revizyonlar obj yapısında: { rev, releaseDate, notes, addedBy, addedAt, technicalDrawing }
-// Her revizyona teknik resim (PDF/PNG/JPG max 20MB) yüklenebilir.
-function CocPartModal({ part, canEdit, onClose }) {
+// COC Parça Düzenle/Yeni Ekle Modal — Faz 1+2 Konfigürasyon Yönetimi
+// Revizyonlar obj yapısında: { rev, releaseDate, notes, ecnNo, technicalDrawing,
+//                              camPrograms[], model3d }
+// Faz 1: teknik resim (PDF/PNG/JPG)
+// Faz 2: CAM programı (revizyon başına çoklu), 3D model, ECN no, Where-Used paneli
+function CocPartModal({ part, canEdit, bomModels, onClose }) {
   const isNew = !part;
   const [stokKodu, setStokKodu] = useState(part?.stokKodu || '');
   const [customerCode, setCustomerCode] = useState(part?.customerCode || '120-0107');
@@ -5446,13 +5454,19 @@ function CocPartModal({ part, canEdit, onClose }) {
   const removeRevision = async (revKod) => {
     // Attachment varsa Storage'dan sil (kaybetmemek için önce sil, sonra state güncelle)
     const target = revisions.find(r => r.rev === revKod);
-    if (target?.technicalDrawing?.path) {
-      try {
+    try {
+      if (target?.technicalDrawing?.path) {
         await deletePartTechnicalDrawing(target.technicalDrawing.path, { canEdit });
-      } catch (e) {
-        setError(`Teknik resim silinemedi: ${e.message}`);
-        return;
       }
+      if (target?.model3d?.path) {
+        await deletePartModel3d(target.model3d.path, { canEdit });
+      }
+      for (const cam of (target?.camPrograms || [])) {
+        if (cam?.path) await deletePartCamProgram(cam.path, { canEdit });
+      }
+    } catch (e) {
+      setError(`Dosyalar silinemedi: ${e.message}`);
+      return;
     }
     const remaining = revisions.filter(r => r.rev !== revKod);
     setRevisions(remaining);
@@ -5520,6 +5534,152 @@ function CocPartModal({ part, canEdit, onClose }) {
     }
   };
 
+  // CAM Programı yükleme — revizyon başına çoklu
+  const handleUploadCam = async (revKod, file, meta) => {
+    if (!canEdit || !file) return;
+    if (isNew || !stokKodu.trim()) {
+      setError('CAM programı yüklemek için önce parçayı kaydet.');
+      return;
+    }
+    setUploadingRev(revKod);
+    setError('');
+    try {
+      const camMeta = await uploadPartCamProgram(stokKodu.trim(), revKod, file, meta || {});
+      const updatedRevisions = revisions.map(r => r.rev === revKod
+        ? { ...r, camPrograms: [...(r.camPrograms || []), camMeta] }
+        : r);
+      setRevisions(updatedRevisions);
+      await saveCocPart({
+        stokKodu: stokKodu.trim(),
+        customerCode, description: description.trim(),
+        faiNo: faiNo.trim() || null,
+        revisions: updatedRevisions, activeRevision,
+      }, { canEdit });
+    } catch (e) {
+      setError(e.message || 'CAM yükleme hatası');
+    } finally {
+      setUploadingRev(null);
+    }
+  };
+
+  const handleDeleteCam = async (revKod, camId) => {
+    if (!canEdit) return;
+    const target = revisions.find(r => r.rev === revKod);
+    const cam = (target?.camPrograms || []).find(c => c.id === camId);
+    if (!cam) return;
+    if (!confirm(`CAM programı "${cam.filename}" silinecek. Devam?`)) return;
+    setUploadingRev(revKod);
+    setError('');
+    try {
+      await deletePartCamProgram(cam.path, { canEdit });
+      const updatedRevisions = revisions.map(r => r.rev === revKod
+        ? { ...r, camPrograms: (r.camPrograms || []).filter(c => c.id !== camId) }
+        : r);
+      setRevisions(updatedRevisions);
+      await saveCocPart({
+        stokKodu: stokKodu.trim(),
+        customerCode, description: description.trim(),
+        faiNo: faiNo.trim() || null,
+        revisions: updatedRevisions, activeRevision,
+      }, { canEdit });
+    } catch (e) {
+      setError(e.message || 'CAM silme hatası');
+    } finally {
+      setUploadingRev(null);
+    }
+  };
+
+  // 3D Model yükleme — revizyon başına tek dosya (technicalDrawing paterni)
+  const handleUploadModel3d = async (revKod, file) => {
+    if (!canEdit || !file) return;
+    if (isNew || !stokKodu.trim()) {
+      setError('3D model yüklemek için önce parçayı kaydet.');
+      return;
+    }
+    setUploadingRev(revKod);
+    setError('');
+    try {
+      // Eski varsa Storage'dan sil
+      const current = revisions.find(r => r.rev === revKod);
+      if (current?.model3d?.path) {
+        try { await deletePartModel3d(current.model3d.path, { canEdit }); } catch (_) {}
+      }
+      const meta = await uploadPartModel3d(stokKodu.trim(), revKod, file);
+      const updatedRevisions = revisions.map(r => r.rev === revKod ? { ...r, model3d: meta } : r);
+      setRevisions(updatedRevisions);
+      await saveCocPart({
+        stokKodu: stokKodu.trim(),
+        customerCode, description: description.trim(),
+        faiNo: faiNo.trim() || null,
+        revisions: updatedRevisions, activeRevision,
+      }, { canEdit });
+    } catch (e) {
+      setError(e.message || '3D model yükleme hatası');
+    } finally {
+      setUploadingRev(null);
+    }
+  };
+
+  const handleDeleteModel3d = async (revKod) => {
+    if (!canEdit) return;
+    const target = revisions.find(r => r.rev === revKod);
+    if (!target?.model3d?.path) return;
+    if (!confirm(`Rev ${revKod} 3D modeli silinecek. Devam?`)) return;
+    setUploadingRev(revKod);
+    setError('');
+    try {
+      await deletePartModel3d(target.model3d.path, { canEdit });
+      const updatedRevisions = revisions.map(r => r.rev === revKod ? { ...r, model3d: null } : r);
+      setRevisions(updatedRevisions);
+      await saveCocPart({
+        stokKodu: stokKodu.trim(),
+        customerCode, description: description.trim(),
+        faiNo: faiNo.trim() || null,
+        revisions: updatedRevisions, activeRevision,
+      }, { canEdit });
+    } catch (e) {
+      setError(e.message || '3D model silme hatası');
+    } finally {
+      setUploadingRev(null);
+    }
+  };
+
+  // Where-Used — bu parça hangi mamül BOM'larında alt bileşen olarak geçiyor?
+  // Salt okunur, bomModels üzerinden traverse. Sonuç: [{ rootStokKodu, modelName, level, qty }]
+  const whereUsed = useMemo(() => {
+    if (!part?.stokKodu || !bomModels) return [];
+    const target = String(part.stokKodu).trim();
+    if (!target) return [];
+    const results = [];
+    for (const [modelKey, model] of Object.entries(bomModels || {})) {
+      const rootStokKodu = model?.rootStokKodu || modelKey;
+      const rootName = model?.rootStokAdi || model?.modelName || rootStokKodu;
+      // BOM ağacında traverse — genel bir walker
+      const walk = (nodes, level = 1) => {
+        if (!Array.isArray(nodes)) return;
+        for (const n of nodes) {
+          const nStok = String(n?.stokKodu || n?.stock || '').trim();
+          if (nStok === target) {
+            results.push({
+              modelKey, rootStokKodu, rootName, level,
+              qty: Number(n?.qty || n?.miktar || 0) || 0,
+            });
+          }
+          walk(n?.children || n?.subs || n?.subComponents || [], level + 1);
+        }
+      };
+      walk(model?.tree || model?.items || model?.children || model?.bom || [], 1);
+    }
+    // Uniq by rootStokKodu — bir mamül BOM'unda parça birden fazla yerde olabilir; ilkini al
+    const uniq = new Map();
+    for (const r of results) {
+      const key = r.rootStokKodu;
+      if (!uniq.has(key) || uniq.get(key).level > r.level) uniq.set(key, r);
+    }
+    return Array.from(uniq.values()).sort((a, b) => a.rootStokKodu.localeCompare(b.rootStokKodu));
+  }, [part?.stokKodu, bomModels]);
+  const [whereUsedOpen, setWhereUsedOpen] = useState(false);
+
   const handleSave = async () => {
     if (!canEdit) return;
     if (!stokKodu.trim()) { setError('Stok kodu zorunlu'); return; }
@@ -5553,6 +5713,12 @@ function CocPartModal({ part, canEdit, onClose }) {
         if (r.technicalDrawing?.path) {
           try { await deletePartTechnicalDrawing(r.technicalDrawing.path, { canEdit }); } catch (_) {}
         }
+        if (r.model3d?.path) {
+          try { await deletePartModel3d(r.model3d.path, { canEdit }); } catch (_) {}
+        }
+        for (const cam of (r.camPrograms || [])) {
+          if (cam?.path) { try { await deletePartCamProgram(cam.path, { canEdit }); } catch (_) {} }
+        }
       }
       await deleteCocPart(part.stokKodu, { canEdit });
       onClose();
@@ -5576,7 +5742,7 @@ function CocPartModal({ part, canEdit, onClose }) {
     >
       <div style={{
         background: '#fff', borderRadius: 10, padding: 0,
-        maxWidth: 720, width: '100%', maxHeight: '92vh', overflowY: 'auto',
+        maxWidth: 800, width: '100%', maxHeight: '92vh', overflowY: 'auto',
         boxShadow: '0 8px 32px rgba(0,0,0,0.25)',
       }}>
         <div style={{ padding: '14px 20px', borderBottom: '1px solid #e7e5e4', display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -5690,13 +5856,21 @@ function CocPartModal({ part, canEdit, onClose }) {
                     {/* Expanded body */}
                     {isExpanded && (
                       <div style={{ padding: '10px 14px', borderTop: '1px solid #e7e5e4', background: '#fafaf9' }}>
-                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: 10 }}>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 10, marginBottom: 10 }}>
                           <div>
                             <label style={{ fontSize: 10, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 3 }}>Yayın Tarihi</label>
                             <input type="date" value={r.releaseDate || ''}
                               onChange={(e) => updateRev(r.rev, { releaseDate: e.target.value || null })}
                               disabled={busy}
                               style={{ ...inp, fontSize: 11 }} />
+                          </div>
+                          <div>
+                            <label style={{ fontSize: 10, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 3 }}>ECN No</label>
+                            <input type="text" value={r.ecnNo || ''}
+                              onChange={(e) => updateRev(r.rev, { ecnNo: e.target.value })}
+                              disabled={busy}
+                              placeholder="opsiyonel — örn. ECN-2026-042"
+                              style={{ ...inp, fontSize: 11, fontFamily: 'ui-monospace, monospace' }} />
                           </div>
                           <div>
                             <label style={{ fontSize: 10, color: '#57534e', fontWeight: 500, display: 'block', marginBottom: 3 }}>Değişim Notu</label>
@@ -5756,6 +5930,81 @@ function CocPartModal({ part, canEdit, onClose }) {
                             </div>
                           )}
                         </div>
+
+                        {/* CAM Programları */}
+                        <div style={{ marginTop: 8, padding: 10, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 5 }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: '#44403c' }}>⚙ CAM Programları ({(r.camPrograms || []).length})</span>
+                            <span style={{ fontSize: 9, color: '#78716c' }}>.nc/.gcode/.txt/.h/.apt/.zip · max 50MB</span>
+                          </div>
+                          {(r.camPrograms || []).length > 0 && (
+                            <div style={{ marginBottom: 8, display: 'flex', flexDirection: 'column', gap: 4 }}>
+                              {(r.camPrograms || []).map(cam => (
+                                <div key={cam.id || cam.path} style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '5px 8px', background: '#fafaf9', border: '1px solid #f5f5f4', borderRadius: 3, fontSize: 11 }}>
+                                  <span style={{ fontFamily: 'ui-monospace, monospace', minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={cam.filename}>📄 {cam.filename}</span>
+                                  {cam.machineTag && <span style={{ fontSize: 10, padding: '1px 6px', borderRadius: 3, background: '#eff6ff', color: '#1e40af', fontWeight: 500, whiteSpace: 'nowrap' }}>{cam.machineTag}</span>}
+                                  <span style={{ fontSize: 10, color: '#78716c', whiteSpace: 'nowrap' }}>{(cam.size / 1024 / 1024).toFixed(2)} MB</span>
+                                  <a href={cam.url} target="_blank" rel="noopener noreferrer" download={cam.filename}
+                                    style={{ fontSize: 10, padding: '2px 8px', background: '#1e40af', color: '#fff', borderRadius: 3, textDecoration: 'none', fontWeight: 500, whiteSpace: 'nowrap' }}>İndir</a>
+                                  {canEdit && (
+                                    <button onClick={() => handleDeleteCam(r.rev, cam.id)} disabled={busy}
+                                      style={{ fontSize: 10, padding: '2px 8px', background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 3, cursor: busy ? 'not-allowed' : 'pointer' }}>Sil</button>
+                                  )}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {canEdit && !isNew && (
+                            <CamUploadRow revKod={r.rev} onUpload={handleUploadCam} busy={busy} />
+                          )}
+                          {isNew && canEdit && (
+                            <span style={{ fontSize: 10, color: '#92400e', fontStyle: 'italic' }}>💡 CAM yüklemek için önce parçayı kaydet.</span>
+                          )}
+                        </div>
+
+                        {/* 3D Model */}
+                        <div style={{ marginTop: 8, padding: 10, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 5 }}>
+                          <div style={{ fontSize: 11, fontWeight: 600, color: '#44403c', marginBottom: 6 }}>🎲 3D Model <span style={{ fontSize: 9, fontWeight: 400, color: '#78716c' }}>.step/.stp/.igs/.sldprt/.stl · max 50MB</span></div>
+                          {r.model3d?.url ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+                              <span style={{ fontSize: 11, fontFamily: 'ui-monospace, monospace' }}>📄 {r.model3d.filename}</span>
+                              <span style={{ fontSize: 10, color: '#78716c' }}>{(r.model3d.size / 1024 / 1024).toFixed(2)} MB</span>
+                              <a href={r.model3d.url} target="_blank" rel="noopener noreferrer" download={r.model3d.filename}
+                                style={{ fontSize: 11, padding: '3px 10px', background: '#1e40af', color: '#fff', borderRadius: 3, textDecoration: 'none', fontWeight: 500 }}>İndir</a>
+                              {canEdit && (
+                                <label style={{ fontSize: 11, padding: '3px 10px', background: '#fff', border: '1px solid #d6d3d1', color: '#44403c', borderRadius: 3, cursor: busy ? 'not-allowed' : 'pointer' }}>
+                                  Değiştir
+                                  <input type="file" accept=".step,.stp,.igs,.iges,.sldprt,.x_t,.x_b,.stl,.prt" disabled={busy}
+                                    onChange={(e) => { if (e.target.files?.[0]) handleUploadModel3d(r.rev, e.target.files[0]); e.target.value = ''; }}
+                                    style={{ display: 'none' }} />
+                                </label>
+                              )}
+                              {canEdit && (
+                                <button onClick={() => handleDeleteModel3d(r.rev)} disabled={busy}
+                                  style={{ fontSize: 11, padding: '3px 10px', background: '#fef2f2', border: '1px solid #fecaca', color: '#991b1b', borderRadius: 3, cursor: busy ? 'not-allowed' : 'pointer' }}>Sil</button>
+                              )}
+                              {isUploading && <span style={{ fontSize: 10, color: '#1e40af' }}>Yükleniyor...</span>}
+                            </div>
+                          ) : (
+                            <div>
+                              {canEdit ? (
+                                isNew ? (
+                                  <span style={{ fontSize: 11, color: '#92400e', fontStyle: 'italic' }}>💡 3D model yüklemek için önce parçayı kaydet.</span>
+                                ) : (
+                                  <label style={{ fontSize: 11, padding: '5px 14px', background: '#1e40af', color: '#fff', borderRadius: 4, cursor: busy ? 'not-allowed' : 'pointer', display: 'inline-block', fontWeight: 500 }}>
+                                    📤 3D Model Yükle
+                                    <input type="file" accept=".step,.stp,.igs,.iges,.sldprt,.x_t,.x_b,.stl,.prt" disabled={busy}
+                                      onChange={(e) => { if (e.target.files?.[0]) handleUploadModel3d(r.rev, e.target.files[0]); e.target.value = ''; }}
+                                      style={{ display: 'none' }} />
+                                  </label>
+                                )
+                              ) : (
+                                <span style={{ fontSize: 11, color: '#a8a29e', fontStyle: 'italic' }}>3D model yok</span>
+                              )}
+                              {isUploading && <span style={{ fontSize: 10, color: '#1e40af', marginLeft: 8 }}>Yükleniyor...</span>}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>
@@ -5764,6 +6013,38 @@ function CocPartModal({ part, canEdit, onClose }) {
             </div>
           )}
         </div>
+
+        {/* Where-Used — Bu parça hangi mamüllerde kullanılıyor (salt okunur) */}
+        {!isNew && whereUsed.length > 0 && (
+          <div style={{ padding: '10px 20px 0' }}>
+            <div
+              onClick={() => setWhereUsedOpen(!whereUsedOpen)}
+              style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#f5f3ff', border: '1px solid #ddd6fe', borderRadius: 6, cursor: 'pointer' }}
+            >
+              <span style={{ fontSize: 11, color: '#78716c' }}>{whereUsedOpen ? '▼' : '▶'}</span>
+              <span style={{ fontSize: 12, fontWeight: 600, color: '#5b21b6' }}>🔗 Nerede kullanılıyor ({whereUsed.length})</span>
+              <span style={{ marginLeft: 'auto', fontSize: 10, color: '#78716c' }}>BOM ağacında alt bileşen olarak geçtiği kök stoklar</span>
+            </div>
+            {whereUsedOpen && (
+              <div style={{ marginTop: 6, padding: 8, background: '#fff', border: '1px solid #e7e5e4', borderRadius: 5 }}>
+                <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr 50px 70px', gap: 6, padding: '4px 8px', fontSize: 10, fontWeight: 500, color: '#57534e', borderBottom: '1px solid #e7e5e4' }}>
+                  <span>Kök Stok</span>
+                  <span>Model Adı</span>
+                  <span style={{ textAlign: 'center' }}>Seviye</span>
+                  <span style={{ textAlign: 'right' }}>Miktar</span>
+                </div>
+                {whereUsed.map(w => (
+                  <div key={w.rootStokKodu} style={{ display: 'grid', gridTemplateColumns: '120px 1fr 50px 70px', gap: 6, padding: '4px 8px', fontSize: 11, borderTop: '0.5px solid #f5f5f4' }}>
+                    <span style={{ fontFamily: 'ui-monospace, monospace', color: '#1e40af', fontWeight: 500 }}>{w.rootStokKodu}</span>
+                    <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={w.rootName}>{w.rootName}</span>
+                    <span style={{ textAlign: 'center', color: '#78716c' }}>L{w.level}</span>
+                    <span style={{ textAlign: 'right', fontFamily: 'ui-monospace, monospace' }}>{w.qty || '—'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
 
         {error && (
           <div style={{ margin: '10px 20px 0', padding: 10, borderRadius: 6, background: '#fef2f2', border: '1px solid #fecaca', fontSize: 11, color: '#991b1b' }}>
@@ -5810,6 +6091,43 @@ function CocPartModal({ part, canEdit, onClose }) {
           }}>{saving ? 'Kaydediliyor...' : (isNew ? 'Ekle' : 'Kaydet')}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// CamUploadRow — CAM programı yükleme satırı (machine tag + notes + dosya)
+// CocPartModal içindeki her revizyon kartında kullanılır.
+function CamUploadRow({ revKod, onUpload, busy }) {
+  const [machineTag, setMachineTag] = useState('');
+  const [notes, setNotes] = useState('');
+  const [file, setFile] = useState(null);
+  const inputRef = useRef(null);
+
+  const handleFile = (e) => {
+    const f = e.target.files?.[0];
+    if (f) setFile(f);
+  };
+
+  const handleSubmit = async () => {
+    if (!file || busy) return;
+    await onUpload(revKod, file, { machineTag: machineTag.trim(), notes: notes.trim() });
+    setMachineTag(''); setNotes(''); setFile(null);
+    if (inputRef.current) inputRef.current.value = '';
+  };
+
+  const inp = { padding: '4px 8px', border: '1px solid #d6d3d1', borderRadius: 3, fontSize: 11, boxSizing: 'border-box' };
+  return (
+    <div style={{ display: 'flex', gap: 4, alignItems: 'center', flexWrap: 'wrap', padding: 6, background: '#fafaf9', borderRadius: 3, border: '1px dashed #d6d3d1' }}>
+      <input type="text" value={machineTag} onChange={(e) => setMachineTag(e.target.value)} disabled={busy}
+        placeholder="Tezgah (örn. Mazak QT200)" style={{ ...inp, width: 180 }} />
+      <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} disabled={busy}
+        placeholder="Not (örn. Kaba işleme)" style={{ ...inp, flex: 1, minWidth: 120 }} />
+      <input ref={inputRef} type="file" accept=".nc,.gcode,.txt,.h,.apt,.zip,.eia" onChange={handleFile} disabled={busy}
+        style={{ fontSize: 10, maxWidth: 200 }} />
+      <button onClick={handleSubmit} disabled={!file || busy}
+        style={{ fontSize: 11, padding: '4px 12px', background: file ? '#1e40af' : '#a8a29e', color: '#fff', border: 'none', borderRadius: 3, cursor: (file && !busy) ? 'pointer' : 'not-allowed', fontWeight: 500 }}>
+        + Yükle
+      </button>
     </div>
   );
 }

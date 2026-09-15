@@ -196,21 +196,29 @@ export async function updateCocCertificate(cert, { canEdit }) {
 
 // Revizyon backward-compat normalize helper.
 // Eski: revisions = ["A", "AB"]  (string array)
-// Yeni: revisions = [{ rev, releaseDate, notes, isActive, addedBy, addedAt, technicalDrawing }]
+// Yeni: revisions = [{ rev, releaseDate, notes, ecnNo, addedBy, addedAt,
+//                       technicalDrawing, camPrograms[], model3d }]
 export function normalizeRevisions(revisions) {
   if (!Array.isArray(revisions)) return [];
   return revisions.map(r => {
     if (typeof r === "string") {
-      return { rev: r, releaseDate: null, notes: "", addedBy: "", addedAt: "", technicalDrawing: null };
+      return {
+        rev: r, releaseDate: null, notes: "", ecnNo: "",
+        addedBy: "", addedAt: "",
+        technicalDrawing: null, camPrograms: [], model3d: null,
+      };
     }
     if (r && typeof r === "object") {
       return {
         rev: r.rev || r.code || "",
         releaseDate: r.releaseDate || null,
         notes: r.notes || "",
+        ecnNo: r.ecnNo || "",
         addedBy: r.addedBy || "",
         addedAt: r.addedAt || "",
         technicalDrawing: r.technicalDrawing || null,
+        camPrograms: Array.isArray(r.camPrograms) ? r.camPrograms : [],
+        model3d: r.model3d || null,
       };
     }
     return null;
@@ -280,6 +288,95 @@ export async function uploadPartTechnicalDrawing(stokKodu, revKod, file, opts = 
 
 // Teknik resmi Storage'dan sil (Firestore field'ı çağıran tarafta temizler).
 export async function deletePartTechnicalDrawing(storagePath, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!storagePath) return;
+  try {
+    await deleteObject(storageRef(storage, storagePath));
+  } catch (e) {
+    if (e?.code !== "storage/object-not-found") throw e;
+  }
+}
+
+// CAM Programı upload — revizyon başına çoklu (kaba işleme, bitiş, tezgah bazında).
+// path: appData/cocParts/{stokKodu}/{rev}/cam/{timestamp}_{filename}
+const PART_CAM_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+const PART_CAM_ALLOWED_EXT = ["nc", "gcode", "txt", "h", "apt", "zip", "eia"];
+export async function uploadPartCamProgram(stokKodu, revKod, file, meta = {}) {
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!stokKodu || !revKod || !file) throw new Error("stokKodu, revKod ve file zorunlu");
+  if (file.size > PART_CAM_MAX_BYTES) {
+    throw new Error(`Dosya çok büyük (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 50 MB.`);
+  }
+  const ext = String(file.name || "").split(".").pop().toLowerCase();
+  if (!PART_CAM_ALLOWED_EXT.includes(ext)) {
+    throw new Error(`Desteklenmeyen dosya türü .${ext} — sadece: ${PART_CAM_ALLOWED_EXT.join(", ")}`);
+  }
+  const safeStok = String(stokKodu).replace(/[^\w.\-]/g, "_");
+  const safeRev = String(revKod).replace(/[^\w.\-]/g, "_");
+  const timestamp = Date.now();
+  const filename = safeFilename(file.name);
+  const path = `appData/cocParts/${safeStok}/${safeRev}/cam/${timestamp}_${filename}`;
+  const ref = storageRef(storage, path);
+  await uploadBytes(ref, file, { contentType: file.type || "application/octet-stream" });
+  const url = await getDownloadURL(ref);
+  return {
+    id: `cam_${timestamp}`,
+    url, path,
+    filename: file.name,
+    size: file.size,
+    contentType: file.type || "application/octet-stream",
+    machineTag: String(meta.machineTag || "").trim(),
+    notes: String(meta.notes || "").trim(),
+    uploadedAt: new Date().toISOString(),
+    uploadedBy: meta.userEmail || "",
+  };
+}
+
+export async function deletePartCamProgram(storagePath, { canEdit }) {
+  if (!canEdit) throw new Error("Yetki yok");
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!storagePath) return;
+  try {
+    await deleteObject(storageRef(storage, storagePath));
+  } catch (e) {
+    if (e?.code !== "storage/object-not-found") throw e;
+  }
+}
+
+// 3D Model upload — revizyon başına tek dosya (STEP/SLDPRT vs.)
+// path: appData/cocParts/{stokKodu}/{rev}/model3d/{timestamp}_{filename}
+const PART_MODEL3D_MAX_BYTES = 50 * 1024 * 1024; // 50 MB
+const PART_MODEL3D_ALLOWED_EXT = ["step", "stp", "igs", "iges", "sldprt", "x_t", "x_b", "stl", "prt"];
+export async function uploadPartModel3d(stokKodu, revKod, file, opts = {}) {
+  if (!storage) throw new Error("Storage bağlantısı hazır değil");
+  if (!stokKodu || !revKod || !file) throw new Error("stokKodu, revKod ve file zorunlu");
+  if (file.size > PART_MODEL3D_MAX_BYTES) {
+    throw new Error(`Dosya çok büyük (${(file.size / 1024 / 1024).toFixed(1)} MB). Max 50 MB.`);
+  }
+  const ext = String(file.name || "").split(".").pop().toLowerCase();
+  if (!PART_MODEL3D_ALLOWED_EXT.includes(ext)) {
+    throw new Error(`Desteklenmeyen dosya türü .${ext} — sadece: ${PART_MODEL3D_ALLOWED_EXT.join(", ")}`);
+  }
+  const safeStok = String(stokKodu).replace(/[^\w.\-]/g, "_");
+  const safeRev = String(revKod).replace(/[^\w.\-]/g, "_");
+  const timestamp = Date.now();
+  const filename = safeFilename(file.name);
+  const path = `appData/cocParts/${safeStok}/${safeRev}/model3d/${timestamp}_${filename}`;
+  const ref = storageRef(storage, path);
+  await uploadBytes(ref, file, { contentType: file.type || "application/octet-stream" });
+  const url = await getDownloadURL(ref);
+  return {
+    url, path,
+    filename: file.name,
+    size: file.size,
+    contentType: file.type || "application/octet-stream",
+    uploadedAt: new Date().toISOString(),
+    uploadedBy: opts.userEmail || "",
+  };
+}
+
+export async function deletePartModel3d(storagePath, { canEdit }) {
   if (!canEdit) throw new Error("Yetki yok");
   if (!storage) throw new Error("Storage bağlantısı hazır değil");
   if (!storagePath) return;
