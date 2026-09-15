@@ -84,14 +84,16 @@ function transformAkibetForFirestore(parserResult) {
 }
 
 /**
- * WIP operasyon giriş tarihleri — sistemin kendi tuttuğu snapshot.
+ * WIP operasyon giriş tarihleri — sistemin kendi tuttuğu snapshot (transit-based).
  * VIO'nun opBasTarihi güvenilmez (emir açılışıyla aynı geliyor). Bu yüzden
- * sistem her akibet yüklemesinde şu an aktif olan (stokKodu, emirNo, opName)
- * key'lerini tespit eder:
+ * sistem her akibet yüklemesinde şu an FİZİKSEL OLARAK bekleyen (transit>0)
+ * (stokKodu, emirNo, opName) key'lerini tespit eder:
  *   - Mevcut key + yeni yükleme'de var → tarih korunur (o gün geldi, hâlâ orada)
- *   - Yeni key (yeni op'a geçti) → bugünün tarihi yazılır
- *   - Kayıp key (op tamamlandı) → siliniyor
+ *   - Yeni key (fiziksel adet ilk kez geldi) → bugünün tarihi yazılır
+ *   - Kayıp key (op boşaldı / tamamlandı) → siliniyor
  * Bekleme süresi = bugün − snapshot tarihi.
+ * Bir emir aynı anda birden fazla op'ta fiziksel olabilir (parça parça ilerler);
+ * bu durumda her aktif op için ayrı snapshot tutulur.
  * Doc: appData/wipOpEntryDates = { entries: { key: "YYYY-MM-DD" }, updatedAt }
  */
 const WIP_ENTRIES_DOC = "wipOpEntryDates";
@@ -101,10 +103,18 @@ function computeActiveWipKeys(akibetResult) {
   if (!akibetResult?.parts) return keys;
   for (const p of akibetResult.parts) {
     for (const o of (p.orders || [])) {
-      const fo = o.firstOpenOp;
-      if (!fo || !fo.name) continue;
-      const key = `${p.code}__${o.emirNo}__${fo.name}`;
-      keys.add(key);
+      // Transit hesabı — her non-cancelled op için:
+      //   prevProduced ilk op için order.qty, sonrakiler için önceki non-cancelled op'un uretileni
+      //   transit = prevProduced − uretilen = fiziksel bekleyen adet
+      let prevProduced = o.qty;
+      for (const op of (o.ops || [])) {
+        if (op.cancelled) continue;
+        const transit = Math.max(0, prevProduced - (op.uretilen || 0));
+        prevProduced = op.uretilen || 0;
+        if (transit > 0 && op.remaining > 0 && op.name) {
+          keys.add(`${p.code}__${o.emirNo}__${op.name}`);
+        }
+      }
     }
   }
   return keys;
