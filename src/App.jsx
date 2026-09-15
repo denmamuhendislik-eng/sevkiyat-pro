@@ -2565,7 +2565,7 @@ ${el.innerHTML}
   // Üretim rolü izinli modüllere kısıtlı — default "planning" görünmüyor,
   // izinsiz sayfadaysa auto-yönlendir (izinli sayfalardaysa dokunma).
   useEffect(() => {
-    if (isUretim && !["shipment", "montaj", "mrp", "yapilabilirlik"].includes(page)) {
+    if (isUretim && !["shipment", "montaj", "mrp", "yapilabilirlik", "import"].includes(page)) {
       setPage("yapilabilirlik");
     }
   }, [isUretim, page]);
@@ -2629,8 +2629,8 @@ ${el.innerHTML}
             if (n.id === "teklifler" && !canSeeTeklifler) return false;
             if (n.id === "yapilabilirlik" && !canSeeYapilabilirlik) return false;
             if (n.id === "maliyet" && !isAdmin) return false;
-            if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard", "teklifler", "yapilabilirlik"].includes(n.id)) return false;
-            if (isUretim && !["shipment", "montaj", "mrp", "yapilabilirlik"].includes(n.id)) return false;
+            if (isSales && !["planning", "products", "dashboard", "shipment", "mrp", "digerMusteriler", "musteriDashboard", "teklifler", "yapilabilirlik", "import"].includes(n.id)) return false;
+            if (isUretim && !["shipment", "montaj", "mrp", "yapilabilirlik", "import"].includes(n.id)) return false;
             if (isViewer && !["planning", "dashboard", "shipment"].includes(n.id)) return false;
             return true;
           }).map(n=>(
@@ -3060,7 +3060,10 @@ ${el.innerHTML}
             </div>
           </div>}
 
-          {/* VIO IMPORT */}
+          {/* VIO IMPORT — admin: iki alt-tab (domestic/export); satış+üretim: sadece İhracat Sipariş Listesi (salt okuma) */}
+          {page==="import" && !isAdmin && (isSales || isUretim) && (
+            <Ihracat canEdit={false} isAdmin={false} products={productsForExport} remainingByPid={remainingByPidForExport} syncExportOrderToPlan={syncExportOrderToPlan} combRules={combRules} logPriceHistory={logPriceHistory} />
+          )}
           {page==="import"&&isAdmin&&<div>
             {/* v22: Alt sekmeler — yurt içi (mevcut) vs. ihracat (yeni modül) */}
             <div style={{display:"flex",gap:4,marginBottom:14,borderBottom:"1px solid var(--color-border-tertiary)"}}>
