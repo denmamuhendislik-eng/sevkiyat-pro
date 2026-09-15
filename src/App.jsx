@@ -6378,15 +6378,26 @@ function MRPPlanlama({ db, userRole, authUser, products, yearsData, setProducts,
   const saveAkibet = async (data) => {
     if (!db || !canEdit) return;
     await setDoc(doc(db, APP_COL, AKIBET_DOC), data);
-    // WIP op giriş tarihleri — sistem snapshot reconcile
-    // (VIO opBasTarihi güvenilmez olduğu için sistem kendi tuttuğu tarih ile bekleme hesabı)
+    // WIP op giriş tarihleri — sistem snapshot reconcile (transit-based)
+    // Sadece transit>0 olan (fiziksel adet bekleyen) op'lar için snapshot tutulur.
+    // Bir emir aynı anda birden fazla op'ta fiziksel olabilir → hepsi ayrı snapshot.
+    // VIO opBasTarihi güvenilmez, sistem kendi tarihini "fiziksel adet ilk geldiği gün"
+    // olarak biriktirir. Transit=0'a düşenlerin snapshot'ı silinir (op boşaldı).
     try {
       const activeKeys = new Set();
       for (const p of (data?.parts || [])) {
         for (const o of (p.orders || [])) {
-          const fo = o.firstOpenOp;
-          if (!fo?.name) continue;
-          activeKeys.add(`${p.code}__${o.emirNo}__${fo.name}`);
+          // Transit hesabı — her non-cancelled op için
+          let prevProduced = o.qty;
+          for (const op of (o.ops || [])) {
+            if (op.cancelled) continue;
+            const transit = Math.max(0, prevProduced - (op.uretilen || 0));
+            prevProduced = op.uretilen || 0;
+            // Sadece transit>0 ve remaining>0 op'lar için snapshot (fiziksel iş var)
+            if (transit > 0 && op.remaining > 0 && op.name) {
+              activeKeys.add(`${p.code}__${o.emirNo}__${op.name}`);
+            }
+          }
         }
       }
       const wipRef = doc(db, APP_COL, WIP_ENTRIES_DOC);
@@ -17421,12 +17432,20 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
         //   prevProduced ilk op için order.qty; sonraki op'lar için önceki non-cancelled op'un uretileni
         //   transit = prevProduced − uretilen = şu an fiziksel olarak bu istasyonun önünde bekleyen adet
         // Cancelled op'lar iterasyonda atlanır (prevProduced korunur).
+        // waitDays: her aktif op için ayrı snapshot key'i (transit-based reconcile).
         let prevProduced = order.qty;
         const opsWithTransit = order.ops.map(op => {
-          if (op.cancelled) return { ...op, transit: 0 };
+          if (op.cancelled) return { ...op, transit: 0, waitDays: null };
           const transit = Math.max(0, prevProduced - (op.uretilen || 0));
           prevProduced = op.uretilen || 0;
-          return { ...op, transit };
+          // Bu op için wait: sistem snapshot varsa onu, yoksa VIO opBasTarihi fallback
+          const opWipKey = op.name ? `${part.code}__${order.emirNo}__${op.name}` : null;
+          const opSnapshotDate = opWipKey ? wipOpEntryDates[opWipKey] : null;
+          const opWaitRefDate = opSnapshotDate || op.opBasTarihi;
+          const opWaitDays = (transit > 0 && op.remaining > 0 && opWaitRefDate)
+            ? daysBetweenIso(opWaitRefDate, today) : null;
+          const opWaitSource = opSnapshotDate ? "system" : (op.opBasTarihi ? "vio" : null);
+          return { ...op, transit, waitDays: opWaitDays, waitSource: opWaitSource };
         });
         const activeOps = opsWithTransit.filter(op => !op.cancelled && op.remaining > 0);
         const completedOps = opsWithTransit.filter(op => !op.cancelled && op.remaining === 0);
@@ -17455,21 +17474,24 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
         }
         const estInternalDays = Math.max(0, Math.ceil(estMin / shiftMin));
         const estTotalDays = estInternalDays + estFasonDays;
-        // Kaç gündür bu aşamada — öncelik zinciri:
-        //   1) Sistem snapshot (wipOpEntryDates) — akibet yüklendikçe biriktirilen
-        //      "bu op'ta ilk gördüğüm gün" tarihi. VIO opBasTarihi güvenilmez (emir
-        //      açılışıyla aynı geliyor), bu yüzden sistem kendi tarihini tutar.
-        //   2) VIO opBasTarihi — fallback (nadiren doğru)
-        // currentOp'a transit ekle — activeOps[0] transit içerir (ilk aktif op = firstOpenOp)
+        // Kaç gündür bu aşamada — her aktif op'un ayrı waitDays'i var (opsWithTransit).
+        // Emir bazlı "en uzun bekleyen" için activeOps arasında max.
+        // currentOp'a transit ve waitDays ekle — activeOps[0] transit içerir (ilk aktif op = firstOpenOp)
         const currentOpBase = order.firstOpenOp;
         const currentOp = currentOpBase
-          ? { ...currentOpBase, transit: activeOps[0]?.transit ?? 0 }
+          ? { ...currentOpBase,
+              transit: activeOps[0]?.transit ?? 0,
+              waitDays: activeOps[0]?.waitDays ?? null,
+              waitSource: activeOps[0]?.waitSource ?? null }
           : null;
-        const wipKey = currentOp?.name ? `${part.code}__${order.emirNo}__${currentOp.name}` : null;
-        const snapshotDate = wipKey ? wipOpEntryDates[wipKey] : null;
-        const waitSource = snapshotDate ? "system" : (currentOp?.opBasTarihi ? "vio" : null);
-        const waitRefDate = snapshotDate || currentOp?.opBasTarihi;
-        const waitDays = waitRefDate ? daysBetweenIso(waitRefDate, today) : null;
+        // Emir bazlı ana waitDays = aktif op'lar arasında en uzun bekleme (kritik olan)
+        const activeWaits = activeOps.map(op => op.waitDays).filter(w => w != null);
+        const waitDays = activeWaits.length > 0 ? Math.max(...activeWaits) : null;
+        // waitSource: en uzun bekleyen op'un kaynağı
+        const longestOp = activeWaits.length > 0
+          ? activeOps.find(op => op.waitDays === waitDays)
+          : null;
+        const waitSource = longestOp?.waitSource || null;
         // Progress
         const progressPct = totalOps > 0 ? Math.round((completedOps.length / totalOps) * 100) : 0;
         // Fason gecikme kontrolü — currentOp fason ise ve waitDays > leadTimeDays × 1.2 ise gecikti
@@ -17592,6 +17614,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
           opMin = setupTime + cycleTime * op.transit;
         }
         // Mini-item: emir bilgisi + o istasyondaki adet + op bilgisi
+        // waitDays: bu op'un kendi bekleme günü (emir bazlı max değil)
         const miniItem = {
           ...it,
           stationOp: op,             // Bu istasyona ait op
@@ -17600,6 +17623,9 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
           stationWcCode: wcCode,
           stationMin: opMin,          // Bu istasyondaki iş dk
           stationCount: stationCountByOrderKey.get(it.key) || 1, // Emir kaç istasyonda?
+          // Bu istasyonun kendi bekleme günü (emir bazlı max'ı ez)
+          waitDays: op.waitDays ?? null,
+          waitSource: op.waitSource ?? null,
         };
         const g = m.get(key);
         g.items.push(miniItem);
@@ -17674,7 +17700,10 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
         <WoKpi label="📦 Toplam Aktif" value={kpis.totalActive} sub={`${kpis.totalRemaining} kalan parça`} color="#1e40af" bg="#eff6ff" />
         <WoKpi label="⏰ En Uzun Bekleyen"
           value={kpis.longest ? `${kpis.longest.waitDays} gün` : "—"}
-          sub={kpis.longest ? `#${kpis.longest.emirNo} · ${kpis.longest.currentOp?.name || "?"}` : "aktif iş yok"}
+          sub={kpis.longest ? (() => {
+            const stage = (kpis.longest.activeOps || []).find(op => op.waitDays === kpis.longest.waitDays);
+            return `#${kpis.longest.emirNo} · ${stage?.name || kpis.longest.currentOp?.name || "?"}`;
+          })() : "aktif iş yok"}
           color="#92400e" bg="#fef3c7"
           onClick={() => { setSortBy("waitDays"); setStatusFilter("active"); setWcFilter("all"); setOpNameFilter("all"); setFasonOnly(false); setSearch(""); setViewMode("list"); }}
           title="Tıkla — bekleme desc sıralı liste görünümü" />
@@ -17823,17 +17852,27 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                             const rest = activeStages.length - shown.length;
                             return (
                               <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
-                                {shown.map((op, si) => (
-                                  <span key={si} style={{ display: "inline-flex", alignItems: "center", gap: 4,
-                                    padding: "1px 6px", fontSize: 9, fontWeight: 600,
-                                    background: op.isFason ? "#fff7ed" : "#eff6ff",
-                                    color: op.isFason ? "#c2410c" : "#1e40af",
-                                    border: `1px solid ${op.isFason ? "#fdba74" : "#bfdbfe"}`, borderRadius: 3, width: "fit-content" }}>
-                                    <span>{op.isFason ? "🚚" : "📍"} {op.name}</span>
-                                    <span style={{ padding: "0 4px", background: "#fff", borderRadius: 2, fontFamily: "ui-monospace, monospace", fontSize: 9, fontWeight: 700 }}>{op.transit}ad</span>
-                                    {op.wcCode && <span style={{ fontSize: 8, color: "#78716c" }}>({op.wcCode})</span>}
-                                  </span>
-                                ))}
+                                {shown.map((op, si) => {
+                                  const w = op.waitDays;
+                                  const wColor = w == null ? "#78716c"
+                                    : w >= 14 ? "#991b1b"
+                                    : w >= 7 ? "#92400e"
+                                    : "#44403c";
+                                  return (
+                                    <span key={si} style={{ display: "inline-flex", alignItems: "center", gap: 4,
+                                      padding: "1px 6px", fontSize: 9, fontWeight: 600,
+                                      background: op.isFason ? "#fff7ed" : "#eff6ff",
+                                      color: op.isFason ? "#c2410c" : "#1e40af",
+                                      border: `1px solid ${op.isFason ? "#fdba74" : "#bfdbfe"}`, borderRadius: 3, width: "fit-content" }}>
+                                      <span>{op.isFason ? "🚚" : "📍"} {op.name}</span>
+                                      <span style={{ padding: "0 4px", background: "#fff", borderRadius: 2, fontFamily: "ui-monospace, monospace", fontSize: 9, fontWeight: 700 }}>{op.transit}ad</span>
+                                      {w != null && (
+                                        <span style={{ padding: "0 4px", background: "#fff", borderRadius: 2, fontFamily: "ui-monospace, monospace", fontSize: 9, fontWeight: 700, color: wColor }} title={`Bu aşamada ${w} gündür bekliyor`}>{w}g</span>
+                                      )}
+                                      {op.wcCode && <span style={{ fontSize: 8, color: "#78716c" }}>({op.wcCode})</span>}
+                                    </span>
+                                  );
+                                })}
                                 {rest > 0 && (
                                   <span style={{ fontSize: 9, color: "#78716c", fontStyle: "italic" }}>+ {rest} aşama daha</span>
                                 )}
@@ -17844,16 +17883,35 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                         <td style={{ ...wotd, textAlign: "right", fontWeight: 600 }}>
                           {it.waitDays == null ? <span style={{ color: "#a8a29e" }}>—</span> : (
                             <>
-                              {it.isFasonBlocked ? (
-                                <span title={`Fason lead time: ${it.currentFasonLeadDays} gün`}
-                                  style={{ color: it.fasonOverdue ? "#991b1b" : "#c2410c", fontWeight: 700 }}>
-                                  🚚 {it.waitDays} gündür fasoncuda
-                                </span>
-                              ) : (
-                                <span style={{ color: it.waitDays >= 14 ? "#991b1b" : it.waitDays >= 7 ? "#92400e" : "#44403c" }}>
-                                  {it.waitDays} gün
-                                </span>
-                              )}
+                              {(() => {
+                                // Multi-stage için: birden fazla aktif aşama varsa "en uzun bekleyen" ibare
+                                const activeStages = (it.activeOps || []).filter(op => (op.transit || 0) > 0 && op.waitDays != null);
+                                const multiStage = activeStages.length > 1;
+                                const others = multiStage ? activeStages
+                                  .filter(op => op.waitDays !== it.waitDays)
+                                  .map(op => `${op.waitDays}g`) : [];
+                                return (
+                                  <>
+                                    {it.isFasonBlocked ? (
+                                      <span title={`Fason lead time: ${it.currentFasonLeadDays} gün`}
+                                        style={{ color: it.fasonOverdue ? "#991b1b" : "#c2410c", fontWeight: 700 }}>
+                                        🚚 {it.waitDays} gündür fasoncuda
+                                      </span>
+                                    ) : (
+                                      <span style={{ color: it.waitDays >= 14 ? "#991b1b" : it.waitDays >= 7 ? "#92400e" : "#44403c" }}
+                                        title={multiStage ? "En uzun bekleyen aşama" : undefined}>
+                                        {it.waitDays} gün
+                                        {multiStage && <span style={{ fontSize: 8, color: "#78716c", fontWeight: 400, marginLeft: 3 }}>(en uzun)</span>}
+                                      </span>
+                                    )}
+                                    {multiStage && others.length > 0 && (
+                                      <div style={{ fontSize: 9, color: "#78716c", fontWeight: 400, marginTop: 1 }}>
+                                        + {others.join(" / ")}
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
                               {it.waitDays === 0 && it.waitSource === "system" && (
                                 <div style={{ marginTop: 2 }}>
                                   <span title="Sistem bu op'u ilk kez bugün gördü — bekleme günleri buradan biriktirilecek"
