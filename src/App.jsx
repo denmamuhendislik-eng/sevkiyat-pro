@@ -17417,12 +17417,27 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
       const prod = productByCode[part.code] || null;
       const bom = bomLookup[part.code] || null;
       for (const order of part.orders) {
-        const activeOps = order.ops.filter(op => !op.cancelled && op.remaining > 0);
-        const completedOps = order.ops.filter(op => !op.cancelled && op.remaining === 0);
-        const totalOps = order.ops.filter(op => !op.cancelled).length;
-        // Tahmini toplam dk (iç imalat op'ları); fason op'ları için leadTimeDays ayrı
+        // Transit (işlenebilir) hesabı — her non-cancelled op için:
+        //   prevProduced ilk op için order.qty; sonraki op'lar için önceki non-cancelled op'un uretileni
+        //   transit = prevProduced − uretilen = şu an fiziksel olarak bu istasyonun önünde bekleyen adet
+        // Cancelled op'lar iterasyonda atlanır (prevProduced korunur).
+        let prevProduced = order.qty;
+        const opsWithTransit = order.ops.map(op => {
+          if (op.cancelled) return { ...op, transit: 0 };
+          const transit = Math.max(0, prevProduced - (op.uretilen || 0));
+          prevProduced = op.uretilen || 0;
+          return { ...op, transit };
+        });
+        const activeOps = opsWithTransit.filter(op => !op.cancelled && op.remaining > 0);
+        const completedOps = opsWithTransit.filter(op => !op.cancelled && op.remaining === 0);
+        const totalOps = opsWithTransit.filter(op => !op.cancelled).length;
+        // Tahmini toplam dk — transit (şu an fiziksel adet) üzerinden hesaplanır,
+        // remaining değil. Çünkü kapasite planlama için istasyona ATANABİLECEK iş kilit,
+        // "toplam sipariş kalanı" değil.
         let estMin = 0, estFasonDays = 0;
         for (const op of activeOps) {
+          const workQty = op.transit; // fiziksel iş adet
+          if (workQty <= 0) continue; // henüz emir bu op'a gelmedi
           if (op.isFason) {
             const fa = (workCenters?.fason || {})[op.opCode];
             estFasonDays += fa?.leadTimeDays || 14;
@@ -17435,7 +17450,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                 if (bomOp.setupTime != null) setupTime = bomOp.setupTime;
               }
             }
-            estMin += setupTime + cycleTime * op.remaining;
+            estMin += setupTime + cycleTime * workQty;
           }
         }
         const estInternalDays = Math.max(0, Math.ceil(estMin / shiftMin));
@@ -17445,7 +17460,11 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
         //      "bu op'ta ilk gördüğüm gün" tarihi. VIO opBasTarihi güvenilmez (emir
         //      açılışıyla aynı geliyor), bu yüzden sistem kendi tarihini tutar.
         //   2) VIO opBasTarihi — fallback (nadiren doğru)
-        const currentOp = order.firstOpenOp;
+        // currentOp'a transit ekle — activeOps[0] transit içerir (ilk aktif op = firstOpenOp)
+        const currentOpBase = order.firstOpenOp;
+        const currentOp = currentOpBase
+          ? { ...currentOpBase, transit: activeOps[0]?.transit ?? 0 }
+          : null;
         const wipKey = currentOp?.name ? `${part.code}__${order.emirNo}__${currentOp.name}` : null;
         const snapshotDate = wipKey ? wipOpEntryDates[wipKey] : null;
         const waitSource = snapshotDate ? "system" : (currentOp?.opBasTarihi ? "vio" : null);
@@ -17808,6 +17827,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                                   <th style={{ ...woth, fontSize: 9 }}>Op Adı</th>
                                   <th style={{ ...woth, fontSize: 9 }}>Tezgah</th>
                                   <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Üretilen</th>
+                                  <th style={{ ...woth, textAlign: "right", fontSize: 9 }} title="Şu an fiziksel olarak bu op'ta bekleyen adet (önceki op'un ürettiği − bu op'un ürettiği)">İşlenebilir</th>
                                   <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Kalan</th>
                                   <th style={{ ...woth, fontSize: 9 }}>Başlangıç</th>
                                   <th style={{ ...woth, fontSize: 9 }}>Durum</th>
@@ -17816,6 +17836,11 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                               <tbody>
                                 {it.completedOps.concat(it.activeOps).map((op, oi) => {
                                   const isActive = op.remaining > 0;
+                                  const transit = op.transit || 0;
+                                  // Renk: transit=0 gri (iş yok), transit>0 mavi, transit>=remaining yeşil (tümü hazır)
+                                  const transitColor = transit === 0 ? "#a8a29e"
+                                    : (transit >= op.remaining && op.remaining > 0) ? "#166534"
+                                    : "#1e40af";
                                   return (
                                     <tr key={`${it.key}_${oi}`} style={{ borderTop: "1px solid #f5f5f4" }}>
                                       <td style={{ ...wotd, fontSize: 9 }}>{op.sayaci || "—"}</td>
@@ -17823,6 +17848,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                                       <td style={{ ...wotd, fontSize: 9 }}>{op.isFason && "🚚 "}{op.name}</td>
                                       <td style={{ ...wotd, fontSize: 9, color: "#78716c" }}>{op.wcCode || "—"}</td>
                                       <td style={{ ...wotd, textAlign: "right", fontSize: 9, color: "#166534", fontWeight: 500 }}>{op.uretilen}</td>
+                                      <td style={{ ...wotd, textAlign: "right", fontSize: 9, color: transitColor, fontWeight: transit > 0 ? 600 : 400 }} title={transit === 0 ? "Henüz emir bu op'a gelmedi" : `${transit} adet fiziksel olarak bu istasyonda hazır`}>{transit}</td>
                                       <td style={{ ...wotd, textAlign: "right", fontSize: 9, color: op.remaining > 0 ? "#dc2626" : "#a8a29e", fontWeight: 500 }}>{op.remaining}</td>
                                       <td style={{ ...wotd, fontSize: 9, color: "#78716c" }}>{op.opBasTarihi || "—"}</td>
                                       <td style={{ ...wotd, fontSize: 9 }}>
@@ -17850,6 +17876,9 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
       {/* İstasyon bazlı görünüm — İç İmalat / Fason iki grup ayrı başlık */}
       {viewMode === "station" && (
         <div>
+          <div style={{ padding: "6px 12px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 10, color: "#1e40af", marginBottom: 12 }}>
+            ℹ İş yükü hesabı <b>şu an fiziksel olarak istasyonda bekleyen adet</b> üzerinden yapılır (transit = önceki op'tan geçen − bu op'un ürettiği). "Toplam sipariş kalanı" değil.
+          </div>
           {byStation.length === 0 && (
             <div style={{ padding: 30, textAlign: "center", color: "#a8a29e", fontSize: 12 }}>Bu kriterlere uyan aktif iş yok.</div>
           )}
