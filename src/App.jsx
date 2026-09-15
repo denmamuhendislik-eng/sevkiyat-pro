@@ -17547,31 +17547,67 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
   }, [items, search, wcFilter, opNameFilter, statusFilter, sortBy, fasonOnly]);
 
   // İstasyon bazlı grup
+  // İstasyon Bazlı: her emir için transit>0 olan aktif op'ları ayrı mini-item olarak grupla.
+  // Bir emir aynı anda birden fazla op'ta fiziksel olarak bulunabilir; bu durumda
+  // her aktif op'u ilgili istasyona düşürür (aynı emir 2 kartta görünebilir).
   const byStation = useMemo(() => {
     const m = new Map();
+    // Önce her emrin kaç aktif istasyonda olduğunu say (duplicate rozet için)
+    const stationCountByOrderKey = new Map(); // itemKey → aktif istasyon sayısı
     for (const it of filtered) {
       if (!it.isActive) continue;
-      // İç imalat: wcCode bazında grupla; Fason: opName bazında grupla
-      // (Fason emirlerinin wcCode'u genelde boş/tekdüze — op adı gerçek ayrımı verir)
-      const isFason = !!it.isFasonBlocked;
-      const key = isFason
-        ? (it.currentOp?.name || "(fason op adı yok)")
-        : (it.wcCode || "(atanmamış)");
-      if (!m.has(key)) {
-        m.set(key, {
-          key, isFason,
-          wcCode: isFason ? "" : (it.wcCode || ""),
-          wcName: isFason ? "" : (it.wcName || ""),
-          opName: isFason ? (it.currentOp?.name || "") : "",
-          items: [], totalMin: 0,
-        });
+      const activeStages = (it.activeOps || []).filter(op => (op.transit || 0) > 0);
+      stationCountByOrderKey.set(it.key, activeStages.length);
+    }
+    for (const it of filtered) {
+      if (!it.isActive) continue;
+      const activeStages = (it.activeOps || []).filter(op => (op.transit || 0) > 0);
+      // Fallback: transit=0 durumunda emir henüz gelmedi ama istasyona düşmüyor (iş yok)
+      if (activeStages.length === 0) continue;
+      const bom = bomLookup[it.code] || null;
+      for (const op of activeStages) {
+        const isFason = !!op.isFason;
+        const wcCode = op.wcCode || "";
+        const key = isFason ? (op.name || "(fason op adı yok)") : (wcCode || "(atanmamış)");
+        if (!m.has(key)) {
+          m.set(key, {
+            key, isFason,
+            wcCode: isFason ? "" : wcCode,
+            wcName: isFason ? "" : ((workCenters?.centers || {})[wcCode]?.name || ""),
+            opName: isFason ? (op.name || "") : "",
+            items: [], totalMin: 0,
+          });
+        }
+        // Bu istasyonda bu emir için iş dk hesabı — sadece bu op'un transit adet üzerinden
+        let opMin = 0;
+        if (!isFason) {
+          let cycleTime = 5, setupTime = 30;
+          if (bom) {
+            const bomOp = bom.part.operations?.find(bo => bo.opCode === op.opCode || bo.opName === op.name);
+            if (bomOp) {
+              if (bomOp.cycleTime != null && bomOp.cycleTime > 0) cycleTime = bomOp.cycleTime;
+              if (bomOp.setupTime != null) setupTime = bomOp.setupTime;
+            }
+          }
+          opMin = setupTime + cycleTime * op.transit;
+        }
+        // Mini-item: emir bilgisi + o istasyondaki adet + op bilgisi
+        const miniItem = {
+          ...it,
+          stationOp: op,             // Bu istasyona ait op
+          stationTransit: op.transit, // Bu istasyondaki iş adet
+          stationOpName: op.name,
+          stationWcCode: wcCode,
+          stationMin: opMin,          // Bu istasyondaki iş dk
+          stationCount: stationCountByOrderKey.get(it.key) || 1, // Emir kaç istasyonda?
+        };
+        const g = m.get(key);
+        g.items.push(miniItem);
+        g.totalMin += opMin;
       }
-      const g = m.get(key);
-      g.items.push(it);
-      g.totalMin += it.estMin;
     }
     return Array.from(m.values()).sort((a, b) => b.items.length - a.items.length);
-  }, [filtered]);
+  }, [filtered, bomLookup, workCenters]);
 
   // D: İç İmalat vs Fason grupları
   const byStationInternal = useMemo(() => byStation.filter(g => !g.isFason), [byStation]);
@@ -17761,17 +17797,49 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
                           </div>
                         </td>
                         <td style={wotd}>
-                          {it.currentOp ? (
-                            <>
-                              <span style={{ display: "inline-block", padding: "1px 6px", fontSize: 9, fontWeight: 700,
-                                background: it.currentOp.isFason ? "#fff7ed" : "#eff6ff",
-                                color: it.currentOp.isFason ? "#c2410c" : "#1e40af",
-                                border: `1px solid ${it.currentOp.isFason ? "#fdba74" : "#bfdbfe"}`, borderRadius: 3 }}>
-                                {it.currentOp.isFason ? "🚚" : "🔧"} {it.currentOp.name}
-                              </span>
-                              {it.wcCode && <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Tezgah: {it.wcCode}{it.wcName ? ` · ${it.wcName}` : ""}</div>}
-                            </>
-                          ) : <span style={{ color: "#a8a29e", fontSize: 10 }}>✓ Tamamlandı</span>}
+                          {(() => {
+                            // Multi-stage: transit>0 olan her aktif op'u chip olarak göster
+                            // Emir aynı anda birden fazla op'ta bulunabilir (parça parça ilerler)
+                            const activeStages = (it.activeOps || []).filter(op => (op.transit || 0) > 0);
+                            if (activeStages.length === 0) {
+                              // Fallback: transit=0 ama isActive true → hala firstOpenOp göster (emir henüz gelmedi)
+                              if (it.currentOp) {
+                                return (
+                                  <>
+                                    <span style={{ display: "inline-block", padding: "1px 6px", fontSize: 9, fontWeight: 700,
+                                      background: it.currentOp.isFason ? "#fff7ed" : "#eff6ff",
+                                      color: it.currentOp.isFason ? "#c2410c" : "#1e40af",
+                                      border: `1px solid ${it.currentOp.isFason ? "#fdba74" : "#bfdbfe"}`, borderRadius: 3 }}>
+                                      {it.currentOp.isFason ? "🚚" : "🔧"} {it.currentOp.name}
+                                    </span>
+                                    {it.wcCode && <div style={{ fontSize: 9, color: "#78716c", marginTop: 2 }}>Tezgah: {it.wcCode}{it.wcName ? ` · ${it.wcName}` : ""}</div>}
+                                    <div style={{ fontSize: 8, color: "#a8a29e", marginTop: 1, fontStyle: "italic" }}>henüz gelmedi</div>
+                                  </>
+                                );
+                              }
+                              return <span style={{ color: "#a8a29e", fontSize: 10 }}>✓ Tamamlandı</span>;
+                            }
+                            const shown = activeStages.slice(0, 3);
+                            const rest = activeStages.length - shown.length;
+                            return (
+                              <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                                {shown.map((op, si) => (
+                                  <span key={si} style={{ display: "inline-flex", alignItems: "center", gap: 4,
+                                    padding: "1px 6px", fontSize: 9, fontWeight: 600,
+                                    background: op.isFason ? "#fff7ed" : "#eff6ff",
+                                    color: op.isFason ? "#c2410c" : "#1e40af",
+                                    border: `1px solid ${op.isFason ? "#fdba74" : "#bfdbfe"}`, borderRadius: 3, width: "fit-content" }}>
+                                    <span>{op.isFason ? "🚚" : "📍"} {op.name}</span>
+                                    <span style={{ padding: "0 4px", background: "#fff", borderRadius: 2, fontFamily: "ui-monospace, monospace", fontSize: 9, fontWeight: 700 }}>{op.transit}ad</span>
+                                    {op.wcCode && <span style={{ fontSize: 8, color: "#78716c" }}>({op.wcCode})</span>}
+                                  </span>
+                                ))}
+                                {rest > 0 && (
+                                  <span style={{ fontSize: 9, color: "#78716c", fontStyle: "italic" }}>+ {rest} aşama daha</span>
+                                )}
+                              </div>
+                            );
+                          })()}
                         </td>
                         <td style={{ ...wotd, textAlign: "right", fontWeight: 600 }}>
                           {it.waitDays == null ? <span style={{ color: "#a8a29e" }}>—</span> : (
@@ -17877,7 +17945,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
       {viewMode === "station" && (
         <div>
           <div style={{ padding: "6px 12px", background: "#eff6ff", border: "1px solid #bfdbfe", borderRadius: 4, fontSize: 10, color: "#1e40af", marginBottom: 12 }}>
-            ℹ İş yükü hesabı <b>şu an fiziksel olarak istasyonda bekleyen adet</b> üzerinden yapılır (transit = önceki op'tan geçen − bu op'un ürettiği). "Toplam sipariş kalanı" değil.
+            ℹ İş yükü hesabı <b>şu an fiziksel olarak istasyonda bekleyen adet</b> üzerinden yapılır (transit = önceki op'tan geçen − bu op'un ürettiği). Bir emir aynı anda birden fazla op'ta bulunabileceği için farklı istasyonlarda görünebilir (📌 rozetı ile işaretlenir).
           </div>
           {byStation.length === 0 && (
             <div style={{ padding: 30, textAlign: "center", color: "#a8a29e", fontSize: 12 }}>Bu kriterlere uyan aktif iş yok.</div>
@@ -17888,7 +17956,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, paddingBottom: 6, borderBottom: "2px solid #1e40af" }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: "#1e40af" }}>🏭 İç İmalat</span>
                 <span style={{ fontSize: 11, color: "#78716c" }}>
-                  {byStationInternal.length} tezgah · {byStationInternal.reduce((s, g) => s + g.items.length, 0)} emir · ~{fmtMin(byStationInternal.reduce((s, g) => s + g.totalMin, 0))}
+                  {byStationInternal.length} tezgah · {byStationInternal.reduce((s, g) => s + g.items.length, 0)} iş satırı · ~{fmtMin(byStationInternal.reduce((s, g) => s + g.totalMin, 0))}
                 </span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 10 }}>
@@ -17904,7 +17972,7 @@ function WorkOrderTrackerPanel({ akibet, products, workCenters, bomModels, wipOp
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, paddingBottom: 6, borderBottom: "2px solid #c2410c" }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: "#c2410c" }}>🚚 Fason</span>
                 <span style={{ fontSize: 11, color: "#78716c" }}>
-                  {byStationFason.length} fasoncu · {byStationFason.reduce((s, g) => s + g.items.length, 0)} emir · ~{byStationFason.reduce((s, g) => s + g.items.reduce((ss, it) => ss + (it.estFasonDays || 0), 0), 0)} fason gün
+                  {byStationFason.length} fasoncu · {byStationFason.reduce((s, g) => s + g.items.length, 0)} iş satırı · ~{byStationFason.reduce((s, g) => s + g.items.reduce((ss, it) => ss + (it.estFasonDays || 0), 0), 0)} fason gün
                 </span>
               </div>
               <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))", gap: 10 }}>
@@ -17959,7 +18027,7 @@ function StationCard({ g, accentBg, icon, fmtMin }) {
       <div style={{ padding: "8px 12px", background: accentBg, color: "#fff", fontSize: 12, fontWeight: 700 }}>
         {icon} {titleMain}{titleSub ? <span style={{ opacity: 0.85, fontWeight: 500 }}> · {titleSub}</span> : null}
         <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, opacity: 0.85 }}>
-          {g.items.length} emir · ~{fmtMin(g.totalMin)}
+          {g.items.length} iş · {g.items.reduce((s, it) => s + (it.stationTransit || 0), 0)} ad · ~{fmtMin(g.totalMin)}
         </span>
       </div>
       <div style={{ maxHeight: 400, overflow: "auto" }}>
@@ -17968,27 +18036,35 @@ function StationCard({ g, accentBg, icon, fmtMin }) {
             <tr>
               <th style={{ ...woth, fontSize: 9 }}>Emir</th>
               <th style={{ ...woth, fontSize: 9 }}>Ürün</th>
-              <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Kalan</th>
+              <th style={{ ...woth, textAlign: "right", fontSize: 9 }} title="Şu an bu istasyonda fiziksel olarak bekleyen adet">İşlenebilir</th>
               <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Bekleme</th>
               <th style={{ ...woth, textAlign: "right", fontSize: 9 }}>Süre</th>
             </tr>
           </thead>
           <tbody>
-            {g.items.slice().sort((a, b) => (b.waitDays || 0) - (a.waitDays || 0)).map(it => (
-              <tr key={it.key} style={{ borderTop: "1px solid #f5f5f4", background: it.fasonOverdue ? "#fef2f2" : "transparent" }}>
-                <td style={{ ...wotd, fontFamily: "ui-monospace, monospace", fontSize: 9, fontWeight: 600 }}>#{it.emirNo}</td>
+            {g.items.slice().sort((a, b) => (b.waitDays || 0) - (a.waitDays || 0)).map((it, idx) => (
+              <tr key={`${it.key}_${it.stationOpName || idx}`} style={{ borderTop: "1px solid #f5f5f4", background: it.fasonOverdue ? "#fef2f2" : "transparent" }}>
+                <td style={{ ...wotd, fontFamily: "ui-monospace, monospace", fontSize: 9, fontWeight: 600 }}>
+                  #{it.emirNo}
+                  {it.stationCount > 1 && (
+                    <div style={{ fontSize: 8, color: "#7c3aed", fontWeight: 500, marginTop: 1 }}
+                      title={`Bu emir aynı anda ${it.stationCount} istasyonda`}>
+                      📌 {it.stationCount} istasyonda
+                    </div>
+                  )}
+                </td>
                 <td style={{ ...wotd, fontSize: 9 }}>
                   <div style={{ fontFamily: "ui-monospace, monospace", color: "#78716c" }}>{it.code}</div>
                   <div>{(it.name || "").slice(0, 30)}</div>
                 </td>
-                <td style={{ ...wotd, textAlign: "right", fontSize: 9, fontWeight: 600, color: "#dc2626" }}>
-                  {it.currentOp?.remaining || it.rem}
+                <td style={{ ...wotd, textAlign: "right", fontSize: 9, fontWeight: 700, color: "#1e40af" }}>
+                  {it.stationTransit ?? (it.currentOp?.remaining || it.rem)}
                 </td>
                 <td style={{ ...wotd, textAlign: "right", fontSize: 9, color: it.fasonOverdue ? "#991b1b" : it.waitDays >= 14 ? "#991b1b" : it.waitDays >= 7 ? "#92400e" : "#44403c", fontWeight: it.fasonOverdue ? 700 : 400 }}>
                   {it.waitDays == null ? "—" : `${it.waitDays}g`}
                   {it.fasonOverdue && <div style={{ fontSize: 8, color: "#991b1b" }}>⚠ gecikmiş</div>}
                 </td>
-                <td style={{ ...wotd, textAlign: "right", fontSize: 9 }}>{fmtMin(it.estMin)}</td>
+                <td style={{ ...wotd, textAlign: "right", fontSize: 9 }}>{fmtMin(it.stationMin ?? it.estMin)}</td>
               </tr>
             ))}
           </tbody>
